@@ -139,6 +139,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Geodesic interpolation ~2.5x faster, same paths**: the least-squares solve runs in a numba kernel that
+  repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
+  every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for
+  options the kernel doesn't cover) it falls back to `scipy.optimize.least_squares`.
 - **The demo needs no password** (mepd.atomsforhumanity.org). Opening the page makes a private workspace
   at once; `MEPD_DEMO_PASSWORD` / `--demo-password` is now optional and gates the demo only when set (the
   k8s manifest no longer sets it; `deploy/demo/run.sh` still uses one). The workspace is made on the page's
