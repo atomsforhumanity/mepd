@@ -1278,3 +1278,16 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .chip { border: 1px solid var(--border); background: transparent; border-radius: 10px; padding: 1px 7px; cursor: pointer; }
 .chip.on { background: var(--accent, #3868b8); color: white; border-color: transparent; }
 .protein-view { min-width: 0; }
+
+/* Atom mapping (Results): numbered start/end drawings per mapping */
+.atom-mapping .mapping-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.atom-mapping .mapping-head { margin: 4px 0 6px; }
+.atom-mapping .mapping-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.atom-mapping .mapping-pair figure { margin: 0; flex: 1 1 260px; min-width: 0; text-align: center; }
+.atom-mapping .mapping-pair img { width: 100%; max-width: 340px; height: auto; }
+.atom-mapping .mapping-arrow { font-size: 22px; color: var(--muted, #888); }
+.atom-mapping .map-broken { color: #c4473c; }
+.atom-mapping .map-formed { color: #3a8f57; }
+.atom-mapping .mapping-interp { margin-top: 10px; }
+@media (prefers-color-scheme: dark) { .atom-mapping .mapping-pair img { filter: invert(0.9) hue-rotate(180deg); } }
+.atom-mapping .chip .chip-detail { opacity: 0.75; font-weight: 400; }

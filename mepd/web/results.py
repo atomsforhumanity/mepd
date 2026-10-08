@@ -1641,7 +1641,30 @@ def _collect(job: dict, job_dir: Optional[Path] = None) -> dict:
     if not job.get("external"):
         result["warnings"] += _log_warnings(out.parent / "stdout.log")
     _flag_negative_barriers(result)
+    mapping = atom_mapping_view(out, int(job.get("charge") or 0))
+    if mapping is not None:
+        result["atom_mapping"] = mapping
     return result
+
+
+def atom_mapping_view(out: Path, charge: int = 0) -> Optional[dict]:
+    """What the start/end atom mapping did (<output>/atom_mapping.json, from
+    mepd.mapping_report), with each mapping drawn: the start with the bonds
+    that break, the end in the start's numbering with the bonds that form."""
+    fp = Path(out) / "atom_mapping.json"
+    if not fp.exists():
+        return None
+    try:
+        import json
+
+        from mepd.mapping_report import candidate_drawings
+
+        report = json.loads(fp.read_text())
+        for c in report.get("candidates", []):
+            c["svg"] = candidate_drawings(report, c, charge)
+        return report
+    except Exception:
+        return None
 
 
 NEGATIVE_BARRIER_TOL = -0.1  # kcal/mol
@@ -1704,7 +1727,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 29
+RESULT_VERSION = 30
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

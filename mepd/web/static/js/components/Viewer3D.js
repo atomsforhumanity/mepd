@@ -29,7 +29,7 @@ function atomCount(xyz) {
 }
 
 export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, labels = false, style = 'stick',
-  system = null, region: regionIn = null, onAtomClick = null, highlight = null }) {
+  system = null, region: regionIn = null, onAtomClick = null, highlight = null, labelBase = 0 }) {
   const host = useRef(null);
   const viewer = useRef(null);
   const lastAtoms = useRef(0);
@@ -64,7 +64,7 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
     if (!labels) return;
     const model = v.getModel();
     if (!model) return;
-    model.selectedAtoms({}).forEach((a, i) => v.addLabel(String(i), {
+    model.selectedAtoms({}).forEach((a, i) => v.addLabel(String(i + labelBase), {
       position: { x: a.x, y: a.y, z: a.z }, fontSize: 10, backgroundOpacity: 0.55, inFront: true,
     }));
   };

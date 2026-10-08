@@ -537,6 +537,9 @@ def _check_endpoint_atom_mapping(
             "Atom mapping: the start's and end's atoms are already numbered the same way "
             "(checked with SLAPMapper), so nothing is renumbered."
         )
+        _report_mapping(output, start_structure, end_structure, None, metric="", chosen="identity",
+                        slapmapper_identity=True,
+                        summary="SLAPMapper found the end already numbered like the start; nothing was renumbered.")
         return end_structure
 
     if not atom_mapping:
@@ -563,6 +566,10 @@ def _check_endpoint_atom_mapping(
         if atom_map.is_identity:
             typer.echo("Atom mapping: the start's and end's atoms are already numbered the same way "
                        "(checked with SLAPMapper), so nothing is renumbered.")
+        _report_mapping(output, start_structure, end_structure, candidates, metric=metric, chosen="identity",
+                        slapmapper_identity=atom_map.is_identity,
+                        summary="SLAPMapper found the end already numbered like the start, and no other numbering "
+                                "(no symmetric atoms to relabel); nothing was renumbered.")
         return end_structure
 
     n_other = sum(c.label != "identity" for c in candidates)
@@ -637,8 +644,35 @@ def _check_endpoint_atom_mapping(
         typer.echo("Keeping the end's current atom numbering: no other fits clearly better.")
     else:
         typer.echo(f"Renumbering the end's atoms ({result.winner.label}) so they match the start's.")
+    shown = list(candidates) if any(c.label == result.winner.label for c in candidates) \
+        else [result.winner, *candidates]          # (snap's picks are candidates of their own)
+    n = len(shown)
+    _report_mapping(
+        output, start_structure, end_structure, shown, metric=metric, chosen=result.winner.label,
+        scores=scores, chains=getattr(result, "chains", None), quantity=result.quantity or "",
+        notes=getattr(result, "notes", None), slapmapper_identity=atom_map.is_identity,
+        summary=(f"{n} numbering{'s' if n != 1 else ''} of the end compared by {result.quantity or metric}; "
+                 + ("the end's current numbering was kept." if result.winner.label == "identity"
+                    else "the end was renumbered (the mapping used is marked ★).")))
 
     return result.winner.end_structure
+
+
+def _report_mapping(output, start_structure, end_structure, candidates, *, metric: str, chosen: str, **kw) -> None:
+    """<output>/atom_mapping.json for the Results page (mepd.mapping_report);
+    never fails the run."""
+    if output is None:
+        return
+    try:
+        from mepd.atom_mapping_selection import MappingCandidate
+        from mepd.mapping_report import build_report, write_report
+
+        if not candidates:
+            candidates = [MappingCandidate(label="identity", end_structure=end_structure, atom_map=None)]
+        write_report(output, build_report(start_structure, end_structure, candidates, metric=metric,
+                                          chosen=chosen, **kw))
+    except Exception as exc:
+        typer.echo(f"(Could not record the atom mapping for the Results page: {type(exc).__name__}: {exc})")
 
 
 def _tree_leaves(tree_dir: Path) -> tuple[set[int], set[int]]:

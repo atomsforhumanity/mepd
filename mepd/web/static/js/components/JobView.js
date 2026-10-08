@@ -17,6 +17,7 @@ import { RetroRoutes } from './Retro.js';
 import { ProteinSites } from './ProteinSites.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
+import { AtomMappingPanel } from './AtomMapping.js';
 
 // ------------------------------------------------------------ live
 // Every live path of a job: one per stream (e.g. each `channels` pair) and,
@@ -434,7 +435,7 @@ function ResultPanel({ job }) {
 
   if (error) return html`<div class="warn-box">Could not read results: ${error} <button class="btn small" onClick=${load}>Retry</button></div>`;
   if (!result) return html`<p class="muted">Reading results…</p>`;
-  if (!result.groups.length && !result.mechano && !result.conditions && !result.substituents && !result.retro && !result.protein_sites) {
+  if (!result.groups.length && !result.atom_mapping && !result.mechano && !result.conditions && !result.substituents && !result.retro && !result.protein_sites) {
     return html`<div class="empty-hint"><p>${result.headline}</p>
       ${running && html`<button class="btn small" onClick=${load} disabled=${loading}>${loading ? 'Reading…' : 'Check for partial results'}</button>`}</div>`;
   }
@@ -467,6 +468,7 @@ function ResultPanel({ job }) {
           <summary>${result.warnings.length} warning${result.warnings.length > 1 ? 's' : ''} reported by mepd — check before trusting every number</summary>
           <ul>${result.warnings.map((w) => html`<li class="mono">${w}</li>`)}</ul>
         </details>`}
+      ${result.atom_mapping && html`<${AtomMappingPanel} mapping=${result.atom_mapping} />`}
       ${job.op === 'nanoreactor' && html`<${SpawnedSearches} job=${job} />`}
       ${result.nanoreactor && html`<${ReactionTable} job=${job} reactions=${result.nanoreactor.reactions} />`}
       ${result.retro && html`<${RetroRoutes} job=${job} retro=${result.retro} />`}
