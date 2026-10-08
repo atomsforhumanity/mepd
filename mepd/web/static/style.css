@@ -705,8 +705,12 @@ button.monitor { text-align: left; font: inherit; cursor: pointer; }
 .pform-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .pform-bare { display: flex; flex-direction: column; gap: 3px; }
 .pform-adv > summary { font-size: 14px; }
-.pform-group { border: 0; border-top: 1px solid var(--border); padding: 12px 0 4px; margin: 10px 0 0; }
-.pform-group legend { font-size: 11.5px; text-transform: uppercase; letter-spacing: .09em; color: var(--label); font-weight: 600; padding-right: 8px; }
+.pform-group { border: 0; border-top: 1px solid var(--border); padding: 12px 0 4px; margin: 20px 0 0; }
+.pform-group legend { font: 600 18px/1.3 var(--font-serif); color: var(--heading); text-transform: none; letter-spacing: normal; padding-right: 10px; }
+.pform-index { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 8px 0; background: var(--bg); border-bottom: 1px solid var(--border); }
+.pform-index button { border: 1px solid var(--border); background: var(--panel); color: var(--accent); border-radius: 3px; padding: 3px 9px; font-size: 13px; cursor: pointer; }
+.pform-index button:hover { border-color: var(--accent); }
+.pform-basic, .pform-group { scroll-margin-top: 56px; }
 .pform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 18px; margin-top: 8px; }
 .pfield.key .field-label { color: var(--heading); }
 @media (max-width: 720px) { .pform-level { grid-column: auto; } }

@@ -154,12 +154,21 @@ function ProfileForm({ text, onText, readOnly }) {
   if (error) return html`<p class="error-box">${error} · fix it on the TOML tab.</p>`;
   if (!form) return html`<p class="muted small">Reading the profile…</p>`;
   const method = form.basic.find((c) => c.key === 'path_method')?.value;
+  // Jump to a section (opening Advanced first when it holds it).
+  const go = (id) => {
+    if (id !== 'main' && !advanced) setAdvanced(true);
+    requestAnimationFrame(() => document.getElementById(`pform-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
   return html`
     <div class="pform">
+      <nav class="pform-index">
+        <button onClick=${() => go('main')}>Main</button>
+        ${form.groups.map((g) => html`<button key=${g.id} onClick=${() => go(g.id)}>${g.title}</button>`)}
+      </nav>
       ${form.issues.map((i) => html`<p class="level-note small">${i}</p>`)}
       ${(form.notes || []).map((n) => html`<p class="small muted">${n}</p>`)}
       ${form.has_comments && html`<p class="small muted">This profile has # comments: a change made here removes them (edit on the TOML tab to keep them).</p>`}
-      <div class="pform-basic">
+      <div class="pform-basic" id="pform-main">
         ${form.basic.map((c) => html`<${ChoiceField} key=${c.key} choice=${c} readOnly=${readOnly} onChange=${(v) => change(c.key, v)} />`)}
         ${form.level.length > 0 && html`<div class="pfield pform-level">
           <span class="field-label">Level of theory</span>
@@ -174,7 +183,7 @@ function ProfileForm({ text, onText, readOnly }) {
       <details class="advanced pform-adv" open=${advanced} onToggle=${(e) => setAdvanced(e.target.open)}>
         <summary>Advanced</summary>
         ${form.groups.map((g) => html`
-          <fieldset class="pform-group" key=${g.id}>
+          <fieldset class="pform-group" key=${g.id} id=${`pform-${g.id}`}>
             <legend>${g.title}</legend>
             ${g.note && html`<p class="small muted">${g.note}</p>`}
             <div class="pform-grid">
