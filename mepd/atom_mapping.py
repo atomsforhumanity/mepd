@@ -358,15 +358,14 @@ def _symmetry_colors(structure: Structure) -> list:
     return [f"{x}{r}" for x, r in zip(structure.symbols, ranks)]
 
 
-def _automorphisms(structure: Structure):
-    """The bond graph's automorphisms that keep every bond and every atom's
-    `_symmetry_colors`, lazily, as arrays: sigma[i] is where atom i goes.
-    The graph is the one SLAPMapper sees (`structure_to_molecule`).
-    Identity alone if there is no symmetry or nauty can't be used."""
+def _automorphism_generators(structure: Structure) -> list[list[int]]:
+    """Generators (nauty) of the bond graph's automorphism group, keeping
+    every bond and every atom's `_symmetry_colors`: g[i] is where atom i
+    goes. The graph is the one SLAPMapper sees (`structure_to_molecule`).
+    [] if there is no symmetry or nauty can't be used."""
     n = len(structure.symbols)
     try:
         import pynauty
-        from sympy.combinatorics import Permutation, PermutationGroup
 
         adj = {i: [] for i in range(n)}
         for u, v in structure_to_molecule(structure).edges():
@@ -377,9 +376,18 @@ def _automorphisms(structure: Structure):
             by_color.setdefault(c, set()).add(i)
         gens = pynauty.autgrp(pynauty.Graph(n, adjacency_dict=adj, vertex_coloring=list(by_color.values())))[0]
     except Exception:
-        gens = []
+        return []
+    return [[int(x) for x in g] for g in gens]
+
+
+def _automorphisms(structure: Structure):
+    """The group of `_automorphism_generators`, lazily, as arrays: sigma[i]
+    is where atom i goes. Identity alone if there is no symmetry."""
+    gens = _automorphism_generators(structure)
     if not gens:
-        return iter([list(range(n))])
+        return iter([list(range(len(structure.symbols)))])
+    from sympy.combinatorics import Permutation, PermutationGroup
+
     return PermutationGroup([Permutation(g) for g in gens]).generate(af=True)
 
 

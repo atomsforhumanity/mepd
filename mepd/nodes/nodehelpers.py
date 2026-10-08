@@ -509,6 +509,51 @@ def _is_conformer_identical(
         return False
 
 
+_STEREO_SMILES: dict = {}
+_STEREO_SMILES_MAX = 4096
+
+
+def _canonical_atom_order(node: Node) -> list[int]:
+    """The atom order fixed by `node`'s bond graph alone (nauty canonical
+    labeling, atoms colored by element)."""
+    import pynauty
+
+    symbols = list(node.structure.symbols)
+    n = len(symbols)
+    adj = {i: [] for i in range(n)}
+    for u, v in node.graph.edges():
+        adj[int(u)].append(int(v))
+        adj[int(v)].append(int(u))
+    by_element: dict = {}
+    for i, x in enumerate(symbols):
+        by_element.setdefault(x, set()).add(i)
+    colors = [by_element[x] for x in sorted(by_element)]
+    return [int(i) for i in pynauty.canon_label(pynauty.Graph(n, adjacency_dict=adj, vertex_coloring=colors))]
+
+
+def _stereo_smiles(node: Node) -> str:
+    """`structure_to_smiles` of `node`, its atoms first put in
+    `_canonical_atom_order`: RDKit's bond orders and charges from 3D can
+    depend on the atom numbering alone (the same geometry, renumbered, gave
+    two SMILES), so two numberings of one structure must reach it in the same
+    order. Cached per structure: a large comparison checks one reference
+    against many candidates."""
+    from qcdata import Structure
+
+    st = node.structure
+    geometry = np.asarray(st.geometry, dtype=float)
+    key = (tuple(st.symbols), geometry.round(6).tobytes(), st.charge, st.multiplicity)
+    smi = _STEREO_SMILES.get(key)
+    if smi is None:
+        order = _canonical_atom_order(node)
+        smi = structure_to_smiles(Structure(symbols=[st.symbols[i] for i in order], geometry=geometry[order],
+                                            charge=st.charge, multiplicity=st.multiplicity))
+        if len(_STEREO_SMILES) >= _STEREO_SMILES_MAX:
+            _STEREO_SMILES.clear()
+        _STEREO_SMILES[key] = smi
+    return smi
+
+
 def _is_connectivity_identical(
     self: Node,
     other: Node,
@@ -540,8 +585,8 @@ def _is_connectivity_identical(
     if (not disable_smiles) and full_natom_self < 100 and full_natom_other < 100:
         try:
 
-            smi1 = structure_to_smiles(self.structure)
-            smi2 = structure_to_smiles(other.structure)
+            smi1 = _stereo_smiles(self)
+            smi2 = _stereo_smiles(other)
             stereochem_identical = smi1 == smi2
 
         except Exception:
