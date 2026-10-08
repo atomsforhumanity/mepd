@@ -255,6 +255,7 @@ def maybe_realign_pair(
     this never warns -- meant for `mepd.msmep`'s `--atom-mapping-recheck-splits`,
     which may call this many times per run, deep in the recursion."""
     from mepd.atom_mapping import HAS_SLAPMAPPER, suggest_atom_mapping_candidates
+    from mepd.inputs import MAPPING_CANDIDATE_LIMIT
 
     if not HAS_SLAPMAPPER or len(start_structure.symbols) != len(end_structure.symbols):
         return end_structure, False
@@ -262,7 +263,7 @@ def maybe_realign_pair(
     atom_mapping_inputs = run_inputs.atom_mapping_inputs
     try:
         atom_maps = suggest_atom_mapping_candidates(
-            start_structure, end_structure, max_candidates=atom_mapping_inputs.n_candidates
+            start_structure, end_structure, max_candidates=MAPPING_CANDIDATE_LIMIT
         )
     except Exception:
         return end_structure, False

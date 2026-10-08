@@ -99,7 +99,7 @@ def _expand_pairs_by_mechanism(
     from mepd.nodes.node import StructureNode
 
     metric = run_inputs.atom_mapping_inputs.metric
-    budget = run_inputs.atom_mapping_inputs.n_candidates
+    from mepd.inputs import MAPPING_CANDIDATE_LIMIT as budget
     # Filtered GI path: every pair by endpoint RMSD first (microseconds each),
     # GI paths only for the pairs near each mechanism's lowest RMSD. Snap +
     # GI + xtb: every pair by snap's pick first, GI + xtb only for the pairs kept.
@@ -290,55 +290,122 @@ def _load_conformer_pool(fp: Path, endpoint, label: str, charge: int, multiplici
 
 
 def _built_pairs_by_mechanism(sources: list, src: str, start_node, end_node, run_inputs: RunInputs, *,
-                              pairs_per_mechanism: int = 0, workers: int = 1) -> tuple[list, list]:
-    """--pair-from with --atom-mapping: for each conformer in `sources` (the
-    `src` side), the other endpoint built for every candidate mapping (each
-    distinct bond set, with swaps of the conformer's symmetric atoms),
-    minimized, dropped if its bonds or stereochemistry change, and the best
-    of each mechanism kept (mepd.built_pair_mapping.best_per_mechanism).
-    `pairs_per_mechanism` > 0 keeps each mechanism's best pairs across the
-    conformers (by the xtb peak along the pair's interpolated path).
-    Returns (sources, built partners) like network_expansion.build_partners,
-    a conformer repeated once per mechanism kept for it -- both in the
-    start's atom order."""
+                              workers: int = 1) -> tuple[list, int]:
+    """--pair-from with --atom-mapping: each conformer in `sources` (the
+    `src` side) builds the other endpoint once per candidate mapping
+    (mepd.built_pair_mapping.best_per_mechanism: one build per mechanism,
+    equivalent sites only if the given one fails), minimized, dropped if its
+    bonds or stereochemistry change. Returns ([(conformer index,
+    MechanismPair)], M), M the number of candidate mappings; the pairs are in
+    the start's atom order."""
     from mepd.atom_mapping import check_atom_mapping
     from mepd.built_pair_mapping import best_per_mechanism
     from mepd.cli_common import _candidate_atom_maps
-    from mepd.nodes.node import StructureNode
 
     pair_from = "start" if src == "start" else "end"
     atom_map = check_atom_mapping(start_node.structure, end_node.structure)
     if atom_map is None:
-        return [], []
+        return [], 0
     maps = _candidate_atom_maps(start_node.structure, end_node.structure, atom_map, run_inputs)
-    typer.echo(f"  per conformer: each of the candidate mappings' {'products' if src == 'start' else 'reactants'} "
-               "built and minimized, the best of each mechanism kept...")
+    typer.echo(f"  per conformer: the {'product' if src == 'start' else 'reactant'} of each of the candidate "
+               "mappings built and minimized...")
 
     def one(node):
         a, b = (node.structure, end_node.structure) if src == "start" else (start_node.structure, node.structure)
+        fallback: list = []    # only the symmetry-swap fallback's lines are shown
+        echo = lambda ln: fallback.append(ln.strip()) if "SYMMETRY-SWAP FALLBACK" in ln else None
         try:
-            return best_per_mechanism(a, b, maps, pair_from, run_inputs, echo=lambda _: None), None
+            return best_per_mechanism(a, b, maps, pair_from, run_inputs, echo=echo), None, fallback
         except Exception as exc:
-            return [], f"{type(exc).__name__}: {exc}"
+            return [], f"{type(exc).__name__}: {exc}", fallback
 
     rows = []
-    for k, (found, error) in enumerate(_fork_map(one, list(sources), workers)):
+    for k, (found, error, fallback) in enumerate(_fork_map(one, list(sources), workers)):
+        for ln in fallback:
+            typer.echo(f"  conformer {k}: {ln}")
         if error:
             typer.echo(f"  conformer {k}: {error}")
-        rows += found
-    by_key: dict = {}
-    for r in rows:
-        by_key.setdefault(r.key, []).append(r)
-    kept = []
-    for key in sorted(by_key):
-        mine = sorted(by_key[key], key=lambda r: r.score)
-        kept += mine[:pairs_per_mechanism] if pairs_per_mechanism > 0 else mine
-        typer.echo(f"  {_describe_mechanism(key)}: {len(mine)} built pair(s)"
-                   + (f", the {pairs_per_mechanism} with the lowest path peak kept"
-                      if 0 < pairs_per_mechanism < len(mine) else ""))
-    a = [StructureNode(structure=r.start) for r in kept]
-    b = [StructureNode(structure=r.end) for r in kept]
-    return (a, b) if src == "start" else (b, a)
+        rows += [(k, r) for r in found]
+    return rows, len(maps)
+
+
+BUILT_PAIRS_JSON = "built_pairs.json"
+
+
+def _save_built_pairs(folder: Path, ranked: list, searched: set, metric: str) -> None:
+    """The ranked built pairs ([(side, conformer index, MechanismPair)]) as
+    <folder>/start.xyz and end.xyz (entry k is frame k, in the start's atom
+    order) and built_pairs.json: one entry per pair, labeled built_<rank>,
+    with whether it has been searched. The interpolation each was scored by
+    goes to paths/<label>.json (xyz frames, xtb energies in kcal/mol); one
+    saved by an earlier run is kept."""
+    from mepd.inputs import ChainInputs
+    from mepd.nodes.node import StructureNode
+
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, name in enumerate(("start", "end")):
+        Chain.model_validate({"nodes": [StructureNode(structure=(r.start, r.end)[i]) for _, _, r in ranked],
+                              "parameters": ChainInputs()}).write_to_disk(folder / f"{name}.xyz")
+    floors = [r.floor for _, _, r in ranked if r.floor is not None]
+    floor = min(floors) if floors else None
+    (folder / "paths").mkdir(exist_ok=True)
+    for n, (_, _, r) in enumerate(ranked):
+        if r.path:
+            (folder / "paths" / f"built_{n}.json").write_text(json.dumps(
+                {"frames": [s.to_xyz() for s in r.path], "energies_kcal": r.path_energies}))
+    entries = [{"label": f"built_{n}", "rank": n, "built_from": src, "conformer": k, "mechanism": r.key,
+                "mechanism_text": _describe_mechanism(r.key), "score": r.score,
+                "barrier_kcal": (r.score - floor) if floor is not None and r.floor is not None else None,
+                "n_variants": r.n_variants, "floor": r.floor, "searched": f"built_{n}" in searched,
+                "has_path": (folder / "paths" / f"built_{n}.json").exists()}
+               for n, (src, k, r) in enumerate(ranked)]
+    (folder / BUILT_PAIRS_JSON).write_text(json.dumps(
+        {"metric": metric, "floor_kcal": floor, "entries": entries}, indent=2) + "\n")
+
+
+def _load_built_pairs(folder: Path, charge: int, multiplicity: int) -> tuple[list, set]:
+    """What `_save_built_pairs` wrote: (ranked, labels searched already)."""
+    from mepd.built_pair_mapping import MechanismPair
+    from mepd.inputs import ChainInputs
+
+    fp = folder / BUILT_PAIRS_JSON
+    if not fp.exists():
+        raise typer.BadParameter(f"--built-pairs {folder} has no {BUILT_PAIRS_JSON}.")
+    entries = json.loads(fp.read_text())["entries"]
+    starts, ends = (list(Chain.from_xyz(folder / f"{name}.xyz", ChainInputs(), charge=charge,
+                                        spinmult=multiplicity).nodes) for name in ("start", "end"))
+    if not len(entries) == len(starts) == len(ends):
+        raise typer.BadParameter(f"--built-pairs {folder}: {BUILT_PAIRS_JSON} and its xyz files disagree.")
+    ranked = [(e["built_from"], e["conformer"],
+               MechanismPair(key=e["mechanism"], score=e["score"], start=a.structure, end=b.structure,
+                             n_variants=e["n_variants"], floor=e["floor"]))
+              for e, a, b in zip(entries, starts, ends)]
+    return ranked, {e["label"] for e in entries if e["searched"]}
+
+
+def _choose_built_pairs(rows: list, max_searches: int, picks: Optional[set] = None,
+                        done: frozenset = frozenset()) -> tuple[list, list, list]:
+    """All built pairs, both sides and every mechanism together ([(src,
+    conformer index, MechanismPair)]), ranked by score (snap-gi-xtb: the xtb
+    peak, so above one shared floor, the lowest start among them). Searched:
+    the entries labeled in `picks` (built_<rank>), else the lowest
+    `max_searches`; `done`, labels searched in an earlier run. Returns
+    (ranked, ranks searched, report lines)."""
+    ranked = sorted(rows, key=lambda t: t[2].score)
+    chosen = ([n for n in range(len(ranked)) if f"built_{n}" in picks] if picks is not None
+              else list(range(min(max_searches, len(ranked)))))
+    floors = [r.floor for _, _, r in rows if r.floor is not None]
+    floor = min(floors) if floors else None
+    lines = []
+    for n, (src, k, r) in enumerate(ranked):
+        value = (f"{r.score - floor:6.1f} kcal/mol" if floor is not None and r.floor is not None
+                 else f"{r.score:.4g}")
+        built = (f"product built from reactant conformer {k}" if src == "start"
+                 else f"reactant built from product conformer {k}")
+        status = "searched" if n in chosen else "done    " if f"built_{n}" in done else "skipped "
+        lines.append(f"  built_{n:<3} {status}  {value}  {built}: "
+                     f"{_describe_mechanism(r.key)}")
+    return ranked, chosen, lines
 
 
 def _minimize_conformer_pool(nodes: list, label: str, run_inputs: RunInputs) -> list:
@@ -872,10 +939,11 @@ def channels(
         "per candidate go to <output>/realign_debug/.",
     ),
     atom_mapping_candidates: int = typer.Option(
-        200, "--atom-mapping-candidates",
-        help="--atom-mapping: how many of SLAPMapper's equal-minimal-cost "
-        "candidate mappings (plus their symmetry-orbit expansions) to keep "
-        "and consider (they're ties, not ranked by quality among themselves).",
+        3, "--atom-mapping-candidates",
+        help="--pair-from with --atom-mapping: the most path searches. Every conformer builds its partner "
+        "once per candidate mapping (at most (reactant + product conformers) x mappings built pairs); if "
+        "there are more, all are ranked by the xtb peak along their interpolation, above the lowest start "
+        "among them, and the lowest are searched. Unused otherwise.",
     ),
     explore_mechanisms: int = typer.Option(
         0, "--explore-mechanisms",
@@ -1012,6 +1080,18 @@ def channels(
         "start+end: both -- every reactant conformer with a product built from it, and every product "
         "conformer with a reactant built from it.",
     ),
+    built_pairs: Optional[Path] = typer.Option(
+        None, "--built-pairs",
+        help="--pair-from with --atom-mapping: the ranked built pairs an earlier run saved "
+        "(<its output>/built_pairs), used instead of building them again. With a higher "
+        "--atom-mapping-candidates the next ones down its list are searched; pairs searched already are "
+        "skipped (their folders are done).",
+    ),
+    search_built: Optional[str] = typer.Option(
+        None, "--search-built",
+        help="With --built-pairs: search exactly these entries of its list (comma-separated labels, e.g. "
+        "built_7,built_12) instead of the lowest --atom-mapping-candidates.",
+    ),
     rmsd_cutoff: float = typer.Option(
         0.1, "--rmsd-cutoff",
         help="Minimum pairwise RMSD (bohr) for two conformers of the same endpoint "
@@ -1075,7 +1155,8 @@ def channels(
         "SLAPMapper allows (e.g. [3,3] and [1,3] shifts for a Claisen); for each "
         "mechanism, only the K pairs its geodesic score (--atom-mapping-metric) "
         "likes best get a path search. 0 = every pair x every mechanism (slow, "
-        "mostly redundant). See docs/channels_candidates.md.",
+        "mostly redundant). Sampled pairs only: --pair-from builds are capped by "
+        "--atom-mapping-candidates. See docs/channels_candidates.md.",
     ),
     workers: int = typer.Option(
         0, "--workers", "-j",
@@ -1178,6 +1259,15 @@ def channels(
         raise typer.BadParameter("--atom-mapping-rmsd-window must be 0 or more (standard deviations).")
     if atom_mapping_candidates <= 0:
         raise typer.BadParameter("--atom-mapping-candidates must be a positive integer.")
+    if not isinstance(built_pairs, (str, Path)):   # typer's OptionInfo when called directly
+        built_pairs = None
+    if not isinstance(search_built, str):
+        search_built = None
+    if search_built and built_pairs is None:
+        raise typer.BadParameter("--search-built picks entries of a saved list: give it --built-pairs.")
+    if built_pairs is not None and (pair_from == "both" or not atom_mapping):
+        raise typer.BadParameter("--built-pairs is the list of a --pair-from start/end/start+end run with "
+                                 "--atom-mapping: give those too.")
     if crest_threads <= 0:
         raise typer.BadParameter("--crest-threads must be a positive integer.")
     if workers < 0:
@@ -1412,26 +1502,73 @@ def channels(
     for label in pools:
         stats["conformers"][label]["n_mirror_images_merged"] = n_mirrors if label == mirror_side else 0
         stats["conformers"][label]["n_final"] = len(pools[label])
+    built_chosen = None   # --pair-from with --atom-mapping: which of the built pairs (all in the pools) to search
     if pair_from != "both":
         from mepd.discovery.network_expansion import build_partners
 
         t0 = time.perf_counter()
         sampled_pools = dict(pools)
-        pairs, n_built = [], {}
-        for src in sampled_sides:
+        pairs, n_built, rows, n_maps = [], {}, [], 0
+        searched_before: set = set()
+        if built_pairs is not None:
+            rows, searched_before = _load_built_pairs(Path(built_pairs), start_node.structure.charge,
+                                                      start_node.structure.multiplicity)
+            typer.echo(f"--built-pairs: {len(rows)} ranked built pair(s) from {built_pairs}, not built again "
+                       f"({len(searched_before)} searched already).")
+        for src in (sampled_sides if built_pairs is None else ()):
             other = "end" if src == "start" else "start"
             typer.echo(f"--pair-from {pair_from}: building a {'product' if other == 'end' else 'reactant'} in the "
                        f"frame of each of the {len(pools[src])} {'reactant' if src == 'start' else 'product'} "
                        "conformer(s)...")
-            kept, built = (_built_pairs_by_mechanism(pools[src], src, start_node, end_node, run_inputs,
-                                                     pairs_per_mechanism=pairs_per_mechanism, workers=max(1, workers))
-                           if atom_mapping else
-                           build_partners(pools[src], end_node if other == "end" else start_node, run_inputs))
+            if atom_mapping:
+                found, m = _built_pairs_by_mechanism(pools[src], src, start_node, end_node, run_inputs,
+                                                     workers=max(1, workers))
+                rows += [(src, k, r) for k, r in found]
+                n_maps, n_built[src] = max(n_maps, m), len(found)
+                typer.echo(f"  {len(found)} built.")
+                continue
+            kept, built = build_partners(pools[src], end_node if other == "end" else start_node, run_inputs)
             pairs += list(zip(kept, built)) if src == "start" else list(zip(built, kept))
             n_built[src] = len(built)
             typer.echo(f"  {len(built)} built (each paired with the conformer it was built from).")
         stats["pair_from"] = {"mode": pair_from, "n_built_from": n_built,
                               "seconds": round(time.perf_counter() - t0, 3)}
+        if rows:
+            # At most (N_reactant + N_product) x M built pairs; past
+            # --atom-mapping-candidates, the lowest by xtb peak are searched.
+            max_searches = run_inputs.atom_mapping_inputs.n_candidates
+            picks = {x.strip() for x in search_built.split(",") if x.strip()} if search_built else None
+            ranked, built_chosen, lines = _choose_built_pairs(rows, max_searches, picks, frozenset(searched_before))
+            unknown = sorted((picks or set()) - {f"built_{n}" for n in range(len(ranked))})
+            if unknown:
+                raise typer.BadParameter(f"--search-built: {', '.join(unknown)} not in {built_pairs} "
+                                         f"(built_0 to built_{len(ranked) - 1}).")
+            metric = run_inputs.atom_mapping_inputs.metric
+            how = ("the xtb peak along their interpolation, above the lowest start among them"
+                   if metric == "snap-gi-xtb" else metric)
+            if picks is not None:
+                head = f"--search-built: searching {len(built_chosen)} chosen of the {len(ranked)} built pairs:"
+            elif built_pairs is not None:
+                head = (f"--pair-from {pair_from}: {len(ranked)} built pair(s) (--built-pairs), ranked by {how}; "
+                        f"the lowest {min(max_searches, len(ranked))} searched (--atom-mapping-candidates):")
+            else:
+                n_sources = sum(len(pools[s]) for s in sampled_sides)
+                head = (f"--pair-from {pair_from}: {len(ranked)} built pair(s), of at most {n_sources} conformer(s) x "
+                        f"{n_maps} mapping(s) = {n_sources * n_maps}; "
+                        + (f"more than --atom-mapping-candidates ({max_searches}), so all are ranked by {how} "
+                           f"and the lowest {max_searches} searched:" if len(ranked) > max_searches
+                           else "all searched:"))
+            typer.echo(head)
+            for ln in lines:
+                typer.echo(ln)
+            _save_built_pairs(output / "built_pairs", ranked, searched_before | (
+                set() if conformers_only else {f"built_{n}" for n in built_chosen}), metric)
+            # Every built pair stays in the pools, in rank order, so a pair's
+            # label is the same in every run of this list; only the chosen
+            # ones are searched.
+            pairs = [(StructureNode(structure=r.start), StructureNode(structure=r.end)) for _, _, r in ranked]
+            stats["pair_from"].update(n_built_pairs=len(ranked), n_mappings=n_maps, max_searches=max_searches,
+                                      n_searched=len(built_chosen), searched=[f"built_{n}" for n in built_chosen])
         if pairs:
             pools = {"start": [a for a, _ in pairs], "end": [b for _, b in pairs]}
         else:
@@ -1470,7 +1607,8 @@ def channels(
     n_start = len(start_confs)
     candidates = [
         (i, n_start + j) for i in range(n_start) for j in range(len(end_confs))
-    ] if pair_from == "both" else [(i, n_start + i) for i in range(n_start)]
+    ] if pair_from == "both" else [(i, n_start + i) for i in (built_chosen if built_chosen is not None
+                                                               else range(n_start))]
     stats["n_pairs_possible"] = len(candidates)
 
     if max_pairs and len(candidates) > max_pairs:

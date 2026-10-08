@@ -1644,7 +1644,27 @@ def _collect(job: dict, job_dir: Optional[Path] = None) -> dict:
     mapping = atom_mapping_view(out, int(job.get("charge") or 0))
     if mapping is not None:
         result["atom_mapping"] = mapping
+    built = built_pairs_view(out)
+    if built is not None:
+        result["built_pairs"] = built
     return result
+
+
+def built_pairs_view(out: Path) -> Optional[dict]:
+    """A channels run with built endpoints: its ranked built pairs
+    (<output>/built_pairs/built_pairs.json, from mepd.cli_channels), lowest
+    apparent barrier first, each with whether it has been searched."""
+    fp = Path(out) / "built_pairs" / "built_pairs.json"
+    if not fp.exists():
+        return None
+    try:
+        data = json.loads(fp.read_text())
+    except Exception:
+        return None
+    keep = ("label", "rank", "built_from", "conformer", "mechanism_text", "barrier_kcal", "score", "searched",
+            "has_path")
+    return {"metric": data.get("metric"), "floor_kcal": data.get("floor_kcal"),
+            "entries": [{k: e.get(k) for k in keep} for e in data.get("entries", [])]}
 
 
 def atom_mapping_view(out: Path, charge: int = 0) -> Optional[dict]:
@@ -1727,7 +1747,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 30
+RESULT_VERSION = 31
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

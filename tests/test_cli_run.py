@@ -763,7 +763,7 @@ def test_atom_mapping_reindexes_when_mapping_scores_better(monkeypatch, capsys):
 
 
 def test_atom_mapping_says_how_many_numberings_slapmapper_found(monkeypatch, capsys):
-    """The candidate budget (n_candidates) is filled with relabelings of
+    """The candidate budget (MAPPING_CANDIDATE_LIMIT) is filled with relabelings of
     symmetric atoms: the log tells those apart from what SLAPMapper found,
     instead of crediting SLAPMapper with the whole budget."""
     pytest.importorskip("slapmapper")
@@ -776,7 +776,7 @@ def test_atom_mapping_says_how_many_numberings_slapmapper_found(monkeypatch, cap
     _patch_candidate_scores(monkeypatch, identity=10.0, mapping=0.0)
     run_inputs = _run_inputs_for_test()
     run_inputs.atom_mapping_inputs.metric = "geodesic-distance"
-    run_inputs.atom_mapping_inputs.n_candidates = 4
+    monkeypatch.setattr("mepd.inputs.MAPPING_CANDIDATE_LIMIT", 4)
     start = _propene_structure(range(9))
     end = _propene_structure(_PROPENE_SCRAMBLED_ORDER)
     (found,) = am.suggest_atom_mapping_candidates(start, end, max_candidates=1)

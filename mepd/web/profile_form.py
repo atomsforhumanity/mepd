@@ -102,7 +102,7 @@ GEOMOPT_DEFAULTS = {"coordsys": "cart", "maxit": 500, "convergence_set": "GAU_TI
 GI_DEFAULTS = {"nimages": 10, "friction": 0.001, "nudge": 0.1, "random_seed": 0, "align": True}
 CHAIN_DEFAULTS = {"k": 0.1, "delta_k": 0.09, "do_parallel": True, "node_freezing": True, "fraction_freeze": 0.1,
                   "node_rms_thre": 5.0, "node_ene_thre": 5.0, "frozen_atom_indices": ""}
-MAPPING_DEFAULTS = {"n_candidates": 200, "metric": "snap-gi-xtb", "rmsd_window": 1.0, "gi_variant_cap": 20,
+MAPPING_DEFAULTS = {"n_candidates": 3, "metric": "snap-gi-xtb", "rmsd_window": 1.0, "gi_variant_cap": 20,
                     "veto_margin": 0.0,
                     "recheck_on_split": False, "explore_mechanisms": 0, "relax_top": 4,
                     "relax_margin": 5.0}
@@ -251,7 +251,7 @@ HELP = {
     "fraction_freeze": "Fraction of the path that may be frozen.",
     "do_parallel": "Compute images in parallel.",
     "frozen_atom_indices": "Atoms held fixed (space-separated indices, from 0).",
-    "n_candidates": "Atom-mapping candidates scored per mechanism.",
+    "n_candidates": "Built endpoints (--pair-from): the most path searches; built pairs ranked by xtb peak.",
     "gi_variant_cap": "Filtered GI path: GI paths for this many lowest-RMSD symmetry variants (0 = all).",
     "rmsd_window": "Filtered GI path: GI paths only for conformer pairs within this many standard deviations of "
                    "the lowest endpoint RMSD (mepd channels).",

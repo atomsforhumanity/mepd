@@ -125,7 +125,8 @@ class TsParams(Params):
         "start (or its start from its product), kept only if bonds and stereochemistry survive.",
         cli="--rebuild-splits-from", group="Endpoints", advanced=True,
         labels={"none": "Off", "start": "Product from start", "end": "Start from product"})
-    atom_mapping_candidates: int = P(200, "Mapping candidates", cli="--atom-mapping-candidates",
+    atom_mapping_candidates: int = P(3, "Built path searches", "Built endpoints: the most path searches; all "
+                                     "built pairs are ranked by their xtb peak.", cli="--atom-mapping-candidates",
                                      group="Atom mapping", advanced=True, ge=1, requires="atom_mapping")
     atom_mapping_metric: AtomMappingMetric = P(
         "snap-gi-xtb", "Mapping metric", _MAPPING_METRIC_HELP,
@@ -771,6 +772,12 @@ class ChannelsMoreParams(Params):
     pairs_per_mechanism: int = P(6, "Searches per mechanism", "The new cap: more of each mechanism's "
                                  "best-scoring conformer pairs (0 = all of them). Pairs already searched are "
                                  "kept and skipped.", kind="custom", ge=0)
+    path_searches: Optional[int] = P(
+        None, "Built path searches", "Runs with built endpoints: the new cap on path searches, so the next built "
+        "pairs down the ranked list are searched (empty: 3 more).", kind="custom", ge=1)
+    search_built: Optional[str] = P(
+        None, "Built pairs to search", "Runs with built endpoints: search exactly these entries of the ranked list "
+        "(comma-separated labels, e.g. built_7).", kind="custom", advanced=True)
     workers: int = P(4, "Workers", "Processes for atom mapping, path searches and TS/IRC.", kind="custom", ge=1)
     rmsd_window: Optional[float] = P(
         None, "RMSD window (σ)", "Filtered GI path only: widen the window to GI-score more conformer pairs "
@@ -805,6 +812,9 @@ def _build_channels_more(ctx: JobContext, p: ChannelsMoreParams) -> list[str]:
     src = ctx.source
     if src is None:
         raise WorkspaceError("Sample more paths follows up on a finished Reaction channels run")
+    built = _channels_more_built(src, p)
+    if built is not None:
+        return built
     old = int((src.get("params") or {}).get("pairs_per_mechanism", 0) or 0)
     if old == 0:
         raise WorkspaceError("that run already searched every pair of every mechanism (0 = all)")
@@ -822,6 +832,41 @@ def _build_channels_more(ctx: JobContext, p: ChannelsMoreParams) -> list[str]:
              "--start-pool": pools["start"], "--end-pool": pools["end"], "--output": out}
     if p.rmsd_window is not None:
         flags["--atom-mapping-rmsd-window"] = f"{p.rmsd_window:g}"
+    return _replace_flags(list(src["argv"]), flags)
+
+
+def _channels_more_built(src: dict, p: ChannelsMoreParams) -> Optional[list[str]]:
+    """A channels run with built endpoints (it saved its ranked built pairs,
+    <output>/built_pairs): rerun it on that list, searching the next ones down
+    it (a higher --atom-mapping-candidates) or exactly the entries asked for.
+    None for any other run."""
+    out = Path(src["output_dir"])
+    fp = out / "built_pairs" / "built_pairs.json"
+    if not fp.exists():
+        return None
+    entries = json.loads(fp.read_text())["entries"]
+    labels = {e["label"] for e in entries}
+    n_done = sum(bool(e["searched"]) for e in entries)
+    # --max-pairs would cut the searches back to the first (already searched) ones.
+    flags = {"--built-pairs": out / "built_pairs", "--workers": p.workers, "--output": out, "--max-pairs": None}
+    if p.search_built:
+        picks = [x.strip() for x in p.search_built.split(",") if x.strip()]
+        unknown = [x for x in picks if x not in labels]
+        if unknown or not picks:
+            raise WorkspaceError(f"not in that run's built pairs: {', '.join(unknown) or '(none given)'}")
+        flags["--search-built"] = ",".join(picks)
+    else:
+        if n_done >= len(entries):
+            raise WorkspaceError("that run already searched every built pair")
+        cap = p.path_searches or n_done + 3
+        if cap <= n_done:
+            raise WorkspaceError(f"that run already searched {n_done} built pairs: ask for more than {n_done}")
+        flags["--atom-mapping-candidates"] = cap
+        flags["--search-built"] = None
+    pools = {side: out / "conformers" / f"{side}_pool.xyz" for side in ("start", "end")}
+    for side, pool in pools.items():
+        if pool.exists():
+            flags[f"--{side}-pool"] = pool
     return _replace_flags(list(src["argv"]), flags)
 
 

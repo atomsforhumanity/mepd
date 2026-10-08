@@ -361,10 +361,9 @@ def run(
         "<output>/realign_debug/, e.g. for inspecting them with `mepd visualize`.",
     ),
     atom_mapping_candidates: int = typer.Option(
-        200, "--atom-mapping-candidates",
-        help="--atom-mapping: how many of SLAPMapper's equal-minimal-cost "
-        "candidate mappings (plus their symmetry-orbit expansions) to keep "
-        "and consider (they're ties, not ranked by quality among themselves).",
+        3, "--atom-mapping-candidates",
+        help="Path searches kept from --pair-from builds in `mepd channels`; unused here (one path is "
+        "searched).",
     ),
     explore_mechanisms: int = typer.Option(
         0, "--explore-mechanisms",

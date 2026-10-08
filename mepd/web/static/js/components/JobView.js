@@ -18,6 +18,7 @@ import { ProteinSites } from './ProteinSites.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
 import { AtomMappingPanel } from './AtomMapping.js';
+import { BuiltPairsPanel } from './BuiltPairs.js';
 
 // ------------------------------------------------------------ live
 // Every live path of a job: one per stream (e.g. each `channels` pair) and,
@@ -469,6 +470,7 @@ function ResultPanel({ job }) {
           <ul>${result.warnings.map((w) => html`<li class="mono">${w}</li>`)}</ul>
         </details>`}
       ${result.atom_mapping && html`<${AtomMappingPanel} mapping=${result.atom_mapping} />`}
+      ${result.built_pairs && html`<${BuiltPairsPanel} job=${job} data=${result.built_pairs} />`}
       ${job.op === 'nanoreactor' && html`<${SpawnedSearches} job=${job} />`}
       ${result.nanoreactor && html`<${ReactionTable} job=${job} reactions=${result.nanoreactor.reactions} />`}
       ${result.retro && html`<${RetroRoutes} job=${job} retro=${result.retro} />`}
@@ -479,7 +481,7 @@ function ResultPanel({ job }) {
       ${result.substituents && html`<${SubstituentPanel} x=${result.substituents} />`}
       ${['ts', 'tsopt', 'design-tsopt', 'channels'].includes(job.op) && html`<${ConditionsFollowUps} job=${job} />`}
       ${result.vri && html`<${VriFollowUps} job=${job} vri=${result.vri} />`}
-      ${job.op === 'channels' && html`<${ChannelsFollowUps} job=${job} />`}
+      ${job.op === 'channels' && html`<${ChannelsFollowUps} job=${job} built=${result.built_pairs} />`}
       ${job.op === 'nanoreactor' && html`<${NanoreactorFollowUps} job=${job} />`}
       ${job.op === 'ts' && html`<${TsFollowUps} job=${job} />`}
       ${result.groups.length > 0 && html`<div class="result-body">
@@ -596,8 +598,10 @@ function VriFollowUps({ job, vri }) {
 }
 
 // A finished channels run: search more conformer pairs per mechanism, reusing
-// everything it computed (the follow-up reruns it in its own folder).
-function ChannelsFollowUps({ job }) {
+// everything it computed (the follow-up reruns it in its own folder). With
+// built endpoints (`built`: result.built_pairs), the next built pairs down
+// its ranked list instead.
+function ChannelsFollowUps({ job, built = null }) {
   const operations = useStore((s) => s.operations);
   const runsKey = useStore((s) => Object.values(s.jobs).filter((j) => j.source_job === job.id)
     .map((j) => `${j.id}:${j.status}`).sort().join('|'));
@@ -605,6 +609,21 @@ function ChannelsFollowUps({ job }) {
     .sort((a, b) => b.created - a.created), [runsKey]);
   const op = operations.find((o) => o.key === 'channels-more' && o.available);
   if (!op || job.status !== 'done' || job.op !== 'channels') return null;
+  if (built) {
+    const total = built.entries.length;
+    const n = built.entries.filter((e) => e.searched).length;
+    if (n >= total) return null;   // every built pair is already searched
+    const only = new Set(['path_searches', 'workers']);
+    const schema = { ...op.schema, properties: Object.fromEntries(Object.entries(op.schema.properties).filter(([k]) => only.has(k))) };
+    return html`
+      <section class="followups">
+        <h3 class="section-title">Next steps</h3>
+        <${FollowUpCard} op=${{ ...op, schema, summary: 'Search the next built pairs down the ranked list, reusing everything this run computed.' }}
+          job=${job} runs=${runs.filter((r) => r.op === op.key)}
+          initial=${{ path_searches: Math.min(total, n + 3) }}
+          note=${`So far: ${n} of ${total} built pairs, lowest apparent barrier first. The next ones down the list are searched; to pick one, use Search in Built pairs.`} />
+      </section>`;
+  }
   const done = runs.filter((r) => r.status === 'done').map((r) => r.params?.pairs_per_mechanism ?? 0);
   const cap = [job.params?.pairs_per_mechanism ?? 0, ...done].reduce((m, v) => (m === 0 || v === 0 ? 0 : Math.max(m, v)));
   if (cap === 0) return null;   // every pair of every mechanism is already searched

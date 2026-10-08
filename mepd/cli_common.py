@@ -393,8 +393,8 @@ def _candidate_atom_maps(start_structure: Structure, end_structure: Structure, a
     bonds already correspond (`atom_map` is the identity), the current
     numbering's relabelings; plus --explore-mechanisms' mechanisms."""
     from mepd.atom_mapping import expand_mapping_fully, suggest_atom_mapping_candidates
+    from mepd.inputs import MAPPING_CANDIDATE_LIMIT as n_candidates
 
-    n_candidates = run_inputs.atom_mapping_inputs.n_candidates
     # Bonds that already correspond still leave the symmetric atoms (a
     # methyl's hydrogens) to be matched: the current numbering competes
     # with its symmetry relabelings.
@@ -546,8 +546,7 @@ def _check_endpoint_atom_mapping(
         return end_structure
 
     from mepd.atom_mapping_selection import build_candidates, select_best_candidate
-
-    n_candidates = run_inputs.atom_mapping_inputs.n_candidates
+    from mepd.inputs import MAPPING_CANDIDATE_LIMIT as n_candidates
     try:
         atom_maps = _candidate_atom_maps(start_structure, end_structure, atom_map, run_inputs)
     except Exception as exc:

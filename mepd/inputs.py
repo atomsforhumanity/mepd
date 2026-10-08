@@ -374,16 +374,26 @@ class GIInputs:
         return GIInputs(**self.__dict__)
 
 
+# How many of SLAPMapper's equal-minimal-cost candidate mappings (and
+# relabelings of their symmetric atoms) are kept and considered: ties, not
+# ranked among themselves.
+MAPPING_CANDIDATE_LIMIT = 200
+
+
 @dataclass
 class AtomMappingInputs:
     """
     Inputs for `--atom-mapping`'s multi-candidate atom-mapping selection
     (`mepd/atom_mapping_selection.py`).
 
-    `n_candidates`: how many of SLAPMapper's equal-minimal-cost candidate
-        mappings (plus their symmetry-orbit expansions, see
-        `expand_mapping_by_symmetry`) to keep and consider (default: 200).
-        These are ties, not ranked by quality among themselves.
+    `n_candidates`: channels --pair-from builds: the most path searches
+        (default 3). Every deduped conformer builds its partner once per
+        candidate mapping, at most (N_reactant + N_product) x M built pairs;
+        if more, all are ranked together by the xtb peak along their
+        interpolation, above the lowest reactant end among them (one shared
+        floor), and the lowest are searched. Elsewhere unused: how many
+        SLAPMapper candidates and symmetry relabelings are considered is
+        `MAPPING_CANDIDATE_LIMIT`.
 
     `metric`: how the candidates (including "don't reindex") are compared;
         `mepd.atom_mapping_metrics.HELP` describes the offered ones. Default
@@ -420,7 +430,7 @@ class AtomMappingInputs:
         survive minimization. None (default): legs keep the endpoints found.
     """
 
-    n_candidates: int = 200
+    n_candidates: int = 3
     metric: str = "snap-gi-xtb"
     veto_margin: float = 0.0
     recheck_on_split: bool = False
