@@ -42,6 +42,7 @@ class GSMHelperError(ElectronicStructureError):
     this is never caught by the RESTART -> native-growth fallback."""
 from mepd.inputs import RunInputs
 from mepd.pathminimizers.pathminimizer import PathMinimizer
+from mepd.engines.gxtb import _SETPRIV
 from mepd.progress import log_at_level
 
 # Same magic numbers the C++ ASE driver (GSM/ase.cpp) uses to convert between
@@ -712,6 +713,14 @@ class GSM(PathMinimizer):
         threading.Thread(target=_drain, daemon=True).start()
         return chunks
 
+    @staticmethod
+    def _dies_with_parent(cmd: list[str]) -> list[str]:
+        """`cmd` with a parent-death signal on Linux (as for g-xTB): a run that
+        is killed (e.g. a sweep's timeout) leaves no engine server or GSM
+        binary behind. Only an executable that resolves is wrapped, so a
+        missing one still raises FileNotFoundError."""
+        return [_SETPRIV, "--pdeathsig", "KILL", "--", *cmd] if _SETPRIV and shutil.which(cmd[0]) else cmd
+
     def _start_engine_server(self, workdir: Path) -> subprocess.Popen:
         """Launch the long-lived engine server `grad.py` clients talk to
         (see the module-level comment on `_ENGINE_SERVER_SOURCE`), and block
@@ -719,7 +728,7 @@ class GSM(PathMinimizer):
         """
         ready_marker = workdir / "engine.sock.ready"
         proc = subprocess.Popen(
-            [sys.executable, "engine_server.py"],
+            self._dies_with_parent([sys.executable, "engine_server.py"]),
             cwd=workdir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -815,7 +824,7 @@ class GSM(PathMinimizer):
 
         try:
             proc = subprocess.Popen(
-                [executable, "0", "1"],
+                self._dies_with_parent([executable, "0", "1"]),
                 cwd=workdir,
                 env=env,
                 text=True,
