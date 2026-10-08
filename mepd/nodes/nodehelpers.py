@@ -5,7 +5,6 @@ from mepd.qcdata_structure_helpers import split_structure_into_frags
 from mepd.geodesic_interpolation2.coord_utils import align_geom
 from mepd.errors import EnergiesNotComputedError
 
-from qcinf import structure_to_smiles
 
 # Rich imports for flashy CLI output
 try:
@@ -531,27 +530,59 @@ def _canonical_atom_order(node: Node) -> list[int]:
     return [int(i) for i in pynauty.canon_label(pynauty.Graph(n, adjacency_dict=adj, vertex_coloring=colors))]
 
 
-def _stereo_smiles(node: Node) -> str:
-    """`structure_to_smiles` of `node`, its atoms first put in
-    `_canonical_atom_order`: RDKit's bond orders and charges from 3D can
-    depend on the atom numbering alone (the same geometry, renumbered, gave
-    two SMILES), so two numberings of one structure must reach it in the same
-    order. Cached per structure: a large comparison checks one reference
-    against many candidates."""
-    from qcdata import Structure
+def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
+    """Isomeric SMILES of `node` from its own bond graph (the one the
+    connectivity check compares), not one RDKit perceives from 3D: that can
+    join close fragments (a P...P contact in a complex read as P=P), and
+    which way such a borderline case fell depended on the atom numbering
+    alone. Bond orders (RDKit's DetermineBondOrders) and stereochemistry are
+    then taken from the geometry, the atoms first put in
+    `_canonical_atom_order` so ties in the bond orders can't depend on the
+    numbering either. Returns (SMILES, whether bond orders were assigned);
+    without them (assignment failed, or `bond_orders=False`) only
+    tetrahedral stereo is seen. Cached per structure: a large comparison
+    checks one reference against many candidates."""
+    from qcconst.constants import BOHR_TO_ANGSTROM
+    from rdkit import Chem
+    from rdkit.Chem import rdDetermineBonds
+    from rdkit.Geometry import Point3D
 
     st = node.structure
     geometry = np.asarray(st.geometry, dtype=float)
-    key = (tuple(st.symbols), geometry.round(6).tobytes(), st.charge, st.multiplicity)
-    smi = _STEREO_SMILES.get(key)
-    if smi is None:
-        order = _canonical_atom_order(node)
-        smi = structure_to_smiles(Structure(symbols=[st.symbols[i] for i in order], geometry=geometry[order],
-                                            charge=st.charge, multiplicity=st.multiplicity))
-        if len(_STEREO_SMILES) >= _STEREO_SMILES_MAX:
-            _STEREO_SMILES.clear()
-        _STEREO_SMILES[key] = smi
-    return smi
+    key = (tuple(st.symbols), geometry.round(6).tobytes(), st.charge, st.multiplicity, bond_orders)
+    hit = _STEREO_SMILES.get(key)
+    if hit is not None:
+        return hit
+    order = _canonical_atom_order(node)
+    where = {old: new for new, old in enumerate(order)}
+    mol = Chem.RWMol()
+    for i in order:
+        mol.AddAtom(Chem.Atom(str(st.symbols[i])))
+    for u, v in node.graph.edges():
+        mol.AddBond(where[int(u)], where[int(v)], Chem.BondType.SINGLE)
+    conformer = Chem.Conformer(len(order))
+    for k, (x, y, z) in enumerate(geometry[order] * BOHR_TO_ANGSTROM):
+        conformer.SetAtomPosition(k, Point3D(float(x), float(y), float(z)))
+    mol.AddConformer(conformer, assignId=True)
+    with_orders = False
+    if bond_orders:
+        trial = Chem.Mol(mol)
+        try:
+            rdDetermineBonds.DetermineBondOrders(trial, charge=int(st.charge))
+            mol, with_orders = trial, True
+        except Exception:
+            pass
+    mol = Chem.Mol(mol)
+    if not with_orders:
+        for atom in mol.GetAtoms():
+            atom.SetNoImplicit(True)
+        Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+    Chem.AssignStereochemistryFrom3D(mol)
+    out = (Chem.MolToSmiles(mol), with_orders)
+    if len(_STEREO_SMILES) >= _STEREO_SMILES_MAX:
+        _STEREO_SMILES.clear()
+    _STEREO_SMILES[key] = out
+    return out
 
 
 def _is_connectivity_identical(
@@ -585,8 +616,9 @@ def _is_connectivity_identical(
     if (not disable_smiles) and full_natom_self < 100 and full_natom_other < 100:
         try:
 
-            smi1 = _stereo_smiles(self)
-            smi2 = _stereo_smiles(other)
+            (smi1, orders1), (smi2, orders2) = _stereo_smiles(self), _stereo_smiles(other)
+            if orders1 != orders2:   # bond orders for one only: compare both without
+                smi1, smi2 = _stereo_smiles(self, False)[0], _stereo_smiles(other, False)[0]
             stereochem_identical = smi1 == smi2
 
         except Exception:
