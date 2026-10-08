@@ -496,6 +496,20 @@ def test_explore_finds_the_water_relay_and_calls_water_catalytic():
     assert ["H2O"] in tags  # the proton passes through the water, which is regenerated
 
 
+def test_explore_puts_proton_shuttles_before_h_moved_through_carbon():
+    from mepd.atom_mapping import _EditCount, catalytic_participants, explore_mechanisms
+
+    start, end = _scrambled("keto_enol_1water")
+    explored = explore_mechanisms(start, end, [suggest_atom_mapping(start, end)], max_new=10)
+    ec = _EditCount(start, end)
+    keys = [(int(m.cost), ec.carbon_h_changes(m.as_order())) for m in explored]
+    assert keys == sorted(keys)
+    # at 4 bond changes the relay through the water's O-H comes before an H shuffled on carbon
+    tied = [m for m in explored if int(m.cost) == 4]
+    assert catalytic_participants(start, realign_end_to_start(tied[0], end)) == ["H2O"]
+    assert any(ec.carbon_h_changes(m.as_order()) > ec.carbon_h_changes(tied[0].as_order()) for m in tied)
+
+
 def test_explore_finds_the_methyl_relay_through_ch3i():
     from mepd.atom_mapping import catalytic_participants, explore_mechanisms
 

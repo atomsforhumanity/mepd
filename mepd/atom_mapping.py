@@ -585,6 +585,9 @@ def suggest_mechanism_candidates(
     return out
 
 
+_PROTIC = {"N", "O", "S", "P", "F", "Cl", "Br", "I"}   # an H on these is passed on as a proton
+
+
 class _EditCount:
     """The exact number of bonds broken plus formed under a mapping, on the
     bond graphs SLAPMapper sees (`structure_to_molecule`), with O(degree)
@@ -632,6 +635,18 @@ class _EditCount:
         order[i], order[j] = order[j], order[i]
         inv[order[i]], inv[order[j]] = i, j
         return after - before
+
+    def carbon_h_changes(self, order) -> int:
+        """Broken plus formed bonds between an H and an atom that is not N,
+        O, S, P or a halogen."""
+        def soft(i, k):
+            return (self.sym[i] == "H") != (self.sym[k] == "H") and \
+                (self.sym[k] if self.sym[i] == "H" else self.sym[i]) not in _PROTIC
+        inv = {int(v): a for a, v in enumerate(order)}
+        c = sum(1 for i in range(self.n) for k in self.adj0[i]
+                if k > i and order[k] not in self.adj1[order[i]] and soft(i, k))
+        return c + sum(1 for j in range(self.n) for b in self.adj1[j]
+                       if b > j and inv[b] not in self.adj0[inv[j]] and soft(inv[j], inv[b]))
 
     def route(self, order) -> tuple:
         """The bonds broken and formed, atoms named by index except that a
@@ -689,7 +704,11 @@ def explore_mechanisms(
     `rounds` swaps deep, the `per_round` cheapest new mappings carried on per
     round. Returns one mapping per new route (`_EditCount.route`: bonds
     broken and formed, by atom, not among the bases'), lowest edit count
-    first, at most `max_new`. Which of them
+    first, at most `max_new`. Equal edit counts are ordered by how many of
+    the changed bonds join an H to a carbon (or another atom that is not N,
+    O, S, P or a halogen), fewest first: a proton shuttled between
+    heteroatoms (a catalyst's N-H or O-H) before an H handed on through a
+    C-H bond, which the edit count alone can't tell apart. Which of them
     are actually low in energy is for the caller's scoring to decide."""
     if not bases or max_new <= 0:
         return []
@@ -722,7 +741,7 @@ def explore_mechanisms(
                     ct = ec.cost(t)
                     if ct - c <= step:
                         new[t] = ct
-        kept = sorted(new.items(), key=lambda kv: kv[1])[:per_round]
+        kept = sorted(new.items(), key=lambda kv: (kv[1], ec.carbon_h_changes(kv[0])))[:per_round]
         seen.update(kept)
         frontier = [t for t, _ in kept]
         if not frontier:
@@ -734,7 +753,7 @@ def explore_mechanisms(
         key = ec.route(order)
         if key not in known and (key not in best or c < best[key][0]):
             best[key] = (c, order)
-    ranked = sorted(best.values(), key=lambda t: (t[0], t[1]))[:max_new]
+    ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
     return [AtomMapping(mapping=dict(enumerate(o)), cost=float(c), n_alternatives=len(best), explored=True)
             for c, o in ranked]
 
