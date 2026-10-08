@@ -213,6 +213,13 @@ function fmtDefault(v) {
   return String(v);
 }
 
+// The arrows of a decimal field step by a tenth of its default's magnitude
+// (step="any" would make them step by 1).
+function floatStep(v) {
+  const x = Math.abs(Number(v));
+  return x > 0 && Number.isFinite(x) ? String(Number(`1e${Math.floor(Math.log10(x)) - 1}`)) : '0.1';
+}
+
 function Field({ f, onChange, readOnly, bare = false }) {
   const set = f.value !== null && f.value !== undefined && f.value !== '';
   // mepd writes every default into a profile: only a real change gets a reset link.
@@ -236,7 +243,7 @@ function Field({ f, onChange, readOnly, bare = false }) {
       ${f.options.map((o) => html`<option value=${String(o.value)}>${o.label}</option>`)}</select>`;
   } else {
     const numeric = f.type === 'int' || f.type === 'float';
-    input = html`<input type=${numeric ? 'number' : 'text'} step=${f.type === 'int' ? '1' : 'any'} value=${set ? f.value : ''}
+    input = html`<input type=${numeric ? 'number' : 'text'} step=${f.type === 'int' ? '1' : floatStep(f.default || f.value)} value=${set ? f.value : ''}
       placeholder=${f.placeholder || fmtDefault(f.default)} readOnly=${readOnly}
       onChange=${(e) => {
         // A half-typed number reads as '' in the browser: refuse it rather
