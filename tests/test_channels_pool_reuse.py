@@ -96,6 +96,29 @@ def test_web_reuses_the_newest_matching_pool_for_each_endpoint(tmp_path):
     assert "--start-pool" not in argv
 
 
+def test_web_does_not_reuse_a_pool_whose_sampling_was_skipped(tmp_path):
+    """A run whose sampler kept only the input (bond orders not perceivable),
+    or that reused a pool itself, is no source of a pool."""
+    from mepd.web.operations import ChannelsParams, _build_channels
+
+    a = {"id": "s_a", "charge": 0, "multiplicity": 1, "name": "A"}
+    b = {"id": "s_b", "charge": 0, "multiplicity": 1, "name": "B"}
+    rdkit = {"backend": "rdkit", "n_conformers": 10}
+    skipped = _channels_job(tmp_path, "j_skip", ["s_a", "s_b"], rdkit, "L1", finished=1)
+    reused = _channels_job(tmp_path, "j_reuse", ["s_a", "s_b"], rdkit, "L1", finished=2)
+    for job, side_stats in ((skipped, {"rdkit_skipped": "bond orders not perceivable"}),
+                            (reused, {"reused_from": "x"})):
+        Path(job["output_dir"], "stats.json").write_text(
+            json.dumps({"conformers": {"start": side_stats, "end": side_stats}}))
+    jdir = tmp_path / "j_this"
+    ctx = SimpleNamespace(structures=[a, b], jobs={"j_skip": skipped, "j_reuse": reused}, job_dir=jdir,
+                          output_dir=jdir / "output", level=lambda: {"key": "L1"},
+                          endpoint_flags=lambda mode: ["--start", "A.xyz", "--end", "B.xyz"],
+                          common_flags=lambda: [])
+    argv = _build_channels(ctx, ChannelsParams(**rdkit))
+    assert "--start-pool" not in argv and "--end-pool" not in argv
+
+
 def test_older_runs_are_reused_only_if_no_mirror_images_were_merged(tmp_path):
     from mepd.web.operations import _saved_pool
 

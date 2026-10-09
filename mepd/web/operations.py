@@ -744,7 +744,17 @@ def _reusable_pool(ctx: JobContext, p: ChannelsParams, rec: dict) -> Optional[tu
             continue
         if p.minimize_ends and (job.get("level") or {}).get("key") != level:
             continue
-        fp = _saved_pool(job, "start" if sids[0] == rec["id"] else "end")
+        side = "start" if sids[0] == rec["id"] else "end"
+        try:
+            sampled = json.loads((Path(job["output_dir"]) / "stats.json").read_text())["conformers"][side]
+        except (OSError, ValueError, KeyError, TypeError):
+            sampled = {}
+        # Not a pool these settings make: sampling was skipped (only the
+        # input kept), or the job reused one itself (its source is a
+        # candidate on its own, and may be such a pool).
+        if sampled.get("rdkit_skipped") or sampled.get("reused_from"):
+            continue
+        fp = _saved_pool(job, side)
         if fp is not None and (best is None or (job.get("finished") or 0) > (best[1].get("finished") or 0)):
             best = (fp, job)
     return best
