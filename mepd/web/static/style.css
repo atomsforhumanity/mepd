@@ -1096,6 +1096,7 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .rc-ladder .rc-missing { fill: var(--muted); font-size: 12px; }
 .rc-ts-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rc-ts-row .spacer { flex: 1; }
+.rc-export { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
 .rc-barrier { font-family: var(--font-mono); font-size: 13px; }
 .rc-events .on { font-weight: 700; text-decoration: underline; }
 .rx-table tr.clickable { cursor: pointer; }

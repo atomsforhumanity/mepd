@@ -312,5 +312,19 @@ export function ReactionCard({ r, event = null, compact = false }) {
           <p class="small muted">${verified ? 'The transition state (TS optimization, IRC-verified).'
             : 'The highest point of the path: no TS optimization or IRC has confirmed it, so the barrier is approximate.'}</p>`)}
     </div>`}
+    <${ReactionExport} r=${r} />
+  </div>`;
+}
+
+// This reaction as files to share, with every channel found for it: one
+// self-contained page (opens offline, embeds in an iframe) or its data for SI.
+function ReactionExport({ r }) {
+  const url = (format) => `/api/reactions/${r.id}/export?format=${format}`;
+  return html`<div class="rc-export small">
+    <span class="muted">Export</span>
+    <a class="btn small" href=${url('html')} download
+      title="One HTML file: equation, energy diagram with every channel found, each channel's TS and IRC in 3D, energies and level of theory. Opens without a server or internet; embeds in an iframe.">Report (.html)</a>
+    <a class="btn small" href=${url('zip')} download
+      title="The data behind it: an XYZ per structure, each channel's TS and IRC, energies as CSV and JSON, the diagram as SVG, the profiles used, a README, and the report">Data (.zip)</a>
   </div>`;
 }

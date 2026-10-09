@@ -1562,3 +1562,91 @@ def test_demo_profile_sync_keeps_visitors_own(tmp_path):
     sync(SimpleNamespace(demo_root=root), ws)
     assert sorted(p.name for p in ws.profiles_dir.glob("*.toml")) == ["default.toml", "mine.toml"]
     assert (ws.profiles_dir / "default.toml").read_text() == 'engine_name = "gxtb"\n'
+
+
+def _reaction_bundle() -> dict:
+    """A reaction export's data as reaction_bundle returns it (water + H -> OH + H2), with two channels:
+    a direct one and one in two steps."""
+    sp = lambda sid, role, name, smiles, e: {
+        "id": sid, "role": role, "name": name, "smiles": smiles, "charge": 0, "multiplicity": 1, "energy_hartree": e,
+        "level": "GFN2-xTB", "xyz": WATER_XYZ, "svg": "<svg/>", "count": 1, "shuttle": False}
+    irc = lambda e_ts: {"ts_index": 1, "frames": [WATER_XYZ, WATER_BENT_XYZ, WATER_XYZ],
+                        "energy_kcal": [0.0, 12.0, -3.0], "energy_hartree": [-5.47, e_ts, -5.48]}
+    step = lambda label, e_ts, b: {"label": label, "ts_xyz": WATER_BENT_XYZ, "ts_hartree": e_ts,
+                                   "barrier_search_kcal": b, "irc": irc(e_ts)}
+    common = {"verified": True, "level": "GFN2-xTB", "level_key": "k", "job": "j_1", "job_title": "TS: water + H",
+              "placed": "absolute"}
+    return {
+        "id": "r_1", "label": "O + [H] -> [OH] + [H][H]",
+        "reactants": [sp("s1", "reactant", "water", "O", -5.07), sp("s2", "reactant", "H", "[H]", -0.39)],
+        "products": [sp("s3", "product", "OH", "[OH]", -4.41), sp("s4", "product", "H2", "[H][H]", -0.98)],
+        "complexes": [{**sp("c1", "reactant complex", "water + H", "O.[H]", -5.47)},
+                      {**sp("c2", "product complex", "OH + H2", "[OH].[H][H]", -5.40)}],
+        "channels": [
+            {**common, "kind": "direct", "label": "channel 0", "steps": [step("channel 0", -5.45, 12.0)],
+             "ts_kcal": 5.7, "barrier_kcal": 12.0, "barrier_search_kcal": 12.0, "n": 1, "id": "ch1", "name": "Channel 1"},
+            {**common, "kind": "multi-step", "label": "alt 0 (2 steps)",
+             "steps": [step("alt_0_step_0", -5.44, 18.0), step("alt_0_step_1", -5.43, 20.0)],
+             "ts_kcal": 13.7, "barrier_kcal": 20.0, "barrier_search_kcal": 20.0, "n": 2, "id": "ch2", "name": "Channel 2"}],
+        "offtarget": 1, "lowest": "ch1",
+        "ladder": {"reactants": 0.0, "reactant_complex": -6.3, "product_complex": 37.7, "products": 49.0},
+        "delta_e_kcal": 49.0, "complex_delta_e_kcal": 44.0, "relaxed_from": None, "source": "composed by hand",
+        "seen": None, "profiles": [{"job": "j_1", "job_title": "TS: water + H", "toml": 'engine_name = "xtb"\n'}],
+        "exported": "2026-10-09", "mepd_version": "test"}
+
+
+def test_a_reaction_exports_every_channel_as_a_self_contained_page_and_a_data_zip():
+    import io
+    import re
+    import zipfile
+
+    from mepd.web.reaction_export import energy_diagram_svg, export_html, export_zip
+
+    b = _reaction_bundle()
+    page = export_html(b)
+    # Nothing to fetch: no external scripts, styles or images (it opens offline and embeds anywhere).
+    assert not re.search(r'(src|href)="https?://', page)
+    assert "$3Dmol" in page and '<script type="application/json" id="data">' in page
+    assert "O + [H] → [OH] + [H][H]" in page
+    data = json.loads(page.split('id="data">')[1].split("</script>")[0])
+    assert [c["id"] for c in data["channels"]] == ["ch1", "ch2"] and data["lowest"] == "ch1"
+    assert all("svg" not in s for s in data["reactants"])
+    # Both channels' TSs on the diagram, each in its own colour, the lowest named.
+    svg = energy_diagram_svg(b)
+    assert "+5.7" in svg and "+13.7" in svg and 'class="c1"' in svg and 'class="c2"' in svg and ">lowest<" in svg
+
+    z = zipfile.ZipFile(io.BytesIO(export_zip(b)))
+    names = {n.split("/", 1)[1] for n in z.namelist()}
+    assert {"README.md", "report.html", "reaction.json", "energies.csv", "energy_diagram.svg", "profile.toml",
+            "structures/ts_ch1.xyz", "structures/ts_ch2_step1.xyz", "structures/ts_ch2_step2.xyz",
+            "irc_ch1.xyz", "irc_ch2_step1.xyz", "irc_ch2_step2.xyz"} <= names
+    root = z.namelist()[0].split("/")[0]
+    csv_text = z.read(f"{root}/energies.csv").decode()
+    assert "Channel 1 TS,5.700" in csv_text and "Channel 2,multi-step,13.700,20.000,20.000,yes,2," in csv_text
+    irc = z.read(f"{root}/irc_ch1.xyz").decode()
+    assert irc.count("IRC frame") == 3 and "IRC frame 1 E=-5.4500000000 Eh (TS)" in irc
+    assert "1 more searches led to other products" in z.read(f"{root}/README.md").decode()
+
+
+def test_channels_are_read_from_a_channels_result_and_a_ts_search():
+    from mepd.web.reaction_export import _result_channels
+
+    f = lambda e: {"xyz": WATER_XYZ, "energy_hartree": e, "energy_kcal": 0.0}
+    irc = lambda i, e: {"id": i, "label": i, "ts_index": 1, "barrier_kcal": 10.0, "frames": [f(-5.5), f(e), f(-5.6)]}
+    chans, off = _result_channels({"groups": [
+        {"kind": "channel", "entries": [irc("channel_0", -5.4), irc("channel_1", -5.3)]},
+        {"kind": "alternate", "entries": [irc("alt_0_step_0", -5.35), irc("alt_0_step_1", -5.33)]},
+        {"kind": "offtarget", "entries": [irc("offtarget_0", -5.2)]}]})
+    assert [(c["kind"], len(c["steps"])) for c in chans] == [("direct", 1), ("direct", 1), ("multi-step", 2)] and off == 1
+    # A TS search: its route's TSs (two steps through an intermediate) are one multi-step channel.
+    ts = lambda i, e: {"id": i, "label": i, "barrier_kcal": 10.0, "frames": [f(e)]}
+    chans, off = _result_channels({"barrier_verified": True, "groups": [
+        {"kind": "ts", "entries": [ts("ts_leaf_1", -5.4), ts("ts_leaf_2", -5.3)]},
+        {"kind": "irc", "entries": [irc("ts_leaf_1_irc", -5.4), irc("ts_leaf_2_irc", -5.3)]}]})
+    assert [(c["kind"], len(c["steps"])) for c in chans] == [("multi-step", 2)] and off == 0
+    assert chans[0]["steps"][1]["irc"]["energy_hartree"][1] == -5.3
+
+
+def test_reaction_export_refuses_an_unknown_format_or_reaction(client):
+    assert client.get("/api/reactions/r_missing/export?format=html").status_code == 400
+    assert client.get("/api/reactions/r_missing/export?format=pdf").status_code == 400
