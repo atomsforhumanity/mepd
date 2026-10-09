@@ -27,6 +27,27 @@ uv run pytest
 Orb and MACE models are the exception: they can't share an environment with FAIR-Chem, so each
 goes in an environment of its own (see `docs/mlip.md`).
 
+### macOS on Apple Silicon: building `vina`
+
+The web app's docking uses AutoDock Vina, which has no arm64 macOS wheel on PyPI, so it is built
+from source and needs Boost and SWIG. Its build only looks for Boost in a conda env or
+`/usr/local`, and it compiles as C++11 while Homebrew's Boost needs C++14. To build it against
+Homebrew's Boost:
+
+```bash
+brew install boost swig
+cat > /tmp/cxx14 <<'EOF'
+#!/bin/bash
+args=(); for a in "$@"; do [[ $a == -std=c++11 ]] && a=-std=c++14; args+=("$a"); done
+exec /usr/bin/clang++ "${args[@]}"
+EOF
+chmod +x /tmp/cxx14
+CC=/tmp/cxx14 CXX=/tmp/cxx14 CONDA_DEFAULT_ENV=homebrew CONDA_PREFIX=/opt/homebrew uv sync
+```
+
+uv caches the built wheel, so later syncs need none of this until the cache is cleared or the
+`vina` version changes.
+
 ## Quick Start
 
 ```python
