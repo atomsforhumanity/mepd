@@ -197,10 +197,12 @@ def _adopt_one(ws, job: dict, data: dict, nodes: dict, refined: dict, *, final: 
 def spawn_ts_searches(manager, job: dict) -> list:
     """With 'Find each reaction's TS': an ordinary TS search per reaction of
     this run (on its subsystem edge), each its own job -- queued, watchable
-    live, its barrier landing on the reaction. Smallest subsystems first;
-    reactions that already have a search are skipped, so calling this
-    again (as more reactions arrive) starts nothing twice. Returns the new
-    job ids."""
+    live, its barrier landing on the reaction. Called each time more
+    reactions have been refined (their ends adopted as an edge), so a
+    reaction's search starts while the others are still being refined;
+    of those ready at once, smallest subsystems first. Reactions that
+    already have a search are skipped, so nothing starts twice. Returns
+    the new job ids."""
     import logging
 
     params = job.get("params") or {}

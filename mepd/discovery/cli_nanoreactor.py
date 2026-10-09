@@ -363,8 +363,15 @@ def nanoreactor(
         if refiner is not None:
             typer.echo("Waiting for the live refinement to finish...")
             refiner.close(wait=True)
+        def say_refined(event, payload):
+            # Each species and reaction as it is refined: the web app adds it to Explore (and
+            # starts its TS search) while the others are still being optimized.
+            say(event, payload)
+            if event in ("species_refined", "reaction_refined"):
+                nr.write_network(result, output)
+
         nr.refine(symbols, frames, hist, species, reactions, run_inputs.engine, output, maxiter=maxiter,
-                  on_event=say, cache=nr._Caches(previous, refiner) if previous is not None else refiner)
+                  on_event=say_refined, cache=nr._Caches(previous, refiner) if previous is not None else refiner)
         nr.write_network(result, output)
         if connect:
             by_id = {s.id: s for s in species}

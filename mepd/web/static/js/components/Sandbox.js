@@ -174,8 +174,8 @@ export function SandboxView() {
   };
   const analyze = async () => {
     const out = await attempt(() => api.post(`/api/sandbox/${sb.id}/analyze`),
-      'Analyzing the run like a nanoreactor: its reactions join this page and Explore');
-    if (out) { set(gone()); openJob(out.job, 'result'); }
+      'Analyzing the run: watch each species and reaction being optimized; each reaction then gets its own TS search');
+    if (out) { set(gone()); openJob(out.job, 'live'); }
   };
   return html`<div class="job-view sandbox">
     <div class="view-head">
@@ -185,7 +185,7 @@ export function SandboxView() {
       <div class="row-actions">
         <button class="btn" onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'Frame added to Explore')}>Add frame to Explore</button>
         <button class="btn primary" onClick=${analyze}
-          title="Stop, keep the trajectory, and analyze it like a nanoreactor run: reaction events, species and reaction complexes refined at the workspace level, a reactor replay, and Explore">Stop & analyze</button>
+          title="Stop, keep the trajectory, and analyze it like a nanoreactor run: reaction events, species and reaction complexes refined at the workspace level (watch them on its Live tab), a TS search per reaction as its own calculation, a reactor replay, and Explore">Stop & analyze</button>
         <button class="btn danger-outline" onClick=${discard} title="Stop without keeping anything">Discard</button>
       </div>
     </div>

@@ -2175,7 +2175,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError(str(exc)) from None
         sandbox.forget(sid)
         jobs = J().submit("nanoreactor", structure_ids=box.sources, edge_ids=[], profile=W().level_profile,
-                          params={"trajectory": str(traj), "trajectory_start": str(start)},
+                          params={"trajectory": str(traj), "trajectory_start": str(start), "connect": True},
                           label=f"Interactive reactor: {box.names}")
         return {"job": jobs[0]["id"]}
 
@@ -2198,6 +2198,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         from mepd.complexes import INSTANT, METHODS, missing_programs
         from mepd.web.compose import complex_members, make_complex
 
+        # connect: each reaction's TS search is its own job, started as soon as the reaction is refined.
         if body.method not in METHODS:
             raise WorkspaceError(f"unknown method {body.method!r}")
         members = complex_members(W(), body.counts)

@@ -987,13 +987,13 @@ class NanoreactorParams(Params):
         "species, reaction and TS is then refined at the profile's level.", cli="--md-method",
         labels={"level": "Your level of theory", "auto": "Automatic", "gfn2": "GFN2-xTB", "gfn1": "GFN1-xTB",
                 "gxtb": "g-xTB (slower)"})
-    # Not passed to the CLI: when the run ends, the web app queues one
-    # ordinary TS search per reaction (its own job, watchable live) instead.
-    connect: bool = P(False, "Find each reaction's TS", "When the run ends, start a TS search on every reaction's "
+    # Not passed to the CLI: as each reaction is refined, the web app queues
+    # an ordinary TS search for it (its own job, watchable live) instead.
+    connect: bool = P(False, "Find each reaction's TS", "As each reaction is refined, start a TS search on its "
                       "subsystem (only the molecules it needs): one calculation per reaction, each watchable live, "
                       "whose barrier lands on its reaction. Or start them later on the reactions you pick.",
                       kind="custom")
-    max_connect: int = P(20, "Max TS searches", "At most this many are started (fewest atoms first).", kind="custom",
+    max_connect: int = P(20, "Max TS searches", "At most this many are started, as their reactions are refined.", kind="custom",
                          ge=1, requires="connect")
     refine_live: bool = P(False, "Refine reactions as they appear", "Each reaction is refined (its species and "
                           "subsystem) as soon as its event is over, in parallel with the MD, and joins Explore and "

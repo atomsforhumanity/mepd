@@ -1196,16 +1196,47 @@ def _complex_multiplicity(symbols, charge: int) -> int:
     return 1 if (sum(_Z.get(s, 0) for s in symbols) - charge) % 2 == 0 else 2
 
 
-def _optimize_one(engine, structure, maxiter: int):
+def _optimize_one(engine, structure, maxiter: int, stream: Optional[str] = None, label: str = "",
+                  caption: str = ""):
+    """The optimized node. With `stream` and a live viewer attached, the
+    optimization is its own live minimization stream (its steps as they
+    come where the engine reports them, then its trajectory to replay).
+    Only from one thread at a time: the stream being fed is process-wide."""
+    from mepd import progress
     from mepd.discovery.network_expansion import _optimize
     from mepd.nodes.node import StructureNode
 
-    out = _optimize(engine, [StructureNode(structure=structure)], maxiter, None)[0]
-    if isinstance(out, Exception):
-        raise out
+    node = StructureNode(structure=structure)
+    if stream is None or progress._stream_path(stream) is None:
+        out = _optimize(engine, [node], maxiter, None)[0]
+        if isinstance(out, Exception):
+            raise out
+    else:
+        progress.begin_minimization(stream, label=label, caption=caption, start_xyz=structure.to_xyz())
+        keywords = {"coordsys": "cart", "maxiter": int(maxiter)}
+        try:
+            try:
+                traj = engine.compute_geometry_optimization(node, keywords=keywords)
+            except TypeError:
+                traj = engine.compute_geometry_optimization(node)
+            if not traj:
+                raise ValueError("empty trajectory")
+        except Exception as exc:
+            progress.end_minimization(stream, status="failed", error=type(exc).__name__)
+            progress.set_minimization_outcome(stream, "failed")
+            raise
+        progress.end_minimization(stream, trajectory=traj)
+        out = traj[-1]
     if out._cached_energy is None:
         engine.compute_energies([out])
     return out
+
+
+def _live_outcome(stream: Optional[str], outcome: str) -> None:
+    if stream is not None:
+        from mepd import progress
+
+        progress.set_minimization_outcome(stream, outcome)
 
 
 def _same_bonds(symbols, coords_a, bonds_expected: set[Pair]) -> bool:
@@ -1235,20 +1266,28 @@ def _species_cuts(symbols, frames, hist: BondHistory, rec) -> list:
     return out
 
 
-def refine_species_one(rec, cuts: list, engine, sp_dir: Path, maxiter: int, name: Optional[str] = None) -> None:
+def refine_species_one(rec, cuts: list, engine, sp_dir: Path, maxiter: int, name: Optional[str] = None,
+                       live: bool = False) -> None:
     """Optimize a species from each of its instances; keep the lowest whose
-    bonds stay as they were (else note why)."""
+    bonds stay as they were (else note why). `live`: each optimization a
+    live stream (see _optimize_one)."""
     best = None
-    for syms, xyz, expect in cuts:
+    for k, (syms, xyz, expect) in enumerate(cuts):
+        stream = f"species_{rec.id}_{k}" if live else None
         try:
-            node = _optimize_one(engine, _structure(syms, xyz, rec.charge, rec.multiplicity), maxiter)
+            node = _optimize_one(engine, _structure(syms, xyz, rec.charge, rec.multiplicity), maxiter, stream,
+                                 label=f"S{rec.id} {rec.smiles}" + (f" #{k + 1}" if len(cuts) > 1 else ""),
+                                 caption=f"Species {rec.id} ({rec.smiles}) from its occurrence {k + 1} of "
+                                         f"{len(cuts)} in the MD, optimized alone")
         except Exception as exc:
             rec.note = f"optimization failed: {type(exc).__name__}: {exc}"[:300]
             continue
         opt_xyz = np.asarray(node.coords) / ANGSTROM_TO_BOHR
         if len(syms) > 1 and not _same_bonds(syms, opt_xyz, expect):
             rec.note = "bonds changed on optimization (not a minimum at this level)"
+            _live_outcome(stream, "bonds changed")
             continue
+        _live_outcome(stream, "minimum")
         if best is None or float(node.energy) < float(best[0].energy):
             best = (node, syms, opt_xyz)
     if best is not None:
@@ -1279,7 +1318,7 @@ def _reaction_cuts(symbols, frames, hist: BondHistory, rxn) -> list:
     return out
 
 
-def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int) -> None:
+def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int, live: bool = False) -> None:
     """Optimize a reaction's subsystem ends from each instance; the first
     whose ends keep their bonds becomes `complex`. If none does, the first
     whose optimized ends still differ in their bonds becomes it anyway,
@@ -1288,7 +1327,8 @@ def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int) -> None:
     dehydrogenation) -- the ends of a reaction that did happen, to search
     a TS between. Only when the ends optimize into the same molecules
     (products falling back to reactants, a barrierless reactant) is there
-    no reaction: then the reason why."""
+    no reaction: then the reason why. `live`: each optimization a live
+    stream (see _optimize_one)."""
     d = Path(d)
     d.mkdir(parents=True, exist_ok=True)
     for c in cuts:
@@ -1299,8 +1339,12 @@ def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int) -> None:
         ends = {}
         for name, xyz in (("reactant", c["xr"]), ("product", c["xp"])):
             expect = c["bonds"][name]
+            stream = f"reaction_{rxn.id}_{k}_{name}" if live else None
             try:
-                node = _optimize_one(engine, _structure(syms, xyz, q, mult), maxiter)
+                node = _optimize_one(engine, _structure(syms, xyz, q, mult), maxiter, stream,
+                                     label=f"R{rxn.id} {name}s" + (f" #{k + 1}" if len(cuts) > 1 else ""),
+                                     caption=f"Reaction {rxn.id} ({rxn.label}): its {name} end, the reacting atoms "
+                                             f"cut from the MD (occurrence {k + 1} of {len(cuts)}), optimized")
             except Exception as exc:
                 ends[name] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
                 continue
@@ -1308,6 +1352,7 @@ def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int) -> None:
             fp = d / f"instance_{k}_{name}_complex.xyz"
             _write_xyz(fp, syms, oxyz, f"energy={float(node.energy):.10f} charge={q} mult={mult}")
             got = perceive_bonds(syms, oxyz)
+            _live_outcome(stream, "minimum" if got == expect else "bonds changed")
             ends[name] = {"file": str(fp), "energy": float(node.energy), "bonds_kept": got == expect}
             if got != expect:
                 ends[name]["verdict"] = _verdict(name, got, expect,
@@ -1398,7 +1443,8 @@ def refine(symbols, frames: np.ndarray, hist: BondHistory, species: list[Species
             rec.energy, rec.file, rec.note = prev.energy, prev.file, prev.note
             continue
         _emit(on_event, "refine_species", index=n, total=len(species), smiles=rec.smiles)
-        refine_species_one(rec, _species_cuts(symbols, frames, hist, rec), engine, sp_dir, maxiter)
+        refine_species_one(rec, _species_cuts(symbols, frames, hist, rec), engine, sp_dir, maxiter, live=True)
+        _emit(on_event, "species_refined", index=n, total=len(species))
     by_id = {r.id: r for r in species}
     for n, rxn in enumerate(reactions):
         _set_delta_e(rxn, by_id)
@@ -1415,9 +1461,10 @@ def refine(symbols, frames: np.ndarray, hist: BondHistory, species: list[Species
             continue
         _emit(on_event, "refine_reaction", index=n, total=len(reactions), label=rxn.label)
         refine_reaction_one(rxn, _reaction_cuts(symbols, frames, hist, rxn), engine, rx_dir / f"reaction_{rxn.id}",
-                            maxiter)
+                            maxiter, live=True)
         if (rxn.complex or {}).get("relaxed"):      # relabelled: its energy change is its relaxed ends'
             rxn.delta_e_kcal = rxn.complex.get("delta_e_kcal")
+        _emit(on_event, "reaction_refined", index=n, total=len(reactions))
 
 
 class PreviousRefinement:
@@ -1766,5 +1813,7 @@ def write_network(result: NanoreactorResult, output: Path) -> Path:
                 "here is a difference within one reaction (Hartree for species, kcal/mol for differences).",
     }
     fp = Path(output) / "network.json"
-    fp.write_text(json.dumps(data, indent=2, default=str))
+    tmp = fp.with_suffix(".json.tmp")   # rewritten as each reaction is refined, while the web app reads it
+    tmp.write_text(json.dumps(data, indent=2, default=str))
+    tmp.replace(fp)
     return fp
