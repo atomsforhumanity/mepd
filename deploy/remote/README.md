@@ -14,7 +14,7 @@ deploy/remote/run.sh status | logs | unshare | stop
 **Anyone who logs in has your access.** They can open your files through
 sessions, set compute profiles that name programs, and run jobs as you.
 Use a long password and close the tunnel (`unshare`) when you don't need it.
-Failed logins are throttled (10 per address per 10 minutes).
+There is no lockout after failed logins, so the password is the protection: make it long and random.
 
 - Its workspace is `~/mepd_remote/workspace`. Other workspaces open from the
   session menu, but don't have one open here and in another `mepd web` at

@@ -60,6 +60,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
   Removed from both modes: login cookies were marked `Secure` based on the same headers. Set "Always Use
   HTTPS" and HSTS in Cloudflare instead.
+- **No lockout after failed logins, in either mode.** Logins used to be blocked after 10 failures per
+  address in 10 minutes. Behind a proxy every visitor can share one address, so a few typos from anyone
+  locked every tester out. A wrong password still waits 0.5 s. The protection is a long random password;
+  rate limiting, if wanted, belongs at the proxy (e.g. a Cloudflare rule), which sees real addresses.
 
 ### Fixed
 

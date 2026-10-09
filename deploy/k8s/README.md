@@ -61,5 +61,11 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
   worker processes each, so a full load can briefly ask for more than 64
   cores. Other examples: `MEPD_DEMO_MAX_ATOMS`, `MEPD_DEMO_JOB_TIMEOUT_S`.
   A bad value stops the server at start-up with a message saying which one.
+- **The password is the protection.** mepd does not lock anyone out after
+  failed logins, because behind the tunnel every visitor can arrive from the
+  same address. Use a long random password (e.g. 20+ characters from a
+  password manager) in the `mepd-demo` Secret. If you want rate limiting,
+  add a Cloudflare rate-limiting rule for `mepd.atomsforhumanity.org/login`;
+  Cloudflare sees each visitor's real address.
 - **Plain HTTP.** mepd serves plain HTTP. The Cloudflare tunnel terminates
   TLS, and HTTPS redirects and HSTS belong in Cloudflare's settings.

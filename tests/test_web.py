@@ -668,10 +668,11 @@ def test_auth_token_login(tmp_path, monkeypatch):
         assert st.status_code == 200 and st.json()["auth"] is True
         c.cookies.clear()
         assert c.get("/api/state", headers={"Authorization": f"Bearer {token}"}).status_code == 200
-        # throttling after repeated failures
-        for _ in range(10):
-            c.post("/login", data={"token": "nope"})
-        assert c.post("/login", data={"token": token}).status_code == 429
+        # no lockout: failed logins (from one address, as every visitor behind a proxy can be)
+        # never keep the right token out; rate limiting is the proxy's job
+        for _ in range(12):
+            assert c.post("/login", data={"token": "nope"}).status_code == 401
+        assert c.post("/login", data={"token": token}).status_code == 303
 
 
 def test_a_chosen_password_logs_in_like_a_token(tmp_path):
@@ -828,6 +829,16 @@ def test_demo_serves_plain_http_and_leaves_tls_to_the_proxy(demo_app):
         for headers in ({}, {"x-forwarded-proto": "http"}, {"cf-visitor": '{"scheme":"http"}'}):
             r = c.get("/login", headers=headers)
             assert r.status_code == 200 and "strict-transport-security" not in r.headers
+
+
+def test_demo_login_has_no_lockout(demo_app):
+    # Behind a proxy every visitor can arrive from one address: a lockout per
+    # address would let one person's typos lock everyone out.
+    root, app = demo_app
+    with TestClient(app, follow_redirects=False) as c:
+        for _ in range(12):
+            assert c.post("/login", data={"password": "wrong"}).status_code == 401
+        assert c.post("/login", data={"password": "pw-for-tests"}).status_code == 303
 
 
 def test_demo_limits_come_from_the_environment():

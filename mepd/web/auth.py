@@ -24,7 +24,6 @@ import hmac
 import html
 import os
 import secrets
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -66,7 +65,6 @@ class Auth:
     def __init__(self, token: str):
         self._token = token
         self._cookie_value = hmac.new(token.encode(), b"mepd-web-session", hashlib.sha256).hexdigest()
-        self._failures: dict[str, list[float]] = {}
 
     # ------------------------------------------------------------ checks
     def _token_ok(self, candidate: Optional[str]) -> bool:
@@ -79,16 +77,6 @@ class Auth:
         header = request.headers.get("authorization", "")
         return header.startswith("Bearer ") and self._token_ok(header[7:])
 
-    def _throttled(self, client: str) -> bool:
-        """At most 10 failed logins per client per 10 minutes."""
-        now = time.time()
-        recent = [t for t in self._failures.get(client, []) if now - t < 600]
-        self._failures[client] = recent
-        return len(recent) >= 10
-
-    def _fail(self, client: str) -> None:
-        self._failures.setdefault(client, []).append(time.time())
-
     # ---------------------------------------------------------- responses
     def _set_cookie(self, response: Response) -> Response:
         response.set_cookie(COOKIE, self._cookie_value, max_age=COOKIE_MAX_AGE, httponly=True,
@@ -96,7 +84,6 @@ class Auth:
         return response
 
     async def login(self, request: Request) -> Response:
-        client = request.client.host if request.client else "?"
         if request.method == "POST":
             form = await request.form()
             candidate = form.get("token")
@@ -104,11 +91,11 @@ class Auth:
             candidate = request.query_params.get("token")
             if candidate is None:
                 return login_page()
-        if self._throttled(client):
-            return login_page("Too many attempts. Wait a few minutes.", status=429)
+        # No lockout after failed logins: behind a proxy every visitor can share
+        # one address, so it would lock everyone out. Rate limiting belongs at
+        # the proxy (Cloudflare), the protection in a long random password.
         if not self._token_ok(candidate):
-            self._fail(client)
-            await asyncio.sleep(0.5)  # blunt online guessing further
+            await asyncio.sleep(0.5)  # slows online guessing
             return login_page("That password or token is not right.", status=401)
         # Redirect so the token never stays in the address bar or history.
         return self._set_cookie(RedirectResponse("/", status_code=303))
@@ -144,7 +131,6 @@ class VisitorAuth:
     def __init__(self, password: str, secret: bytes):
         self._password = password
         self._secret = secret
-        self._failures: dict[str, list[float]] = {}
 
     def _sign(self, visitor: str) -> str:
         return hmac.new(self._secret, visitor.encode(), hashlib.sha256).hexdigest()
@@ -156,24 +142,12 @@ class VisitorAuth:
             return vid
         return None
 
-    def _throttled(self, client: str) -> bool:
-        now = time.time()
-        recent = [t for t in self._failures.get(client, []) if now - t < 600]
-        self._failures[client] = recent
-        # per client, and a global ceiling in case a proxy hides client IPs
-        total = sum(len(v) for v in self._failures.values())
-        return len(recent) >= 10 or total >= 200
-
     async def login(self, request: Request) -> Response:
-        client = request.client.host if request.client else "?"
         if request.method != "POST":
             return login_page(demo=True)
         form = await request.form()
         candidate = str(form.get("password") or "")
-        if self._throttled(client):
-            return login_page("Too many attempts. Wait a few minutes.", status=429, demo=True)
-        if not (candidate and hmac.compare_digest(candidate, self._password)):
-            self._failures.setdefault(client, []).append(time.time())
+        if not (candidate and hmac.compare_digest(candidate, self._password)):   # no lockout: see Auth.login
             await asyncio.sleep(0.5)
             return login_page("That password is not right.", status=401, demo=True)
         vid = self.visitor(request) or secrets.token_urlsafe(16)
