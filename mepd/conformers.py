@@ -194,6 +194,37 @@ def _auto_n_embed(mol) -> int:
     return 300
 
 
+def _bond_orders_from_openbabel(structure: Structure):
+    """An RDKit molecule with openbabel's bond orders for `structure`, or
+    None unless they are plausible: the molecule sanitizes, its formal
+    charges add up to the structure's charge, no atom is a radical, and its
+    bonds are the ones RDKit perceives (openbabel draws e.g. a sulfonic
+    acid's S=O as S-O radicals, and has no charge for an ammonium N)."""
+    from openbabel import pybel
+    from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDetermineBonds
+
+    try:
+        RDLogger.DisableLog("rdApp.*")
+        mol = Chem.MolFromMolBlock(pybel.readstring("xyz", structure.to_xyz()).write("mol"), removeHs=False)
+        connected = Chem.MolFromXYZBlock(structure.to_xyz())
+        rdDetermineBonds.DetermineConnectivity(connected, charge=structure.charge)
+    except Exception:
+        return None
+    finally:
+        RDLogger.EnableLog("rdApp.*")
+    if mol is None or [a.GetSymbol() for a in mol.GetAtoms()] != list(structure.symbols):
+        return None
+    if sum(a.GetFormalCharge() for a in mol.GetAtoms()) != structure.charge \
+            or any(a.GetNumRadicalElectrons() for a in mol.GetAtoms()):
+        return None
+
+    def bonds(m):
+        return {tuple(sorted((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))) for b in m.GetBonds()}
+
+    return mol if bonds(mol) == bonds(connected) else None
+
+
 def _generate_conformers_rdkit(
     node: StructureNode, inputs: ConformerInputs, stats: dict | None = None
 ) -> list[StructureNode]:
@@ -211,15 +242,21 @@ def _generate_conformers_rdkit(
     try:
         rdDetermineBonds.DetermineBonds(mol, charge=structure.charge)
     except Exception as exc:
-        # Bond orders can't always be assigned from a geometry (radicals,
-        # unusual charge states -- several Reaction-QM species). Without
-        # them ETKDG would embed double bonds as single, so rather than
-        # sample garbage, keep just the input geometry for this endpoint.
+        # RDKit's perception fails on some ordinary molecules too
+        # (4-nitrobenzaldehyde), so openbabel's is tried next.
+        mol = _bond_orders_from_openbabel(structure)
+        if mol is None:
+            # Bond orders can't always be assigned from a geometry (radicals,
+            # unusual charge states -- several Reaction-QM species). Without
+            # them ETKDG would embed double bonds as single, so rather than
+            # sample garbage, keep just the input geometry for this endpoint.
+            if stats is not None:
+                stats["n_generated"] = 0
+                stats["n_in_window"] = 0
+                stats["rdkit_skipped"] = f"bond orders not perceivable: {exc}"
+            return [node]
         if stats is not None:
-            stats["n_generated"] = 0
-            stats["n_in_window"] = 0
-            stats["rdkit_skipped"] = f"bond orders not perceivable: {exc}"
-        return [node]
+            stats["bond_orders_from"] = "openbabel"
     Chem.AssignStereochemistryFrom3D(mol, confId=0)
 
     params = AllChem.ETKDGv3()

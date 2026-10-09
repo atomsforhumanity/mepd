@@ -437,6 +437,37 @@ def test_rdkit_backend_keeps_the_input_when_bond_orders_cant_be_perceived():
     assert stats["n_generated"] == 0 and "rdkit_skipped" in stats
 
 
+def test_rdkit_backend_samples_when_only_openbabel_perceives_the_bond_orders():
+    """RDKit's bond-order perception fails on 4-nitrobenzaldehyde (a
+    closed-shell, neutral molecule); openbabel's is used instead."""
+    from qcconst.constants import ANGSTROM_TO_BOHR
+
+    m = Chem.AddHs(Chem.MolFromSmiles("O=Cc1ccc([N+](=O)[O-])cc1"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    node = StructureNode(structure=Structure(
+        symbols=[a.GetSymbol() for a in m.GetAtoms()],
+        geometry=m.GetConformer().GetPositions() * ANGSTROM_TO_BOHR, charge=0, multiplicity=1,
+    ))
+    stats = {}
+    confs = generate_conformers(node, ConformerInputs(n_embed=20), stats)
+    assert "rdkit_skipped" not in stats and stats["bond_orders_from"] == "openbabel"
+    assert stats["n_generated"] > 0 and len(confs) > 1
+
+
+def test_openbabel_bond_orders_are_rejected_when_implausible():
+    """An ammonium N gets no charge from openbabel: rejected, not sampled
+    with the wrong total charge."""
+    from qcconst.constants import ANGSTROM_TO_BOHR
+
+    from mepd.conformers import _bond_orders_from_openbabel
+
+    m = Chem.AddHs(Chem.MolFromSmiles("C[N+](C)(C)C"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    structure = Structure(symbols=[a.GetSymbol() for a in m.GetAtoms()],
+                          geometry=m.GetConformer().GetPositions() * ANGSTROM_TO_BOHR, charge=1, multiplicity=1)
+    assert _bond_orders_from_openbabel(structure) is None
+
+
 def test_diverse_subset_keeps_input_first_and_maximizes_spread():
     """A line of 6 equally-spaced points on a synthetic 1D-like axis
     (encoded as butane conformers with an artificial ordering): capping to 3

@@ -1429,6 +1429,10 @@ def channels(
             start_confs = reused.get("start", sampled)
             end_confs = reused.get("end", sampled)
         typer.echo(f"  {len(start_confs)} reactant and {len(end_confs)} product conformer(s).")
+        for label, name in (("start", "reactant"), ("end", "product")):
+            skipped = stats["conformers"].get(label, {}).get("rdkit_skipped")
+            if skipped and label not in reused:
+                typer.echo(f"  WARNING: {name} conformers not sampled, only the input geometry kept ({skipped}).")
 
     pools = {"start": start_confs, "end": end_confs}
     for label in ("start", "end"):
