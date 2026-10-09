@@ -1,0 +1,59 @@
+# Changelog
+
+All notable changes to mepd are listed here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Add each change under `Unreleased` as you make it, in the group it belongs to
+(Added, Changed, Deprecated, Removed, Fixed, Security). On a release, rename
+`Unreleased` to the version and date, and start a new empty `Unreleased`.
+
+## [Unreleased]
+
+### Added
+
+- **Container image of the full web app** (`Dockerfile`, `.dockerignore`,
+  `deploy/docker/`). `docker build -t mepd .` builds one image with:
+  - mepd and every `web` extra, from `uv.lock`;
+  - g-xTB 2.0.1 (release build, SHA-256 checked);
+  - xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 and Psi4 1.11 from conda-forge, via micromamba;
+  - molecularGSM built from source with its ASE backend, against MKL;
+  - the retrosynthesis data and an AiZynthFinder 4.4.1 environment;
+  - AIMNet2, ANI-2x and ReactionT5 weights; FAIR-Chem UMA only with a Hugging Face token (build secret).
+
+  The base image is Ubuntu 26.04. Every program and data set is checked when the image is built
+  (`mepd-entrypoint check`). See `deploy/docker/README.md`.
+- **Image entrypoint** (`deploy/docker/entrypoint.sh`): `serve` runs the web app in `demo` mode (shared
+  password, a private workspace per visitor) or `full` mode (`MEPD_MODE`). `check` verifies the image. Any
+  other argument runs as a command.
+- **Data mirror for the retrosynthesis files** at `https://public.atomsforhumanity.org/mepd/retro/`:
+  - `deploy/docker/retro-data.txt` pins each file's SHA-256 and upstream URL. The checksums were verified
+    against Zenodo's and figshare's published MD5s.
+  - `deploy/docker/fetch_data.py` fetches from the mirror, falls back to Zenodo/figshare, and accepts only
+    matching checksums. It also lays out the mirror directory. Builds no longer wait 30–45 minutes on Zenodo.
+- **Pinned AiZynthFinder environment** (`deploy/docker/aizynth-constraints.txt`). It is taken from a working
+  install, because an unpinned one breaks as its dependencies move (see Fixed).
+- **This changelog.**
+
+### Fixed
+
+- **`mepd retro plan --method aizynthfinder` found almost no routes.** mepd rewrote AiZynthFinder's
+  `config.yml` with keys sorted alphabetically, which put the ring-breaking-only `ringbreaker` expansion
+  policy first. `aizynthcli` used that policy, so most targets got no expansions; paracetamol, for example,
+  gave 0 routes. mepd now keeps the config's order and passes `--policy uspto` (`mepd/retro/aizynth.py`).
+  Paracetamol now gives 23 solved routes, led by acetic anhydride + 4-aminophenol.
+
+### Known issues
+
+- **A new AiZynthFinder environment is broken.** `mepd retro setup --aizynthfinder` now installs
+  pyarrow 26 (released 2026-10), which needs NumPy 2. AiZynthFinder's RDKit needs NumPy 1, so it fails to
+  import. The image pins a working set; installs made outside the image are not yet pinned.
+- **The image's GSM is upstream molecularGSM, not mepd's patched build.** `early_stop_on_minima` is
+  unavailable: mepd warns and runs GSM to convergence.
+- **GSM crashes on linear molecules.** HCN → HNC aborts with heap corruption (`munmap_chunk(): invalid
+  pointer`) in GSM's exact-TS search, while nonlinear cases such as keto–enol converge. This is likely
+  upstream GSM, but it has not been compared against a known-good build.
+- **`tests/test_sandbox.py::test_reaction_events_are_found_as_the_nanoreactor_finds_them` is flaky.** It
+  fails about 1 run in 3–4, both in and outside the image.
+- **`uv.lock` is gitignored**, so builds from a fresh clone (e.g. CI) resolve dependencies afresh. Commit it
+  for reproducible images.
