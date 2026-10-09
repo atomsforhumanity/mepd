@@ -604,13 +604,55 @@ class JobManager:
             inputs = self.job_dir(jid) / "inputs"
             inputs.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(self.ws.qmmm_region_path(job["qmmm"]), inputs / "qmmm_region.json")
+        return self._add_finished(job)
+
+    def _add_finished(self, job: dict) -> dict:
+        """A job that is done the moment it exists (an import, a step):
+        listed, and its result read like any finished job's."""
         _bump_rev(job)
-        self.jobs[jid] = job
+        self.jobs[job["id"]] = job
         self._write(job)
         self.bus.publish("job", job)
         if self.on_finished:
             self.on_finished(job)
         return job
+
+    def add_step_job(self, parent: dict, step: tuple[int, int, int], edge_id: str,
+                     structure_ids: list[str]) -> dict:
+        """One step of a multi-step TS search (`step`: leaf node, step
+        number, steps; see mepd.web.steps) as a finished job of its own on
+        the edge added from it, holding only that step's files. The edge's
+        origin then points at it. One per edge and step: an existing one is
+        returned."""
+        from mepd.web import steps
+
+        leaf, k, n = step
+        mark = {"job": parent["id"], "leaf": leaf}
+        for j in self.jobs.values():
+            of = j.get("step_of") or {}
+            if (of.get("job"), of.get("leaf")) == (parent["id"], leaf) and edge_id in j["targets"]["edges"]:
+                return j
+        jid = new_id("j_")
+        out = self.job_dir(jid) / "output"
+        steps.write_step_folder(Path(parent["output_dir"]), leaf, out)
+        inputs = self.job_dir(parent["id"]) / "inputs"
+        if inputs.is_dir():   # its profile (and QM/MM region): what its follow-ups run at
+            shutil.copytree(inputs, self.job_dir(jid) / "inputs")
+        now = time.time()
+        job = {
+            "id": jid, "op": "ts", "title": f"Step {k} of {n}: {parent['title']}", "status": "done",
+            "created": now, "started": now, "finished": now, "returncode": 0, "argv": [],
+            "command": f"(step {k} of {n}, copied from {parent['output_dir']})",
+            "targets": {"structures": list(structure_ids), "edges": [edge_id]},
+            "target_conformers": [None] * len(structure_ids),
+            "charge": parent.get("charge"), "multiplicity": parent.get("multiplicity"), "params": {},
+            "profile": parent.get("profile"), "level": parent.get("level"), "qmmm": parent.get("qmmm"),
+            "batch": None, "output_dir": str(out), "error": None, "last_line": "", "summary": None,
+            # Nothing ran here (no log, nothing to rerun): its files are a copy of the step's.
+            "external": True, "step_of": {**mark, "step": k, "steps": n},
+        }
+        steps.point_edge_at_step(self.ws, edge_id, {"id": jid, "step_of": mark})
+        return self._add_finished(job)
 
     # ------------------------------------------------------------ control
     def cancel(self, jid: str) -> dict:

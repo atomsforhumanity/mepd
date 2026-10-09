@@ -498,6 +498,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 logging.getLogger(__name__).exception("could not compute the QM/MM barrier of %s", eid)
         if attached:
             bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+        # Edges added from one step of a multi-step TS search before steps had jobs of their own.
+        from mepd.web.steps import adopt_step_edges
+
+        try:
+            if adopt_step_edges(manager):
+                bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+        except Exception:
+            logging.getLogger(__name__).exception("could not give step edges their own jobs")
         stale = [j for j in manager.jobs.values()
                  if j["status"] == "done" and j.get("summary") and ("barrier_verified" not in j["summary"]
                      # ...or from before the edge's TS was recorded (route_ts, for VRI on edges)
@@ -1977,6 +1985,16 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     @app.post("/api/jobs/{jid}/retro/routes/{route}/explore")
     async def retro_route_to_explore(jid: str, route: int):
         """One retrosynthesis route into Explore: whatever of it is no longer
+        edge = out["edge"]
+        if edge is not None:
+            # One step of a multi-step route: the edge gets a job of its own holding only that step
+            # (its result, barrier and follow-ups are the step's, not the whole route's).
+            from mepd.web.steps import step_of_entry
+
+            step = step_of_entry(job, entry["id"])
+            if step is not None:
+                out["step_job"] = J().add_step_job(job, step, edge["id"], [edge["source"], edge["target"]])["id"]
+                out["edge"] = W().edge(edge["id"])
         there (deleted since) is added back, the rest reused. Returns the
         route's structures and edges, to select."""
         from mepd.web.retro import adopt_retro, route_elements

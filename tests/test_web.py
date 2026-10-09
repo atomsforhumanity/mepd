@@ -301,6 +301,66 @@ def test_import_existing_output_and_pull_irc_ends_into_graph(client, tmp_path):
     assert (out / "ts.xyz").exists()
 
 
+def _water(comment: str, h1=(0.758, 0.000, 0.504), h2=(-0.758, 0.000, 0.504)) -> str:
+    return (f"3\n{comment}\nO 0.000 0.000 0.000\nH {h1[0]:.3f} {h1[1]:.3f} {h1[2]:.3f}\n"
+            f"H {h2[0]:.3f} {h2[1]:.3f} {h2[2]:.3f}\n")
+
+
+def _two_step_ts_output(out: Path) -> None:
+    """A `mepd ts` output whose path split into two elementary steps:
+    water -> OH + H (step 1, leaf node 1) -> O + 2 H (step 2, leaf node 2)."""
+    start = _water("start")
+    mid = _water("intermediate", h1=(2.600, 0.000, 0.450))
+    end = _water("end", h1=(2.600, 0.000, 0.450), h2=(-2.600, 0.000, 0.450))
+    ts1 = _water("ts1", h1=(1.300, 0.000, 0.480))
+    ts2 = _water("ts2", h1=(2.600, 0.000, 0.450), h2=(-1.300, 0.000, 0.480))
+    (out / "tree").mkdir(parents=True)
+    np.savetxt(out / "tree" / "adj_matrix.txt", [[1, 1, 1], [0, 1, 0], [0, 0, 1]])
+    _write_chain(out / "mep_output.xyz", [start, ts1, mid, ts2, end], [-76.40, -76.30, -76.35, -76.28, -76.33])
+    _write_chain(out / "tree" / "node_0.xyz", [start, ts1, mid, ts2, end], [-76.40, -76.30, -76.35, -76.28, -76.33])
+    _write_chain(out / "tree" / "node_1.xyz", [start, ts1, mid], [-76.40, -76.30, -76.35])
+    _write_chain(out / "tree" / "node_2.xyz", [mid, ts2, end], [-76.35, -76.28, -76.33])
+    _write_chain(out / "ts_leaf_1.xyz", [ts1], [-76.30])
+    _write_chain(out / "ts_leaf_1_irc.xyz", [start, ts1, mid], [-76.40, -76.30, -76.35])
+    _write_chain(out / "ts_leaf_2.xyz", [ts2], [-76.28])
+    _write_chain(out / "ts_leaf_2_irc.xyz", [mid, ts2, end], [-76.35, -76.28, -76.33])
+
+
+def test_a_step_of_a_multistep_route_added_as_an_edge_gets_a_job_of_its_own(client, tmp_path):
+    out = tmp_path / "mepd_two_step_output"
+    _two_step_ts_output(out)
+    route = client.post("/api/jobs/import", json={"path": str(out)}).json()
+    assert route["op"] == "ts"
+    result = client.get(f"/api/jobs/{route['id']}/result").json()
+    assert [e["id"] for g in result["groups"] if g["kind"] == "irc" for e in g["entries"]] == \
+        ["ts_leaf_1_irc", "ts_leaf_2_irc"]
+
+    # Step 2 into Explore: its edge gets a job holding only step 2.
+    r = client.post(f"/api/jobs/{route['id']}/import-entry",
+                    json={"entry": "ts_leaf_2_irc", "frames": "endpoints", "connect": True}).json()
+    edge, step_id = r["edge"], r["step_job"]
+    step = client.get(f"/api/jobs/{step_id}").json()["job"]
+    assert step["step_of"] == {"job": route["id"], "leaf": 2, "step": 2, "steps": 2}
+    assert step["targets"]["edges"] == [edge["id"]] and step["external"]
+    assert edge["origin"]["job"] == step_id and edge["origin"]["step_of"] == route["id"]
+    assert edge["origin"]["barrier_kcal"] is None   # the step job's result sets it, from the step's own start
+    sub = client.get(f"/api/jobs/{step_id}/result").json()
+    entries = {g["kind"]: [e["id"] for e in g["entries"]] for g in sub["groups"] if g["entries"]}
+    assert entries == {"path": ["mep"], "ts": ["ts"], "irc": ["ts_irc"]}   # nothing of step 1
+    # Its barrier is from the intermediate (step 2's start), not from the route's start.
+    assert sub["barrier_kcal"] == pytest.approx(0.07 * 627.509474, abs=1e-2)
+    assert sub["n_steps"] == 1
+
+    # Adding the same step again makes no second job.
+    again = client.post(f"/api/jobs/{route['id']}/import-entry",
+                        json={"entry": "ts_leaf_2_irc", "frames": "endpoints", "connect": True}).json()
+    assert again["step_job"] == step_id
+    # The whole route (its path) is no step: an edge added from it stays the route's.
+    from mepd.web.steps import step_of_entry
+
+    assert step_of_entry(route, "mep") is None and step_of_entry(route, "first_leaf_1") == (1, 1, 2)
+
+
 def test_imported_output_takes_its_level_from_the_profile_kept_with_it(client, tmp_path):
     out = tmp_path / "calc" / "mepd_ts_output"
     out.mkdir(parents=True)

@@ -693,7 +693,8 @@ function TsFollowUps({ job }) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState(() => (op ? rememberedValues(op) : {}));
   const [busy, setBusy] = useState(false);
-  if (!op || job.status !== 'done' || job.external || job.targets.structures.length !== 2) return null;
+  // A step of a multi-step search has its own job (a copy, never run): more paths between that step's ends.
+  if (!op || job.status !== 'done' || (job.external && !job.step_of) || job.targets.structures.length !== 2) return null;
   const last = runs[0];
   const active = last && ['queued', 'running'].includes(last.status);
   const finished = runs.find((r) => r.status === 'done');
@@ -1029,7 +1030,8 @@ export function JobView({ jobId: openedId }) {
           <h2>${job.title}</h2>
           <div class="small muted">
             <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
-            ${job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
+            ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
+              : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
             ${job.profile && html` · profile <b>${job.profile}</b>`}
             ${targets.length > 0 && html` · ${targets.map((t, i) => html`${i ? (job.op === 'ts' || job.op === 'channels' ? ' → ' : ', ') : ''}<a href="#"
               onClick=${(e) => { e.preventDefault(); select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId } }); }}>${t.label}</a>`)}`}
