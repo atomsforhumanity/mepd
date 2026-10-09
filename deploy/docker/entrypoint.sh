@@ -42,6 +42,13 @@ check() {
   for m in templates reactiont5 aizynthfinder; do
     grep -qE "^$m +ok" <<<"$methods" && ok "retro" "$m" || fail retro "$m: $(grep -A1 "^$m" <<<"$methods" | tail -1)"
   done
+  # Stock indexes, prebuilt: present and newer than their sources (else mepd rebuilds them).
+  local idx src
+  for pair in zinc_stock_inchikeys.u64.npy:zinc_stock_inchikeys.txt stock_n1.inchikeys:stock_n1.txt \
+              stock_n5.inchikeys:stock_n5.txt; do
+    idx="$MEPD_RETRO_DATA/${pair%%:*}"; src="$MEPD_RETRO_DATA/${pair##*:}"
+    if [ "$idx" -nt "$src" ]; then ok stock "${pair%%:*}"; else fail stock "$idx missing or older than $src"; fi
+  done
   # Installed is not enough: AiZynthFinder's own env must import (it broke on
   # a NumPy 1/2 mismatch once while `aizynthcli` was still there).
   local az="$MEPD_RETRO_DATA/aizynth-env/bin/python" err

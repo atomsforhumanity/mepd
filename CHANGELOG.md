@@ -33,6 +33,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     matching checksums. It also lays out the mirror directory. Builds no longer wait 30–45 minutes on Zenodo.
 - **Pinned AiZynthFinder environment** (`deploy/docker/aizynth-constraints.txt`). It is taken from a working
   install, because an unpinned one breaks as its dependencies move (see Fixed).
+- **Prebuilt retrosynthesis stock indexes in the image.** These are the 80 MB sorted ZINC InChIKey array and
+  the PaRoutes InChIKeys, which mepd would otherwise build on first use after every container restart. The
+  ZINC stock now loads in 0.1 s.
 - **This changelog.**
 
 ### Fixed

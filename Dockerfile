@@ -20,6 +20,7 @@
 #             or Zenodo/figshare) and AiZynthFinder's env. Depends only on
 #             pybase, the manifest and mepd/retro/{data,aizynth,stock}.py.
 #   deps      a Python venv with mepd's locked dependencies, not mepd itself
+#   stock     the retrosynthesis stocks' lookup indexes (ZINC: 80 MB)
 #   models    MLIP and ReactionT5 weights (Hugging Face etc.); needs the deps
 #             to load the models, but not mepd's code
 #   runtime   the final image; mepd's own code is its last, small layer
@@ -179,6 +180,19 @@ RUN --mount=type=secret,id=hf_token,required=false \
     else echo "no hf_token secret: FAIR-Chem models not baked in (set HF_TOKEN at run time instead)"; fi \
  && rm -rf "$HOME/.cache/uv" && mkdir -p "$HOME/.cache"
 
+# --------------------------------------------------------------------- stock
+# The lookup indexes mepd builds the first time a retrosynthesis uses a stock
+# (mepd/retro/stock.py): ZINC's 10.5 M InChIKeys as a sorted uint64 array
+# (80 MB) and the PaRoutes stocks' InChIKeys. Built here, they are not rebuilt
+# after every container restart. Needs only mepd/retro (mepd's __init__ is lazy).
+FROM deps AS stock
+ENV MEPD_RETRO_DATA=/opt/mepd/retro
+COPY --from=retro /opt/mepd/retro /opt/mepd/retro
+COPY mepd/__init__.py /tmp/stock/mepd/__init__.py
+COPY mepd/retro /tmp/stock/mepd/retro
+RUN PYTHONPATH=/tmp/stock /opt/mepd/venv/bin/python -c "from mepd.retro.stock import load; \
+print(load(['zinc', 'paroutes-n1', 'paroutes-n5']).describe())"
+
 # ------------------------------------------------------------------- runtime
 FROM ${UBUNTU_IMAGE} AS runtime
 # Links the image to its repository on GHCR (and its access to the repo's).
@@ -206,6 +220,9 @@ COPY --from=conda /opt/psi4 /opt/psi4
 COPY --from=gsm /opt/gsm /opt/gsm
 COPY --from=gxtb /opt/gxtb /opt/gxtb
 COPY --from=retro --chown=mepd:mepd /opt/mepd/retro /opt/mepd/retro
+# Only the indexes from `stock` (newer than their sources, so mepd uses them).
+COPY --from=stock --chown=mepd:mepd /opt/mepd/retro/zinc_stock_inchikeys.u64.npy \
+     /opt/mepd/retro/stock_n1.inchikeys /opt/mepd/retro/stock_n5.inchikeys /opt/mepd/retro/
 COPY --from=models --chown=mepd:mepd /home/mepd /home/mepd
 COPY --from=deps /opt/mepd/venv /opt/mepd/venv
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
