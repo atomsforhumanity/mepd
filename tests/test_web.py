@@ -821,15 +821,28 @@ def test_demo_form_defaults_respect_limits(demo_app):
             c.__exit__(None, None, None)
 
 
-def test_demo_forces_https_behind_proxy(demo_app):
+def test_demo_serves_plain_http_and_leaves_tls_to_the_proxy(demo_app):
+    # TLS, https redirects and HSTS are the proxy's job (Cloudflare); mepd is a plain http app.
     root, app = demo_app
     with TestClient(app, follow_redirects=False) as c:
-        r = c.get("/login", headers={"x-forwarded-proto": "http"})
-        assert r.status_code == 301 and r.headers["location"].startswith("https://")
-        r = c.get("/login", headers={"x-forwarded-proto": "https"})
-        assert r.status_code == 200 and "max-age" in r.headers["strict-transport-security"]
-        r = c.get("/login", headers={"x-forwarded-proto": "https", "cf-visitor": '{"scheme":"http"}'})
-        assert r.status_code == 301                                   # Cloudflare's own signal wins
+        for headers in ({}, {"x-forwarded-proto": "http"}, {"cf-visitor": '{"scheme":"http"}'}):
+            r = c.get("/login", headers=headers)
+            assert r.status_code == 200 and "strict-transport-security" not in r.headers
+
+
+def test_demo_limits_come_from_the_environment():
+    from mepd.web.demo import DemoPolicy
+
+    policy = DemoPolicy.from_env({"MEPD_DEMO_GLOBAL_CONCURRENCY": "64", "MEPD_DEMO_MAX_ACTIVE_JOBS": "8",
+                                  "MEPD_DEMO_JOB_TIMEOUT_S": "3600", "UNRELATED": "x"})
+    assert (policy.global_concurrency, policy.max_active_jobs, policy.job_timeout_s) == (64, 8, 3600.0)
+    assert policy.max_atoms == DemoPolicy().max_atoms                 # the rest keep their defaults
+    assert DemoPolicy.from_env({}) == DemoPolicy()
+    for bad, why in (({"MEPD_DEMO_GLOBAL_CONCURRENCY": "lots"}, "integer"),
+                     ({"MEPD_DEMO_GLOBAL_CONCURRENCY": "0"}, "positive"),
+                     ({"MEPD_DEMO_CAPS": "{}"}, "not a single number")):
+        with pytest.raises(ValueError, match=why):
+            DemoPolicy.from_env(bad)
 
 
 def test_barrier_needs_an_irc_connecting_start_and_end(tmp_path):

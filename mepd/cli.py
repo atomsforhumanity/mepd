@@ -1723,7 +1723,11 @@ def _serve_demo(root: Path, host: str, port: int, max_jobs: int, password: Optio
             password = secrets.token_urlsafe(9)
             pw_file.write_text(password + "\n")
             os.chmod(pw_file, 0o600)
-    policy = DemoPolicy()
+    try:
+        policy = DemoPolicy.from_env()
+    except ValueError as exc:
+        typer.echo(f"mepd web --demo: {exc}")
+        raise typer.Exit(code=2)
     typer.echo(f"mepd web DEMO: root {root} -> http://{host}:{port}")
     typer.echo(f"  password: {password}")
     typer.echo(f"  profiles (read-only for visitors): {', '.join(p.stem for p in sorted((root / 'profiles').glob('*.toml')))}")

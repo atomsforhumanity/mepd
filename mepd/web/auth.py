@@ -90,10 +90,9 @@ class Auth:
         self._failures.setdefault(client, []).append(time.time())
 
     # ---------------------------------------------------------- responses
-    def _set_cookie(self, request: Request, response: Response) -> Response:
-        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    def _set_cookie(self, response: Response) -> Response:
         response.set_cookie(COOKIE, self._cookie_value, max_age=COOKIE_MAX_AGE, httponly=True,
-                            samesite="lax", secure=secure, path="/")
+                            samesite="lax", path="/")
         return response
 
     async def login(self, request: Request) -> Response:
@@ -112,7 +111,7 @@ class Auth:
             await asyncio.sleep(0.5)  # blunt online guessing further
             return login_page("That password or token is not right.", status=401)
         # Redirect so the token never stays in the address bar or history.
-        return self._set_cookie(request, RedirectResponse("/", status_code=303))
+        return self._set_cookie(RedirectResponse("/", status_code=303))
 
     def logout(self) -> Response:
         response = RedirectResponse("/login", status_code=303)
@@ -179,9 +178,8 @@ class VisitorAuth:
             return login_page("That password is not right.", status=401, demo=True)
         vid = self.visitor(request) or secrets.token_urlsafe(16)
         response = RedirectResponse("/", status_code=303)
-        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
         response.set_cookie(self.COOKIE, f"{vid}.{self._sign(vid)}", max_age=COOKIE_MAX_AGE, httponly=True,
-                            samesite="lax", secure=secure, path="/")
+                            samesite="lax", path="/")
         return response
 
     def logout(self) -> Response:

@@ -19,8 +19,9 @@ Run it inside the container described in deploy/demo/ for a second wall.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Optional
+import os
+from dataclasses import asdict, dataclass, field, fields
+from typing import Mapping, Optional
 
 from mepd.web.workspace import WorkspaceError
 
@@ -89,6 +90,30 @@ class DemoPolicy:
                           "network-splits", "vri", "vri-check", "vri-surface", "graph-enumeration", "nanoreactor",
                           "solvent", "complex", "retrosynthesis", "nanoreactor-more", "qmmm-build", "qmmm-reaction",
                           "qmmm-embed", "qmmm-inspect")
+
+    @classmethod
+    def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "DemoPolicy":
+        """The defaults, with any number above overridden by MEPD_DEMO_<FIELD>,
+        e.g. MEPD_DEMO_GLOBAL_CONCURRENCY=64 to run 64 jobs at once on a big
+        machine. Raises ValueError for a value that is not a positive number,
+        or a field that is not a single number (caps, timeouts per op, ...)."""
+        environ = os.environ if environ is None else environ
+        policy = cls()
+        for f in fields(cls):
+            name = f"MEPD_DEMO_{f.name.upper()}"
+            if name not in environ:
+                continue
+            kind = type(getattr(policy, f.name))
+            if kind not in (int, float):
+                raise ValueError(f"{name}: {f.name} is not a single number and cannot be set from the environment")
+            try:
+                value = kind(environ[name])
+            except ValueError:
+                raise ValueError(f"{name}={environ[name]!r} is not {'an integer' if kind is int else 'a number'}") from None
+            if value <= 0:
+                raise ValueError(f"{name}={environ[name]!r} must be positive")
+            setattr(policy, f.name, value)
+        return policy
 
     def qmmm_limits(self) -> dict:
         return {"max_qm": self.max_atoms, **self.qmmm}

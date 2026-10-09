@@ -36,7 +36,23 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Prebuilt retrosynthesis stock indexes in the image.** These are the 80 MB sorted ZINC InChIKey array and
   the PaRoutes InChIKeys, which mepd would otherwise build on first use after every container restart. The
   ZINC stock now loads in 0.1 s.
+- **Kubernetes manifest for the beta** (`deploy/k8s/mepd-demo.yaml`, `deploy/k8s/README.md`). It runs demo
+  mode on afh-c04 as a single replica that is never rolled over (`Recreate`), with the GPU. State and scratch
+  live on the node's data disk (`/nvme1/mepd`), and an Ingress serves `mepd.atomsforhumanity.org`.
+- **Demo limits are configurable from the environment.** Any number in `DemoPolicy` (`mepd/web/demo.py`) can
+  be overridden as `MEPD_DEMO_<FIELD>`, e.g. `MEPD_DEMO_GLOBAL_CONCURRENCY=64` to run 64 jobs at once across
+  all testers instead of 4. Invalid values stop `mepd web --demo` at start-up with a message.
 - **This changelog.**
+
+### Changed
+
+- **`mepd web` no longer handles HTTPS; it is a plain HTTP app.** TLS and HTTPS policy belong to the proxy in
+  front (here, Cloudflare). Removed from demo mode:
+  - the redirect of plain-HTTP requests to HTTPS (it read `X-Forwarded-Proto`/`CF-Visitor`);
+  - the `Strict-Transport-Security` header.
+
+  Removed from both modes: login cookies were marked `Secure` based on the same headers. Set "Always Use
+  HTTPS" and HSTS in Cloudflare instead.
 
 ### Fixed
 
