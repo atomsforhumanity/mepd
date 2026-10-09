@@ -20,4 +20,5 @@ site/
 *_history/
 *_visualize.html
 mepd_output/
+mepd_workspace/
 examples/
