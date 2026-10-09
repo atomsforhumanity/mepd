@@ -4,7 +4,8 @@ One image with the whole web app and everything it runs, for hosting on a
 server (and, next, building in CI and deploying to Kubernetes).
 
 ```bash
-docker build -t mepd .                                   # from the repository root
+read -rs HF_TOKEN && export HF_TOKEN                    # a Hugging Face token with UMA access (see below)
+docker build --secret id=hf_token,env=HF_TOKEN -t mepd . # from the repository root
 docker run -d --name mepd -p 8765:8765 -v mepd-data:/data \
   -e MEPD_DEMO_PASSWORD='choose-one' mepd                 # open http://localhost:8765
 ```
@@ -22,10 +23,11 @@ run on the CPU. The same image serves both.
 | xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 | conda-forge (micromamba) | `/opt/tools` | on `PATH` |
 | Psi4 1.11 | conda-forge (micromamba), own Python | `/opt/psi4` | `MEPD_PSI4_PYTHON` |
 | molecularGSM (ASE backend), MKL | built from source; MKL from conda-forge | `/opt/gsm` | `GSM_EXECUTABLE` |
-| Retrosynthesis data (USPTO templates, policy/filter ONNX, PaRoutes stocks) | Zenodo | `/opt/mepd/retro` | `MEPD_RETRO_DATA` |
+| Retrosynthesis data (USPTO templates, policy/filter ONNX, PaRoutes stocks) and their prebuilt lookup indexes | our mirror, else Zenodo (SHA-256 checked) | `/opt/mepd/retro` | `MEPD_RETRO_DATA` |
 | AiZynthFinder 4.4.1 in its own Python 3.11 env, its public models and ZINC stock | PyPI, its download script | `/opt/mepd/retro/aizynth-*` | `MEPD_RETRO_DATA` |
 | AIMNet2 (rxn, general, nse, 2025), ANI-2x, ReactionT5v2 weights | their registries, Hugging Face | `/home/mepd/.cache`, `.local/share` | default caches |
-| FAIR-Chem UMA (gated) | Hugging Face, only with a token | `/home/mepd/.cache/huggingface` | default cache |
+| FAIR-Chem UMA `uma-s-1p2p1` (gated) | Hugging Face, with a token at build time | `/home/mepd/.cache/fairchem` | fairchem's cache |
+| A C compiler | Ubuntu | `/usr/bin/cc` | Triton compiles a helper for UMA on the GPU |
 
 The build finishes with `mepd-entrypoint check`, which fails the build if any
 of these is missing or does not run. Run it any time with
@@ -45,17 +47,20 @@ at it.
 ## Build options
 
 ```bash
-docker build -t mepd .                                          # everything
-docker build --secret id=hf_token,env=HF_TOKEN -t mepd .        # + UMA weights (gated)
-docker build --build-arg FAIRCHEM_MODELS="uma-s-1p2p1 uma-m-1p1" --secret id=hf_token,env=HF_TOKEN -t mepd .
-docker build --build-arg PREFETCH_MODELS=0 -t mepd .            # skip AIMNet2/ANI/ReactionT5 weights
+docker build --secret id=hf_token,env=HF_TOKEN -t mepd .        # everything, UMA included
+docker build --build-arg FAIRCHEM_MODELS= -t mepd .             # no UMA, so no token needed
+docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMNet2/ANI/ReactionT5 weights
 ```
 
-- **The gated FAIR-Chem models.** `HF_TOKEN` must belong to a Hugging Face
-  account that has been granted access to
-  [facebook/UMA](https://huggingface.co/facebook/UMA). The token is a build
-  secret, so it is never stored in a layer. Alternatively, pass
-  `-e HF_TOKEN=...` to `docker run` and the models download on first use.
+- **The gated FAIR-Chem models (`FAIRCHEM_MODELS`, default `uma-s-1p2p1`).**
+  - **Token:** `HF_TOKEN` must belong to a Hugging Face account that has been granted access to
+    [facebook/UMA](https://huggingface.co/facebook/UMA): `huggingface@atomsforhumanity.org`, with a
+    fine-grained token that may only read gated repos.
+  - **It is a build secret,** so it is never stored in a layer. Secrets are not part of BuildKit's
+    cache key, so the model list is: a build that names models but has no token **fails** rather than
+    silently leaving them out.
+  - **Don't add `uma-m-1p1`.** It is a single 11 GB file, over GHCR's 10 GB limit per layer.
+  - **Keep the image private.** It now contains Meta's licensed weights.
 - **`uv.lock` pins the Python environment.** It is in `.gitignore` today, so
   a fresh clone (e.g. in CI) has none and uv resolves the newest allowed
   versions instead. Commit it for builds that match what was tested.
@@ -91,7 +96,7 @@ docker build --build-arg PREFETCH_MODELS=0 -t mepd .            # skip AIMNet2/A
 | `MEPD_MAX_JOBS` | 4 | calculations at once |
 | `MEPD_PORT` | 8765 | |
 | `OMP_NUM_THREADS` | 1 | threads per calculation. Parallelism comes from running jobs side by side. |
-| `HF_TOKEN` | | for the gated FAIR-Chem models, if not baked in |
+| `HF_TOKEN` | | only for FAIR-Chem models that are not baked in (downloaded on first use) |
 
 Everything the app writes is under the `/data` volume: workspaces, job
 outputs, logins and session state (`/data/state`). The container runs as

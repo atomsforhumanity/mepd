@@ -19,10 +19,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   - xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 and Psi4 1.11 from conda-forge, via micromamba;
   - molecularGSM built from source with its ASE backend, against MKL;
   - the retrosynthesis data and an AiZynthFinder 4.4.1 environment;
-  - AIMNet2, ANI-2x and ReactionT5 weights; FAIR-Chem UMA only with a Hugging Face token (build secret).
+  - AIMNet2, ANI-2x and ReactionT5 weights;
+  - FAIR-Chem UMA `uma-s-1p2p1` (uma-s-1.2.1), in a layer of its own.
+
+  UMA is gated on Hugging Face. A build needs a token from an approved account, as a build secret
+  (`--secret id=hf_token,env=HF_TOKEN`); it is never stored in the image. A build without one fails with
+  instructions, unless it opts out with `--build-arg FAIRCHEM_MODELS=`. The image check loads each baked
+  model with Hugging Face offline. The image includes a C compiler because Triton, which runs UMA on the
+  GPU, compiles a helper on first use.
 
   The base image is Ubuntu 26.04. Every program and data set is checked when the image is built
-  (`mepd-entrypoint check`). See `deploy/docker/README.md`.
+  (`mepd-entrypoint check`), as the user the app runs as. See `deploy/docker/README.md`.
 - **Image entrypoint** (`deploy/docker/entrypoint.sh`): `serve` runs the web app in `demo` mode (shared
   password, a private workspace per visitor) or `full` mode (`MEPD_MODE`). `check` verifies the image. Any
   other argument runs as a command.

@@ -34,6 +34,9 @@ check() {
   says "Version" crest --version && ok crest "$(command -v crest)" || fail crest "crest does not run"
   [ -x "$(command -v packmol)" ] && ok packmol "$(command -v packmol)" || fail packmol "not on PATH"
   [ -x "$GSM_EXECUTABLE" ] && ok gsm "$GSM_EXECUTABLE" || fail gsm "$GSM_EXECUTABLE"
+  # Triton (UMA on the GPU) compiles a C helper on first use.
+  if command -v cc >/dev/null && cc --version >/dev/null 2>&1; then ok cc "$(command -v cc)"
+  else fail cc "no C compiler (Triton, UMA on GPUs, needs one)"; fi
   "$MEPD_PSI4_PYTHON" -c "import psi4" 2>/dev/null && ok psi4 "$MEPD_PSI4_PYTHON" || fail psi4 "$MEPD_PSI4_PYTHON cannot import psi4"
   python -c "import mepd.web.app" && ok mepd "$(python -c 'import mepd, os; print(os.path.dirname(mepd.__file__))')" \
     || fail mepd "mepd.web.app does not import"
@@ -48,6 +51,17 @@ check() {
               stock_n5.inchikeys:stock_n5.txt; do
     idx="$MEPD_RETRO_DATA/${pair%%:*}"; src="$MEPD_RETRO_DATA/${pair##*:}"
     if [ "$idx" -nt "$src" ]; then ok stock "${pair%%:*}"; else fail stock "$idx missing or older than $src"; fi
+  done
+  # FAIR-Chem models baked in (MEPD_FAIRCHEM_MODELS, from the build): each must
+  # load from the image alone, with Hugging Face offline.
+  local m out
+  for m in ${MEPD_FAIRCHEM_MODELS:-}; do
+    if out="$(HF_HUB_OFFLINE=1 python -c "import sys; from fairchem.core import pretrained_mlip; \
+pretrained_mlip.get_predict_unit(sys.argv[1], device='cpu')" "$m" 2>&1)"; then
+      ok fairchem "$m"
+    else
+      fail fairchem "$m does not load offline: $(tail -1 <<<"$out")"
+    fi
   done
   # Installed is not enough: AiZynthFinder's own env must import (it broke on
   # a NumPy 1/2 mismatch once while `aizynthcli` was still there).

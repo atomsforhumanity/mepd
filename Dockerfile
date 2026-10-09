@@ -21,8 +21,9 @@
 #             pybase, the manifest and mepd/retro/{data,aizynth,stock}.py.
 #   deps      a Python venv with mepd's locked dependencies, not mepd itself
 #   stock     the retrosynthesis stocks' lookup indexes (ZINC: 80 MB)
-#   models    MLIP and ReactionT5 weights (Hugging Face etc.); needs the deps
-#             to load the models, but not mepd's code
+#   models    AIMNet2, ANI-2x and ReactionT5 weights; needs the deps to load
+#             the models, but not mepd's code
+#   uma       FAIR-Chem UMA weights (gated: needs a Hugging Face token)
 #   runtime   the final image; mepd's own code is its last, small layer
 #
 # For CI, keep every stage's layers between runs (BuildKit `mode=max`
@@ -32,6 +33,11 @@
 ARG UBUNTU_IMAGE=ubuntu:26.04
 ARG MICROMAMBA_IMAGE=mambaorg/micromamba:2.3.3
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.5
+# The FAIR-Chem models baked in (stage `uma`). They are gated on Hugging Face,
+# so a build needs a token of an account with access, as a build secret:
+#   docker build --secret id=hf_token,env=HF_TOKEN -t mepd .
+# `--build-arg FAIRCHEM_MODELS=` builds without them.
+ARG FAIRCHEM_MODELS="uma-s-1p2p1"
 
 FROM ${MICROMAMBA_IMAGE} AS micromamba
 FROM ${UV_IMAGE} AS uv
@@ -169,16 +175,32 @@ ENV HOME=/home/mepd
 COPY deploy/docker/prefetch.py /tmp/build/prefetch.py
 # Model weights into $HOME's caches: AIMNet2, ANI-2x, ReactionT5.
 ARG PREFETCH_MODELS=1
-RUN if [ "$PREFETCH_MODELS" = 1 ]; then /opt/mepd/venv/bin/python /tmp/build/prefetch.py models; fi
-# FAIR-Chem UMA/eSEN are gated on Hugging Face: only with a token, passed as a
-# build secret so it never lands in a layer:
-#   docker build --secret id=hf_token,env=HF_TOKEN -t mepd .
-ARG FAIRCHEM_MODELS="uma-s-1p2p1"
+RUN if [ "$PREFETCH_MODELS" = 1 ]; then /opt/mepd/venv/bin/python /tmp/build/prefetch.py models; fi \
+ && mkdir -p "$HOME/.cache"
+
+# ----------------------------------------------------------------------- uma
+# FAIR-Chem UMA weights (gated; see FAIRCHEM_MODELS at the top), in a stage
+# and a layer of their own. A secret is not part of BuildKit's cache key, so
+# the step's key is the model list: a build that names models and has no
+# token fails here, rather than reusing a step that ran without one.
+FROM deps AS uma
+ENV HOME=/home/mepd
+COPY deploy/docker/prefetch.py /tmp/build/prefetch.py
+ARG FAIRCHEM_MODELS
 RUN --mount=type=secret,id=hf_token,required=false \
-    if [ -s /run/secrets/hf_token ]; then \
+    mkdir -p "$HOME/.cache/huggingface"; \
+    if [ -z "$FAIRCHEM_MODELS" ]; then \
+      echo "FAIRCHEM_MODELS is empty: no FAIR-Chem models in this image"; \
+    elif [ ! -s /run/secrets/hf_token ]; then \
+      echo "FAIRCHEM_MODELS=\"$FAIRCHEM_MODELS\" needs a Hugging Face token: build with" \
+           "--secret id=hf_token,env=HF_TOKEN, or --build-arg FAIRCHEM_MODELS= to leave them out" >&2; \
+      exit 1; \
+    else \
       HF_TOKEN="$(cat /run/secrets/hf_token)" /opt/mepd/venv/bin/python /tmp/build/prefetch.py fairchem $FAIRCHEM_MODELS; \
-    else echo "no hf_token secret: FAIR-Chem models not baked in (set HF_TOKEN at run time instead)"; fi \
- && rm -rf "$HOME/.cache/uv" && mkdir -p "$HOME/.cache"
+    fi
+# fairchem's own cache (~/.cache/fairchem), where the weights are; there even
+# when FAIRCHEM_MODELS is empty, for the runtime stage to copy.
+RUN mkdir -p "$HOME/.cache/fairchem"
 
 # --------------------------------------------------------------------- stock
 # The lookup indexes mepd builds the first time a retrosynthesis uses a stock
@@ -195,16 +217,18 @@ print(load(['zinc', 'paroutes-n1', 'paroutes-n5']).describe())"
 
 # ------------------------------------------------------------------- runtime
 FROM ${UBUNTU_IMAGE} AS runtime
+ARG FAIRCHEM_MODELS
 # Links the image to its repository on GHCR (and its access to the repo's).
 LABEL org.opencontainers.image.source=https://github.com/atomsforhumanity/mepd \
       org.opencontainers.image.description="mepd web app with its chemistry programs, models and data" \
       org.opencontainers.image.licenses=MIT
 # libgomp/libgfortran: g-xTB and GSM. The X libraries: the Cairo bundled in
-# openbabel-wheel (its plugins fail to load without them). tini: PID 1 that
-# forwards signals and reaps the job processes mepd starts.
+# openbabel-wheel (its plugins fail to load without them). gcc + libc headers:
+# Triton (UMA on the GPU) compiles a small C helper on first use. tini: PID 1
+# that forwards signals and reaps the job processes mepd starts.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates libgomp1 libgfortran5 libstdc++6 \
-      libxrender1 libxext6 libx11-6 libexpat1 tini \
+      libxrender1 libxext6 libx11-6 libexpat1 gcc libc6-dev tini \
  && rm -rf /var/lib/apt/lists/* \
  && userdel -r ubuntu 2>/dev/null || true \
  && useradd --uid 1000 --create-home --home-dir /home/mepd --shell /bin/bash mepd \
@@ -224,6 +248,8 @@ COPY --from=retro --chown=mepd:mepd /opt/mepd/retro /opt/mepd/retro
 COPY --from=stock --chown=mepd:mepd /opt/mepd/retro/zinc_stock_inchikeys.u64.npy \
      /opt/mepd/retro/stock_n1.inchikeys /opt/mepd/retro/stock_n5.inchikeys /opt/mepd/retro/
 COPY --from=models --chown=mepd:mepd /home/mepd /home/mepd
+# fairchem keeps its weights in a cache of its own, not Hugging Face's.
+COPY --from=uma --chown=mepd:mepd /home/mepd/.cache/fairchem /home/mepd/.cache/fairchem
 COPY --from=deps /opt/mepd/venv /opt/mepd/venv
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
 COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
@@ -240,6 +266,7 @@ ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     OMP_STACKSIZE=1G \
     TORCHDYNAMO_DISABLE=1 \
     PYTHONUNBUFFERED=1 \
+    MEPD_FAIRCHEM_MODELS=${FAIRCHEM_MODELS} \
     MEPD_MODE=demo MEPD_PORT=8765 MEPD_MAX_JOBS=4
 
 # mepd itself, into the venv above (its dependencies are all there already):
@@ -247,10 +274,10 @@ ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
 RUN --mount=type=bind,target=/tmp/src,rw \
     uv pip install --no-deps --no-cache --compile-bytecode --python /opt/mepd/venv/bin/python /tmp/src
 
-# The app was checked at build time: every external program resolves.
-RUN mepd-entrypoint check
-
 USER mepd
+# Checked at build time, as the user it runs as: every program and data set
+# is there and runs (and the caches the check fills stay writable by mepd).
+RUN mepd-entrypoint check
 WORKDIR /data
 VOLUME /data
 EXPOSE 8765
