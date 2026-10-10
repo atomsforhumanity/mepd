@@ -20,6 +20,7 @@ Run it inside the container described in deploy/demo/ for a second wall.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict, dataclass, field, fields
 from typing import Mapping, Optional
 
@@ -72,9 +73,9 @@ class DemoPolicy:
         # submits directly); a visitor's own nanoreactor job runs its MD.
         "nanoreactor": {"trajectory": ("",), "trajectory_start": ("",)},
         "retrosynthesis": {
-            "method": ("templates",),            # the others need GBs of models, or call a URL the user picks
-            "verify": ("none",),                 # top/all: a path search + TS + IRC per step
-            "stock": ("auto", "paroutes"),       # zinc needs the AiZynthFinder setup
+            # local-llm calls a URL the visitor picks; the others say themselves
+            # when their models are not set up here (the image has them all).
+            "method": ("templates", "reactiont5", "aizynthfinder"),
             "stock_file": ("",),                 # a file path on the server
             "llm_url": ("http://localhost:11434/v1",),
         },
@@ -89,30 +90,68 @@ class DemoPolicy:
     allowed_ops: tuple = ("ts", "channels", "tsopt", "hessian-sample", "hessian-global", "optimize",
                           "network-splits", "vri", "vri-check", "vri-surface", "graph-enumeration", "nanoreactor",
                           "solvent", "complex", "retrosynthesis", "nanoreactor-more", "qmmm-build", "qmmm-reaction",
-                          "qmmm-embed", "qmmm-inspect")
+                          "qmmm-embed", "qmmm-inspect", "conformers", "substituents", "mechanochem",
+                          "design-optimize", "design-tsopt", "channels-more", "qmmm-protein-sites",
+                          "qmmm-protein-build")
+
+    # Tables of numbers that MEPD_DEMO_<FIELD> may change, as JSON merged into
+    # the defaults. (What may run at all -- ops, engines, allowed values,
+    # forbidden keys -- is not settable from outside.)
+    _ENV_TABLES = ("caps", "op_timeout_s", "profile_caps", "sandbox", "qmmm")
 
     @classmethod
     def from_env(cls, environ: Optional[Mapping[str, str]] = None) -> "DemoPolicy":
-        """The defaults, with any number above overridden by MEPD_DEMO_<FIELD>,
-        e.g. MEPD_DEMO_GLOBAL_CONCURRENCY=64 to run 64 jobs at once on a big
-        machine. Raises ValueError for a value that is not a positive number,
-        or a field that is not a single number (caps, timeouts per op, ...)."""
+        """The defaults, overridden by MEPD_DEMO_<FIELD>:
+          a number, e.g. MEPD_DEMO_GLOBAL_CONCURRENCY=64 (64 jobs at once);
+          a table, as JSON merged into it, e.g.
+            MEPD_DEMO_CAPS='{"channels": {"workers": 8}}'.
+        Raises ValueError for anything else: a value that is not a positive
+        number, a name the table does not have (a typo would otherwise be
+        ignored), or a field that cannot be set from outside."""
+        import json
+
         environ = os.environ if environ is None else environ
         policy = cls()
+
+        def number(where, raw, kind):
+            if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+                raise ValueError(f"{where}={raw!r} is not a number")
+            try:
+                value = kind(raw)
+            except ValueError:
+                raise ValueError(f"{where}={raw!r} is not {'an integer' if kind is int else 'a number'}") from None
+            if value <= 0:
+                raise ValueError(f"{where}={raw!r} must be positive")
+            return value
+
+        def merged(where, default: dict, given) -> dict:
+            if not isinstance(given, dict):
+                raise ValueError(f"{where} must be a JSON object")
+            out = dict(default)
+            for key, value in given.items():
+                if key not in default:
+                    raise ValueError(f"{where}: unknown {key!r} (known: {', '.join(map(str, default))})")
+                if isinstance(default[key], dict):
+                    out[key] = merged(f"{where}.{key}", default[key], value)
+                else:
+                    out[key] = number(f"{where}.{key}", value, type(default[key]))
+            return out
+
         for f in fields(cls):
             name = f"MEPD_DEMO_{f.name.upper()}"
             if name not in environ:
                 continue
-            kind = type(getattr(policy, f.name))
-            if kind not in (int, float):
-                raise ValueError(f"{name}: {f.name} is not a single number and cannot be set from the environment")
-            try:
-                value = kind(environ[name])
-            except ValueError:
-                raise ValueError(f"{name}={environ[name]!r} is not {'an integer' if kind is int else 'a number'}") from None
-            if value <= 0:
-                raise ValueError(f"{name}={environ[name]!r} must be positive")
-            setattr(policy, f.name, value)
+            current = getattr(policy, f.name)
+            if f.name in cls._ENV_TABLES:
+                try:
+                    given = json.loads(environ[name])
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{name} is not valid JSON ({exc})") from None
+                setattr(policy, f.name, merged(name, current, given))
+            elif type(current) in (int, float):
+                setattr(policy, f.name, number(name, environ[name], type(current)))
+            else:
+                raise ValueError(f"{name}: {f.name} cannot be set from the environment")
         return policy
 
     def qmmm_limits(self) -> dict:
@@ -204,14 +243,17 @@ class DemoPolicy:
 
     # ------------------------------------------------------------ visitors' own profiles
     max_profiles: int = 10              # a visitor's own, besides the built-in ones
-    profile_engines: tuple = ("gxtb", "xtb", "mlip", "fairchem")
+    profile_engines: tuple = ("gxtb", "xtb", "mlip", "fairchem", "psi4")
     # Never in a visitor's profile: programs, import paths, model files and
     # other files on the server, credentials, debugging dumps.
     profile_forbidden_keys: tuple = (
         "executable", "checkpoint", "calculator", "calculator_kwds", "family", "model_path", "mlp_checkpoint",
         "file", "input_files", "prmtop", "pdb", "tcin", "debug_dump_dir", "debug_dump_inputs", "chemcloud_queue",
-        "hf_token", "model_cache_dir", "model_repo", "keep_workdirs", "collect_files", "qmmm")
+        "hf_token", "model_cache_dir", "model_repo", "keep_workdirs", "collect_files", "qmmm",
+        "python")                       # psi4_engine_kwds.python: the interpreter it launches
     # Parallelism and size: no more than a visitor's share of the machine.
+    # Psi4 asks for its memory as text ("4 GB"); one job must not take the machine.
+    psi4_max_memory_gb: float = 16.0
     profile_caps: dict = field(default_factory=lambda: {
         "n_parallel": 2, "n_threads": 2, "node_threads": 2, "threads": 2, "workers": 2, "batch_size": 16,
         "nimages": 30, "nnodes": 30, "adaptive_max_images": 40, "min_images": 30})
@@ -255,6 +297,15 @@ class DemoPolicy:
         if engine not in self.profile_engines:
             raise WorkspaceError(f"engine {engine!r} is not available in the demo "
                                  f"(use {', '.join(self.profile_engines)})")
+        if engine == "psi4":
+            memory = str((data.get("psi4_engine_kwds") or {}).get("memory") or "4 GB")
+            m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(mb|mib|gb|gib|tb|tib)\s*", memory.lower())
+            if m is None:
+                raise WorkspaceError(f"psi4_engine_kwds.memory = {memory!r}: give it as e.g. \"4 GB\"")
+            gb = float(m.group(1)) * {"mb": 1e-3, "mib": 1e-3, "gb": 1, "gib": 1, "tb": 1e3, "tib": 1e3}[m.group(2)]
+            if gb > self.psi4_max_memory_gb:
+                raise WorkspaceError(f"psi4_engine_kwds.memory = {memory!r} is above the demo's limit "
+                                     f"({self.psi4_max_memory_gb:g} GB)")
         if _normalized_path_method(data.get("path_min_method") or "NEB") == "NEB-DLF":
             raise WorkspaceError("DL-FIND NEB (TeraChem) is not available in the demo")
         models = [((data.get("mlip_engine_kwds") or {}).get("model"), "mlip_engine_kwds.model")] if engine == "mlip" else []

@@ -53,14 +53,27 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
   manages each workspace's jobs. Two servers would both manage them.
 - **The GPU.** The pod takes the node's one GPU (`nvidia.com/gpu: 1`) for
   the machine-learned potentials. g-xTB, xtb, CREST and Psi4 run on CPU.
-- **Demo limits.** The defaults are in `mepd/web/demo.py` (`DemoPolicy`), and
-  any of its numbers can be overridden with `MEPD_DEMO_<FIELD>` in the
-  manifest. The manifest runs 64 calculations at once across all testers
-  (`MEPD_DEMO_GLOBAL_CONCURRENCY`), and up to 8 per workspace. Each
-  calculation uses one core (`OMP_NUM_THREADS=1`). A few operations start 2
-  worker processes each, so a full load can briefly ask for more than 64
-  cores. Other examples: `MEPD_DEMO_MAX_ATOMS`, `MEPD_DEMO_JOB_TIMEOUT_S`.
-  A bad value stops the server at start-up with a message saying which one.
+- **Demo limits.** The defaults in `mepd/web/demo.py` (`DemoPolicy`) suit a
+  small shared demo. The manifest sizes them for this node with
+  `MEPD_DEMO_<FIELD>` variables:
+  - 64 calculations at once, 8 per workspace;
+  - 150 atoms per structure;
+  - 4 h per calculation;
+  - 8 workers per operation and per profile;
+  - 8 interactive reactors;
+  - QM/MM systems up to 50,000 atoms.
+
+  Numbers are plain values (`MEPD_DEMO_MAX_ATOMS=150`). Tables (`CAPS`,
+  `OP_TIMEOUT_S`, `PROFILE_CAPS`, `SANDBOX`, `QMMM`) are JSON merged into the
+  defaults, e.g. `MEPD_DEMO_CAPS='{"channels": {"workers": 16}}'`. A bad value
+  or a misspelled name stops the server at start-up with a message saying
+  which. What may run at all (operations, engines, forbidden settings) cannot
+  be changed from the manifest.
+- **What testers can't do** (by design): read files on the server, run the
+  ASE, QCCompute or ChemCloud engines (they run arbitrary code or programs),
+  set programs, file paths or credentials in a profile, use a local-LLM
+  retrosynthesis server, or ask Psi4 for more than 16 GB per job
+  (`MEPD_DEMO_PSI4_MAX_MEMORY_GB`). Everything else in the app is available.
 - **The password is the protection.** mepd does not lock anyone out after
   failed logins, because behind the tunnel every visitor can arrive from the
   same address. Use a long random password (e.g. 20+ characters from a

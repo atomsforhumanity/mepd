@@ -860,7 +860,7 @@ def test_demo_settings_offer_the_fairchem_engine_and_grey_out_the_others(demo_ap
         engine = next(f for f in r["form"]["basic"] if f["key"] == "engine")
         disabled = {o["value"] for o in engine["options"] if o["disabled"]}
         assert "fairchem" not in disabled and "mlip" not in disabled and "gxtb" not in disabled
-        assert {"chemcloud", "qccompute", "ase", "psi4"} <= disabled           # shown, but not pickable
+        assert disabled == {"chemcloud", "qccompute", "ase"}                    # shown, but not pickable
         v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
         assert v["ok"], v
         r = c.post("/api/profiles/form/apply", json={"text": r["text"], "path": "fairchem_engine_kwds.model",
@@ -877,9 +877,22 @@ def test_demo_limits_come_from_the_environment():
     assert (policy.global_concurrency, policy.max_active_jobs, policy.job_timeout_s) == (64, 8, 3600.0)
     assert policy.max_atoms == DemoPolicy().max_atoms                 # the rest keep their defaults
     assert DemoPolicy.from_env({}) == DemoPolicy()
+    # tables: JSON merged into the defaults
+    policy = DemoPolicy.from_env({"MEPD_DEMO_CAPS": '{"channels": {"workers": 8}, "vri": {"workers": 8}}',
+                                  "MEPD_DEMO_SANDBOX": '{"total": 8}', "MEPD_DEMO_PSI4_MAX_MEMORY_GB": "32"})
+    assert policy.caps["channels"]["workers"] == 8 and policy.caps["vri"]["workers"] == 8
+    assert policy.caps["channels"]["n_conformers"] == DemoPolicy().caps["channels"]["n_conformers"]
+    assert policy.caps["ts"] == DemoPolicy().caps["ts"]
+    assert policy.sandbox["total"] == 8 and policy.sandbox["per_owner"] == DemoPolicy().sandbox["per_owner"]
+    assert policy.psi4_max_memory_gb == 32.0
     for bad, why in (({"MEPD_DEMO_GLOBAL_CONCURRENCY": "lots"}, "integer"),
                      ({"MEPD_DEMO_GLOBAL_CONCURRENCY": "0"}, "positive"),
-                     ({"MEPD_DEMO_CAPS": "{}"}, "not a single number")):
+                     ({"MEPD_DEMO_CAPS": "{not json"}, "not valid JSON"),
+                     ({"MEPD_DEMO_CAPS": '{"chanels": {"workers": 8}}'}, "unknown 'chanels'"),
+                     ({"MEPD_DEMO_CAPS": '{"channels": {"wokers": 8}}'}, "unknown 'wokers'"),
+                     ({"MEPD_DEMO_CAPS": '{"channels": {"workers": -1}}'}, "positive"),
+                     ({"MEPD_DEMO_ALLOWED_OPS": '["anything"]'}, "cannot be set"),
+                     ({"MEPD_DEMO_ALLOWED_VALUES": "{}"}, "cannot be set")):
         with pytest.raises(ValueError, match=why):
             DemoPolicy.from_env(bad)
 
@@ -1543,20 +1556,31 @@ def test_demo_complexes_obey_the_atom_and_geometry_limits(demo_app):
             v.__exit__(None, None, None)
 
 
-def test_demo_retrosynthesis_runs_only_the_light_method():
+def test_every_operation_is_decided_for_the_demo():
+    # The demo runs from an allowlist, so a new operation was silently left
+    # out of it. Now one fails here until it is added (or this test says why not).
+    from mepd.web.demo import DemoPolicy
+    from mepd.web.operations import OPERATIONS
+
+    assert set(OPERATIONS) - set(DemoPolicy().allowed_ops) == set()
+
+
+def test_demo_retrosynthesis_runs_every_local_method_but_not_a_url_or_a_server_file():
     from mepd.web.demo import DemoPolicy
     from mepd.web.operations import OPERATIONS
     from mepd.web.workspace import WorkspaceError
 
     policy = DemoPolicy()
-    policy.check_op("retrosynthesis", {"method": "templates", "iterations": 100})
-    for bad in ({"method": "local-llm"}, {"method": "templates", "verify": "all"},
-                {"method": "templates", "stock_file": "/etc/passwd"}, {"method": "templates", "iterations": 500}):
+    for ok in ({"method": "templates", "iterations": 100}, {"method": "reactiont5"},
+               {"method": "aizynthfinder", "stock": "zinc"}, {"method": "templates", "verify": "all"}):
+        policy.check_op("retrosynthesis", ok)
+    for bad in ({"method": "local-llm"},                                     # calls a URL the visitor picks
+                {"method": "templates", "stock_file": "/etc/passwd"},        # a file on the server
+                {"method": "templates", "iterations": 500}):                 # above the cap
         with pytest.raises(WorkspaceError):
             policy.check_op("retrosynthesis", bad)
     desc = policy.adapt_operation(OPERATIONS["retrosynthesis"].describe())
-    assert [m["fixed"]["method"] for m in desc["methods"] if m["available"]] in (["templates"], [])
-    assert desc["schema"]["properties"]["verify"].get("enum", ["none"]) == ["none"]
+    assert "local-llm" not in [m["fixed"]["method"] for m in desc["methods"] if m["available"]]
 
 
 def test_complex_members_are_always_molecules(tmp_path):

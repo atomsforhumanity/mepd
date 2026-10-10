@@ -79,6 +79,25 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   (`task`, `inference_settings`). Its model is checked like any other: blank means `uma-s-1p2p1`. The demo's
   Settings menu now shows the engines the demo doesn't run greyed out, with the reason, instead of letting a
   tester pick one and fail on save.
+- **Demo mode blocks only what would hand a tester the server.** It worked from an allowlist that new
+  features had fallen behind. Unblocked:
+  - the operations Conformers, Substituent effects, Mechanical force, Minimize the design, Optimize the design
+    as a TS, Sample more paths, Place in a protein (QM/MM) and QM/MM system at this site;
+  - the Psi4 engine;
+  - the ReactionT5 and AiZynthFinder retrosynthesis methods, the ZINC stock, and step verification.
+
+  Still blocked:
+  - reading server files;
+  - the ASE, QCCompute and ChemCloud engines;
+  - programs, paths and credentials in profiles, now including Psi4's `python`;
+  - local-LLM retrosynthesis.
+
+  A test now fails if an operation is added without a decision for the demo.
+- **Demo limits are fully configurable.** As well as numbers, the tables of per-operation caps and timeouts,
+  profile caps, interactive-reactor and QM/MM limits take JSON merged into the defaults
+  (`MEPD_DEMO_CAPS='{"channels": {"workers": 8}}'`), and misspelled names stop the server. New limit
+  `psi4_max_memory_gb` (16 GB): Psi4's memory is text, which the numeric caps did not see. The beta manifest
+  sizes the limits for afh-c04.
 - **Demo mode offers only models that are installed.** It used to accept Orb and MACE, which can't be
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
@@ -102,5 +121,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   upstream GSM, but it has not been compared against a known-good build.
 - **`tests/test_sandbox.py::test_reaction_events_are_found_as_the_nanoreactor_finds_them` is flaky.** It
   fails about 1 run in 3–4, both in and outside the image.
+- **`tests/test_qmmm_web.py::test_adding_a_qmmm_result_to_explore_reads_only_its_qm_region` is flaky** under
+  parallel runs (`-n 8`). It passed 5 of 5 times alone in the image.
 - **`uv.lock` is gitignored**, so builds from a fresh clone (e.g. CI) resolve dependencies afresh. Commit it
   for reproducible images.
