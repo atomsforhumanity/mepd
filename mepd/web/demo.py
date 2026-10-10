@@ -223,6 +223,10 @@ class DemoPolicy:
 
         from mepd.engines.mlip import MODELS, weights_available
         from mepd.inputs import _normalized_path_method
+        from mepd.web.profile_form import _mlip_missing
+
+        def usable(model: str) -> bool:
+            return model in MODELS and _mlip_missing(model) is None and weights_available(model)
 
         try:
             data = tomllib.loads(text or "")
@@ -258,11 +262,12 @@ class DemoPolicy:
         for name, where in models:
             if engine == "mlip" and where.startswith("mlip") and not name:
                 raise WorkspaceError("pick a model (mlip_engine_kwds.model)")
-            # A gated model (UMA, eSEN) is fine once its weights are here (e.g. baked
-            # into the image): it then runs like any other, with no login.
-            if name and not weights_available(name):
-                usable = ", ".join(n for n in MODELS if weights_available(n))
-                raise WorkspaceError(f"{where} = {name!r}: the demo runs only these models: {usable}")
+            # Only models that run here: installed (Orb and MACE can't share an env
+            # with fairchem), and, if gated (UMA, eSEN), with their weights already
+            # here (e.g. baked into the image) -- then they run like any other.
+            if name and not usable(name):
+                usable_names = ", ".join(n for n in MODELS if usable(n))
+                raise WorkspaceError(f"{where} = {name!r}: the demo runs only these models: {usable_names}")
 
     def check_text(self, text: str) -> None:
         if len(text.encode()) > self.max_upload_bytes:

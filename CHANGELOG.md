@@ -74,6 +74,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   needed". That holds only when the weights still have to be downloaded with a login. A gated model whose
   weights are already in fairchem's cache, as UMA is in the image, now runs like any other model
   (`mepd.engines.mlip.weights_available`).
+- **Demo mode offers only models that are installed.** It used to accept Orb and MACE, which can't be
+  installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
 
