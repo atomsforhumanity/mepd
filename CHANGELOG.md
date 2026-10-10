@@ -45,7 +45,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   ZINC stock now loads in 0.1 s.
 - **Kubernetes manifest for the beta** (`deploy/k8s/mepd-demo.yaml`, `deploy/k8s/README.md`). It runs demo
   mode on afh-c04 as a single replica that is never rolled over (`Recreate`), with the GPU. State and scratch
-  live on the node's data disk (`/nvme1/mepd`), and an Ingress serves `mepd.atomsforhumanity.org`.
+  live on the node's data disk (`/nvme1/mepd`), and an Ingress serves `mepd.atomsforhumanity.org`. The pod
+  sets two things the first deploy needed:
+  - `runtimeClassName: nvidia`: without it the GPU was assigned but never reached the container.
+  - `enableServiceLinks: false`: Kubernetes' `MEPD_PORT` for the Service `mepd` overrode the server's
+    port, and the server would not start.
 - **Demo limits are configurable from the environment.** Any number in `DemoPolicy` (`mepd/web/demo.py`) can
   be overridden as `MEPD_DEMO_<FIELD>`, e.g. `MEPD_DEMO_GLOBAL_CONCURRENCY=64` to run 64 jobs at once across
   all testers instead of 4. Invalid values stop `mepd web --demo` at start-up with a message.

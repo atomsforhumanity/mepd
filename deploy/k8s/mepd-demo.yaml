@@ -31,6 +31,14 @@ spec:
         kubernetes.io/hostname: afh-c04      # the data lives on this node's disk
       imagePullSecrets:
         - name: ghcr-pull
+      # Kubernetes otherwise sets <SERVICE>_PORT etc. for every Service in the
+      # namespace: the Service `mepd` gave MEPD_PORT=tcp://...:80, which
+      # overrides the image's MEPD_PORT (the server's port) and stops it.
+      enableServiceLinks: false
+      # The NVIDIA container runtime injects the GPU devices and driver; the
+      # device plugin only assigns the GPU (NVIDIA_VISIBLE_DEVICES), which the
+      # default runtime ignores.
+      runtimeClassName: nvidia
       # Jobs stop with the pod; the next server marks them interrupted, and
       # they resume where they left off. A minute lets requests finish.
       terminationGracePeriodSeconds: 60
