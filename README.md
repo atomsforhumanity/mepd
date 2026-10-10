@@ -97,6 +97,27 @@ mepd-elementarystep path.xyz
 
 Use the Python API for lower-level NEB, MLPGI, MSMEP, and elementary-step workflows.
 
+### FSM-TS: freezing string with a TS check
+
+`path_min_method = "FSM-TS"` uses the freezing string method's quick path for each pair and asks
+its TS whether the pair is one elementary step:
+
+1. FSM grows a path between the two ends.
+2. The path's highest image is optimized to a TS.
+3. Pseudo-IRC: one Hessian at the TS, a push both ways along its imaginary mode, and a
+   minimization of each side.
+4. If the two minima are the two ends, the pair is an elementary step, and its path ends as
+   [reactant, converged TS, product], so `--use-tsopt`, `mepd channels` and the web app start from
+   that TS. If a minimum is a new species, MSMEP splits there.
+5. If both sides fall to the same end (the TS belongs to some other motion), the TS search fails,
+   or what it found is not a TS (no imaginary frequency, or more than one), the TS is discarded and
+   that pair is searched again with NEB.
+
+Its `[path_min_inputs]` are FSM's plus `pseudo_irc_amplitude` (bohr, default 0.3),
+`pseudo_irc_hessian` (`auto`: from gradients for g-xTB), `neb_fallback` and `neb_inputs` (NEB
+settings for the fallback). `tree/tree.json` records, per pair, what the pseudo-IRC found and why
+a pair fell back to NEB.
+
 ## Web interface
 
 ```bash

@@ -116,6 +116,19 @@ def _build_path_minimizer(initial_chain: Chain, run_inputs: RunInputs):
             optimizer=run_inputs.optimizer,
             gi_inputs=run_inputs.gi_inputs,
         )
+    if method == "FSM-TS":
+        import copy
+
+        from mepd.pathminimizers.fsm_ts import FSMTS
+
+        return FSMTS(
+            initial_chain=initial_chain,
+            engine=run_inputs.engine,
+            parameters=run_inputs.path_min_inputs,
+            optimizer=run_inputs.optimizer,
+            neb_optimizer=copy.deepcopy(run_inputs.optimizer),
+            gi_inputs=run_inputs.gi_inputs,
+        )
     if method == "NEB-DLF":
         return DLFindNEB(
             initial_chain=initial_chain,
@@ -147,7 +160,7 @@ def _build_path_minimizer(initial_chain: Chain, run_inputs: RunInputs):
         )
     raise typer.BadParameter(
         f"Unsupported path_min_method '{run_inputs.path_min_method}'. "
-        "This build supports: NEB, FNEB, NEB-DLF, GEOMETRIC-NEB, GSM, MLPGI."
+        "This build supports: NEB, FNEB, FSM-TS, NEB-DLF, GEOMETRIC-NEB, GSM, MLPGI."
     )
 
 
@@ -1545,7 +1558,7 @@ def optimize(
         raise typer.Exit(code=1)
 
 
-_DEFAULT_INPUTS_PATH_METHODS = ("NEB", "FNEB", "NEB-DLF", "GEOMETRIC-NEB", "GSM", "MLPGI")
+_DEFAULT_INPUTS_PATH_METHODS = ("NEB", "FNEB", "FSM-TS", "NEB-DLF", "GEOMETRIC-NEB", "GSM", "MLPGI")
 
 
 @app.command("models")

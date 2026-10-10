@@ -77,6 +77,11 @@ def node_record(node, n_children: int | None = None) -> dict:
         "traceback": None,
         "n_rejected_pieces": len(getattr(node, "rejected_chains", None) or []),
     }
+    # FSM-TS: which method made this node's path, why it fell back to NEB, what the pseudo-IRC found.
+    for key in ("path_method_used", "fallback_reason", "pseudo_irc"):
+        value = getattr(data, key, None) if data is not None else None
+        if value is not None:
+            rec[key] = value
     if getattr(node, "leaf_error", None):
         rec["error"] = f"{getattr(node, 'leaf_error_type', 'Error')}: {node.leaf_error}"
         rec["traceback"] = getattr(node, "leaf_traceback", None) or None
