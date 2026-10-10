@@ -69,6 +69,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   locked every tester out. A wrong password still waits 0.5 s. The protection is a long random password;
   rate limiting, if wanted, belongs at the proxy (e.g. a Cloudflare rule), which sees real addresses.
 
+- **Gated models (UMA, eSEN) are usable once their weights are on the machine, in demo mode too.** Demo mode
+  refused every gated model in testers' profiles, and the model menu labelled them "Hugging Face access
+  needed". That holds only when the weights still have to be downloaded with a login. A gated model whose
+  weights are already in fairchem's cache, as UMA is in the image, now runs like any other model
+  (`mepd.engines.mlip.weights_available`).
+
 ### Fixed
 
 - **`mepd retro plan --method aizynthfinder` found almost no routes.** mepd rewrote AiZynthFinder's

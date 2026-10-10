@@ -491,13 +491,14 @@ def _mlip_missing(model: str) -> Optional[str]:
 def _mlip_model_choice(data: dict):
     import importlib.util
 
-    from mepd.engines.mlip import MODELS
+    from mepd.engines.mlip import MODELS, weights_available
 
     model = str(_get(data, "mlip_engine_kwds.model") or "")
     options = [("", "Choose a model…", "Run `mepd models` for what each covers.")] if not model else []
     for name, spec in MODELS.items():
         ok = importlib.util.find_spec(MLIP_PACKAGES.get(spec.family, spec.family)) is not None
-        flags = [s for s, on in (("Hugging Face access needed", spec.gated), ("not installed here", not ok)) if on]
+        flags = [s for s, on in (("Hugging Face access needed", ok and not weights_available(name)),
+                                 ("not installed here", not ok)) if on]
         options.append((name, f"{name}{' (' + '; '.join(flags) + ')' if flags else ''}",
                         f"{spec.summary}. Elements: {spec.elements or 'see mepd models'}. "
                         f"Charge and spin: {spec.charge_and_spin}.{'' if ok else ' Install: ' + spec.install + '.'}"))

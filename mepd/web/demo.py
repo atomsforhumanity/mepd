@@ -221,7 +221,7 @@ class DemoPolicy:
         models, no file or program on the server, and capped parallelism."""
         import tomllib
 
-        from mepd.engines.mlip import MODELS
+        from mepd.engines.mlip import MODELS, weights_available
         from mepd.inputs import _normalized_path_method
 
         try:
@@ -258,9 +258,11 @@ class DemoPolicy:
         for name, where in models:
             if engine == "mlip" and where.startswith("mlip") and not name:
                 raise WorkspaceError("pick a model (mlip_engine_kwds.model)")
-            if name and (name not in MODELS or MODELS[name].gated):
-                open_names = ", ".join(n for n, spec in MODELS.items() if not spec.gated)
-                raise WorkspaceError(f"{where} = {name!r}: the demo runs only these models: {open_names}")
+            # A gated model (UMA, eSEN) is fine once its weights are here (e.g. baked
+            # into the image): it then runs like any other, with no login.
+            if name and not weights_available(name):
+                usable = ", ".join(n for n in MODELS if weights_available(n))
+                raise WorkspaceError(f"{where} = {name!r}: the demo runs only these models: {usable}")
 
     def check_text(self, text: str) -> None:
         if len(text.encode()) > self.max_upload_bytes:

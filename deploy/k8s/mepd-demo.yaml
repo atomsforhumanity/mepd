@@ -48,7 +48,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: mepd
-          image: ghcr.io/atomsforhumanity/mepd:0.1.0-beta.4
+          image: ghcr.io/atomsforhumanity/mepd:0.1.0-beta.5
           args: ["serve"]
           env:
             - name: MEPD_MODE
