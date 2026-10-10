@@ -70,3 +70,56 @@ def test_a_failure_that_keep_going_cannot_fix_still_raises(monkeypatch):
     with pytest.raises(ElectronicStructureError, match="IRCInnerLoopConvergenceFailure"):
         ase_engine.ASEEngine(calculator=EMT()).compute_irc_chain(_ts())
     assert calls == [("reverse", False), ("reverse", True)]
+
+
+def _rotation(deg):
+    t = np.radians(deg)
+    return np.array([[np.cos(t), -np.sin(t), 0.0], [np.sin(t), np.cos(t), 0.0], [0.0, 0.0, 1.0]])
+
+
+def test_rigid_spin_is_stripped_from_the_frames_and_gradients_turn_with_them():
+    from mepd.engines.ase import _align_frames
+
+    ref = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    stretched = ref.copy()
+    stretched[1, 0] = 1.0
+    grad = np.array([[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0], [0.0, 0.0, 0.0]])
+    # The second and third frames are the stretched one, spun and shifted: only rigid motion after it.
+    frames = [stretched, stretched @ _rotation(30).T + 2.0, stretched @ _rotation(60).T]
+    grads = [grad, grad @ _rotation(30).T, grad @ _rotation(60).T]
+    out, out_grads = _align_frames(frames, grads, ref)
+    for f, g in zip(out, out_grads):
+        assert np.allclose(f, out[0], atol=1e-8) and np.allclose(g, out_grads[0], atol=1e-8)
+    assert np.isclose(np.linalg.norm(out[0][1] - out[0][0]), 1.0)   # the real motion (the stretch) is kept
+
+
+def test_irc_convergence_ignores_the_rotational_eigenvalues():
+    """Sella's test (lowest Hessian eigenvalue > 0) fails at a minimum when noise pushes a
+    rotation's ~0 eigenvalue negative; the vibrational curvature is what counts."""
+    from types import SimpleNamespace
+
+    from mepd.engines.ase import _rigid_basis, _sella_irc_class
+
+    pos = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    rigid = _rigid_basis(pos)
+    assert rigid.shape == (9, 6)
+    u, _, _ = np.linalg.svd(rigid, full_matrices=True)
+    vib = u[:, 6:]
+    hessian = vib @ np.diag([0.3, 0.5, 0.7]) @ vib.T - 1e-4 * rigid @ rigid.T   # a minimum, noisy rotations
+
+    class Base:
+        def converged(self, forces=None):
+            return "sella's own"
+
+    def irc(constraints=(), vib_evals=None):
+        h = hessian if vib_evals is None else vib @ np.diag(vib_evals) @ vib.T
+        obj = _sella_irc_class(Base)()
+        obj.first, obj.fmax = False, 0.1
+        obj.atoms = SimpleNamespace(constraints=list(constraints), get_positions=lambda: pos)
+        obj.pes = SimpleNamespace(H=SimpleNamespace(evals=np.linalg.eigvalsh(h), asarray=lambda: h),
+                                  converged=lambda fmax: (True,))
+        return obj.converged()
+
+    assert np.linalg.eigvalsh(hessian)[0] < 0 and irc() is True
+    assert irc(vib_evals=[-0.2, 0.5, 0.7]) is False            # still on a downhill mode
+    assert irc(constraints=["fixed"]) == "sella's own"          # fixed atoms: rotations are real motions

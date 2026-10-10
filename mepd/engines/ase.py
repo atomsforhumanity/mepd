@@ -43,6 +43,57 @@ except Exception:
 from ase.io import Trajectory
 
 from pathlib import Path
+
+
+def _rigid_basis(positions: NDArray) -> NDArray:
+    """Orthonormal columns spanning the rigid translations and rotations of
+    `positions` (n_atoms x 3): 6 columns, 5 for a linear molecule."""
+    centered = positions - positions.mean(axis=0)
+    vecs = [np.tile(np.eye(3)[k], len(positions)) for k in range(3)]
+    vecs += [np.cross(np.eye(3)[k], centered).ravel() for k in range(3)]
+    u, s, _ = np.linalg.svd(np.array(vecs).T, full_matrices=False)
+    return u[:, s > 1e-6 * s.max()]
+
+
+def _sella_irc_class(base):
+    """Sella's IRC, ending at the minimum. Sella stops a direction only once
+    its Hessian's lowest eigenvalue is positive, but that Hessian keeps
+    translations and rotations (IRC runs with proj_rot=False), whose
+    near-zero eigenvalues noise can push below zero: at the minimum it then
+    keeps stepping along a rotation, a rigid spin of the whole system, until
+    `steps` runs out. Here the curvature is judged on vibrations only. With
+    atoms fixed rotations are real motions, so Sella's own test stands."""
+
+    class _IRC(base):
+        def converged(self, forces=None):
+            if self.first or self.atoms.constraints:
+                return super().converged(forces)
+            if self.pes.H.evals is None or not self.pes.converged(self.fmax)[0]:
+                return False
+            basis = _rigid_basis(self.atoms.get_positions())
+            u, _, _ = np.linalg.svd(basis, full_matrices=True)
+            vib = u[:, basis.shape[1]:]
+            hessian = np.asarray(self.pes.H.asarray(), dtype=float)
+            return bool(np.linalg.eigvalsh(vib.T @ hessian @ vib)[0] > 0)
+
+    return _IRC
+
+
+def _align_frames(frames: list[NDArray], gradients: list[NDArray], reference: NDArray):
+    """Strip rigid motion from an IRC branch: each frame is rotated and
+    translated onto the one before it (the first onto `reference`), its
+    gradient rotated with it. Returns the new (frames, gradients)."""
+    prev = np.asarray(reference, dtype=float)
+    out_frames, out_grads = [], []
+    for coords, grad in zip(frames, gradients):
+        coords = np.asarray(coords, dtype=float)
+        mu, mu_prev = coords.mean(axis=0), prev.mean(axis=0)
+        u, _, vt = np.linalg.svd((coords - mu).T @ (prev - mu_prev))
+        rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+        prev = (coords - mu) @ rot + mu_prev
+        out_frames.append(prev)
+        out_grads.append(np.asarray(grad, dtype=float) @ rot)
+    return out_frames, out_grads
 import tempfile
 
 AVAIL_OPTS = {
@@ -447,7 +498,7 @@ class ASEEngine(Engine):
                     if k:
                         atoms.set_positions(structure_to_ase_atoms(ts_node.structure).get_positions())
                         Path(tmp.name).write_bytes(b"")
-                    optimizer = SellaIRC(
+                    optimizer = _sella_irc_class(SellaIRC)(
                         atoms=atoms,
                         logfile=None,
                         trajectory=tmp.name,
@@ -464,19 +515,25 @@ class ASEEngine(Engine):
 
             charge = ts_node.structure.charge
             multiplicity = ts_node.structure.multiplicity
-            aT = Trajectory(tmp.name)
+            aT = [frame for frame in Trajectory(tmp.name)]
+            energies = [obj.get_potential_energy() / Hartree for obj in aT]
+            gradients = [(-1 * obj.get_forces() / ANGSTROM_TO_BOHR) / Hartree for obj in aT]
+            if not atoms.constraints:
+                # Sella steps in Cartesians with rotations left in, so the path also drifts rigidly; drop that.
+                positions, gradients = _align_frames(
+                    [obj.get_positions() for obj in aT], gradients, structure_to_ase_atoms(ts_node.structure).get_positions())
+                for obj, pos in zip(aT, positions):
+                    obj.positions = pos
             traj_nodes = [
                 StructureNode(
                     structure=ase_atoms_to_structure(
-                        atoms=aT[i],
+                        atoms=obj,
                         charge=charge,
                         multiplicity=multiplicity,
                     )
                 )
-                for i, _ in enumerate(aT)
+                for obj in aT
             ]
-            energies = [obj.get_potential_energy() / Hartree for obj in aT]
-            gradients = [(-1 * obj.get_forces() / ANGSTROM_TO_BOHR) / Hartree for obj in aT]
             all_results = []
             for ene, grad in zip(energies, gradients):
                 res = FakeQCIOResults.model_validate({"energy": ene, "gradient": grad})
