@@ -74,6 +74,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   needed". That holds only when the weights still have to be downloaded with a login. A gated model whose
   weights are already in fairchem's cache, as UMA is in the image, now runs like any other model
   (`mepd.engines.mlip.weights_available`).
+- **The "FAIR-Chem model" engine works in demo mode.** It refused `engine_name = "fairchem"`, although it is
+  the same engine (`FAIRChemEngine`) a `mlip` profile with a UMA model uses, with FAIR-Chem's own settings
+  (`task`, `inference_settings`). Its model is checked like any other: blank means `uma-s-1p2p1`. The demo's
+  Settings menu now shows the engines the demo doesn't run greyed out, with the reason, instead of letting a
+  tester pick one and fail on save.
 - **Demo mode offers only models that are installed.** It used to accept Orb and MACE, which can't be
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 

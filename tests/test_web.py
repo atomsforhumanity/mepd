@@ -841,6 +841,34 @@ def test_demo_login_has_no_lockout(demo_app):
         assert c.post("/login", data={"password": "pw-for-tests"}).status_code == 303
 
 
+def test_demo_settings_offer_the_fairchem_engine_and_grey_out_the_others(demo_app, tmp_path, monkeypatch):
+    # As a tester's browser does it: switch a profile's engine, then validate.
+    # UMA's weights are "baked in" (fairchem's cache layout) so the model runs here.
+    pytest.importorskip("huggingface_hub")
+    cache = tmp_path / "fairchem"
+    snap = cache / "models--facebook--UMA" / "snapshots" / "abc123" / "checkpoints"
+    snap.mkdir(parents=True)
+    (snap / "uma-s-1p2p1.pt").write_bytes(b"weights")
+    (cache / "models--facebook--UMA" / "refs").mkdir()
+    (cache / "models--facebook--UMA" / "refs" / "main").write_text("abc123")
+    monkeypatch.setenv("FAIRCHEM_CACHE_DIR", str(cache))
+    root, app = demo_app
+    with TestClient(app) as c:
+        assert c.post("/login", data={"password": "pw-for-tests"}).status_code == 200
+        r = c.post("/api/profiles/form/apply", json={"text": 'engine_name = "gxtb"\n', "path": "engine",
+                                                      "value": "fairchem"}).json()
+        engine = next(f for f in r["form"]["basic"] if f["key"] == "engine")
+        disabled = {o["value"] for o in engine["options"] if o["disabled"]}
+        assert "fairchem" not in disabled and "mlip" not in disabled and "gxtb" not in disabled
+        assert {"chemcloud", "qccompute", "ase", "psi4"} <= disabled           # shown, but not pickable
+        v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
+        assert v["ok"], v
+        r = c.post("/api/profiles/form/apply", json={"text": r["text"], "path": "fairchem_engine_kwds.model",
+                                                      "value": "uma-s-1p1"}).json()     # gated, not baked in
+        v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
+        assert not v["ok"] and "runs only these models" in v["message"]
+
+
 def test_demo_limits_come_from_the_environment():
     from mepd.web.demo import DemoPolicy
 

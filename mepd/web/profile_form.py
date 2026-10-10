@@ -19,7 +19,7 @@ import functools
 import math
 import re
 import tomllib
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import tomli_w
 
@@ -527,7 +527,9 @@ def _interp(data: dict) -> str:
 
 # ------------------------------------------------------------------ form
 
-def form(text: str) -> dict:
+def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
+    """The settings form for a profile's TOML. `allowed_engines` (the demo's):
+    the other engines are shown but cannot be picked."""
     data = _parse(text)
     issues, notes = [], []
     path_issues = []   # the subset only a path search is affected by
@@ -565,7 +567,9 @@ def form(text: str) -> dict:
     basic = [
         _choice("path_method", "Path method", method, PATH_METHODS, "How the minimum-energy path is found.",
                 disabled={"NEB-DLF": tc_reason} if tc_reason and method != "NEB-DLF" else None),
-        _choice("engine", "Engine", engine, ENGINES, "Where energies and gradients come from."),
+        _choice("engine", "Engine", engine, ENGINES, "Where energies and gradients come from.",
+                disabled=None if allowed_engines is None else
+                {k: "not available in the demo" for k, _, _ in ENGINES if k not in set(allowed_engines) and k != engine}),
     ]
     level_fields = []
     if engine in ("qccompute", "chemcloud"):
@@ -772,7 +776,7 @@ def _coerce(field: dict, value):
     return str(value).strip()
 
 
-def apply(text: str, path: str, value) -> dict:
+def apply(text: str, path: str, value, allowed_engines: Optional[Iterable[str]] = None) -> dict:
     """Change one setting and return {"text": new TOML, "form": new form}."""
     new = copy.deepcopy(_parse(text))
     if path == "path_method":
@@ -861,7 +865,7 @@ def apply(text: str, path: str, value) -> dict:
             raise WorkspaceError(f"{path!r} is not a setting on this form (edit it on the TOML tab)")
         _set(new, path, _coerce(field, value))
     out = _dump(new)
-    return {"text": out, "form": form(out)}
+    return {"text": out, "form": form(out, allowed_engines)}
 
 
 def _apply_method(new: dict, value) -> None:

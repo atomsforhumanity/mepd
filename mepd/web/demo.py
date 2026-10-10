@@ -204,7 +204,7 @@ class DemoPolicy:
 
     # ------------------------------------------------------------ visitors' own profiles
     max_profiles: int = 10              # a visitor's own, besides the built-in ones
-    profile_engines: tuple = ("gxtb", "xtb", "mlip")
+    profile_engines: tuple = ("gxtb", "xtb", "mlip", "fairchem")
     # Never in a visitor's profile: programs, import paths, model files and
     # other files on the server, credentials, debugging dumps.
     profile_forbidden_keys: tuple = (
@@ -223,7 +223,7 @@ class DemoPolicy:
 
         from mepd.engines.mlip import MODELS, weights_available
         from mepd.inputs import _normalized_path_method
-        from mepd.web.profile_form import _mlip_missing
+        from mepd.web.profile_form import FAIRCHEM_DEFAULTS, _mlip_missing
 
         def usable(model: str) -> bool:
             return model in MODELS and _mlip_missing(model) is None and weights_available(model)
@@ -258,6 +258,9 @@ class DemoPolicy:
         if _normalized_path_method(data.get("path_min_method") or "NEB") == "NEB-DLF":
             raise WorkspaceError("DL-FIND NEB (TeraChem) is not available in the demo")
         models = [((data.get("mlip_engine_kwds") or {}).get("model"), "mlip_engine_kwds.model")] if engine == "mlip" else []
+        if engine == "fairchem":   # the same models by FAIR-Chem's own engine; blank = its default
+            models.append(((data.get("fairchem_engine_kwds") or {}).get("model") or FAIRCHEM_DEFAULTS["model"],
+                           "fairchem_engine_kwds.model"))
         models.append(((data.get("path_min_inputs") or {}).get("mlp_model"), "path_min_inputs.mlp_model"))
         for name, where in models:
             if engine == "mlip" and where.startswith("mlip") and not name:

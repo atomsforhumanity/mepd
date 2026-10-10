@@ -1509,14 +1509,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         Advanced settings those choices use)."""
         from mepd.web import profile_form
 
-        return profile_form.form(body.text)
+        return profile_form.form(body.text, demo.profile_engines if demo is not None else None)
 
     @app.post("/api/profiles/form/apply")
     def profile_form_apply(body: ProfileFormIn):
         """Change one form setting; returns the new TOML (not saved) and form."""
         from mepd.web import profile_form
 
-        return profile_form.apply(body.text, body.path, body.value)
+        return profile_form.apply(body.text, body.path, body.value, demo.profile_engines if demo is not None else None)
 
     @app.post("/api/profiles/validate")
     async def validate_profile(body: ProfileIn):
