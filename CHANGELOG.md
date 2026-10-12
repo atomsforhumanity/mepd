@@ -20,7 +20,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   - molecularGSM built from source with its ASE backend, against MKL;
   - the retrosynthesis data and an AiZynthFinder 4.4.1 environment;
   - AIMNet2, ANI-2x and ReactionT5 weights;
-  - FAIR-Chem UMA `uma-s-1p2p1` (uma-s-1.2.1), in a layer of its own.
+  - FAIR-Chem UMA `uma-s-1p2p1` (uma-s-1.2.1), in a layer of its own that doesn't depend on `uv.lock`: it is
+    downloaded with `huggingface_hub` alone, so a dependency change neither downloads nor pushes it again.
 
   UMA is gated on Hugging Face. A build needs a token from an approved account, as a build secret
   (`--secret id=hf_token,env=HF_TOKEN`); it is never stored in the image. A build without one fails with

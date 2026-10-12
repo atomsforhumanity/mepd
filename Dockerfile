@@ -23,7 +23,8 @@
 #   stock     the retrosynthesis stocks' lookup indexes (ZINC: 80 MB)
 #   models    AIMNet2, ANI-2x and ReactionT5 weights; needs the deps to load
 #             the models, but not mepd's code
-#   uma       FAIR-Chem UMA weights (gated: needs a Hugging Face token)
+#   uma       FAIR-Chem UMA weights (gated: needs a Hugging Face token); on
+#             pybase, so uv.lock changes don't download or push them again
 #   runtime   the final image; mepd's own code is its last, small layer
 #
 # For CI, keep every stage's layers between runs (BuildKit `mode=max`
@@ -179,15 +180,17 @@ RUN if [ "$PREFETCH_MODELS" = 1 ]; then /opt/mepd/venv/bin/python /tmp/build/pre
 
 # ----------------------------------------------------------------------- uma
 # FAIR-Chem UMA weights (gated; see FAIRCHEM_MODELS at the top), in a stage
-# and a layer of their own. A secret is not part of BuildKit's cache key, so
-# the step's key is the model list: a build that names models and has no
-# token fails here, rather than reusing a step that ran without one.
-FROM deps AS uma
+# and a layer of their own. On pybase, with only huggingface_hub (pinned here,
+# not from uv.lock): a dependency change neither downloads nor pushes them
+# again. A secret is not part of BuildKit's cache key, so the step's key is the
+# model list: a build that names models and has no token fails here, rather
+# than reusing a step that ran without one.
+FROM pybase AS uma
 ENV HOME=/home/mepd
-COPY deploy/docker/prefetch.py /tmp/build/prefetch.py
+COPY deploy/docker/fetch_uma.py /tmp/build/fetch_uma.py
 ARG FAIRCHEM_MODELS
-RUN --mount=type=secret,id=hf_token,required=false \
-    mkdir -p "$HOME/.cache/huggingface"; \
+RUN --mount=type=secret,id=hf_token,required=false --mount=type=cache,target=/root/.cache/uv \
+    mkdir -p "$HOME/.cache/fairchem"; \
     if [ -z "$FAIRCHEM_MODELS" ]; then \
       echo "FAIRCHEM_MODELS is empty: no FAIR-Chem models in this image"; \
     elif [ ! -s /run/secrets/hf_token ]; then \
@@ -195,11 +198,10 @@ RUN --mount=type=secret,id=hf_token,required=false \
            "--secret id=hf_token,env=HF_TOKEN, or --build-arg FAIRCHEM_MODELS= to leave them out" >&2; \
       exit 1; \
     else \
-      HF_TOKEN="$(cat /run/secrets/hf_token)" /opt/mepd/venv/bin/python /tmp/build/prefetch.py fairchem $FAIRCHEM_MODELS; \
+      HF_TOKEN="$(cat /run/secrets/hf_token)" UV_CACHE_DIR=/root/.cache/uv \
+        uv run --no-project --no-config --python 3.12 --with huggingface_hub==1.33.0 \
+        python /tmp/build/fetch_uma.py $FAIRCHEM_MODELS; \
     fi
-# fairchem's own cache (~/.cache/fairchem), where the weights are; there even
-# when FAIRCHEM_MODELS is empty, for the runtime stage to copy.
-RUN mkdir -p "$HOME/.cache/fairchem"
 
 # --------------------------------------------------------------------- stock
 # The lookup indexes mepd builds the first time a retrosynthesis uses a stock

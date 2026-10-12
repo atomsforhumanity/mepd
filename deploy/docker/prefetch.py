@@ -4,7 +4,6 @@ Runs in the Dockerfile's `models` stage, which has mepd's dependencies but
 not mepd itself (so editing mepd does not re-download any of this):
 
     prefetch.py models              # AIMNet2, ANI-2x, ReactionT5
-    prefetch.py fairchem NAME...    # gated UMA/eSEN (needs HF_TOKEN)
 
 Everything lands where mepd looks for it at run time, the caches under $HOME
 (~/.cache/aimnet, ~/.cache/huggingface, ~/.local/share/Torchani). The
@@ -48,19 +47,9 @@ def models() -> None:
         print(f"{repo}: {snapshot_download(repo)}", flush=True)
 
 
-def fairchem(names: list[str]) -> None:
-    from fairchem.core import pretrained_mlip
-
-    for name in names:
-        pretrained_mlip.get_predict_unit(name, device="cpu")
-        print(f"{name}: downloaded", flush=True)
-
-
 if __name__ == "__main__":
     what, args = sys.argv[1], sys.argv[2:]
     if what == "models":
         models()
-    elif what == "fairchem":
-        fairchem(args)
     else:
         sys.exit(f"unknown: {what}")
