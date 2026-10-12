@@ -29,44 +29,34 @@ back.
 
 The builds run on our own machine, not GitHub's. GitHub's runners have too little disk for an ~18 GB image,
 start every build cold, and can't reach the cluster's API on the LAN. The runner goes on **afh-services**,
-which is mostly idle and keeps the compute nodes free for science.
+which is mostly idle and keeps the compute nodes free for science. It runs as your own user, GitHub's default.
 
-**Docker:**
+**Docker,** usable by you:
 
 ```bash
 sudo apt-get install -y docker.io docker-buildx git curl   # buildx: BuildKit, for `docker build --secret`
-
 # The build cache trims itself to 300 GB (it would otherwise only grow).
 echo '{"builder": {"gc": {"enabled": true, "defaultKeepStorage": "300GB"}}}' | sudo tee /etc/docker/daemon.json
 sudo systemctl restart docker
-
-# A user for the runner, allowed to use Docker. Docker access amounts to root on this machine;
-# the repository is private, so only people with write access can run jobs here.
-sudo useradd --create-home --shell /bin/bash github-runner
-sudo usermod -aG docker github-runner
+sudo usermod -aG docker "$USER"      # the runner runs as you and needs Docker
 ```
 
-**Register the runner.** Everything below runs as `github-runner`, in *its* home: the service runs as that
-user, which can't enter anyone else's home folder. On GitHub, go to the **mepd repository → Settings →
-Actions → Runners → New self-hosted runner** and copy the registration **token** it shows. Ignore its other
-commands; these do the same, as the right user:
+**The runner,** GitHub's own steps. Go to the **mepd repository → Settings → Actions → Runners → New
+self-hosted runner → Linux x64**, and run its *Download* and *Configure* commands in your home folder on
+afh-services. When `config.sh` asks, give:
+- **runner name:** `afh-services`
+- **additional labels:** `mepd-build`. The workflow asks for this label.
+
+Then make it a service that starts with the machine. It runs as you:
 
 ```bash
-sudo -iu github-runner bash -c '
-  set -e
-  mkdir -p ~/actions-runner && cd ~/actions-runner
-  v=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | sed -n "s/.*\"tag_name\": \"v\([^\"]*\)\".*/\1/p")
-  curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v$v/actions-runner-linux-x64-$v.tar.gz"
-  tar xzf runner.tgz && rm runner.tgz
-  ./config.sh --url https://github.com/atomsforhumanity/mepd --token <the token from that page> \
-    --name afh-services --labels mepd-build --unattended'
-
-cd /home/github-runner/actions-runner && sudo ./svc.sh install github-runner && sudo ./svc.sh start
-systemctl status "$(cat .service)" --no-pager      # active (running)
+cd ~/actions-runner
+sudo ./svc.sh install && sudo ./svc.sh start
+sudo ./svc.sh status                 # active (running)
 ```
 
-The label `mepd-build` is what the workflow asks for, and the runner then shows as *Idle* on that settings
-page.
+The runner then shows as *Idle* on that settings page. The repository is private, so only people with write
+access can run jobs on this machine. Those jobs run as you, with Docker access, which amounts to root.
 
 ### 2. The deploy account (a cluster admin, once)
 
