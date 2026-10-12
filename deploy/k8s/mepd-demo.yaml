@@ -8,7 +8,7 @@
 #     --docker-username=<github user> --docker-password=<classic PAT, read:packages only>
 #   kubectl -n mepd create secret generic mepd-demo --from-literal=password='<shared tester password>'
 #
-#   kubectl apply -f deploy/k8s/mepd-demo.yaml
+#   kubectl apply -k deploy/k8s        (normally CI does this: .github/workflows/build-deploy.yml)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,7 +48,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: mepd
-          image: ghcr.io/atomsforhumanity/mepd:0.1.0-beta.6
+          image: ghcr.io/atomsforhumanity/mepd       # tag: kustomization.yaml (set by CI)
           args: ["serve"]
           env:
             - name: MEPD_MODE

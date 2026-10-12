@@ -24,16 +24,21 @@ kubectl -n mepd create secret generic mepd-demo --from-literal=password='<passwo
 
 ## Deploy, update, inspect
 
+**Deploys are done by CI.** A merge to `main` builds, tests and deploys a new image
+(`.github/workflows/build-deploy.yml`, set up in `deploy/ci/README.md`). To redeploy or roll back to an
+existing image, use the workflow's **Run workflow** button with its tag. The image tag is set at deploy
+time in `kustomization.yaml`; the tag committed there is only an older fallback, so a
+`kubectl apply -k deploy/k8s` by hand would roll the cluster back to it.
+
 ```bash
-kubectl apply -f deploy/k8s/mepd-demo.yaml
 kubectl -n mepd rollout status deploy/mepd
 kubectl -n mepd logs -f deploy/mepd                         # the server's log
+kubectl -n mepd get deploy mepd -o jsonpath='{..image}'     # which image is live
 kubectl -n mepd port-forward deploy/mepd 8765:8765          # http://localhost:8765, no Ingress needed
 ```
 
-To deploy a new image, change the `image:` tag and apply again. The old pod
-stops before the new one starts (`strategy: Recreate`), so jobs running at
-that moment become **interrupted**; testers can resume them.
+A new version stops the old pod before starting the new one (`strategy: Recreate`), so jobs running at that
+moment become **interrupted**; testers can resume them.
 
 ## Where things are
 

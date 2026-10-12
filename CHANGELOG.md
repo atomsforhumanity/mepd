@@ -53,6 +53,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Demo limits are configurable from the environment.** Any number in `DemoPolicy` (`mepd/web/demo.py`) can
   be overridden as `MEPD_DEMO_<FIELD>`, e.g. `MEPD_DEMO_GLOBAL_CONCURRENCY=64` to run 64 jobs at once across
   all testers instead of 4. Invalid values stop `mepd web --demo` at start-up with a message.
+- **Continuous deployment** (`.github/workflows/build-deploy.yml`, set up in `deploy/ci/README.md`).
+  - **On a push to `main`:** build `ghcr.io/atomsforhumanity/mepd:main-<run>-<sha>`, test it inside the
+    image (a failed test is rerun once, alone), push it, deploy it to the beta cluster, and check the public
+    site. It rolls back automatically if the new version doesn't become ready.
+  - **On a tag `v1.2.3`:** publish image `1.2.3`. "Run workflow" with a tag redeploys or rolls back to it.
+  - It runs on a self-hosted runner on our own node (a warm build cache, room for the image, the cluster on
+    the LAN), and deploys as `ci-deployer` (`deploy/k8s/ci-deployer.yaml`), which can change only mepd's
+    objects in the `mepd` namespace.
+  - `deploy/k8s` is now applied with kustomize (`kustomization.yaml` carries the image tag, which CI sets).
+- **`uv.lock` is committed.** The build uses `uv sync --locked`, so a `pyproject.toml` change without an
+  updated lock fails instead of building untested versions.
 - **This changelog.**
 
 ### Changed
@@ -123,5 +134,4 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   fails about 1 run in 3–4, both in and outside the image.
 - **`tests/test_qmmm_web.py::test_adding_a_qmmm_result_to_explore_reads_only_its_qm_region` is flaky** under
   parallel runs (`-n 8`). It passed 5 of 5 times alone in the image.
-- **`uv.lock` is gitignored**, so builds from a fresh clone (e.g. CI) resolve dependencies afresh. Commit it
-  for reproducible images.
+

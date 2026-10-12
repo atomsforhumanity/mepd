@@ -18,7 +18,7 @@ run on the CPU. The same image serves both.
 
 | Piece | From | Where | How mepd finds it |
 |---|---|---|---|
-| mepd + every `web` extra (FastAPI, ASE/Sella, tblite, fairchem-core, AIMNet2, TorchANI, OpenMM, Vina, PDBFixer, onnxruntime, rdchiral, transformers, SLAPMapper, PyTorch with CUDA) | `uv sync --frozen` from `uv.lock` | `/opt/mepd/venv` | on `PATH` |
+| mepd + every `web` extra (FastAPI, ASE/Sella, tblite, fairchem-core, AIMNet2, TorchANI, OpenMM, Vina, PDBFixer, onnxruntime, rdchiral, transformers, SLAPMapper, PyTorch with CUDA) | `uv sync --locked` from `uv.lock` | `/opt/mepd/venv` | on `PATH` |
 | g-xTB 2.0.1 (also runs GFN1/GFN2-xTB) | GitHub release, SHA-256 checked | `/opt/gxtb` | `GXTB_EXECUTABLE` |
 | xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 | conda-forge (micromamba) | `/opt/tools` | on `PATH` |
 | Psi4 1.11 | conda-forge (micromamba), own Python | `/opt/psi4` | `MEPD_PSI4_PYTHON` |
@@ -61,9 +61,9 @@ docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMN
     silently leaving them out.
   - **Don't add `uma-m-1p1`.** It is a single 11 GB file, over GHCR's 10 GB limit per layer.
   - **Keep the image private.** It now contains Meta's licensed weights.
-- **`uv.lock` pins the Python environment.** It is in `.gitignore` today, so
-  a fresh clone (e.g. in CI) has none and uv resolves the newest allowed
-  versions instead. Commit it for builds that match what was tested.
+- **`uv.lock` pins the Python environment** (committed). The build uses
+  `uv sync --locked`, so a `pyproject.toml` change without an updated lock
+  fails the build: run `uv lock` and commit both.
 - **Layer caching.** The downloads sit in stages that change rarely:
   - `retro`: the retrosynthesis data and AiZynthFinder (~2 GB, from Zenodo,
     which can be slow) depend only on the base image and

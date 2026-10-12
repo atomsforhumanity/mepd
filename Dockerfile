@@ -162,12 +162,11 @@ open(sys.argv[2], 'w').write('\n'.join(df['inchi_key'].astype(str)) + '\n')" \
 FROM pybase AS deps
 ENV UV_PROJECT_ENVIRONMENT=/opt/mepd/venv
 WORKDIR /src
-# uv.lock pins every package; it is gitignored today, so it is optional here
-# (without it uv resolves afresh). Commit it for reproducible builds.
-COPY pyproject.toml .python-version uv.lock* ./
+# uv.lock pins every package. --locked: a pyproject.toml change without an
+# updated lock (`uv lock`) fails here, rather than building untested versions.
+COPY pyproject.toml .python-version uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then lock=--frozen; else lock=; fi \
- && uv sync $lock --no-dev --no-install-project
+    uv sync --locked --no-dev --no-install-project
 
 # -------------------------------------------------------------------- models
 FROM deps AS models
