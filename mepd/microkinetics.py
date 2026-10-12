@@ -159,7 +159,13 @@ def simulate(net: Network, c0: Sequence[float], temperature: float, time_s: floa
     y0 = np.concatenate([np.asarray(c0, dtype=float), np.zeros(m)])
     t_first = min(1e-12, time_s * 1e-6)
     t_eval = np.concatenate([[0.0], np.logspace(math.log10(t_first), math.log10(time_s), n_points - 1)])
-    sol = solve_ivp(f, (0.0, time_s), y0, method="BDF", t_eval=t_eval, jac=jac, rtol=rtol, atol=atol)
+    t_eval[-1] = time_s   # logspace can land a rounding error past the end
+    # The extents ride along but don't steer the step size: a fast step at
+    # equilibrium has forward and reverse rates of ~1e12 M/s whose
+    # difference is rounding noise, and tracking that noise to `atol` made
+    # hot runs (a temperature sweep's top end) crawl or fail.
+    tol = np.concatenate([np.full(n, atol), np.full(m, np.inf)])
+    sol = solve_ivp(f, (0.0, time_s), y0, method="BDF", t_eval=t_eval, jac=jac, rtol=rtol, atol=tol)
     if not sol.success:
         raise RuntimeError(f"the kinetics did not integrate: {sol.message}")
     c = np.maximum(sol.y[:n].T, 0.0)

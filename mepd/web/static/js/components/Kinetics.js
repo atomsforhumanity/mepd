@@ -61,20 +61,26 @@ function LineChart({ xs, series, xLabel, yLabel, floor = 1e-12, xlog = true, wid
 }
 
 // Diverging bars: positive (blue) speeds the target up when that energy is lowered.
+// One bar per TS or species: what 1 kcal/mol lower (a lower barrier, a
+// more stable species) does to the target -- "3.2× more" (blue) or "1.6×
+// less" (red). The bar length is the degree of rate control X, the
+// exponent of that factor (Campbell); the tooltip gives X itself.
 function ControlBars({ rows, onPick, T }) {
   const max = Math.max(0.05, ...rows.map((r) => Math.abs(r.x)));
   return html`<div class="kn-bars">${rows.map((r) => {
     const w = (Math.abs(r.x) / max) * 50;
     const factor = Math.exp(r.x / RT(T));
     return html`<button class="kn-bar-row" onClick=${() => onPick && onPick(r)}
-      title=${`Lowering it by 1 kcal/mol multiplies the target by ${factor >= 1 ? factor.toFixed(2) : factor.toFixed(3)}`}>
+      title=${`Degree of rate control X = ${r.x.toFixed(2)}: 1 kcal/mol lower multiplies the target by ${fmtFactor(factor)}`}>
       <span class="kn-bar-label">${r.label}</span>
       <span class="kn-bar-track"><span class="kn-bar-mid"></span>
         <span class=${`kn-bar ${r.x >= 0 ? 'pos' : 'neg'}`} style=${{ width: `${w}%`, [r.x >= 0 ? 'left' : 'right']: '50%' }}></span></span>
-      <span class="kn-bar-v mono">${r.x >= 0 ? '+' : ''}${r.x.toFixed(2)}</span>
+      <span class="kn-bar-v mono">${factor >= 1 ? `${fmtFactor(factor)}× more` : `${fmtFactor(1 / factor)}× less`}</span>
     </button>`;
   })}</div>`;
 }
+
+const fmtFactor = (f) => (f < 1000 ? f.toPrecision(2) : f.toExponential(0));
 
 // ------------------------------------------------------------ setup
 function Mixture({ items, onChange, species }) {
@@ -199,18 +205,22 @@ function Results({ res, T, onReaction }) {
 
     ${res.control && !ctl.length && html`<section>
       <div class="section-title">What controls ${tgt.name}</div>
-      <p class="small">${`No barrier controls it here: by ${timeLabel} at ${Math.round(res.temperature)} K the network has reached ${
-        res.mode === 'batch' ? 'equilibrium' : 'a steady state set by the feed'}, so the amount of ${tgt.name} is under thermodynamic control, set by the species' energies. To make more: stabilize ${
-        tgt.name} or destabilize what competes with it${traps.length ? ' (below)' : ''}. Use a shorter time or a lower temperature to see which barriers matter before that.`}</p>
-      ${traps.length > 0 && html`<${ControlBars} rows=${traps} T=${res.temperature} />`}
+      <p class="small">${res.steady
+        ? `No barrier controls it here: by ${timeLabel} at ${Math.round(res.temperature)} K the network has reached ${
+          res.mode === 'batch' ? 'equilibrium' : 'a steady state set by the feed'}, so the amount of ${tgt.name} is set by the species' energies. To make more: stabilize ${
+          tgt.name} or destabilize what competes with it${traps.length ? ' (below)' : ''}. Use a shorter time or a lower temperature to see which barriers matter before that.`
+        : `No barrier controls it here: every step that limits it has its TS at or below one of its sides, so it counts as barrierless and its pace is set by the species' energies${
+          traps.length ? ' (below)' : ''}. Lowering a TS changes nothing; check those TSs (see the warnings at the bottom).`}</p>
+      ${traps.length > 0 && html`<p class="small muted kn-sub">What making each intermediate or other product 1 kcal/mol more stable does to ${tgt.name}: red, less; blue, more.</p>
+        <${ControlBars} rows=${traps} T=${res.temperature} />`}
     </section>`}
     ${ctl.length > 0 && html`<section>
       <div class="section-title">What controls ${tgt.name} (${res.control.what === 'rate' ? 'its formation rate' : 'its amount'})</div>
-      <p class="small muted">Degree of rate control of each TS: + means lowering that barrier gives more ${tgt.name}; − means it diverts material away.
-        Hover for the effect of 1 kcal/mol. Click to open the reaction.</p>
+      <p class="small muted">What lowering each TS by 1 kcal/mol does to ${tgt.name}: blue, more of it; red, less (that step diverts material away).
+        Click to open the reaction.</p>
       <${ControlBars} rows=${ctl} T=${res.temperature} onPick=${(r) => r.reaction && onReaction(r.reaction)} />
-      ${quiet > 0 && html`<p class="small muted">${quiet} other step${quiet > 1 ? 's have' : ' has'} no real control over it (|X| below 0.01).</p>`}
-      ${traps.length > 0 && html`<p class="small muted kn-sub">Intermediates and other products: − means stabilizing it lowers ${tgt.name} (a trap or a competing product); + means stabilizing it helps.</p>
+      ${quiet > 0 && html`<p class="small muted">${quiet} other step${quiet > 1 ? 's have' : ' has'} next to no effect on it.</p>`}
+      ${traps.length > 0 && html`<p class="small muted kn-sub">What making each intermediate or other product 1 kcal/mol more stable does to ${tgt.name}: red, less (a trap or a competing product); blue, more.</p>
         <${ControlBars} rows=${traps} T=${res.temperature} />`}
     </section>`}
 
@@ -247,7 +257,7 @@ function Sweep({ sw, res }) {
   const mid = rows[Math.floor(rows.length / 2)];
   return html`<section>
     <div class="section-title">With temperature</div>
-    ${res.target && rows.some((r) => r.rate > 0) && html`<p class="small">${res.target.name} forms ${speedup(rows[rows.length - 1].rate / Math.max(rows[0].rate, 1e-300))} faster at ${Math.round(rows[rows.length - 1].t)} K than at ${Math.round(rows[0].t)} K${mid?.ea != null ? ` · apparent activation energy ≈ ${mid.ea.toFixed(1)} kcal/mol around ${Math.round(mid.t)} K` : ''}.</p>`}
+    ${res.target && rows[0].rate > 0 && rows[rows.length - 1].rate > 0 && html`<p class="small">${res.target.name} forms ${speedup(rows[rows.length - 1].rate / rows[0].rate)} faster at ${Math.round(rows[rows.length - 1].t)} K than at ${Math.round(rows[0].t)} K${mid?.ea != null ? ` · apparent activation energy ≈ ${mid.ea.toFixed(1)} kcal/mol around ${Math.round(mid.t)} K` : ''}.</p>`}
     <${LineChart} xs=${sw.temperatures} series=${series} xLabel="temperature (K)" yLabel="amount at the end (M)" xlog=${false} />
   </section>`;
 }
