@@ -59,8 +59,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     site. It rolls back automatically if the new version doesn't become ready.
   - **On a tag `v1.2.3`:** publish image `1.2.3`. "Run workflow" with a tag redeploys or rolls back to it.
   - It runs on a self-hosted runner on afh-services (a warm build cache, room for the image, the cluster on
-    the LAN), and deploys as `ci-deployer` (`deploy/k8s/ci-deployer.yaml`), which can change only mepd's
-    objects in the `mepd` namespace.
+    the LAN), and deploys with k3s's `kubectl` and the cluster's kubeconfig on that node.
   - `deploy/k8s` is now applied with kustomize (`kustomization.yaml` carries the image tag, which CI sets).
 - **`uv.lock` is committed.** The build uses `uv sync --locked`, so a `pyproject.toml` change without an
   updated lock fails instead of building untested versions.

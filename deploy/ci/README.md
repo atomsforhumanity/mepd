@@ -58,50 +58,30 @@ sudo ./svc.sh status                 # active (running)
 The runner then shows as *Idle* on that settings page. The repository is private, so only people with write
 access can run jobs on this machine. Those jobs run as you, with Docker access, which amounts to root.
 
-### 2. The deploy account (a cluster admin, once)
+### 2. Cluster access for the runner (afh-services, once)
+
+The deploy step runs `kubectl` on afh-services, using k3s's own copy. Give your user the cluster's
+kubeconfig, which points at `127.0.0.1:6443`, i.e. afh-services itself:
 
 ```bash
-kubectl apply -f deploy/k8s/ci-deployer.yaml
+mkdir -p ~/.kube && sudo install -m 600 -o "$USER" /etc/rancher/k3s/k3s.yaml ~/.kube/config
+kubectl get nodes        # works without sudo
 ```
 
-This creates `ci-deployer`, an account that can only change mepd's Deployment, Service and Ingress in the
-`mepd` namespace, and gives it a long-lived token. Then make a kubeconfig for it:
-
-```bash
-SERVER=https://192.168.8.6:6443      # the k3s API (afh-services itself, where the runner is)
-CA=$(kubectl -n mepd get secret ci-deployer-token -o jsonpath='{.data.ca\.crt}')
-TOKEN=$(kubectl -n mepd get secret ci-deployer-token -o jsonpath='{.data.token}' | base64 -d)
-cat > ci-deployer.kubeconfig <<EOF
-apiVersion: v1
-kind: Config
-clusters: [{name: afh, cluster: {server: $SERVER, certificate-authority-data: $CA}}]
-users: [{name: ci-deployer, user: {token: $TOKEN}}]
-contexts: [{name: ci, context: {cluster: afh, user: ci-deployer, namespace: mepd}}]
-current-context: ci
-EOF
-chmod 600 ci-deployer.kubeconfig
-KUBECONFIG=ci-deployer.kubeconfig kubectl -n mepd get deploy mepd      # works
-KUBECONFIG=ci-deployer.kubeconfig kubectl get nodes                    # forbidden, as intended
-```
-
-Its contents go into the `KUBE_CONFIG` secret (step 3). Then delete the file. To revoke the token,
-`kubectl -n mepd delete secret ci-deployer-token`; re-applying the YAML makes a new one.
+This is the cluster's admin credential. A separate restricted account would protect nothing here: jobs run on
+this node with Docker access, which amounts to root, and root can read this file anyway.
 
 ### 3. GitHub settings (repository admin)
 
-In the **mepd repository → Settings**:
+- **Repository → Settings → Secrets and variables → Actions → New repository secret → `HF_TOKEN`.** This is
+  the fine-grained Hugging Face token of `huggingface@atomsforhumanity.org`, with read access to gated repos.
+  The build needs it for the UMA weights.
+- **The GHCR package** (https://github.com/orgs/atomsforhumanity/packages/container/package/mepd → **Package
+  settings → Manage Actions access → Add repository → `mepd`, role *Write***). The first images were pushed by
+  hand, so the workflow's built-in token can't push to the package until the repository has access here.
 
-- **Environments → New environment → `production`.** The deploy job runs in it, and GitHub keeps a deploy
-  history there. In that environment, add the secret **`KUBE_CONFIG`**: the whole kubeconfig file from
-  step 2.
-- **Secrets and variables → Actions → New repository secret → `HF_TOKEN`.** This is the fine-grained Hugging
-  Face token of `huggingface@atomsforhumanity.org`, with read access to gated repos. The build needs it for
-  the UMA weights.
-
-In the **GHCR package** (https://github.com/orgs/atomsforhumanity/packages/container/package/mepd → **Package settings**):
-
-- **Manage Actions access → Add repository → `mepd`, role *Write*.** The first images were pushed by hand,
-  so the workflow's built-in token can't push to the package until the repository is given access here.
+The deploy job runs in a `production` environment, which GitHub creates on the first run. It lists every
+deploy under the repository's **Environments**.
 
 ### 4. First run
 
