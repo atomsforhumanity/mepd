@@ -1,0 +1,12 @@
+# The beta deployment: `kubectl apply -k deploy/k8s`.
+#
+# The image tag is set by CI at deploy time (.github/workflows/build-deploy.yml
+# writes newTag below in its own checkout, then applies). The tag committed here
+# is only a fallback for an apply by hand, and it is older than what CI last
+# deployed -- applying by hand rolls the cluster back to it. To deploy a given
+# build by hand, use the workflow's "Run workflow" button with that tag.
+resources:
+  - mepd-demo.yaml
+images:
+  - name: ghcr.io/atomsforhumanity/mepd
+    newTag: 0.1.0-beta.6

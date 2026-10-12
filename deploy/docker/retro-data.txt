@@ -1,0 +1,22 @@
+# The retrosynthesis data baked into the image (Dockerfile stage `retro`).
+#
+# One file per line: sha256, the file's name on the mirror, where it comes
+# from upstream, and where it goes under $MEPD_RETRO_DATA (comma-separated;
+# a file needed in several places is downloaded once and hard-linked).
+# The SHA-256s were checked against the publishers' own MD5s (Zenodo's
+# record API; figshare's ETag) on 2026-10-09.
+#
+# mepd/retro/data.py (FILES) and AiZynthFinder's download_public_data name
+# these files; the build fails if either asks for one that is missing here.
+#
+# Licenses: Zenodo 7341155 (PaRoutes) and 7797465 (AiZynthFinder models) are
+# CC-BY-4.0; the ZINC stock (figshare 23086469) is AiZynthFinder's, MIT.
+
+a4f1945e90cfa195538320833d68aed38f14e2fcc2f8afb5d958bc920edcafbe  uspto_unique_templates.csv.gz  https://zenodo.org/records/7341155/files/uspto_unique_templates.csv.gz  uspto_unique_templates.csv.gz,aizynth-data/uspto_templates.csv.gz
+bd0a3cb74cd7068de474c8fb789a00a66bc42c75636d66510ccac585ebe928f8  uspto_model.onnx  https://zenodo.org/records/7797465/files/uspto_model.onnx  uspto_model.onnx,aizynth-data/uspto_model.onnx
+ad29aa32bdfcbe37065045546493806cf04899c55386c438905d83fb14bb6320  uspto_filter_model.onnx  https://zenodo.org/records/7797465/files/uspto_filter_model.onnx  uspto_filter_model.onnx,aizynth-data/uspto_filter_model.onnx
+b8641e2028846d995953b30f7acd36e7521d0301159518d172497340a0bfb115  stock_n1.txt  https://zenodo.org/records/7341155/files/stock_n1.txt  stock_n1.txt
+199ec2d9fad0638c3ae53f2ea091dcd6bf9207a938b12ae1aa9429c37dd097af  stock_n5.txt  https://zenodo.org/records/7341155/files/stock_n5.txt  stock_n5.txt
+1bf0690352d9e9212d7dbe8b35649caf74f73ef0b30edefdfdac37fce38085be  uspto_ringbreaker_model.onnx  https://zenodo.org/records/7797465/files/uspto_ringbreaker_model.onnx  aizynth-data/uspto_ringbreaker_model.onnx
+5616a056454b10a2f044e69e027422128986856ebd958541a3bf9f837e3a0d14  uspto_ringbreaker_unique_templates.csv.gz  https://zenodo.org/records/7341155/files/uspto_ringbreaker_unique_templates.csv.gz  aizynth-data/uspto_ringbreaker_templates.csv.gz
+99d39a6f807c3e815487500bafc2b4a9dc66a31af189e3b1776874fb0d4a188d  zinc_stock.hdf5  https://ndownloader.figshare.com/files/23086469  aizynth-data/zinc_stock.hdf5

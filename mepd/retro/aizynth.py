@@ -135,10 +135,13 @@ def plan(target: str, workdir: Path, *, max_iterations: int = 100, time_limit: f
                      "max_transforms": int(max_depth)}
     if stock_files:
         cfg["stock"] = {f"s{k}": str(f) for k, f in enumerate(stock_files)}
-    (workdir / "config.yml").write_text(yaml.safe_dump(cfg))
+    # sort_keys=False keeps config.yml's order. Without --policy, aizynthcli uses the first
+    # expansion policy listed, and an alphabetical dump put "ringbreaker" (ring-opening
+    # templates only) ahead of "uspto", so most targets found no route.
+    (workdir / "config.yml").write_text(yaml.safe_dump(cfg, sort_keys=False))
     out = workdir / "trees.json"
     env = {**os.environ, "OMP_NUM_THREADS": "1"}
-    _run([_bin("aizynthcli"), "--config", workdir / "config.yml", "--smiles", target, "--output", out], say,
-         cwd=workdir, env=env)
+    _run([_bin("aizynthcli"), "--config", workdir / "config.yml", "--smiles", target, "--policy", "uspto",
+          "--output", out], say, cwd=workdir, env=env)
     trees = json.loads(out.read_text())
     return {"routes": _routes(trees, routes), "n_trees": len(trees)}

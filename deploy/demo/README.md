@@ -56,7 +56,8 @@ Four layers stack:
    - The limits above are enforced on the server, not only in the page.
 2. **Login.**
    - One shared password, compared in constant time.
-   - Failed logins are throttled per client and globally.
+   - No lockout after failed logins (behind a proxy every visitor can share one address); a wrong password
+     waits half a second. Use a long random password; rate-limit at the proxy if needed.
    - Each visitor gets a signed, HttpOnly cookie. The signing key is `~/mepd_demo/root/.demo_secret`; delete it to log everyone out.
 3. **The container (`run.sh`).**
    - Runs as your uid, not root, with no Linux capabilities and no privilege escalation.
