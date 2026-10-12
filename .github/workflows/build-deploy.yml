@@ -74,7 +74,7 @@ jobs:
               uv pip install -q --no-cache --python /opt/mepd/venv/bin/python pytest==9.1.1 pytest-xdist==3.8.0
               export HOME=/tmp/home
               run() { python -m pytest -q -o cache_dir=/tmp/pytest-cache "$@"; }
-              run -n 16 tests && exit 0
+              run -n 8 tests && exit 0          # 8: the runner shares afh-services with the web services
               echo "::warning::some tests failed; rerunning just those, one at a time"
               run -n 0 --last-failed --last-failed-no-failures none tests'
 

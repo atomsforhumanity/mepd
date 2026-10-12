@@ -25,38 +25,81 @@ back.
 
 ## One-time setup
 
-### 1. The build runner (a node, sudo)
+### 1. The build runner (afh-services, sudo)
 
 The builds run on our own machine, not GitHub's. GitHub's runners have too little disk for an ~18 GB image,
-start every build cold, and can't reach the cluster's API on the LAN. Use a node with free CPU and disk, not
-afh-c04, which runs mepd itself; afh-c01 for example. Docker's data goes on the 4 TB data disk.
+start every build cold, and can't reach the cluster's API on the LAN. The runner goes on **afh-services**,
+which keeps the compute nodes free for science. afh-services also runs the whole public path (the Cloudflare
+tunnel, Traefik, the k3s control plane), so builds run in a **low-priority slice with a memory cap**. When
+anything else needs the machine, the build yields; when the machine is idle, the build gets all of it.
+
+**Check the uplink first.** After a dependency change, the image's 7.4 GB Python layer must upload to GHCR
+within GHCR's 10-minute limit per upload, which needs a sustained ~100 Mbit/s or more:
 
 ```bash
-# Docker, with its data on the data disk
-sudo apt-get install -y docker.io docker-buildx git curl   # buildx: BuildKit, for `docker build --secret`
-sudo mkdir -p /nvme1/docker
-echo '{"data-root": "/nvme1/docker"}' | sudo tee /etc/docker/daemon.json
-sudo systemctl restart docker
+head -c 200000000 /dev/urandom | curl -s -o /dev/null -w '%{speed_upload}\n' --data-binary @- https://speed.cloudflare.com/__up
+# bytes/s: 12500000 or more is 100 Mbit/s
+```
 
-# A user for the runner, allowed to use Docker (and nothing else needs root)
+**The slice, Docker and its configuration:**
+
+```bash
+sudo apt-get install -y docker.io docker-buildx git curl   # buildx: BuildKit, for `docker build --secret`
+
+# ci.slice: lowest CPU and disk priority (k3s, Traefik, cloudflared win any contest),
+# and at most 40 of the 62 GB, so a build can never take the web services' memory.
+sudo tee /etc/systemd/system/ci.slice >/dev/null <<'UNIT'
+[Unit]
+Description=CI builds (low priority: the cluster and web services come first)
+[Slice]
+CPUWeight=20
+IOWeight=20
+MemoryHigh=36G
+MemoryMax=40G
+UNIT
+
+# Docker and its containerd run in it. (k3s has its own containerd; it is not affected.)
+for svc in docker containerd; do
+  sudo mkdir -p /etc/systemd/system/$svc.service.d
+  printf '[Service]\nSlice=ci.slice\n' | sudo tee /etc/systemd/system/$svc.service.d/ci-slice.conf >/dev/null
+done
+
+# Containers and build steps in it too; the build cache trims itself to 300 GB.
+echo '{"cgroup-parent": "ci.slice", "builder": {"gc": {"enabled": true, "defaultKeepStorage": "300GB"}}}' \
+  | sudo tee /etc/docker/daemon.json
+sudo systemctl daemon-reload && sudo systemctl restart containerd docker
+
+# A user for the runner, allowed to use Docker. Docker access amounts to root on this machine;
+# the repository is private, so only people with write access can run jobs here.
 sudo useradd --create-home --shell /bin/bash github-runner
 sudo usermod -aG docker github-runner
 ```
 
-Then register the runner. On GitHub, go to the **mepd repository → Settings → Actions → Runners → New
-self-hosted runner → Linux x64**. Run the download and `config.sh` commands it shows, as `github-runner`:
+**Register the runner.** On GitHub, go to the **mepd repository → Settings → Actions → Runners → New
+self-hosted runner → Linux x64**. Run the download commands it shows as `github-runner`, then:
 
 ```bash
 sudo -iu github-runner
-# ... the download/extract commands GitHub shows, then:
+# ... the download/extract commands GitHub shows (they create ~/actions-runner), then:
+cd ~/actions-runner
 ./config.sh --url https://github.com/atomsforhumanity/mepd --token <shown on that page> \
-  --name afh-c01 --labels mepd-build --unattended
+  --name afh-services --labels mepd-build --unattended
 exit
-cd /home/github-runner/actions-runner && sudo ./svc.sh install github-runner && sudo ./svc.sh start
+
+cd /home/github-runner/actions-runner
+sudo ./svc.sh install github-runner
+UNIT=$(cat .service)                       # actions.runner.<org>-<repo>.afh-services.service
+sudo mkdir -p /etc/systemd/system/$UNIT.d
+printf '[Service]\nSlice=ci.slice\n' | sudo tee /etc/systemd/system/$UNIT.d/ci-slice.conf >/dev/null
+sudo systemctl daemon-reload && sudo ./svc.sh start
 ```
 
-The label `mepd-build` is what the workflow asks for. The runner then shows as *Idle* on that settings
-page. The repository is private, so only people with write access can run jobs on this machine.
+The label `mepd-build` is what the workflow asks for, and the runner then shows as *Idle* on that settings
+page.
+
+**Check the guardrails during the first build:**
+- `systemd-cgls /ci.slice` lists the runner, Docker, and the build and test processes.
+- `systemctl status ci.slice` shows the slice's memory against its 40 GB cap.
 
 ### 2. The deploy account (a cluster admin, once)
 
@@ -68,7 +111,7 @@ This creates `ci-deployer`, an account that can only change mepd's Deployment, S
 `mepd` namespace, and gives it a long-lived token. Then make a kubeconfig for it:
 
 ```bash
-SERVER=https://192.168.8.6:6443      # the k3s API on the LAN, where the runner is
+SERVER=https://192.168.8.6:6443      # the k3s API (afh-services itself, where the runner is)
 CA=$(kubectl -n mepd get secret ci-deployer-token -o jsonpath='{.data.ca\.crt}')
 TOKEN=$(kubectl -n mepd get secret ci-deployer-token -o jsonpath='{.data.token}' | base64 -d)
 cat > ci-deployer.kubeconfig <<EOF

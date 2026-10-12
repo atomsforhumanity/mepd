@@ -58,8 +58,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     image (a failed test is rerun once, alone), push it, deploy it to the beta cluster, and check the public
     site. It rolls back automatically if the new version doesn't become ready.
   - **On a tag `v1.2.3`:** publish image `1.2.3`. "Run workflow" with a tag redeploys or rolls back to it.
-  - It runs on a self-hosted runner on our own node (a warm build cache, room for the image, the cluster on
-    the LAN), and deploys as `ci-deployer` (`deploy/k8s/ci-deployer.yaml`), which can change only mepd's
+  - It runs on a self-hosted runner on afh-services (a warm build cache, room for the image, the cluster on
+    the LAN). Builds run in a low-priority systemd slice capped at 40 GB, so the web services and the k3s
+    control plane on that node always come first. It deploys as `ci-deployer` (`deploy/k8s/ci-deployer.yaml`), which can change only mepd's
     objects in the `mepd` namespace.
   - `deploy/k8s` is now applied with kustomize (`kustomization.yaml` carries the image tag, which CI sets).
 - **`uv.lock` is committed.** The build uses `uv sync --locked`, so a `pyproject.toml` change without an
