@@ -65,8 +65,13 @@ kubeconfig, which points at `127.0.0.1:6443`, i.e. afh-services itself:
 
 ```bash
 mkdir -p ~/.kube && sudo install -m 600 -o "$USER" /etc/rancher/k3s/k3s.yaml ~/.kube/config
+echo 'export KUBECONFIG=~/.kube/config' >> ~/.bashrc && source ~/.bashrc
 kubectl get nodes        # works without sudo
 ```
+
+k3s's `kubectl` reads `/etc/rancher/k3s/k3s.yaml` (root-only) whenever it exists and ignores
+`~/.kube/config` unless `KUBECONFIG` names it. The workflow sets `KUBECONFIG` itself; the `.bashrc` line is
+for your own use on the machine.
 
 This is the cluster's admin credential. A separate restricted account would protect nothing here: jobs run on
 this node with Docker access, which amounts to root, and root can read this file anyway.
