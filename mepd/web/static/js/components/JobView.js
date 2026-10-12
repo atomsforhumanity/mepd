@@ -169,6 +169,7 @@ function LivePanel({ job }) {
   const runningNow = minimizing && autoFollow ? paths.find((p) => p.state === 'running') : null;
   const fg = runningNow || paths.find((p) => p.id === selected) || null;
   const stats = progress?.stats;
+  const nano = ['nanoreactor', 'nanoreactor-more'].includes(job.op);
 
   const frames = useMemo(() => fg?.geometry?.frames, [fg?.geometry]);
   const tsIndex = fg?.geometry?.ts_index ?? null;
@@ -179,6 +180,7 @@ function LivePanel({ job }) {
   return html`
     <div class="live">
       <div class="last-line mono">${progress?.last_line || job.last_line || (job.status === 'queued' ? 'Waiting for a free slot…' : '')}</div>
+      ${nano && html`<${SpawnedSearches} job=${job} />`}
       ${fg && (fg.kind === 'minimization' || fg.kind === 'sampling') && html`<${MinimizationLive} job=${job} fg=${fg} />`}
       ${(reactions.length > 0 || job.op === 'graph-enumeration') && html`<${NetworkLive} job=${job} reactions=${reactions} />`}
       ${fg && fg.kind !== 'minimization' && fg.kind !== 'sampling' && html`
@@ -199,8 +201,10 @@ function LivePanel({ job }) {
         </div>`}
       ${paths.length > 1 && html`
         ${minimizing && html`<label class="small check follow-toggle"><input type="checkbox" class="switch" checked=${autoFollow}
-          onChange=${(e) => setAutoFollow(e.target.checked)} /> Follow the candidate being minimized</label>`}
-        <div class="live-list-head small muted">${minimizing
+          onChange=${(e) => setAutoFollow(e.target.checked)} /> ${nano ? 'Follow the structure being optimized' : 'Follow the candidate being minimized'}</label>`}
+        <div class="live-list-head small muted">${minimizing && nano
+          ? `${paths.length} optimizations · ${paths.filter((p) => p.state === 'running').length} running · ${paths.filter((p) => p.outcome === 'minimum').length} kept their bonds · ${paths.filter((p) => p.outcome === 'bonds changed').length} changed them · click one to watch it`
+          : minimizing
           ? `${paths.length} candidates · ${paths.filter((p) => p.state === 'running').length} minimizing · ${paths.filter((p) => p.outcome === 'new minimum').length} new minima · click one to watch it`
           : `${paths.length} paths · ${paths.filter((p) => p.state === 'running').length} running · click one to bring it to the front`}</div>
         <div class="monitors">
@@ -220,10 +224,29 @@ function LivePanel({ job }) {
           </button>`)}
         </div>`}
       ${stats && html`<${StatsBlock} stats=${stats} />`}
-      ${!paths.length && !stats && job.status === 'running' && job.op !== 'graph-enumeration' && html`<p class="muted small">${['hessian-sample', 'hessian-global'].includes(job.op)
+      ${!paths.length && !stats && job.status === 'running' && job.op !== 'graph-enumeration' && html`<p class="muted small">${nano
+        ? 'Once the reaction events are found, each species and each reaction\'s two ends are optimized here, one after another, as you watch. Every reaction then gets its own TS search, listed above as it starts.'
+        : ['hessian-sample', 'hessian-global'].includes(job.op)
         ? 'Each candidate appears here as it starts minimizing (after the Hessian of the seed).'
         : 'The live paths appear once a path optimization starts.'}</p>`}
     </div>`;
+}
+
+// On a nanoreactor's other tabs while it refines: where to watch that.
+function RefiningNote({ job, onWatch }) {
+  const n = useStore((s) => Object.values(s.progress[job.id]?.streams || {}).filter((st) => st.kind === 'minimization').length);
+  const spawned = (job.spawned || []).length;
+  const running = ['running', 'queued'].includes(job.status);
+  useEffect(() => {
+    if (!running) return;
+    // Seed with a full snapshot (SSE only sends the streams that changed).
+    api.get(`/api/jobs/${job.id}`).then((d) => {
+      if (d.progress) set({ progress: { ...state.progress, [job.id]: { ...(state.progress[job.id] || {}), ...d.progress } } });
+    }).catch(() => {});
+  }, [job.id, running]);
+  if (!running || (!n && !spawned)) return null;
+  return html`<p class="level-note small">Refining its reactions: ${n} optimization${n === 1 ? '' : 's'} so far${spawned ? `, ${spawned} TS search${spawned === 1 ? '' : 'es'} started` : ''}.
+    <a href="#" onClick=${(e) => { e.preventDefault(); onWatch(); }}>Watch them live →</a></p>`;
 }
 
 function StatsBlock({ stats }) {
@@ -670,7 +693,8 @@ function TsFollowUps({ job }) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState(() => (op ? rememberedValues(op) : {}));
   const [busy, setBusy] = useState(false);
-  if (!op || job.status !== 'done' || job.external || job.targets.structures.length !== 2) return null;
+  // A step of a multi-step search has its own job (a copy, never run): more paths between that step's ends.
+  if (!op || job.status !== 'done' || (job.external && !job.step_of) || job.targets.structures.length !== 2) return null;
   const last = runs[0];
   const active = last && ['queued', 'running'].includes(last.status);
   const finished = runs.find((r) => r.status === 'done');
@@ -994,7 +1018,7 @@ export function JobView({ jobId: openedId }) {
   // A network expansion whose products come from nanoreactor MD: it has a reactor to watch too.
   const reactorGen = job.op === 'graph-enumeration' && job.params?.generator === 'nanoreactor';
   const current = tab || (['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
-    : job.op === 'nanoreactor' || reactorGen ? 'reactor' : 'live');
+    : (job.op === 'nanoreactor' && !job.params?.trajectory) || reactorGen ? 'reactor' : 'live');
   const targets = job.targets.structures.map((id) => ({ id, label: structureName(id) }));
   const runLabel = (j, i) => (i === 0 ? (job.op === 'ts' ? 'First search' : 'First run')
     : j.op === 'nanoreactor-more' ? `+${j.params?.more_ps ?? '?'} ps` : `More paths ${i}`);
@@ -1006,7 +1030,8 @@ export function JobView({ jobId: openedId }) {
           <h2>${job.title}</h2>
           <div class="small muted">
             <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
-            ${job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
+            ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
+              : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
             ${job.profile && html` · profile <b>${job.profile}</b>`}
             ${targets.length > 0 && html` · ${targets.map((t, i) => html`${i ? (job.op === 'ts' || job.op === 'channels' ? ' → ' : ', ') : ''}<a href="#"
               onClick=${(e) => { e.preventDefault(); select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId } }); }}>${t.label}</a>`)}`}
@@ -1031,11 +1056,12 @@ export function JobView({ jobId: openedId }) {
         were not added to Explore (the threshold under Explore in this calculation's settings). They are in the results, to add by hand.</p>`}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
       <div class="tabs">
-        ${[['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && job.op !== 'nanoreactor' && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
+        ${[['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
           ['ts', 'channels', 'channels-more', 'network-splits'].includes(job.op) && ['tree', 'Optimization tree'],
           !job.external && ['log', 'Log'], ['files', 'Files']].filter(Boolean)
           .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && k !== 'live' && k !== 'reactor'} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
+      ${job.op === 'nanoreactor' && current !== 'live' && html`<${RefiningNote} job=${run} onWatch=${() => setTab('live')} />`}
       <div class="tab-body">
         ${current === 'result' && html`<${ResultPanel} job=${page} />`}
         ${current === 'live' && (job.op === 'complex' ? html`<${ComplexLive} key=${run.id} job=${run} />` : html`<${LivePanel} key=${run.id} job=${run} />`)}

@@ -39,10 +39,36 @@ def _normalized_path_method(path_min_method: str) -> str:
         "GEOMETRIC": "GEOMETRIC-NEB",
         "GEOMETRICNEB": "GEOMETRIC-NEB",
         "FSM": "FNEB",  # freezing string method
+        "FSMTS": "FSM-TS",  # FSM, TS opt + pseudo-IRC check, NEB fallback
+        "FNEB-TS": "FSM-TS",
+        "FNEBTS": "FSM-TS",
         "MLP-GI": "MLPGI",
         "GI": "MLPGI",
     }
     return aliases.get(method, method)
+
+
+def fneb_defaults() -> dict:
+    """The freezing string method's [path_min_inputs] defaults (FNEB, and FSM-TS's FSM stage)."""
+    return {
+        "max_min_iter": 100,
+        "max_grow_iter": 20,
+        "verbosity": 1,
+        "skip_identical_graphs": True,
+        "disregard_stereochem": False,
+        "do_elem_step_checks": True,
+        "grad_tol": 0.05,  # Hartree/Bohr,
+        "barrier_thre": 5,  # kcal/mol,
+        "tangent": 'geodesic',
+        "tangent_alpha": 1.0,  # mixing coefficient for tangents,
+        "use_xtb_grow": False,
+        "distance_metric": "GEODESIC",
+        "min_images": 10,
+        "todd_way": True,
+        "dist_err": 0.1,
+        "phi": 0.5,
+        "drstep": 0.1,
+    }
 
 
 def _resolve_ase_omol25_model_settings(
@@ -548,26 +574,11 @@ class RunInputs:
             default_kwds = NEBInputs().__dict__
 
         elif path_method == "FNEB":
-            default_kwds = {
-                "max_min_iter": 100,
-                "max_grow_iter": 20,
-                "verbosity": 1,
-                "skip_identical_graphs": True,
-                "disregard_stereochem": False,
-                "do_elem_step_checks": True,
-                "grad_tol": 0.05,  # Hartree/Bohr,
-                "barrier_thre": 5,  # kcal/mol,
-                "tangent": 'geodesic',
-                "tangent_alpha": 1.0,  # mixing coefficient for tangents,
-                "use_xtb_grow": False,
-                "distance_metric": "GEODESIC",
-                "min_images": 10,
-                "todd_way": True,
-                "dist_err": 0.1,
-                "phi": 0.5,
-                "drstep": 0.1,
+            default_kwds = fneb_defaults()
+        elif path_method == "FSM-TS":
+            from mepd.pathminimizers.fsm_ts import fsm_ts_defaults
 
-            }
+            default_kwds = fsm_ts_defaults()
         elif path_method == "NEB-DLF":
             default_kwds = {
                 "nstep": 200,

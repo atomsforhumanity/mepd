@@ -67,7 +67,7 @@ export function JobsView() {
                   <td><div class="job-title">${j.title}</div>
                     <div class="small muted">${opTitle[j.op] || j.op}${j.batch ? ' · batch' : ''}${j.profile ? ` · ${j.profile}` : ''}</div></td>
                   <td class="job-line">${j.summary?.headline || (j.status === 'failed' ? (j.error || '').split('\n').pop() : lastLine(j, progress)) || ''}</td>
-                  <td class="nowrap small">${j.external ? 'imported' : j.status === 'queued' ? fmtAgo(j.created) : fmtDuration(jobElapsed(j))}</td>
+                  <td class="nowrap small">${j.step_of ? 'one step' : j.external ? 'imported' : j.status === 'queued' ? fmtAgo(j.created) : fmtDuration(jobElapsed(j))}</td>
                   <td class="nowrap"><${JobControls} job=${j} compact /></td>
                 </tr>`)}
             </tbody>

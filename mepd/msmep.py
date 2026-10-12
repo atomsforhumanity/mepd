@@ -61,23 +61,16 @@ def _disregard_stereochem(inputs: RunInputs) -> bool:
     return bool(getattr(inputs.path_min_inputs, "disregard_stereochem", False))
 
 
-PATH_METHODS = ["NEB", "FNEB", "MLPGI", "NEB-DLF", "GEOMETRIC-NEB", "GSM"]
+PATH_METHODS = ["NEB", "FNEB", "FSM-TS", "MLPGI", "NEB-DLF", "GEOMETRIC-NEB", "GSM"]
 DEFAULT_CONSECUTIVE_SAME_PAIR_SPLIT_LIMIT = 5
 DEFAULT_CYCLE_REVISITS = 5  # see NEBInputs.recursive_cycle_revisits
 
 
 def _normalize_path_method(path_min_method: str) -> str:
-    method = str(path_min_method or "").strip().upper().replace("_", "-")
-    aliases = {
-        "NEBDLF": "NEB-DLF",
-        "DLFNEB": "NEB-DLF",
-        "DLFIND": "NEB-DLF",
-        "DL-FIND": "NEB-DLF",
-        "GEOMETRIC": "GEOMETRIC-NEB",
-        "GEOMETRICNEB": "GEOMETRIC-NEB",
-        "FSM": "FNEB",  # freezing string method
-    }
-    return aliases.get(method, method)
+    # One alias table (inputs.py): the defaults RunInputs picks and the minimizer built here must agree.
+    from mepd.inputs import _normalized_path_method
+
+    return _normalized_path_method(path_min_method)
 
 
 def _empty_leaf(index: int, status: str) -> TreeNode:
@@ -1242,6 +1235,19 @@ class MSMEP:
                 gi_inputs=self.inputs.gi_inputs
             )
 
+        elif path_method == "FSM-TS":
+            from mepd.pathminimizers.fsm_ts import FSMTS
+
+            self._say("Using FSM-TS (freezing string, TS + pseudo-IRC check, NEB fallback)")
+            n = FSMTS(
+                initial_chain=initial_chain,
+                engine=self.inputs.engine,
+                parameters=self.inputs.path_min_inputs,
+                optimizer=self._build_neb_optimizer(),
+                neb_optimizer=self._build_neb_optimizer(),
+                gi_inputs=self.inputs.gi_inputs,
+            )
+
         elif path_method == "MLPGI":
             from mepd.pathminimizers.mlpgi import MLPGI
             self._say("Using MLP-GI (geodesic path length on the PES)")
@@ -1275,7 +1281,7 @@ class MSMEP:
             )
         else:
             raise NotImplementedError(
-                "Invalid path minimization method. Select from NEB, FNEB, MLPGI, NEB-DLF, GEOMETRIC-NEB, or GSM.")
+                "Invalid path minimization method. Select from NEB, FNEB, FSM-TS, MLPGI, NEB-DLF, GEOMETRIC-NEB, or GSM.")
 
         return n
 
@@ -1298,6 +1304,10 @@ class MSMEP:
 
         else:
             interpolation = input_chain
+        # The pairs this branch came from, for minimizers that check against them (FSM-TS: a TS
+        # leading back to one of their species does not help this pair).
+        if getattr(input_chain, "_split_ancestors", None) and interpolation is not input_chain:
+            interpolation._split_ancestors = list(input_chain._split_ancestors)
         self._disable_molecular_graphs(interpolation)
 
         # Use spinner when v=0, print when v=1

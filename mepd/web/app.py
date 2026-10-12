@@ -498,6 +498,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 logging.getLogger(__name__).exception("could not compute the QM/MM barrier of %s", eid)
         if attached:
             bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+        # Edges added from one step of a multi-step TS search before steps had jobs of their own.
+        from mepd.web.steps import adopt_step_edges
+
+        try:
+            if adopt_step_edges(manager):
+                bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+        except Exception:
+            logging.getLogger(__name__).exception("could not give step edges their own jobs")
         stale = [j for j in manager.jobs.values()
                  if j["status"] == "done" and j.get("summary") and ("barrier_verified" not in j["summary"]
                      # ...or from before the edge's TS was recorded (route_ts, for VRI on edges)
@@ -1749,31 +1757,38 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """The structure behind a job's barrier (xyz): its IRC-verified TS;
         else its first optimized TS; else the highest point of its path (an
         unverified barrier). A nanoreactor job: that reaction's own TS."""
-        job = J().get(jid)
-        fp = J().job_dir(jid) / "route_ts.xyz"
-        if fp.is_file():
-            return PlainTextResponse(fp.read_text())
-        if job["op"] == "nanoreactor":
-            from mepd.web.nanoreactor import _json, _read
+        from mepd.web.reaction_export import route_ts_xyz
 
-            data = _json(Path(job["output_dir"]) / "network.json") or {}
-            rx = next((r for r in data.get("reactions") or [] if r["id"] == reaction), None)
-            text = _read(Path(((rx or {}).get("ts") or {}).get("files", {}).get("ts") or "")) if rx else None
-            if text:
-                return PlainTextResponse(text)
-            raise HTTPException(404, "no TS for this reaction in the run")
-        result = collect_cached(job, J().job_dir(jid))
-        if (result.get("route_ts") or {}).get("xyz"):
-            return PlainTextResponse(result["route_ts"]["xyz"])
-        for kind in ("ts", "path"):
-            for g in result.get("groups") or []:
-                if g.get("kind") != kind or not g.get("entries"):
-                    continue
-                e = g["entries"][0]
-                k = e.get("ts_index") or 0 if kind == "path" else 0
-                if e.get("frames"):
-                    return PlainTextResponse(e["frames"][min(k, len(e["frames"]) - 1)]["xyz"])
-        raise HTTPException(404, "this job has no TS or path")
+        job = J().get(jid)
+        text = route_ts_xyz(job, J().job_dir(jid), lambda: collect_cached(job, J().job_dir(jid)), reaction=reaction)
+        if text is None:
+            raise HTTPException(404, "no TS for this reaction in the run" if job["op"] == "nanoreactor"
+                                else "this job has no TS or path")
+        return PlainTextResponse(text)
+
+    @app.get("/api/reactions/{rid}/export")
+    async def reaction_export(rid: str, format: str = "html"):
+        """A reaction's page to share, with every channel found for it (all
+        searches on its edge): `html`, one self-contained page (energy
+        diagram, each channel's TS and IRC in 3D; opens offline, embeds in an
+        iframe), or `zip`, its data (XYZ, energies CSV/JSON, the diagram as
+        SVG, the profiles) with that page."""
+        from mepd.web import reaction_export as rx
+
+        if format not in ("html", "zip"):
+            raise WorkspaceError(f"unknown export format {format!r} (html or zip)")
+        manager = J()
+        # A search's page: with its Sample more paths runs (their channels too), as its result page shows it.
+        bundle = await run_in_threadpool(
+            rx.reaction_bundle, W(), dict(manager.jobs), rid, job_dir=manager.job_dir, page_of=manager.page_job,
+            result_of=lambda job: collect_cached(manager.result_view(job), manager.job_dir(job["id"])))
+        name = rx._safe(bundle["label"]) or rid
+        if format == "zip":
+            data = await run_in_threadpool(rx.export_zip, bundle)
+            return Response(data, media_type="application/zip",
+                            headers={"Content-Disposition": f'attachment; filename="{name}.zip"'})
+        return Response(rx.export_html(bundle), media_type="text/html; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.html"'})
 
     @app.get("/api/jobs/{jid}/reactor")
     def job_reactor(jid: str, start: int = 0, run: Optional[int] = None):
@@ -1971,6 +1986,16 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             picks = [body.frame]
         connect = body.connect and body.frames == "endpoints"
         out = await run_in_threadpool(_import_picks, job, group, entry, picks, connect)
+        edge = out["edge"]
+        if edge is not None:
+            # One step of a multi-step route: the edge gets a job of its own holding only that step
+            # (its result, barrier and follow-ups are the step's, not the whole route's).
+            from mepd.web.steps import step_of_entry
+
+            step = step_of_entry(job, entry["id"])
+            if step is not None:
+                out["step_job"] = J().add_step_job(job, step, edge["id"], [edge["source"], edge["target"]])["id"]
+                out["edge"] = W().edge(edge["id"])
         publish_ws()
         return out
 
@@ -2174,8 +2199,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         except RuntimeError as exc:
             raise WorkspaceError(str(exc)) from None
         sandbox.forget(sid)
+        # connect: each reaction's TS search is its own job, started as soon as the reaction is refined.
         jobs = J().submit("nanoreactor", structure_ids=box.sources, edge_ids=[], profile=W().level_profile,
-                          params={"trajectory": str(traj), "trajectory_start": str(start)},
+                          params={"trajectory": str(traj), "trajectory_start": str(start), "connect": True},
                           label=f"Interactive reactor: {box.names}")
         return {"job": jobs[0]["id"]}
 

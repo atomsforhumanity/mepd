@@ -27,6 +27,27 @@ uv run pytest
 Orb and MACE models are the exception: they can't share an environment with FAIR-Chem, so each
 goes in an environment of its own (see `docs/mlip.md`).
 
+### macOS on Apple Silicon: building `vina`
+
+The web app's docking uses AutoDock Vina, which has no arm64 macOS wheel on PyPI, so it is built
+from source and needs Boost and SWIG. Its build only looks for Boost in a conda env or
+`/usr/local`, and it compiles as C++11 while Homebrew's Boost needs C++14. To build it against
+Homebrew's Boost:
+
+```bash
+brew install boost swig
+cat > /tmp/cxx14 <<'EOF'
+#!/bin/bash
+args=(); for a in "$@"; do [[ $a == -std=c++11 ]] && a=-std=c++14; args+=("$a"); done
+exec /usr/bin/clang++ "${args[@]}"
+EOF
+chmod +x /tmp/cxx14
+CC=/tmp/cxx14 CXX=/tmp/cxx14 CONDA_DEFAULT_ENV=homebrew CONDA_PREFIX=/opt/homebrew uv sync
+```
+
+uv caches the built wheel, so later syncs need none of this until the cache is cleared or the
+`vina` version changes.
+
 ## Quick Start
 
 ```python
@@ -75,6 +96,27 @@ mepd-elementarystep path.xyz
 ```
 
 Use the Python API for lower-level NEB, MLPGI, MSMEP, and elementary-step workflows.
+
+### FSM-TS: freezing string with a TS check
+
+`path_min_method = "FSM-TS"` uses the freezing string method's quick path for each pair and asks
+its TS whether the pair is one elementary step:
+
+1. FSM grows a path between the two ends.
+2. The path's highest image is optimized to a TS.
+3. Pseudo-IRC: one Hessian at the TS, a push both ways along its imaginary mode, and a
+   minimization of each side.
+4. If the two minima are the two ends, the pair is an elementary step, and its path ends as
+   [reactant, converged TS, product], so `--use-tsopt`, `mepd channels` and the web app start from
+   that TS. If a minimum is a new species, MSMEP splits there.
+5. If both sides fall to the same end (the TS belongs to some other motion), the TS search fails,
+   or what it found is not a TS (no imaginary frequency, or more than one), the TS is discarded and
+   that pair is searched again with NEB.
+
+Its `[path_min_inputs]` are FSM's plus `pseudo_irc_amplitude` (bohr, default 0.3),
+`pseudo_irc_hessian` (`auto`: from gradients for g-xTB), `neb_fallback` and `neb_inputs` (NEB
+settings for the fallback). `tree/tree.json` records, per pair, what the pseudo-IRC found and why
+a pair fell back to NEB.
 
 ## Web interface
 
