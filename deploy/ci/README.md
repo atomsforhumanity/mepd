@@ -46,18 +46,23 @@ sudo useradd --create-home --shell /bin/bash github-runner
 sudo usermod -aG docker github-runner
 ```
 
-**Register the runner.** On GitHub, go to the **mepd repository → Settings → Actions → Runners → New
-self-hosted runner → Linux x64**. Run the download commands it shows as `github-runner`, then:
+**Register the runner.** Everything below runs as `github-runner`, in *its* home: the service runs as that
+user, which can't enter anyone else's home folder. On GitHub, go to the **mepd repository → Settings →
+Actions → Runners → New self-hosted runner** and copy the registration **token** it shows. Ignore its other
+commands; these do the same, as the right user:
 
 ```bash
-sudo -iu github-runner
-# ... the download/extract commands GitHub shows (they create ~/actions-runner), then:
-cd ~/actions-runner
-./config.sh --url https://github.com/atomsforhumanity/mepd --token <shown on that page> \
-  --name afh-services --labels mepd-build --unattended
-exit
+sudo -iu github-runner bash -c '
+  set -e
+  mkdir -p ~/actions-runner && cd ~/actions-runner
+  v=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | sed -n "s/.*\"tag_name\": \"v\([^\"]*\)\".*/\1/p")
+  curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v$v/actions-runner-linux-x64-$v.tar.gz"
+  tar xzf runner.tgz && rm runner.tgz
+  ./config.sh --url https://github.com/atomsforhumanity/mepd --token <the token from that page> \
+    --name afh-services --labels mepd-build --unattended'
 
 cd /home/github-runner/actions-runner && sudo ./svc.sh install github-runner && sudo ./svc.sh start
+systemctl status "$(cat .service)" --no-pager      # active (running)
 ```
 
 The label `mepd-build` is what the workflow asks for, and the runner then shows as *Idle* on that settings
