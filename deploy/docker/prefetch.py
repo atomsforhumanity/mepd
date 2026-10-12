@@ -3,11 +3,11 @@
 Runs in the Dockerfile's `models` stage, which has mepd's dependencies but
 not mepd itself (so editing mepd does not re-download any of this):
 
-    prefetch.py models              # AIMNet2, ANI-2x, ReactionT5
+    prefetch.py models              # AIMNet2, ANI-2x
 
 Everything lands where mepd looks for it at run time, the caches under $HOME
-(~/.cache/aimnet, ~/.cache/huggingface, ~/.local/share/Torchani). The
-retrosynthesis data has a stage of its own (the Dockerfile's `retro`).
+(~/.cache/aimnet, ~/.local/share/Torchani). ReactionT5, UMA and the
+retrosynthesis data have stages of their own, independent of uv.lock.
 """
 from __future__ import annotations
 
@@ -16,8 +16,6 @@ import sys
 # The no-account models of mepd.engines.mlip.MODELS whose packages are in
 # mepd's environment (Orb and MACE are not: they conflict with fairchem-core).
 AIMNET2_MODELS = ["aimnet2-rxn", "aimnet2", "aimnet2-nse", "aimnet2-2025"]
-# mepd.retro.proposers: the ReactionT5 method's retro and forward models.
-REACTIONT5_MODELS = ["sagawa/ReactionT5v2-retrosynthesis", "sagawa/ReactionT5v2-forward"]
 
 
 def _water():
@@ -40,11 +38,6 @@ def models() -> None:
     atoms = _water()
     atoms.calc = torchani.models.ANI2x(periodic_table_index=True).ase()
     print(f"ani-2x: E(water) = {atoms.get_potential_energy():.4f} eV", flush=True)
-
-    from huggingface_hub import snapshot_download
-
-    for repo in REACTIONT5_MODELS:
-        print(f"{repo}: {snapshot_download(repo)}", flush=True)
 
 
 if __name__ == "__main__":

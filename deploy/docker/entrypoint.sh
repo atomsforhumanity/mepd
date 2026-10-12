@@ -52,6 +52,14 @@ check() {
     idx="$MEPD_RETRO_DATA/${pair%%:*}"; src="$MEPD_RETRO_DATA/${pair##*:}"
     if [ "$idx" -nt "$src" ]; then ok stock "${pair%%:*}"; else fail stock "$idx missing or older than $src"; fi
   done
+  # ReactionT5's models: their tokenizer and config load from the image alone.
+  if out="$(HF_HUB_OFFLINE=1 python -c "from transformers import AutoConfig, AutoTokenizer
+for repo in ('sagawa/ReactionT5v2-retrosynthesis', 'sagawa/ReactionT5v2-forward'):
+    AutoTokenizer.from_pretrained(repo); AutoConfig.from_pretrained(repo)" 2>&1)"; then
+    ok reactiont5 "offline"
+  else
+    fail reactiont5 "does not load offline: $(tail -1 <<<"$out")"
+  fi
   # FAIR-Chem models baked in (MEPD_FAIRCHEM_MODELS, from the build): each must
   # load from the image alone, with Hugging Face offline.
   local m out

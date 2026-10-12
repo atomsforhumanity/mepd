@@ -21,10 +21,11 @@
 #             pybase, the manifest and mepd/retro/{data,aizynth,stock}.py.
 #   deps      a Python venv with mepd's locked dependencies, not mepd itself
 #   stock     the retrosynthesis stocks' lookup indexes (ZINC: 80 MB)
-#   models    AIMNet2, ANI-2x and ReactionT5 weights; needs the deps to load
+#   models    AIMNet2 and ANI-2x weights; needs the deps to load
 #             the models, but not mepd's code
 #   uma       FAIR-Chem UMA weights (gated: needs a Hugging Face token); on
 #             pybase, so uv.lock changes don't download or push them again
+#   reactiont5  ReactionT5's models (public), likewise on pybase
 #   runtime   the final image; mepd's own code is its last, small layer
 #
 # For CI, keep every stage's layers between runs (BuildKit `mode=max`
@@ -173,7 +174,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM deps AS models
 ENV HOME=/home/mepd
 COPY deploy/docker/prefetch.py /tmp/build/prefetch.py
-# Model weights into $HOME's caches: AIMNet2, ANI-2x, ReactionT5.
+# Model weights into $HOME's caches: AIMNet2, ANI-2x (ReactionT5 and UMA: own stages).
 ARG PREFETCH_MODELS=1
 RUN if [ "$PREFETCH_MODELS" = 1 ]; then /opt/mepd/venv/bin/python /tmp/build/prefetch.py models; fi \
  && mkdir -p "$HOME/.cache"
@@ -202,6 +203,18 @@ RUN --mount=type=secret,id=hf_token,required=false --mount=type=cache,target=/ro
         uv run --no-project --no-config --python 3.12 --with huggingface_hub==1.33.0 \
         python /tmp/build/fetch_uma.py $FAIRCHEM_MODELS; \
     fi
+
+# ---------------------------------------------------------------- reactiont5
+# ReactionT5's models (public, ~1.6 GB), for `mepd retro --method reactiont5`.
+# Like `uma`: on pybase with only huggingface_hub, so uv.lock changes don't
+# download or push them again.
+FROM pybase AS reactiont5
+ENV HOME=/home/mepd
+COPY deploy/docker/fetch_reactiont5.py /tmp/build/fetch_reactiont5.py
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_CACHE_DIR=/root/.cache/uv uv run --no-project --no-config --python 3.12 --with huggingface_hub==1.33.0 \
+      python /tmp/build/fetch_reactiont5.py \
+ && rm -rf "$HOME/.cache/huggingface/xet"      # download logs and staging, not weights
 
 # --------------------------------------------------------------------- stock
 # The lookup indexes mepd builds the first time a retrosynthesis uses a stock
@@ -251,6 +264,7 @@ COPY --from=stock --chown=mepd:mepd /opt/mepd/retro/zinc_stock_inchikeys.u64.npy
 COPY --from=models --chown=mepd:mepd /home/mepd /home/mepd
 # fairchem keeps its weights in a cache of its own, not Hugging Face's.
 COPY --from=uma --chown=mepd:mepd /home/mepd/.cache/fairchem /home/mepd/.cache/fairchem
+COPY --from=reactiont5 --chown=mepd:mepd /home/mepd/.cache/huggingface /home/mepd/.cache/huggingface
 COPY --from=deps /opt/mepd/venv /opt/mepd/venv
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
 COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint

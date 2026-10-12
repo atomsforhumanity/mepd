@@ -19,7 +19,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   - xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 and Psi4 1.11 from conda-forge, via micromamba;
   - molecularGSM built from source with its ASE backend, against MKL;
   - the retrosynthesis data and an AiZynthFinder 4.4.1 environment;
-  - AIMNet2, ANI-2x and ReactionT5 weights;
+  - AIMNet2 and ANI-2x weights, and ReactionT5's models in a layer of their own that doesn't depend on `uv.lock`;
   - FAIR-Chem UMA `uma-s-1p2p1` (uma-s-1.2.1), in a layer of its own that doesn't depend on `uv.lock`: it is
     downloaded with `huggingface_hub` alone, so a dependency change neither downloads nor pushes it again.
 
