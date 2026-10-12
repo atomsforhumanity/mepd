@@ -29,45 +29,16 @@ back.
 
 The builds run on our own machine, not GitHub's. GitHub's runners have too little disk for an ~18 GB image,
 start every build cold, and can't reach the cluster's API on the LAN. The runner goes on **afh-services**,
-which keeps the compute nodes free for science. afh-services also runs the whole public path (the Cloudflare
-tunnel, Traefik, the k3s control plane), so builds run in a **low-priority slice with a memory cap**. When
-anything else needs the machine, the build yields; when the machine is idle, the build gets all of it.
+which is mostly idle and keeps the compute nodes free for science.
 
-**Check the uplink first.** After a dependency change, the image's 7.4 GB Python layer must upload to GHCR
-within GHCR's 10-minute limit per upload, which needs a sustained ~100 Mbit/s or more:
-
-```bash
-head -c 200000000 /dev/urandom | curl -s -o /dev/null -w '%{speed_upload}\n' --data-binary @- https://speed.cloudflare.com/__up
-# bytes/s: 12500000 or more is 100 Mbit/s
-```
-
-**The slice, Docker and its configuration:**
+**Docker:**
 
 ```bash
 sudo apt-get install -y docker.io docker-buildx git curl   # buildx: BuildKit, for `docker build --secret`
 
-# ci.slice: lowest CPU and disk priority (k3s, Traefik, cloudflared win any contest),
-# and at most 40 of the 62 GB, so a build can never take the web services' memory.
-sudo tee /etc/systemd/system/ci.slice >/dev/null <<'UNIT'
-[Unit]
-Description=CI builds (low priority: the cluster and web services come first)
-[Slice]
-CPUWeight=20
-IOWeight=20
-MemoryHigh=36G
-MemoryMax=40G
-UNIT
-
-# Docker and its containerd run in it. (k3s has its own containerd; it is not affected.)
-for svc in docker containerd; do
-  sudo mkdir -p /etc/systemd/system/$svc.service.d
-  printf '[Service]\nSlice=ci.slice\n' | sudo tee /etc/systemd/system/$svc.service.d/ci-slice.conf >/dev/null
-done
-
-# Containers and build steps in it too; the build cache trims itself to 300 GB.
-echo '{"cgroup-parent": "ci.slice", "builder": {"gc": {"enabled": true, "defaultKeepStorage": "300GB"}}}' \
-  | sudo tee /etc/docker/daemon.json
-sudo systemctl daemon-reload && sudo systemctl restart containerd docker
+# The build cache trims itself to 300 GB (it would otherwise only grow).
+echo '{"builder": {"gc": {"enabled": true, "defaultKeepStorage": "300GB"}}}' | sudo tee /etc/docker/daemon.json
+sudo systemctl restart docker
 
 # A user for the runner, allowed to use Docker. Docker access amounts to root on this machine;
 # the repository is private, so only people with write access can run jobs here.
@@ -86,20 +57,11 @@ cd ~/actions-runner
   --name afh-services --labels mepd-build --unattended
 exit
 
-cd /home/github-runner/actions-runner
-sudo ./svc.sh install github-runner
-UNIT=$(cat .service)                       # actions.runner.<org>-<repo>.afh-services.service
-sudo mkdir -p /etc/systemd/system/$UNIT.d
-printf '[Service]\nSlice=ci.slice\n' | sudo tee /etc/systemd/system/$UNIT.d/ci-slice.conf >/dev/null
-sudo systemctl daemon-reload && sudo ./svc.sh start
+cd /home/github-runner/actions-runner && sudo ./svc.sh install github-runner && sudo ./svc.sh start
 ```
 
 The label `mepd-build` is what the workflow asks for, and the runner then shows as *Idle* on that settings
 page.
-
-**Check the guardrails during the first build:**
-- `systemd-cgls /ci.slice` lists the runner, Docker, and the build and test processes.
-- `systemctl status ci.slice` shows the slice's memory against its 40 GB cap.
 
 ### 2. The deploy account (a cluster admin, once)
 
