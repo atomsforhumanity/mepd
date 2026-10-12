@@ -65,9 +65,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **`uv.lock` is committed.** The build uses `uv sync --locked`, so a `pyproject.toml` change without an
   updated lock fails instead of building untested versions.
 - **This changelog.**
+- **FSM-TS path method** (`mepd/pathminimizers/fsm_ts.py`). The freezing string method grows the path,
+  its highest image is optimized to a TS, and a pseudo-IRC (one Hessian, a push both ways along the imaginary
+  mode, two minimizations) decides whether the pair is one elementary step. If it is, the path ends as
+  [reactant, TS, product], so `--use-tsopt`, channels and the web start from that TS; a new species splits the
+  pair there. A TS that isn't one, doesn't converge, or doesn't connect is discarded and the pair is searched
+  again with NEB.
 
 ### Changed
 
+- **Kinetics: the degree-of-control bars say what they mean.** Each reads "3.2× more" or "1.6× less": what
+  lowering that TS, or stabilizing that species, by 1 kcal/mol does to the target (X is in the tooltip).
+  "No barrier controls it" says equilibrium only when the run has stopped changing.
+- **Kinetics: the amounts chart and the result use the time unit the run was set up in**, not always seconds.
 - **`mepd web` no longer handles HTTPS; it is a plain HTTP app.** TLS and HTTPS policy belong to the proxy in
   front (here, Cloudflare). Removed from demo mode:
   - the redirect of plain-HTTP requests to HTTPS (it read `X-Forwarded-Proto`/`CF-Visitor`);
@@ -114,6 +124,16 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Kinetics: "the kinetics did not integrate".** Runs failed or crawled at the top of the default
+  250–650 K sweep, and some at room temperature (the CO2 + epoxide network at 298 K for 2 h). Causes: the
+  per-step extents' rounding noise steered BDF's step size, and amounts were clipped at zero inside the rates.
+  Now the extents don't steer the step, the rates use the raw amounts, and the solver is Radau, which finished
+  400 of 400 random mixtures, temperatures and times on that network where BDF failed 12. A year-long run no
+  longer ends a rounding error past its span.
+- **IRC through Sella spun the molecule at the minimum.** Sella kept rotations in its Hessian, and noise made
+  one negative, so the IRC stepped along it to its step limit (~720 frames of the whole system rotating). The
+  curvature is now judged on vibrations only, and frames are aligned onto the previous one. The same g-xTB
+  IRC takes 363 frames, not 1262.
 - **`mepd retro plan --method aizynthfinder` found almost no routes.** mepd rewrote AiZynthFinder's
   `config.yml` with keys sorted alphabetically, which put the ring-breaking-only `ringbreaker` expansion
   policy first. `aizynthcli` used that policy, so most targets got no expansions; paracetamol, for example,
