@@ -133,14 +133,16 @@ def simulate(net: Network, c0: Sequence[float], temperature: float, time_s: floa
     free[list(held)] = 0.0
     steps = net.steps
 
+    # No clipping at zero inside: a kink there, under a step running at
+    # ~1e12 /s, forced ever-smaller steps (amounts of -1e-15 M are noise).
     def f(_t, y):
-        c = np.maximum(y[:n], 0.0)
+        c = y[:n]
         rf, rr = _rates(c, kf, kr, steps)
         r = rf - rr
         return np.concatenate([(net.nu @ r) * free, r])
 
     def jac(_t, y):
-        c = np.maximum(y[:n], 0.0)
+        c = y[:n]
         dr = np.zeros((m, n))            # d(net rate_j)/d c_i
         for j, st in enumerate(steps):
             for side, k, sign in ((st.reactants, kf[j], 1.0), (st.products, kr[j], -1.0)):
@@ -163,9 +165,11 @@ def simulate(net: Network, c0: Sequence[float], temperature: float, time_s: floa
     # The extents ride along but don't steer the step size: a fast step at
     # equilibrium has forward and reverse rates of ~1e12 M/s whose
     # difference is rounding noise, and tracking that noise to `atol` made
-    # hot runs (a temperature sweep's top end) crawl or fail.
-    tol = np.concatenate([np.full(n, atol), np.full(m, np.inf)])
-    sol = solve_ivp(f, (0.0, time_s), y0, method="BDF", t_eval=t_eval, jac=jac, rtol=rtol, atol=tol)
+    # hot runs (a temperature sweep's top end) crawl or fail. Radau, not
+    # BDF: BDF still gave up on ~3% of random mixtures, temperatures and
+    # times on a real network; Radau on none, and faster.
+    tol = np.concatenate([np.full(n, atol), np.full(m, 1e300)])
+    sol = solve_ivp(f, (0.0, time_s), y0, method="Radau", t_eval=t_eval, jac=jac, rtol=rtol, atol=tol)
     if not sol.success:
         raise RuntimeError(f"the kinetics did not integrate: {sol.message}")
     c = np.maximum(sol.y[:n].T, 0.0)

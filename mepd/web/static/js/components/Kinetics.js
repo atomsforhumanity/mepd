@@ -55,7 +55,7 @@ function LineChart({ xs, series, xLabel, yLabel, floor = 1e-12, xlog = true, wid
         ${series.map((s) => html`<circle class="kn-dot" cx=${X(xs[hover])} cy=${Y(s.values[hover])} r="4" style=${{ fill: `var(--series-${s.slot})` }} />`)}`}
     </svg>
     <div class="kn-legend">${series.map((s) => html`<span><i style=${{ background: `var(--series-${s.slot})` }}></i>${s.name}</span>`)}</div>
-    ${hover != null && html`<div class="kn-tip">${xLabel.split(' (')[0]} ${fmtC(xs[hover])}:
+    ${hover != null && html`<div class="kn-tip">${xLabel.replace(/ \((.*)\)$/, ` ${fmtC(xs[hover])} $1`)}:
       ${series.map((s) => html` <span><i style=${{ background: `var(--series-${s.slot})` }}></i>${s.name} ${fmtC(s.values[hover])}</span>`)}</div>`}
   </div>`;
 }
@@ -146,8 +146,9 @@ export function KineticsView() {
       temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unverified,
       control: !!target, control_what: what, sweep }));
     setBusy(false);
-    if (out) setRes(out);
-    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, sweepOn, tLo, tHi, res: out || res } });
+    const shown = out ? { ...out, tUnit } : res;
+    setRes(shown);
+    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, sweepOn, tLo, tHi, res: shown } });
   };
   const openReaction = (rid) => set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: rid } });
 
@@ -195,7 +196,8 @@ function Results({ res, T, onReaction }) {
     .filter((r) => Number.isFinite(r.x) && Math.abs(r.x) > 0.02 && !(r.c0 > 0) && r.id !== tgt?.id)
     .sort((a, b) => Math.abs(b.x) - Math.abs(a.x)).slice(0, 6) : [];
   const flows = [...res.steps].sort((a, b) => Math.abs(b.extent) - Math.abs(a.extent));
-  const timeLabel = res.time_s >= 86400 ? `${+(res.time_s / 86400).toFixed(2)} d` : res.time_s >= 3600 ? `${+(res.time_s / 3600).toFixed(2)} h` : `${+res.time_s.toPrecision(3)} s`;
+  const unit = res.tUnit || 's';   // the unit the run was set up in
+  const timeLabel = `${+(res.time_s / UNITS[unit]).toPrecision(3)} ${unit}`;
   return html`<div class="kn-out">
     ${tgt && html`<div class="kn-head">
       <div class="stat"><span class="stat-v">${fmtC(tgt.final)} M</span><span class="stat-l">${tgt.name} after ${timeLabel} at ${Math.round(res.temperature)} K${total ? ` · ${fmtC((100 * tgt.final) / total)}% of the start` : ''}</span></div>
@@ -226,7 +228,7 @@ function Results({ res, T, onReaction }) {
 
     <section>
       <div class="section-title">Amounts over time</div>
-      <${LineChart} xs=${res.times} series=${series} xLabel="time (s)" yLabel="amount (M)" />
+      <${LineChart} xs=${res.times.map((t) => t / UNITS[unit])} series=${series} xLabel=${`time (${unit})`} yLabel="amount (M)" />
       <details class="small"><summary>Table</summary>
         <table class="rx-table"><thead><tr><th>Species</th><th>start (M)</th><th>end (M)</th><th>peak (M)</th></tr></thead>
           <tbody>${ranked.slice(0, showAll ? ranked.length : 12).map((s) => html`<tr><td class="rx-eq">${s.name}${s.held ? ' (fixed)' : ''}</td>

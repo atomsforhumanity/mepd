@@ -55,18 +55,26 @@ def test_temperature_sweep_gives_an_arrhenius_activation_energy():
     assert out["apparent_ea_kcal"][1] == pytest.approx(20.0 + mk.rt_kcal(320), abs=0.3)
 
 
-def test_a_hot_catalytic_cycle_with_fast_equilibria_integrates():
+@pytest.mark.parametrize("temperature, time_s", [
+    (1000.0, 3600.0),
+    (298.15, 7200.0),
+])
+def test_a_catalytic_cycle_with_fast_equilibria_integrates(temperature, time_s):
     """The CO2 + epoxide cycle of a workspace (bromide opens the ring, CO2
     inserts, the ring closes; the ammonium rides along), electronic
-    energies in kcal/mol. At 1000 K its fast steps run at ~1e12 M/s each
-    way, and tracking their extents' rounding noise made BDF crawl, then
-    give up ("the kinetics did not integrate")."""
-    g = [-96514.34, -118372.65, -214895.35, -134400.88, -1711819.90, -1830222.37, -1615326.41]
-    steps = [([0, 1], [2], -214830.28), ([6, 3, 0], [4, 3], -1846198.95), ([4, 3, 1], [5, 3], -1964618.51),
-             ([5, 3], [6, 2, 3], -1964613.19), ([1, 4, 3], [0, 1, 3, 6], -1964606.52)]
+    energies in kcal/mol (unrounded: the failures hinged on the last
+    digits). Its fast steps run at up to ~1e15 M/s each way. Each case once
+    failed with "the kinetics did not integrate": BDF tracking the
+    extents' rounding noise (1000 K), then clipping amounts at zero inside
+    the rates (298 K, 2 h)."""
+    g = [-96514.33783447006, -118372.64761196476, -214895.35230279158, -134400.87831998916,
+         -1711819.9002998823, -1830222.3710563441, -1615326.409164431]
+    steps = [([0, 1], [2], -214830.28132018843), ([6, 3, 0], [4, 3], -1846198.9469304155),
+             ([4, 3, 1], [5, 3], -1964618.5105339368), ([5, 3], [6, 2, 3], -1964613.1859591333),
+             ([1, 4, 3], [0, 1, 3, 6], -1964606.52333577)]
     net = mk.Network(["EO", "CO2", "EC", "NMe4+", "BrCH2CH2O-", "BrCH2CH2OCO2-", "Br-"], g,
                      [mk.Step(a, b, t) for a, b, t in steps])
-    res = mk.simulate(net, [1, 1, 0, 1, 0, 0, 1], 1000.0, 3600.0)
+    res = mk.simulate(net, [1, 1, 0, 1, 0, 0, 1], temperature, time_s)
     assert res.c[-1, [4, 5, 6]].sum() == pytest.approx(1.0, rel=1e-6)     # bromine conserved
     assert res.c[-1, 3] == pytest.approx(1.0)                               # the ammonium only rides along
 
