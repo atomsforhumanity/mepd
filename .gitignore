@@ -7,7 +7,6 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
-uv.lock
 dist/
 build/
 .DS_Store
@@ -20,4 +19,5 @@ site/
 *_history/
 *_visualize.html
 mepd_output/
+mepd_workspace/
 examples/

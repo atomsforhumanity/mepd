@@ -1,0 +1,12 @@
+# Only what the Dockerfile copies: pyproject.toml, .python-version, uv.lock,
+# README.md, LICENSE, mepd/ and deploy/docker/.
+*
+!pyproject.toml
+!.python-version
+!uv.lock
+!README.md
+!LICENSE
+!mepd/
+!deploy/docker/
+**/__pycache__
+**/*.py[cod]

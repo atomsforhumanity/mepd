@@ -175,6 +175,36 @@ for _name, _repo in (("uma-s-1p2p1", "facebook/UMA"), ("uma-s-1p2", "facebook/UM
                              elements="most of the periodic table", options={"repo": _repo})
 
 
+def weights_available(name: str) -> bool:
+    """Whether `name` runs here without a Hugging Face login: open models
+    (they download on first use), and gated ones whose weights are already
+    in fairchem's cache ($FAIRCHEM_CACHE_DIR, ~/.cache/fairchem), e.g. baked
+    into a container image. Imports neither torch nor fairchem."""
+    import importlib.util
+    import json
+    import os
+    from pathlib import Path
+
+    spec = MODELS.get(name)
+    if spec is None:
+        return False
+    if not spec.gated:
+        return True
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        roots = importlib.util.find_spec("fairchem").submodule_search_locations
+        table = next(Path(r, "core", "calculate", "pretrained_models.json") for r in roots
+                     if Path(r, "core", "calculate", "pretrained_models.json").exists())
+        entry = json.loads(table.read_text())[name]
+    except Exception:          # fairchem or huggingface_hub missing, or a model fairchem doesn't list
+        return False
+    cache = os.environ.get("FAIRCHEM_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache/fairchem"))
+    found = try_to_load_from_cache(entry["repo_id"], f"{entry['subfolder']}/{entry['filename']}",
+                                   cache_dir=cache, revision=entry.get("revision"))
+    return isinstance(found, str)
+
+
 def unknown_model_message(name: str) -> str:
     open_names = [n for n, s in MODELS.items() if not s.gated]
     gated = [n for n, s in MODELS.items() if s.gated]

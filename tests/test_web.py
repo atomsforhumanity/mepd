@@ -668,10 +668,11 @@ def test_auth_token_login(tmp_path, monkeypatch):
         assert st.status_code == 200 and st.json()["auth"] is True
         c.cookies.clear()
         assert c.get("/api/state", headers={"Authorization": f"Bearer {token}"}).status_code == 200
-        # throttling after repeated failures
-        for _ in range(10):
-            c.post("/login", data={"token": "nope"})
-        assert c.post("/login", data={"token": token}).status_code == 429
+        # no lockout: failed logins (from one address, as every visitor behind a proxy can be)
+        # never keep the right token out; rate limiting is the proxy's job
+        for _ in range(12):
+            assert c.post("/login", data={"token": "nope"}).status_code == 401
+        assert c.post("/login", data={"token": token}).status_code == 303
 
 
 def test_a_chosen_password_logs_in_like_a_token(tmp_path):
@@ -821,15 +822,79 @@ def test_demo_form_defaults_respect_limits(demo_app):
             c.__exit__(None, None, None)
 
 
-def test_demo_forces_https_behind_proxy(demo_app):
+def test_demo_serves_plain_http_and_leaves_tls_to_the_proxy(demo_app):
+    # TLS, https redirects and HSTS are the proxy's job (Cloudflare); mepd is a plain http app.
     root, app = demo_app
     with TestClient(app, follow_redirects=False) as c:
-        r = c.get("/login", headers={"x-forwarded-proto": "http"})
-        assert r.status_code == 301 and r.headers["location"].startswith("https://")
-        r = c.get("/login", headers={"x-forwarded-proto": "https"})
-        assert r.status_code == 200 and "max-age" in r.headers["strict-transport-security"]
-        r = c.get("/login", headers={"x-forwarded-proto": "https", "cf-visitor": '{"scheme":"http"}'})
-        assert r.status_code == 301                                   # Cloudflare's own signal wins
+        for headers in ({}, {"x-forwarded-proto": "http"}, {"cf-visitor": '{"scheme":"http"}'}):
+            r = c.get("/login", headers=headers)
+            assert r.status_code == 200 and "strict-transport-security" not in r.headers
+
+
+def test_demo_login_has_no_lockout(demo_app):
+    # Behind a proxy every visitor can arrive from one address: a lockout per
+    # address would let one person's typos lock everyone out.
+    root, app = demo_app
+    with TestClient(app, follow_redirects=False) as c:
+        for _ in range(12):
+            assert c.post("/login", data={"password": "wrong"}).status_code == 401
+        assert c.post("/login", data={"password": "pw-for-tests"}).status_code == 303
+
+
+def test_demo_settings_offer_the_fairchem_engine_and_grey_out_the_others(demo_app, tmp_path, monkeypatch):
+    # As a tester's browser does it: switch a profile's engine, then validate.
+    # UMA's weights are "baked in" (fairchem's cache layout) so the model runs here.
+    pytest.importorskip("huggingface_hub")
+    cache = tmp_path / "fairchem"
+    snap = cache / "models--facebook--UMA" / "snapshots" / "abc123" / "checkpoints"
+    snap.mkdir(parents=True)
+    (snap / "uma-s-1p2p1.pt").write_bytes(b"weights")
+    (cache / "models--facebook--UMA" / "refs").mkdir()
+    (cache / "models--facebook--UMA" / "refs" / "main").write_text("abc123")
+    monkeypatch.setenv("FAIRCHEM_CACHE_DIR", str(cache))
+    root, app = demo_app
+    with TestClient(app) as c:
+        assert c.post("/login", data={"password": "pw-for-tests"}).status_code == 200
+        r = c.post("/api/profiles/form/apply", json={"text": 'engine_name = "gxtb"\n', "path": "engine",
+                                                      "value": "fairchem"}).json()
+        engine = next(f for f in r["form"]["basic"] if f["key"] == "engine")
+        disabled = {o["value"] for o in engine["options"] if o["disabled"]}
+        assert "fairchem" not in disabled and "mlip" not in disabled and "gxtb" not in disabled
+        assert disabled == {"chemcloud", "qccompute", "ase"}                    # shown, but not pickable
+        v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
+        assert v["ok"], v
+        r = c.post("/api/profiles/form/apply", json={"text": r["text"], "path": "fairchem_engine_kwds.model",
+                                                      "value": "uma-s-1p1"}).json()     # gated, not baked in
+        v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
+        assert not v["ok"] and "runs only these models" in v["message"]
+
+
+def test_demo_limits_come_from_the_environment():
+    from mepd.web.demo import DemoPolicy
+
+    policy = DemoPolicy.from_env({"MEPD_DEMO_GLOBAL_CONCURRENCY": "64", "MEPD_DEMO_MAX_ACTIVE_JOBS": "8",
+                                  "MEPD_DEMO_JOB_TIMEOUT_S": "3600", "UNRELATED": "x"})
+    assert (policy.global_concurrency, policy.max_active_jobs, policy.job_timeout_s) == (64, 8, 3600.0)
+    assert policy.max_atoms == DemoPolicy().max_atoms                 # the rest keep their defaults
+    assert DemoPolicy.from_env({}) == DemoPolicy()
+    # tables: JSON merged into the defaults
+    policy = DemoPolicy.from_env({"MEPD_DEMO_CAPS": '{"channels": {"workers": 8}, "vri": {"workers": 8}}',
+                                  "MEPD_DEMO_SANDBOX": '{"total": 8}', "MEPD_DEMO_PSI4_MAX_MEMORY_GB": "32"})
+    assert policy.caps["channels"]["workers"] == 8 and policy.caps["vri"]["workers"] == 8
+    assert policy.caps["channels"]["n_conformers"] == DemoPolicy().caps["channels"]["n_conformers"]
+    assert policy.caps["ts"] == DemoPolicy().caps["ts"]
+    assert policy.sandbox["total"] == 8 and policy.sandbox["per_owner"] == DemoPolicy().sandbox["per_owner"]
+    assert policy.psi4_max_memory_gb == 32.0
+    for bad, why in (({"MEPD_DEMO_GLOBAL_CONCURRENCY": "lots"}, "integer"),
+                     ({"MEPD_DEMO_GLOBAL_CONCURRENCY": "0"}, "positive"),
+                     ({"MEPD_DEMO_CAPS": "{not json"}, "not valid JSON"),
+                     ({"MEPD_DEMO_CAPS": '{"chanels": {"workers": 8}}'}, "unknown 'chanels'"),
+                     ({"MEPD_DEMO_CAPS": '{"channels": {"wokers": 8}}'}, "unknown 'wokers'"),
+                     ({"MEPD_DEMO_CAPS": '{"channels": {"workers": -1}}'}, "positive"),
+                     ({"MEPD_DEMO_ALLOWED_OPS": '["anything"]'}, "cannot be set"),
+                     ({"MEPD_DEMO_ALLOWED_VALUES": "{}"}, "cannot be set")):
+        with pytest.raises(ValueError, match=why):
+            DemoPolicy.from_env(bad)
 
 
 def test_barrier_needs_an_irc_connecting_start_and_end(tmp_path):
@@ -1491,20 +1556,31 @@ def test_demo_complexes_obey_the_atom_and_geometry_limits(demo_app):
             v.__exit__(None, None, None)
 
 
-def test_demo_retrosynthesis_runs_only_the_light_method():
+def test_every_operation_is_decided_for_the_demo():
+    # The demo runs from an allowlist, so a new operation was silently left
+    # out of it. Now one fails here until it is added (or this test says why not).
+    from mepd.web.demo import DemoPolicy
+    from mepd.web.operations import OPERATIONS
+
+    assert set(OPERATIONS) - set(DemoPolicy().allowed_ops) == set()
+
+
+def test_demo_retrosynthesis_runs_every_local_method_but_not_a_url_or_a_server_file():
     from mepd.web.demo import DemoPolicy
     from mepd.web.operations import OPERATIONS
     from mepd.web.workspace import WorkspaceError
 
     policy = DemoPolicy()
-    policy.check_op("retrosynthesis", {"method": "templates", "iterations": 100})
-    for bad in ({"method": "local-llm"}, {"method": "templates", "verify": "all"},
-                {"method": "templates", "stock_file": "/etc/passwd"}, {"method": "templates", "iterations": 500}):
+    for ok in ({"method": "templates", "iterations": 100}, {"method": "reactiont5"},
+               {"method": "aizynthfinder", "stock": "zinc"}, {"method": "templates", "verify": "all"}):
+        policy.check_op("retrosynthesis", ok)
+    for bad in ({"method": "local-llm"},                                     # calls a URL the visitor picks
+                {"method": "templates", "stock_file": "/etc/passwd"},        # a file on the server
+                {"method": "templates", "iterations": 500}):                 # above the cap
         with pytest.raises(WorkspaceError):
             policy.check_op("retrosynthesis", bad)
     desc = policy.adapt_operation(OPERATIONS["retrosynthesis"].describe())
-    assert [m["fixed"]["method"] for m in desc["methods"] if m["available"]] in (["templates"], [])
-    assert desc["schema"]["properties"]["verify"].get("enum", ["none"]) == ["none"]
+    assert "local-llm" not in [m["fixed"]["method"] for m in desc["methods"] if m["available"]]
 
 
 def test_complex_members_are_always_molecules(tmp_path):

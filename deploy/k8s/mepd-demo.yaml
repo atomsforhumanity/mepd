@@ -1,0 +1,167 @@
+# mepd web in demo mode on afh-c04: one FastAPI process (it holds state, so
+# exactly one replica), the GPU, and its state on the node's data disk.
+#
+# Before the first apply (see deploy/k8s/README.md):
+#   on afh-c04:   sudo mkdir -p /nvme1/mepd/data /nvme1/mepd/tmp && sudo chown -R 1000:1000 /nvme1/mepd
+#   kubectl create namespace mepd
+#   kubectl -n mepd create secret docker-registry ghcr-pull --docker-server=ghcr.io \
+#     --docker-username=<github user> --docker-password=<classic PAT, read:packages only>
+#   kubectl -n mepd create secret generic mepd-demo --from-literal=password='<shared tester password>'
+#
+#   kubectl apply -k deploy/k8s        (normally CI does this: .github/workflows/build-deploy.yml)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mepd
+  namespace: mepd
+  labels: {app: mepd}
+spec:
+  replicas: 1
+  # Never two servers at once: a rolling update would start the new pod before
+  # the old one stops, and both would manage the same workspaces and jobs.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: mepd}
+  template:
+    metadata:
+      labels: {app: mepd}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: afh-c04      # the data lives on this node's disk
+      imagePullSecrets:
+        - name: ghcr-pull
+      # Kubernetes otherwise sets <SERVICE>_PORT etc. for every Service in the
+      # namespace: the Service `mepd` gave MEPD_PORT=tcp://...:80, which
+      # overrides the image's MEPD_PORT (the server's port) and stops it.
+      enableServiceLinks: false
+      # The NVIDIA container runtime injects the GPU devices and driver; the
+      # device plugin only assigns the GPU (NVIDIA_VISIBLE_DEVICES), which the
+      # default runtime ignores.
+      runtimeClassName: nvidia
+      # Jobs stop with the pod; the next server marks them interrupted, and
+      # they resume where they left off. A minute lets requests finish.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: mepd
+          image: ghcr.io/atomsforhumanity/mepd       # tag: kustomization.yaml (set by CI)
+          args: ["serve"]
+          env:
+            - name: MEPD_MODE
+              value: demo
+            # Job limits (mepd/web/demo.py, DemoPolicy; any of its numbers can be
+            # set as MEPD_DEMO_<FIELD>). Each calculation uses one core
+            # (OMP_NUM_THREADS=1), so 64 at once fill the node's 64 cores.
+            - name: MEPD_DEMO_GLOBAL_CONCURRENCY   # running, across all testers
+              value: "64"
+            - name: MEPD_DEMO_MAX_ACTIVE_JOBS      # queued + running, per workspace
+              value: "8"
+            - name: MEPD_MAX_JOBS                  # running, per workspace
+              value: "8"
+            # Sized for a dedicated 64-core GPU node (the code's defaults suit a
+            # small shared demo). Tables are JSON merged into the defaults; a
+            # name the table does not have stops the server at start-up.
+            - name: MEPD_DEMO_MAX_ATOMS            # per structure (also the QM region)
+              value: "150"
+            - name: MEPD_DEMO_JOB_TIMEOUT_S        # 4 h per calculation
+              value: "14400"
+            - name: MEPD_DEMO_OP_TIMEOUT_S
+              value: '{"vri": 14400, "vri-check": 14400}'
+            - name: MEPD_DEMO_CAPS                 # worker processes per operation
+              value: >-
+                {"channels": {"workers": 8}, "ts": {"parallel_workers": 8},
+                "vri": {"workers": 8}, "vri-check": {"workers": 8}, "vri-surface": {"workers": 8},
+                "graph-enumeration": {"workers": 8}, "nanoreactor": {"workers": 8},
+                "retrosynthesis": {"workers": 8}}
+            - name: MEPD_DEMO_PROFILE_CAPS         # parallelism a tester's own profile may ask for
+              value: >-
+                {"n_parallel": 8, "n_threads": 8, "node_threads": 8, "threads": 8, "workers": 8,
+                "batch_size": 32}
+            - name: MEPD_DEMO_SANDBOX              # interactive reactors at once
+              value: '{"total": 8}'
+            - name: MEPD_DEMO_QMMM                 # whole QM/MM systems: a protein site with its water
+              value: '{"max_atoms": 50000, "max_active_radius": 8.0}'
+            - name: MEPD_DEMO_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: mepd-demo, key: password}
+          ports:
+            - name: http
+              containerPort: 8765
+          volumeMounts:
+            - name: data                       # workspaces, jobs, logins: everything kept
+              mountPath: /data
+            - name: tmp                        # GSM/Psi4 scratch: the data disk, not the OS disk
+              mountPath: /tmp
+            - name: shm                        # PyTorch worker processes share memory here
+              mountPath: /dev/shm
+          resources:
+            # The node is mepd's: most of its 64 cores and 256 GB, leaving room
+            # for the OS and Kubernetes' own processes.
+            requests:
+              cpu: "56"
+              memory: 64Gi
+              nvidia.com/gpu: 1
+            limits:
+              memory: 224Gi
+              nvidia.com/gpu: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 5
+            failureThreshold: 60               # up to 5 min to start
+          readinessProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /login, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5                # a busy server is not a dead one
+      volumes:
+        - name: data
+          hostPath: {path: /nvme1/mepd/data, type: Directory}
+        - name: tmp
+          hostPath: {path: /nvme1/mepd/tmp, type: Directory}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 8Gi}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mepd
+  namespace: mepd
+spec:
+  type: ClusterIP
+  selector: {app: mepd}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mepd
+  namespace: mepd
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: mepd.atomsforhumanity.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mepd
+                port: {name: http}

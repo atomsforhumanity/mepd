@@ -27,7 +27,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -633,25 +633,6 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         elif path.startswith("/static/") or path == "/":
             response.headers["Cache-Control"] = "no-cache"
         return response
-
-    if demo is not None:
-        # Registered last = outermost: must run before the login check, which
-        # otherwise answers a plain-http request itself.
-        @app.middleware("http")
-        async def _https_only(request: Request, call_next):
-            # Behind the public proxy: a plain-http visit can be tampered with
-            # by the network (injected redirects), so bounce it to https and
-            # tell browsers to stay on https (HSTS).
-            # Cloudflare reports the visitor's scheme in CF-Visitor (its hop to
-            # cloudflared is always https); other proxies use X-Forwarded-Proto.
-            cf = request.headers.get("cf-visitor", "")
-            visitor_scheme = ("http" if '"http"' in cf else "https") if cf else request.headers.get("x-forwarded-proto")
-            if visitor_scheme == "http":
-                return RedirectResponse(str(request.url.replace(scheme="https")), status_code=301)
-            response = await call_next(request)
-            if visitor_scheme == "https":
-                response.headers["Strict-Transport-Security"] = "max-age=31536000"
-            return response
 
     @app.exception_handler(WorkspaceError)
     async def _ws_error(_: Request, exc: WorkspaceError):
@@ -1528,14 +1509,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         Advanced settings those choices use)."""
         from mepd.web import profile_form
 
-        return profile_form.form(body.text)
+        return profile_form.form(body.text, demo.profile_engines if demo is not None else None)
 
     @app.post("/api/profiles/form/apply")
     def profile_form_apply(body: ProfileFormIn):
         """Change one form setting; returns the new TOML (not saved) and form."""
         from mepd.web import profile_form
 
-        return profile_form.apply(body.text, body.path, body.value)
+        return profile_form.apply(body.text, body.path, body.value, demo.profile_engines if demo is not None else None)
 
     @app.post("/api/profiles/validate")
     async def validate_profile(body: ProfileIn):

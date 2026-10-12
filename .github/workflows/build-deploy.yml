@@ -1,0 +1,145 @@
+# Build the mepd image, test it, push it to GHCR, and deploy it to the beta
+# cluster (deploy/k8s). See deploy/ci/README.md for the runner and secrets.
+#
+#   push to main        build main-<run>-<sha> (+ `main`), test, push, deploy
+#   push a tag v1.2.3   build 1.2.3, test, push (no deploy)
+#   Run workflow        with `tag`: deploy that existing image (redeploy or roll
+#                       back) without building; without: as a push to main
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Deploy this existing image tag instead of building (e.g. main-14-592a9b4)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write          # push to ghcr.io/atomsforhumanity/mepd
+
+env:
+  IMAGE: ghcr.io/atomsforhumanity/mepd
+
+jobs:
+  build:
+    if: inputs.tag == ''
+    # The self-hosted runner on our own node: a warm build cache (a code-only
+    # change rebuilds in minutes) and the room an ~18 GB image needs.
+    runs-on: [self-hosted, linux, x64, mepd-build]
+    timeout-minutes: 180
+    concurrency:
+      group: build-${{ github.ref }}
+      cancel-in-progress: true          # a newer push supersedes this one
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Choose the tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+          else
+            tag="main-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Image: $IMAGE:$tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build (the image checks itself at the end)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}    # UMA weights; a build secret, never in a layer
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker build --secret id=hf_token,env=HF_TOKEN \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$TAG" \
+            -t "$IMAGE:$TAG" .
+
+      - name: Test inside the image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # The tests are mounted, not shipped. A failure is retried once, alone:
+          # two tests are known to be flaky under parallel load (CHANGELOG.md).
+          docker run --rm -u root \
+            --mount "type=bind,src=$PWD/tests,dst=/src/tests,readonly" \
+            --mount "type=bind,src=$PWD/pyproject.toml,dst=/src/pyproject.toml,readonly" \
+            -w /src --entrypoint bash "$IMAGE:$TAG" -c '
+              uv pip install -q --no-cache --python /opt/mepd/venv/bin/python pytest==9.1.1 pytest-xdist==3.8.0
+              export HOME=/tmp/home
+              run() { python -m pytest -q -o cache_dir=/tmp/pytest-cache "$@"; }
+              run -n 8 tests && exit 0          # 8: the runner shares afh-services with the web services
+              echo "::warning::some tests failed; rerunning just those, one at a time"
+              run -n 0 --last-failed --last-failed-no-failures none tests'
+
+      - name: Push
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$TAG"
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            docker tag "$IMAGE:$TAG" "$IMAGE:main"
+            docker push "$IMAGE:main"
+          fi
+
+      - name: Clean up
+        if: always()
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          docker logout ghcr.io || true
+          # Only the tags: the layers stay in the build cache for the next build.
+          docker image rm "$IMAGE:$TAG" "$IMAGE:main" 2>/dev/null || true
+
+  deploy:
+    needs: build
+    # After a successful build of main, or a manual run naming a tag.
+    if: >-
+      always() &&
+      ((needs.build.result == 'success' && github.ref == 'refs/heads/main') ||
+       (needs.build.result == 'skipped' && inputs.tag != ''))
+    runs-on: [self-hosted, linux, x64, mepd-build]
+    timeout-minutes: 30
+    environment: production                # GitHub keeps a deploy history (created on first use)
+    concurrency:
+      group: deploy-mepd
+      cancel-in-progress: false            # never stop a deploy halfway
+    env:
+      TAG: ${{ inputs.tag || needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy ${{ env.TAG }}
+        run: |
+          # k3s's kubectl, with the cluster's kubeconfig the runner's user keeps (deploy/ci/README.md)
+          export KUBECONFIG="$HOME/.kube/config"
+          sed -i -E "s|^(\s*newTag:).*|\1 $TAG|" deploy/k8s/kustomization.yaml
+          kubectl kustomize deploy/k8s | grep -q "image: $IMAGE:$TAG" || { echo "tag not applied"; exit 1; }
+          kubectl apply -k deploy/k8s
+          # Jobs running at this moment become "interrupted" (resumable).
+          if ! kubectl -n mepd rollout status deploy/mepd --timeout=20m; then
+            echo "::error::the new version did not become ready; rolling back"
+            kubectl -n mepd describe pods -l app=mepd | tail -40 || true
+            kubectl -n mepd logs deploy/mepd --tail=60 || true
+            kubectl -n mepd rollout undo deploy/mepd
+            kubectl -n mepd rollout status deploy/mepd --timeout=20m
+            exit 1
+          fi
+          echo "Deployed $IMAGE:$TAG to mepd.atomsforhumanity.org" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the public site
+        run: |
+          for _ in $(seq 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://mepd.atomsforhumanity.org/login) || true
+            [ "$code" = 200 ] && { echo "https://mepd.atomsforhumanity.org/login: 200"; exit 0; }
+            sleep 10
+          done
+          echo "::error::https://mepd.atomsforhumanity.org/login answered $code"; exit 1

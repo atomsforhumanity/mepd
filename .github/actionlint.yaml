@@ -1,0 +1,4 @@
+# For actionlint: the label of our self-hosted build runner (deploy/ci/README.md).
+self-hosted-runner:
+  labels:
+    - mepd-build
