@@ -1,5 +1,5 @@
 """FSM-TS: the freezing string method with a TS-based elementary-step check,
-and NEB when that check finds the TS does not connect the pair.
+and GSM (or NEB) when that check finds the TS does not connect the pair.
 
 For one pair (reactant R, product P), as MSMEP hands it over:
 
@@ -11,8 +11,9 @@ For one pair (reactant R, product P), as MSMEP hands it over:
    - R and P: an elementary step (a leaf; the TS is kept on the result);
    - one end and a new species, or two new species: not elementary; MSMEP
      splits at the new species (R -> X -> P, or R -> X -> Y -> P);
-5. ... and the TS is discarded and the pair is searched again with NEB (with
-   NEB's own elementary-step checks, which may split it) when the minima are
+5. ... and the TS is discarded and the pair is searched again with the
+   fallback method -- GSM by default, or NEB; either with its own
+   elementary-step checks, which may split it -- when the minima are
    both R or both P (the TS belongs to another motion, e.g. a conformer
    change), when the TS optimization fails, or when what it found is not a
    TS (no imaginary frequency, or more than one: a higher-order saddle) --
@@ -24,11 +25,18 @@ FSM is quick to give a path whose highest point optimizes to a real TS;
 the pseudo-IRC costs one Hessian and two minimizations, far less than an
 IRC, and answers the same question MSMEP asks: does this one TS join R
 and P?
+
+GSM is the default fallback: on 20 KAIST reactions (playgroud
+results/pathbench) it found the lowest channel more often than NEB (17 vs 14
+within 1 kcal/mol of the best method; 1 vs 2 with none). Without a GSM
+binary the fallback is NEB.
 """
 from __future__ import annotations
 
 import copy
 import logging
+import os
+import shutil
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Optional
@@ -48,26 +56,31 @@ from mepd.progress import print_persistent
 
 logger = logging.getLogger(__name__)
 
-# Keys the NEB fallback shares with the FSM-TS run (the rest are NEB's own
-# defaults, then `neb_inputs` overrides).
-_SHARED_WITH_NEB = ("skip_identical_graphs", "disregard_stereochem", "do_elem_step_checks",
+# Keys the fallback (GSM or NEB) shares with the FSM-TS run (the rest are
+# that method's own defaults, then `gsm_inputs` / `neb_inputs` overrides).
+_SHARED_WITH_FALLBACK = ("skip_identical_graphs", "disregard_stereochem", "do_elem_step_checks",
                     "validate_minima_with_hessian", "hessian_minimum_frequency_cutoff",
                     "hessian_minima_rescue_displacement")
 
 
 def fsm_ts_defaults() -> dict:
-    """FSM's own settings plus the TS / pseudo-IRC / fallback knobs."""
+    """FSM's own settings plus the TS / pseudo-IRC / fallback knobs. The
+    string is only a TS guess here (the TS optimization and pseudo-IRC do the
+    rest), so it is coarse: 3 beads and 3 minimization steps per growth."""
     from mepd.inputs import fneb_defaults
 
     return {
         **fneb_defaults(),
+        "min_images": 3,                      # beads: the path is grown in steps of d0 / (3 + 1)
+        "max_min_iter": 3,                    # minimization steps per growth step
         "ts_maxiter": 500,                    # TS optimization steps (engines that take it)
         "pseudo_irc_amplitude": 0.3,          # bohr: how far the most-moved atom is pushed off the TS
         "pseudo_irc_maxiter": 500,            # each minimization
         "pseudo_irc_hessian": "auto",         # auto | engine | gradients (auto: gradients for g-xTB)
         "pseudo_irc_imaginary_cutoff": 20.0,  # cm^-1: below -this is an imaginary mode
-        "neb_fallback": True,                 # False: keep the FSM path and run FSM's usual check
-        "neb_inputs": {},                     # overrides for the NEB fallback (NEBInputs keys)
+        "fallback": "GSM",                    # GSM | NEB | none (none: keep the FSM path, FSM's usual check)
+        "gsm_inputs": {},                     # overrides for a GSM fallback (GSM's path_min_inputs keys)
+        "neb_inputs": {},                     # overrides for an NEB fallback (NEBInputs keys)
     }
 
 
@@ -78,7 +91,7 @@ class FSMTS(PathMinimizer):
     optimizer: Optimizer
     parameters: SimpleNamespace = None
     gi_inputs: SimpleNamespace = None
-    neb_optimizer: Optional[Optimizer] = None   # the fallback's (a fresh one); default: a copy of `optimizer`
+    neb_optimizer: Optional[Optimizer] = None   # an NEB fallback's (a fresh one); default: a copy of `optimizer`
     chain_trajectory: list = field(default_factory=list)
 
     def __post_init__(self):
@@ -277,32 +290,76 @@ class FSMTS(PathMinimizer):
         return [a, b] if d(a, r) + d(b, p) <= d(b, r) + d(a, p) else [b, a]
 
     # ------------------------------------------------------------- fallback
+    def _fallback_method(self) -> Optional[str]:
+        """"GSM", "NEB" or None (no fallback). `neb_fallback = false`, the
+        older switch, still turns it off; GSM without a binary is NEB."""
+        if self._p("neb_fallback") is False:
+            return None
+        method = str(self._p("fallback") or "none").upper()
+        if method in ("NONE", "FALSE", "OFF", ""):
+            return None
+        if method not in ("GSM", "NEB"):
+            raise ValueError(f"FSM-TS fallback must be GSM, NEB or none, not {self._p('fallback')!r}")
+        if method == "GSM" and not self._gsm_executable():
+            self._log("no GSM binary (set gsm_inputs.executable or $GSM_EXECUTABLE); the fallback is NEB",
+                      level="warning")
+            return "NEB"
+        return method
+
+    def _gsm_executable(self) -> Optional[str]:
+        exe = (dict(self._p("gsm_inputs") or {}).get("executable") or os.getenv("GSM_EXECUTABLE") or "gsm")
+        return shutil.which(str(exe))
+
     def _fallback(self, reason: str, fsm_chain: Optional[Chain] = None) -> ElemStepResults:
-        """Discard the TS; NEB on the pair (or, with neb_fallback off, the
-        FSM path with FSM's usual elementary-step check)."""
-        self._log(f"{reason}; " + ("searching this pair again with NEB" if self._p("neb_fallback")
-                                   else "keeping the FSM path"), level="warning")
+        """Discard the TS; search the pair with GSM or NEB (or, with the
+        fallback off, keep the FSM path with FSM's usual elementary-step check)."""
+        method = self._fallback_method()
+        self._log(f"{reason}; " + (f"searching this pair again with {method}" if method else "keeping the FSM path"),
+                  level="warning")
         self.fallback_reason = reason
-        if not self._p("neb_fallback"):
+        if method is None:
             if fsm_chain is None:
                 raise NoneConvergedException(trajectory=self.chain_trajectory, msg=reason, obj=self)
             short = Chain.model_validate({"nodes": [fsm_chain[0], fsm_chain.get_ts_node(), fsm_chain[-1]],
                                           "parameters": fsm_chain.parameters})
             return check_if_elem_step(short, engine=self.engine, **elem_step_check_kwargs(self.parameters))
+        self.ts_node = None
+        if method == "GSM":
+            try:
+                return self._run_fallback("GSM", self._gsm())
+            except NoneConvergedException:
+                raise
+            except Exception as exc:   # the binary failed: NEB still gets the pair
+                self._log(f"GSM failed ({type(exc).__name__}: {exc})"[:300] + "; searching with NEB", level="warning")
+                self.fallback_reason = f"{reason}; GSM failed ({type(exc).__name__})"
+        return self._run_fallback("NEB", self._neb())
+
+    def _shared(self) -> dict:
+        return {k: getattr(self.parameters, k) for k in _SHARED_WITH_FALLBACK if hasattr(self.parameters, k)}
+
+    def _gsm(self):
+        from mepd.inputs import RunInputs
+        from mepd.pathminimizers.gsm import GSM
+
+        own = vars(RunInputs(path_min_method="GSM").path_min_inputs)
+        params = SimpleNamespace(**{**own, **self._shared(), **dict(self._p("gsm_inputs") or {})})
+        return GSM(initial_chain=self.initial_chain, engine=self.engine, parameters=params, gi_inputs=self.gi_inputs)
+
+    def _neb(self):
         from mepd.inputs import NEBInputs
         from mepd.neb import NEB
 
-        shared = {k: getattr(self.parameters, k) for k in _SHARED_WITH_NEB if hasattr(self.parameters, k)}
-        params = SimpleNamespace(**{**NEBInputs().__dict__, **shared, **dict(self._p("neb_inputs") or {})})
-        neb = NEB(initial_chain=self.initial_chain, parameters=params,
-                  optimizer=self.neb_optimizer or copy.deepcopy(self.optimizer), engine=self.engine)
-        self.path_method_used = "NEB"
-        self.ts_node = None
+        params = SimpleNamespace(**{**NEBInputs().__dict__, **self._shared(), **dict(self._p("neb_inputs") or {})})
+        return NEB(initial_chain=self.initial_chain, parameters=params,
+                   optimizer=self.neb_optimizer or copy.deepcopy(self.optimizer), engine=self.engine)
+
+    def _run_fallback(self, method: str, minimizer) -> ElemStepResults:
+        self.path_method_used = method
         try:
-            result = neb.optimize_chain()
-        finally:   # MSMEP reads the trajectory, also when NEB did not converge
-            self.chain_trajectory = list(neb.chain_trajectory) or self.chain_trajectory
-            self.optimized = getattr(neb, "optimized", None) or (self.chain_trajectory[-1] if self.chain_trajectory else None)
-            self.grad_calls_made += getattr(neb, "grad_calls_made", 0)
-            self.geom_grad_calls_made += getattr(neb, "geom_grad_calls_made", 0)
+            result = minimizer.optimize_chain()
+        finally:   # MSMEP reads the trajectory, also when the fallback did not converge
+            self.chain_trajectory = list(getattr(minimizer, "chain_trajectory", None) or []) or self.chain_trajectory
+            self.optimized = getattr(minimizer, "optimized", None) or (self.chain_trajectory[-1] if self.chain_trajectory else None)
+            self.grad_calls_made += getattr(minimizer, "grad_calls_made", 0)
+            self.geom_grad_calls_made += getattr(minimizer, "geom_grad_calls_made", 0)
         return result

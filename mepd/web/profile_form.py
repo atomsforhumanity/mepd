@@ -38,7 +38,7 @@ PATH_METHODS = [
     ("FNEB", "FSM (FNEB)", "Freezing string method: grows the path from both ends, then relaxes it."),
     ("FSM-TS", "FSM + TS check", "Freezing string, then the TS optimized from its highest image and a pseudo-IRC (one "
                "Hessian, a push both ways along the imaginary mode, two minimizations) decides: one step, split at "
-               "the new minima, or, when the TS does not join the pair, search it again with NEB."),
+               "the new minima, or, when the TS does not join the pair, search it again with GSM (or NEB)."),
     ("GSM", "GSM", "Growing string method (molecularGSM binary)."),
     ("MLPGI", "MLP-GI", "Geodesic path on the energy surface: minimizes the path's energy-weighted length and adds "
                         "images near barriers. Runs on this profile's engine, or on a machine-learned potential "
@@ -136,8 +136,8 @@ HIDDEN_PATH_KEYS = {"adaptive_segment_ratio", "adaptive_energy_ratio", "adaptive
 KEY_PATH_FIELDS = {
     "NEB": ["climb", "max_steps", "rms_grad_thre", "ts_grad_thre", "ts_converged_stop", "adaptive_resolution"],
     "FNEB": ["max_grow_iter", "max_min_iter", "grad_tol", "min_images", "tangent", "distance_metric"],
-    "FSM-TS": ["max_grow_iter", "grad_tol", "min_images", "pseudo_irc_amplitude", "pseudo_irc_hessian", "neb_fallback",
-               "neb_inputs"],
+    "FSM-TS": ["max_grow_iter", "grad_tol", "min_images", "pseudo_irc_amplitude", "pseudo_irc_hessian", "fallback",
+               "gsm_inputs", "neb_inputs"],
     "GSM": ["nnodes", "seed_with_geodesic_interpolation", "max_opt_iters", "conv_tol", "ts_final_type",
             "early_stop_on_minima", "executable"],
     "GEOMETRIC-NEB": ["max_steps", "rms_grad_thre", "max_rms_grad_thre", "climb", "nebk"],
@@ -159,6 +159,7 @@ OPTIONS = {
     "xtb_engine_kwds.method": [("gfn2", "GFN2-xTB"), ("gfn1", "GFN1-xTB")],
     "path_min_inputs.tangent": [("geodesic", "geodesic"), ("linear", "linear")],
     "path_min_inputs.pseudo_irc_hessian": [("auto", "auto"), ("engine", "the engine's"), ("gradients", "from gradients")],
+    "path_min_inputs.fallback": [("GSM", "GSM"), ("NEB", "NEB"), ("none", "none")],
     "path_min_inputs.distance_metric": [("GEODESIC", "geodesic"), ("RMSD", "RMSD"), ("LINEAR", "linear")],
     "path_min_inputs.new_minimizer": [("no", "no"), ("yes", "yes")],
     "path_min_inputs.ts_final_type": [(1, "1: bond breaking"), (0, "0: no bond breaking")],
@@ -242,9 +243,11 @@ HELP = {
     "pseudo_irc_hessian": "The Hessian at the TS: auto (from gradient differences for g-xTB, whose own Hessian "
                           "disagrees with its gradients; the engine's otherwise), engine, or gradients.",
     "pseudo_irc_imaginary_cutoff": "Frequencies below minus this (cm⁻¹) count as imaginary.",
-    "neb_fallback": "When the TS does not join the pair (both sides minimize to one end, or the TS search fails), "
-                    "search the pair again with NEB. Off: keep the FSM path and its usual check.",
-    "neb_inputs": "Settings for that NEB (any NEB setting, e.g. {max_steps = 500, climb = true}).",
+    "fallback": "When the TS does not join the pair (both sides minimize to one end, or the TS search fails), "
+                "search the pair again with GSM (NEB when no GSM binary is installed) or NEB; none keeps the FSM "
+                "path and its usual check.",
+    "gsm_inputs": "Settings for a GSM fallback (any GSM setting, e.g. {nnodes = 20, max_opt_iters = 80}).",
+    "neb_inputs": "Settings for an NEB fallback (any NEB setting, e.g. {max_steps = 500, climb = true}).",
     "max_min_iter": "Minimization iterations per growth step.",
     "min_images": "Fewest images FSM keeps.",
     "tangent": "Tangent used while growing.",

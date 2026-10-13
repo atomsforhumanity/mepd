@@ -1,7 +1,7 @@
 """FSM-TS: FSM, then the TS and a pseudo-IRC decide the pair's fate.
 
-The engine steps (FSM growth, TS optimization, Hessian, minimizations, NEB)
-are stubbed so each verdict -- elementary, split, NEB fallback -- is driven
+The engine steps (FSM growth, TS optimization, Hessian, minimizations, NEB,
+GSM) are stubbed so each verdict -- elementary, split, fallback -- is driven
 exactly; the species comparison is mepd's own (molecular graphs).
 """
 from types import SimpleNamespace
@@ -46,8 +46,11 @@ class _Engine:
             n._cached_energy = -76.0
 
 
-def _run(monkeypatch, ends, *, freqs=(-900.0, 120.0), engine=None, ancestors=None, **params):
-    """FSMTS on R -> P with the pseudo-IRC minima `ends` ([plus, minus])."""
+def _run(monkeypatch, ends, *, freqs=(-900.0, 120.0), engine=None, ancestors=None, gsm=None, **params):
+    """FSMTS on R -> P with the pseudo-IRC minima `ends` ([plus, minus]).
+    The fallback is NEB unless `gsm` is given: then GSM, whose stub returns
+    `gsm` (an exception is raised)."""
+    params.setdefault("fallback", "GSM" if gsm is not None else "NEB")
     ri = RunInputs(path_min_method="FSM-TS", path_min_inputs=params)
     chain = Chain.model_validate({"nodes": [R.copy(), TS.copy(), P.copy()], "parameters": ri.chain_inputs})
     for node, e in zip(chain.nodes, (-76.40, -76.30, -76.35)):   # the TS guess is the highest image
@@ -76,6 +79,20 @@ def _run(monkeypatch, ends, *, freqs=(-900.0, 120.0), engine=None, ancestors=Non
 
     monkeypatch.setattr("mepd.pathminimizers.fneb.FreezingNEB", FakeFSM)
     monkeypatch.setattr("mepd.neb.NEB", FakeNEB)
+
+    class FakeGSM:
+        def __init__(self, initial_chain, engine, parameters, gi_inputs):
+            neb_runs.append(("GSM", parameters))
+            self.chain_trajectory, self.optimized = [initial_chain], initial_chain
+            self.grad_calls_made, self.geom_grad_calls_made = 5, 0
+
+        def optimize_chain(self):
+            if isinstance(gsm, Exception):
+                raise gsm
+            return gsm
+
+    monkeypatch.setattr("mepd.pathminimizers.gsm.GSM", FakeGSM)
+    monkeypatch.setattr(FSMTS, "_gsm_executable", lambda self: "/opt/gsm" if gsm is not None else None)
     monkeypatch.setattr("mepd.discovery.vri._optimize_nodes", lambda engine, nodes, kw: list(ends))
     monkeypatch.setattr(FSMTS, "_modes", lambda self, ts: SimpleNamespace(
         freqs=np.array(freqs), lowest_mode_cart=np.ones((3, 3))))
@@ -151,6 +168,29 @@ def test_with_the_fallback_off_the_fsm_path_gets_fsms_usual_check(monkeypatch):
     assert res == "FSM check" and seen == [3] and not neb and m.path_method_used == "FSM"
 
 
+def test_gsm_is_the_fallback_with_its_own_settings_the_shared_ones_and_overrides(monkeypatch):
+    m, res, runs = _run(monkeypatch, [R, R], gsm="GSM's verdict", gsm_inputs={"nnodes": 20})
+    assert res == "GSM's verdict" and m.path_method_used == "GSM" and m.ts_node is None
+    (name, p), = runs
+    assert name == "GSM" and p.nnodes == 20 and hasattr(p, "max_opt_iters") and p.skip_identical_graphs is True
+    assert m.grad_calls_made == 5
+
+
+def test_a_failing_gsm_hands_the_pair_to_neb_and_no_binary_means_neb(monkeypatch):
+    m, res, runs = _run(monkeypatch, [R, R], gsm=RuntimeError("gsm crashed"))
+    assert res == "NEB's verdict" and m.path_method_used == "NEB" and "GSM failed" in m.fallback_reason
+    assert runs[0][0] == "GSM" and len(runs) == 2
+    m, res, runs = _run(monkeypatch, [R, R], fallback="GSM")   # no binary
+    assert res == "NEB's verdict" and m.path_method_used == "NEB" and len(runs) == 1
+
+
+def test_fallback_none_or_the_old_switch_off_keeps_the_fsm_path(monkeypatch):
+    monkeypatch.setattr(fsm_ts, "check_if_elem_step", lambda chain, engine, **kw: "FSM check")
+    for off in ({"fallback": "none"}, {"neb_fallback": False, "fallback": "GSM"}):
+        m, res, runs = _run(monkeypatch, [R, R], **off)
+        assert res == "FSM check" and not runs and m.path_method_used == "FSM"
+
+
 def test_fsm_ts_is_a_path_method_with_its_aliases():
     from mepd.msmep import PATH_METHODS, _normalize_path_method
 
@@ -158,4 +198,4 @@ def test_fsm_ts_is_a_path_method_with_its_aliases():
     for name in ("FSM-TS", "fsm_ts", "fsmts", "FNEB-TS"):
         assert _normalize_path_method(name) == "FSM-TS"
     p = RunInputs(path_min_method="fsm-ts").path_min_inputs
-    assert p.max_grow_iter == 20 and p.pseudo_irc_amplitude == 0.3 and p.neb_fallback is True
+    assert p.min_images == 3 and p.max_min_iter == 3 and p.max_grow_iter == 20 and p.pseudo_irc_amplitude == 0.3 and p.fallback == "GSM"

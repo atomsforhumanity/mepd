@@ -547,14 +547,25 @@ class NEB(PathMinimizer):
     def _ts_region_converged(self, prev: Chain, new: Chain, ind_ts: int, ts_grad: float) -> bool:
         """The TS guess is converged even if the rest of the band isn't: an
         interior highest image whose perpendicular gradient and neighbouring
-        springs are within threshold, with a barrier that has stopped moving."""
+        springs are within threshold, with a barrier that has stopped moving
+        -- both since the last step and over the last `ts_converged_window`
+        steps. One step is not enough: while the band is still relaxing the
+        barrier can drift down slowly (0.07 kcal/mol a step on a KAIST pair,
+        under barrier_thre), and stopping there left it 25 kcal/mol high."""
         if not getattr(self.parameters, "ts_converged_stop", False) or ind_ts in (0, len(new) - 1):
             return False
-        return (
-            ts_grad <= self.parameters.ts_grad_thre
-            and new.ts_triplet_gspring_infnorm <= self.parameters.ts_spring_thre
-            and abs(new.get_eA_chain() - prev.get_eA_chain()) <= self.parameters.barrier_thre
-        )
+        if not (ts_grad <= self.parameters.ts_grad_thre
+                and new.ts_triplet_gspring_infnorm <= self.parameters.ts_spring_thre
+                and abs(new.get_eA_chain() - prev.get_eA_chain()) <= self.parameters.barrier_thre):
+            return False
+        window = int(getattr(self.parameters, "ts_converged_window", 0) or 0)
+        if window <= 0:
+            return True
+        history = getattr(self, "chain_trajectory", None) or []
+        if len(history) < window:   # too few steps to tell a stable barrier from a slow drift
+            return False
+        drift = abs(new.get_eA_chain() - history[-window].get_eA_chain())
+        return drift <= float(getattr(self.parameters, "ts_converged_window_thre", 0.5))
 
     def _elem_step_check(self, chain: Chain) -> ElemStepResults:
         results = check_if_elem_step(

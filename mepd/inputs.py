@@ -39,7 +39,7 @@ def _normalized_path_method(path_min_method: str) -> str:
         "GEOMETRIC": "GEOMETRIC-NEB",
         "GEOMETRICNEB": "GEOMETRIC-NEB",
         "FSM": "FNEB",  # freezing string method
-        "FSMTS": "FSM-TS",  # FSM, TS opt + pseudo-IRC check, NEB fallback
+        "FSMTS": "FSM-TS",  # FSM, TS opt + pseudo-IRC check, GSM/NEB fallback
         "FNEB-TS": "FSM-TS",
         "FNEBTS": "FSM-TS",
         "MLP-GI": "MLPGI",
@@ -217,7 +217,13 @@ class NEBInputs:
         check (TS |g_perp| and TS springs below early_stop_force_thre) finds the
         chain elementary, NEB stops there; otherwise the chain counts as converged
         once the interior highest image's |g_perp| <= ts_grad_thre, springs around
-        it <= ts_spring_thre and the barrier has stopped moving (<= barrier_thre).
+        it <= ts_spring_thre and the barrier has stopped moving: <= barrier_thre since
+        the last step and <= ts_converged_window_thre over the last
+        ts_converged_window steps.
+    `ts_converged_window`: steps over which the barrier must have stopped moving
+        before the TS-region stop (default: 50; 0 = only the last step).
+    `ts_converged_window_thre`: largest barrier change over that window, kcal/mol
+        (default: 0.5).
     `recursive_same_pair_split_limit`: during recursive autosplitting, if a branch
         repeats the exact same (start, end) endpoint pair this many times in a row
         with no new chemistry found (a genuinely unproductive loop -- a split that
@@ -279,6 +285,8 @@ class NEBInputs:
     recursive_cycle_revisits: int = 5
     direct_only: bool = False
     ts_converged_stop: bool = True
+    ts_converged_window: int = 50
+    ts_converged_window_thre: float = 0.5  # kcal/mol
 
     max_steps: float = 2000
 

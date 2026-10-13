@@ -74,6 +74,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **FSM-TS falls back to GSM, not NEB** (`[path_min_inputs] fallback = "GSM" | "NEB" | "none"`,
+  overrides in `gsm_inputs` / `neb_inputs`). On 20 KAIST reactions GSM found the lowest channel more often
+  than NEB. Without a GSM binary, or when GSM fails, the pair goes to NEB. `neb_fallback = false` still
+  turns the fallback off.
+- **FSM-TS defaults to a coarse string: 3 beads (`min_images`) and 3 minimization steps per growth
+  (`max_min_iter`)**, down from FSM's 10 and 100. FNEB keeps its defaults.
 - **Kinetics: the degree-of-control bars say what they mean.** Each reads "3.2× more" or "1.6× less": what
   lowering that TS, or stabilizing that species, by 1 kcal/mol does to the target (X is in the tooltip).
   "No barrier controls it" says equilibrium only when the run has stopped changing.
@@ -124,6 +130,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **NEB stopped on a barrier that was still falling.** The TS-region stop (`ts_converged_stop`) checked only
+  that the barrier moved less than `barrier_thre` since the last step; a band still relaxing drifts by less
+  than that (0.07 kcal/mol a step on a KAIST pair) and stopped 25 kcal/mol high (114 vs 90 kcal/mol). The
+  barrier must now also have moved under `ts_converged_window_thre` (0.5 kcal/mol) over the last
+  `ts_converged_window` (50) steps.
 - **Kinetics: "the kinetics did not integrate".** Runs failed or crawled at the top of the default
   250–650 K sweep, and some at room temperature (the CO2 + epoxide network at 298 K for 2 h). Causes: the
   per-step extents' rounding noise steered BDF's step size, and amounts were clipped at zero inside the rates.

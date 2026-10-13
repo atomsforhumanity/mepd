@@ -4,8 +4,10 @@ from mepd.neb import NEB
 
 
 def _neb(**params):
-    defaults = dict(ts_converged_stop=True, ts_grad_thre=0.005, ts_spring_thre=0.005, barrier_thre=0.1)
-    return SimpleNamespace(parameters=SimpleNamespace(**{**defaults, **params}))
+    defaults = dict(ts_converged_stop=True, ts_grad_thre=0.005, ts_spring_thre=0.005, barrier_thre=0.1,
+                    ts_converged_window=0)
+    history = params.pop("history", [])
+    return SimpleNamespace(parameters=SimpleNamespace(**{**defaults, **params}), chain_trajectory=history)
 
 
 
@@ -27,6 +29,19 @@ def test_ts_region_converged_ignores_the_rest_of_the_band():
     assert not check(_neb(), _Chain(ea=10.0), _Chain(ea=10.5), ind_ts=3, ts_grad=0.004)  # barrier moving
     assert not check(_neb(), _Chain(), _Chain(), ind_ts=6, ts_grad=0.0)  # TS guess at an endpoint
     assert not check(_neb(ts_converged_stop=False), _Chain(), _Chain(), ind_ts=3, ts_grad=0.0)
+
+
+def test_a_barrier_drifting_slowly_over_the_window_is_not_converged():
+    # 0.07 kcal/mol a step passes barrier_thre, but 50 such steps are 3.5 kcal/mol.
+    check = NEB._ts_region_converged
+    drifting = [_Chain(ea=114.0 + 0.07 * (50 - i)) for i in range(50)]
+    assert not check(_neb(ts_converged_window=50, history=drifting), _Chain(ea=114.07), _Chain(ea=114.0),
+                     ind_ts=3, ts_grad=0.004)
+    steady = [_Chain(ea=114.0 + 0.005 * (50 - i)) for i in range(50)]
+    assert check(_neb(ts_converged_window=50, history=steady), _Chain(ea=114.005), _Chain(ea=114.0),
+                 ind_ts=3, ts_grad=0.004)
+    # Fewer steps than the window: no stop yet.
+    assert not check(_neb(ts_converged_window=50, history=steady[:10]), _Chain(), _Chain(), ind_ts=3, ts_grad=0.004)
 
 
 def test_gxtb_concurrent_optimizations_do_not_share_extra_args(monkeypatch):

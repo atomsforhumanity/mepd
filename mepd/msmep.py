@@ -1238,7 +1238,7 @@ class MSMEP:
         elif path_method == "FSM-TS":
             from mepd.pathminimizers.fsm_ts import FSMTS
 
-            self._say("Using FSM-TS (freezing string, TS + pseudo-IRC check, NEB fallback)")
+            self._say("Using FSM-TS (freezing string, TS + pseudo-IRC check, GSM/NEB fallback)")
             n = FSMTS(
                 initial_chain=initial_chain,
                 engine=self.inputs.engine,
