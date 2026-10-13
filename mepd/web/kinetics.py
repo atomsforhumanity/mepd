@@ -4,7 +4,10 @@ plain edge whose TS search gave a barrier, among species with energies at
 one level of theory -- and the analyses the page shows."""
 from __future__ import annotations
 
-from typing import Optional
+import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -71,7 +74,17 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
 
     ids = [sid for sid, r in st.items() if is_species(r) and usable(r)]
     index = {sid: k for k, sid in enumerate(ids)}
+    names = [st[s]["name"] for s in ids]
+    g = [st[s]["energy"] * HARTREE_KCAL for s in ids]
+    geom = list(ids)          # the structure whose geometry each model species stands for
     steps, info, excluded = [], [], []
+
+    # A complex is its molecules side by side, not a species of its own: a
+    # reaction runs from its separated reactants to its separated products,
+    # with its TS energy (relative to the separated molecules, which is the
+    # pre-equilibrium rate K_assoc * k through the complex). So "A + B" at
+    # 1 M is 1 M of A and 1 M of B, and what a reaction makes is counted in
+    # its products' own amounts.
     for r in (snap.get("reactions") or {}).values():
         label = r.get("label") or "reaction"
         edge = snap["edges"].get(r.get("edge") or "")
@@ -83,14 +96,13 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
         if e_ts is None:
             excluded.append({"label": label, "reason": why, "reaction": r["id"]})
             continue
-        rc = st.get(edge["source"])
         missing = [st.get(s, {}).get("name", s) for s in r["reactants"] + r["products"] if s not in index]
-        if not usable(rc) or missing:
+        if missing:
             excluded.append({"label": label, "reaction": r["id"],
-                             "reason": "energies missing at this level: " + ", ".join(missing or ["reactant complex"])})
+                             "reason": "energies missing at this level: " + ", ".join(missing)})
             continue
         steps.append(mk.Step([index[s] for s in r["reactants"]], [index[s] for s in r["products"]],
-                             e_ts * HARTREE_KCAL, label))
+                             e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts)}))
         info.append({"kind": "reaction", "reaction": r["id"], "edge": edge["id"], "label": label,
                      "verified": verified, "job": jid, "shuttles": r.get("shuttles") or []})
     complexes = {sid for sid, rec in st.items() if rec.get("role") == "complex"}
@@ -108,7 +120,7 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
         if a not in index or c not in index:
             excluded.append({"label": label, "reason": "an end has no energy at this level", "edge": e["id"]})
             continue
-        steps.append(mk.Step([index[a]], [index[c]], e_ts * HARTREE_KCAL, label))
+        steps.append(mk.Step([index[a]], [index[c]], e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts)}))
         info.append({"kind": "edge", "edge": e["id"], "label": label, "verified": verified, "job": jid,
                      "shuttles": []})
     # The same transformation from several runs (same reactants and products,
@@ -128,18 +140,128 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
                                                           (tuple(sorted(s2.products)), tuple(sorted(s2.reactants))))
                                 == min((a, b), (b, a)))
     steps, info = [steps[k] for k in keep], [info[k] for k in keep]
-    names = [st[s]["name"] for s in ids]
-    g = np.array([st[s]["energy"] * HARTREE_KCAL for s in ids])
-    return mk.Network(names, g, steps), ids, info, excluded
+    net = mk.Network(names, np.array(g), steps)
+    net.geom = geom
+    return net, ids, info, excluded
+
+
+def ts_geometry(job_or_jobs, e_ts: float, tol: float = 2e-3):
+    """The TS structure in the output of a job (or of any of several jobs)
+    whose energy is closest to `e_ts` (Hartree, within `tol`): (symbols,
+    coordinates in Angstrom), or None."""
+    jobs_ = job_or_jobs if isinstance(job_or_jobs, list) else [job_or_jobs]
+    files = []
+    for job in jobs_:
+        out = Path((job or {}).get("output_dir") or "")
+        if out.is_dir():
+            files += list(out.rglob("ts*.xyz"))
+    best = None
+    for f in files:
+        if "irc" in f.name:
+            continue
+        en = f.with_suffix(".energies")
+        try:
+            e = float(en.read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            continue
+        if abs(e - e_ts) <= tol and (best is None or abs(e - e_ts) < best[0]):
+            best = (abs(e - e_ts), f)
+    if best is None:
+        return None
+    lines = best[1].read_text().splitlines()
+    n = int(lines[0])
+    rows = [ln.split() for ln in lines[2:2 + n]]
+    return [r[0] for r in rows], np.array([[float(v) for v in r[1:4]] for r in rows])
+
+
+def free_energies(ws, jobs: dict, net: mk.Network, *, workers: int = 2) -> tuple[Callable, dict]:
+    """G(T) for every species and TS of `net` (built by build()):
+    E + quasi-RRHO correction from GFN2-xTB single-point Hessians, cached
+    per geometry under the workspace's thermo/ folder. Returns
+    (energies_at(T) -> (g, g_ts), report)."""
+    from mepd import thermo
+
+    solvent, model = None, "alpb"
+    try:
+        solv = tomllib.loads(ws.read_profile(ws.level_profile)).get("solvation") if ws.level_profile else None
+    except Exception:
+        solv = None
+    if solv and solv.get("solvent"):
+        solvent, model = str(solv["solvent"]).lower(), str(solv.get("model", "alpb")).lower()
+    cache = Path(ws.root) / "thermo"
+    snap = ws.snapshot()["structures"]
+
+    def species_task(k):
+        sid = net.geom[k]
+        rec = snap[sid]
+        s = ws.load_structure(sid)
+        xyz = np.asarray(s.geometry).reshape(-1, 3) * 0.529177210903
+        return list(s.symbols), xyz, int(rec["charge"]), int(rec["multiplicity"])
+
+    tasks, approx = {}, []
+    for k in range(len(net.names)):
+        tasks[("sp", k)] = species_task(k)
+    for j, stp in enumerate(net.steps):
+        ref = (stp.info or {}).get("ts")
+        if not ref:
+            continue
+        job = jobs.get(ref[0])
+        # A TS search's summary carries the best TS of the "Sample more
+        # paths" runs that extend it, whose files are in their own folders.
+        family = [job] + [j for j in jobs.values() if job and j.get("extends") == job.get("id")]
+        if job and job.get("extends") in jobs:
+            family.append(jobs[job["extends"]])
+        found = ts_geometry([j for j in family if j], ref[1])
+        if found is None:
+            approx.append(stp.label)
+            continue
+        tasks[("ts", j)] = (*found, int(job.get("charge", 0)), int(job.get("multiplicity", 1)))
+
+    def run(item):
+        key, (symbols, xyz, q, mult) = item
+        return key, thermo.cached_frequencies(cache, symbols, xyz, charge=q, multiplicity=mult,
+                                              solvent=solvent, model=model)
+
+    new = sum(not (cache / f"{thermo.cache_key(sym, xyz, q, m, solvent, model)}.json").exists()
+              for sym, xyz, q, m in tasks.values())
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        freqs = dict(pool.map(run, tasks.items()))
+
+    def corr(key, T):
+        symbols, xyz, _q, mult = tasks[key]
+        fr = freqs[key]
+        return thermo.qrrho(fr["freqs"], symbols, xyz, T, rotational_number=fr["rotational_number"],
+                            linear=fr["linear"], multiplicity=mult, ts=key[0] == "ts")["g_corr"]
+
+    def energies_at(T):
+        g = np.array([net.g[k] + corr(("sp", k), T) for k in range(len(net.names))])
+        g_ts = []
+        for j, stp in enumerate(net.steps):
+            if ("ts", j) in tasks:
+                g_ts.append(stp.g_ts + corr(("ts", j), T))
+            else:
+                # No TS geometry: take the thermal correction of the
+                # separated molecules it starts from.
+                g_ts.append(stp.g_ts + sum(corr(("sp", i), T) for i in stp.reactants))
+        return g, np.array(g_ts)
+
+    n_imag = {key: sum(1 for x in fr["freqs"] if x < -20) for key, fr in freqs.items()}
+    report = {"method": "quasi-RRHO, GFN2-xTB single-point Hessians" + (f" ({model.upper()}, {solvent})" if solvent else ""),
+              "structures": len(tasks), "computed": new, "ts_without_geometry": approx,
+              "extra_imaginary": [net.names[k[1]] if k[0] == "sp" else net.steps[k[1]].label
+                                  for k, n in n_imag.items() if n > (1 if k[0] == "ts" else 0)]}
+    return energies_at, report
 
 
 def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, held: list, temperature: float,
             time_s: float, target: Optional[str], include_unverified: bool = False, control: bool = True,
-            sweep: Optional[list] = None, control_what: str = "amount") -> dict:
+            sweep: Optional[list] = None, control_what: str = "amount", free_energy: bool = False,
+            ws=None) -> dict:
     net, ids, info, excluded = build(snap, jobs, level_key, include_unverified=include_unverified)
-    warnings = ["Electronic energies stand in for free energies: absolute rates (bimolecular ones especially, "
-                "which lack the entropy cost of meeting) are orders of magnitude; read ratios, controlling steps "
-                "and trends."]
+    warnings = [] if free_energy and ws is not None else [
+        "Electronic energies stand in for free energies: absolute rates (bimolecular ones especially, "
+        "which lack the entropy cost of meeting) are orders of magnitude; read ratios, controlling steps "
+        "and trends."]
     if not net.steps:
         return {"error": "No reaction in this workspace has a barrier yet: run TS searches first"
                 + (" (or include unverified barriers)" if not include_unverified else "") + ".",
@@ -148,9 +270,28 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
     used = sorted({i for s in net.steps for i in s.reactants + s.products}
                   | {ids.index(s) for s in initial if s in ids})
     keep = {old: new for new, old in enumerate(used)}
-    steps = [mk.Step([keep[i] for i in s.reactants], [keep[i] for i in s.products], s.g_ts, s.label)
+    steps = [mk.Step([keep[i] for i in s.reactants], [keep[i] for i in s.products], s.g_ts, s.label, info=s.info)
              for s in net.steps]
+    geom = [net.geom[i] for i in used]
     net = mk.Network([net.names[i] for i in used], net.g[used], steps)
+    net.geom = geom
+    energies_at, fe_report = None, None
+    if free_energy and ws is not None:
+        energies_at, fe_report = free_energies(ws, jobs, net)
+        g_T, g_ts_T = energies_at(temperature)
+        net = mk.Network(net.names, g_T, [mk.Step(s.reactants, s.products, float(x), s.label, info=s.info)
+                                          for s, x in zip(net.steps, g_ts_T)])
+        fresh = (f" Frequencies computed for {fe_report['computed']} new structure"
+                 f"{'s' if fe_report['computed'] != 1 else ''} (kept for the next runs)." if fe_report["computed"] else "")
+        warnings.append(f"Free energies at {temperature:g} K ({fe_report['method']}; 1 M standard state).{fresh} "
+                        "One structure per species (no conformer averaging); association entropy uses "
+                        "gas-phase formulas, which overstate it in solution.")
+        if fe_report["ts_without_geometry"]:
+            warnings.append("TS geometry not found, thermal correction taken from the reactant side: "
+                            + ", ".join(fe_report["ts_without_geometry"]))
+        if fe_report["extra_imaginary"]:
+            warnings.append("Extra imaginary frequencies (below -20 cm-1) in: "
+                            + ", ".join(fe_report["extra_imaginary"]))
     sids = [ids[i] for i in used]
     pos = {sid: k for k, sid in enumerate(sids)}
     c0 = np.zeros(len(sids))
@@ -168,7 +309,7 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
             warnings.append(f"{s.label}: its TS lies below one side ({bf:.1f} / {br:.1f} kcal/mol); it counts as "
                             "barrierless that way.")
     out = {
-        "species": [{"id": sid, "name": net.names[k], "c0": float(c0[k]), "final": float(res.c[-1, k]),
+        "species": [{"id": sid, "name": net.names[k], "g": float(net.g[k]), "c0": float(c0[k]), "final": float(res.c[-1, k]),
                      "max": float(res.c[:, k].max()), "held": k in held_idx} for k, sid in enumerate(sids)],
         "times": res.times.tolist(),
         "series": {sid: res.c[:, k].tolist() for k, sid in enumerate(sids)},
@@ -176,6 +317,7 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
                   for i, (bf, br), nr, ex in zip(info, net.barriers(), res.net_rate, res.extent)],
         "steady": res.steady, "temperature": temperature, "time_s": time_s, "excluded": excluded,
         "warnings": warnings, "mode": "constant feed" if held_idx else "batch",
+        "energies": "free" if fe_report else "electronic", "free_energy": fe_report,
     }
     if target in pos:
         t = pos[target]
@@ -187,7 +329,9 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
             drc = mk.degree_of_control(net, c0, temperature, time_s, t, what=what, held=held_idx)
             out["control"] = {"what": what, "steps": drc["steps"], "species": drc["species"]}
         if sweep:
-            out["sweep"] = mk.sweep(net, c0, [float(x) for x in sweep], time_s, t, held=held_idx)
+            out["sweep"] = mk.sweep(net, c0, [float(x) for x in sweep], time_s, t, held=held_idx,
+                                    energies_at=energies_at)
     elif sweep:
-        out["sweep"] = mk.sweep(net, c0, [float(x) for x in sweep], time_s, None, held=held_idx)
+        out["sweep"] = mk.sweep(net, c0, [float(x) for x in sweep], time_s, None, held=held_idx,
+                                energies_at=energies_at)
     return out

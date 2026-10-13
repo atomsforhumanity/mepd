@@ -17,6 +17,7 @@ in `mepd.web.results`).
 
 from __future__ import annotations
 
+import collections
 import functools
 import json
 import shutil
@@ -185,6 +186,10 @@ class ChannelsParams(Params):
     pairs_per_mechanism: int = P(3, "Searches per mechanism",
                                  "Best-scoring conformer pairs kept per bond-change mechanism (0 = all).",
                                  cli="--pairs-per-mechanism", ge=0)
+    built_cap_per_mechanism: bool = P(False, "Built searches per mechanism", "Built endpoints: the path-search "
+                                      "cap (Built path searches) applies to each mechanism, not to all built "
+                                      "pairs together.", cli="--built-cap-per-mechanism", kind="switch",
+                                      advanced=True)
     workers: int = P(4, "Workers", "Processes for atom mapping, path searches and TS/IRC.",
                      cli="--workers", ge=1)
     conformers_only: bool = P(False, "Conformers only", "Stop after conformer pools and pair selection.",
@@ -856,7 +861,10 @@ def _channels_more_built(src: dict, p: ChannelsMoreParams) -> Optional[list[str]
         return None
     entries = json.loads(fp.read_text())["entries"]
     labels = {e["label"] for e in entries}
-    n_done = sum(bool(e["searched"]) for e in entries)
+    if "--built-cap-per-mechanism" in src["argv"]:   # the cap counts each mechanism's searches
+        n_done = max(collections.Counter(e["mechanism"] for e in entries if e["searched"]).values(), default=0)
+    else:
+        n_done = sum(bool(e["searched"]) for e in entries)
     # --max-pairs would cut the searches back to the first (already searched) ones.
     flags = {"--built-pairs": out / "built_pairs", "--workers": p.workers, "--output": out, "--max-pairs": None}
     if p.search_built:
@@ -1852,7 +1860,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "qmmm-protein-build", "QM/MM system at this site", "The species at the chosen docked site as a QM/MM "
         "system: protein (AMBER ff14SB) and TIP3P water around it as the environment, whose charges act on the QM "
-        "region (needs a QM level that takes point charges: xTB or Psi4). (`mepd qmmm protein-build`)",
+        "region (needs a QM level that takes point charges: xTB, Psi4 or TeraChem). (`mepd qmmm protein-build`)",
         "job", QMMM, ProteinBuildParams, _build_protein_build, own_output=True,
         source_ops=("qmmm-protein-sites",), produces=["a QM/MM system (species in the protein)"],
         cli_path=("qmmm", "protein-build"), cli_extra_flags=("--end", "--ts", "--output")),

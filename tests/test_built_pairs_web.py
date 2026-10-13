@@ -58,3 +58,15 @@ def test_result_lists_the_ranked_pairs(tmp_path):
     assert [e["searched"] for e in view["entries"]] == [True, False, False, False]
     assert view["entries"][2]["barrier_kcal"] == 12.0 and "floor" not in view["entries"][0]
     assert built_pairs_view(tmp_path / "missing") is None
+
+
+def test_more_counts_per_mechanism_when_the_run_did(tmp_path):
+    src = _run(tmp_path, 8, 0)
+    fp = tmp_path / "out" / "built_pairs" / "built_pairs.json"
+    data = json.loads(fp.read_text())
+    for e in data["entries"]:
+        e["mechanism"], e["searched"] = ("a" if e["rank"] % 2 else "b"), e["rank"] < 4
+    fp.write_text(json.dumps(data))
+    src["argv"].append("--built-cap-per-mechanism")
+    argv = _channels_more_built(src, ChannelsMoreParams())
+    assert _flag(argv, "--atom-mapping-candidates") == "5" and "--built-cap-per-mechanism" in argv

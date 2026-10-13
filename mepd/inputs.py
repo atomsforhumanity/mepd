@@ -516,7 +516,9 @@ class RunInputs:
         `ase_engine_kwds.calculator = "package.module:ClassName"` with its
         keyword arguments in `ase_engine_kwds.calculator_kwds`), "xtb"
         (GFN2-/GFN1-xTB run directly, `xtb_engine_kwds.method`; takes point
-        charges, so it can be the QM level in TIP3P water), or "psi4".
+        charges, so it can be the QM level in TIP3P water), "psi4", or
+        "terachem" (a local TeraChem, `terachem_engine_kwds` method/basis/
+        keywords; takes point charges too -- see mepd/engines/terachem.py).
     `solvation`: optional implicit solvent for whichever engine, e.g.
         {solvent = "water", model = "alpb", method = "auto"} -- GFN2-xTB's own
         model when the engine is GFN2-xTB, otherwise its solvation free energy
@@ -524,7 +526,8 @@ class RunInputs:
     `qmmm`: optional QM/MM partition (see mepd/qmmm.py): the engine above
         becomes the QM level of the atoms in `qm_atoms`, embedded in a low
         level (`mm` = "gfnff" (default), "gfn2", "gfn1", "amber" through
-        OpenMM, or "terachem" for TeraChem's own QM/MM), e.g.
+        OpenMM, or "terachem" for TeraChem's own QM/MM: run locally with
+        engine_name = "terachem", else through ChemCloud), e.g.
         {file = "region.json"} or {reference = "system.xyz",
         qm_atoms = "0-11", qm_charge = 0, active_radius = 6.0}. Environment
         atoms outside `active_radius` (Å) of the QM region are frozen.
@@ -558,6 +561,7 @@ class RunInputs:
     fairchem_engine_kwds: dict = None
     mlip_engine_kwds: dict = None
     psi4_engine_kwds: dict = None
+    terachem_engine_kwds: dict = None
     geometry_optimizer_kwds: dict = None
     optimizer_kwds: dict = None
     solvation: dict = None
@@ -738,7 +742,7 @@ class RunInputs:
             self.program_kwds = None
 
         if self.program_kwds is None:
-            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "xtb"}:
+            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "xtb", "terachem"}:
                 # Neither engine uses the qccompute/chemcloud ProgramArgs/qcdata
                 # input construct -- gxtb shells out directly, and ASEEngine
                 # takes an already-constructed ase.Calculator.
@@ -787,6 +791,11 @@ class RunInputs:
         self.mlip_engine_kwds = dict(self.mlip_engine_kwds or {})
         self.psi4_engine_kwds = dict(self.psi4_engine_kwds or {})
         self.xtb_engine_kwds = dict(self.xtb_engine_kwds or {})
+        self.terachem_engine_kwds = dict(self.terachem_engine_kwds or {})
+        if self.engine_name == "terachem" or "terachem" in str(self.program):
+            from mepd.engines.terachem import ensure_license_env
+
+            ensure_license_env()
 
         if self.geometry_optimizer_kwds is None:
             self.geometry_optimizer_kwds = {}
@@ -877,6 +886,10 @@ class RunInputs:
             from mepd.engines.psi4 import Psi4Engine
 
             eng = Psi4Engine(**dict(self.psi4_engine_kwds or {}))
+        elif self.engine_name == 'terachem':
+            from mepd.engines.terachem import TeraChemEngine
+
+            eng = TeraChemEngine(**dict(self.terachem_engine_kwds or {}))
         elif self.engine_name == 'gxtb':
             try:
                 from mepd.engines.gxtb import GXTBCalculator
@@ -951,10 +964,12 @@ class RunInputs:
             if region.mm == "terachem":
                 from mepd.engines.terachem_qmmm import TeraChemQMMMEngine
 
-                eng = TeraChemQMMMEngine.from_region(region, program_args=self.program_kwds,
-                                                     compute_program=self.engine_name
-                                                     if self.engine_name in ("qccompute", "chemcloud") else "chemcloud",
-                                                     chemcloud_queue=self.chemcloud_queue)
+                local = self.engine_name == "terachem"
+                eng = TeraChemQMMMEngine.from_region(
+                    region, program_args=self.terachem_engine_kwds if local else self.program_kwds,
+                    compute_program="local" if local else self.engine_name
+                    if self.engine_name in ("qccompute", "chemcloud") else "chemcloud",
+                    chemcloud_queue=self.chemcloud_queue)
             else:
                 from mepd.engines.qmmm import QMMMEngine
 

@@ -350,7 +350,7 @@ def protein_build(
 ):
     """The species at a docked site as a QM/MM system: the protein (AMBER
     ff14SB) and a TIP3P water shell as the environment, whose charges act on
-    the QM region (electrostatic embedding: use engine_name "xtb" or "psi4")."""
+    the QM region (electrostatic embedding: use engine_name "xtb", "psi4" or "terachem")."""
     import numpy as np
     from qcdata import Structure
 

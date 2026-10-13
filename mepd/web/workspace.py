@@ -141,6 +141,10 @@ def _engine_level(data: dict) -> dict:
         kw = table("psi4_engine_kwds")
         return {"engine": "psi4", "method": str(kw.get("method") or "b3lyp").lower(),
                 "basis": str(kw.get("basis") or "def2-svp").lower(), **clean(kw, ("options",))}
+    if engine == "terachem":
+        kw = table("terachem_engine_kwds")
+        return {"engine": "terachem", "method": str(kw.get("method") or "b3lyp").lower(),
+                "basis": str(kw.get("basis") or "6-31gs").lower(), **clean(kw, ("keywords",))}
     if engine == "fairchem":
         kw = table("fairchem_engine_kwds")
         return {"engine": "fairchem", "model": kw.get("model") or "uma-s-1p2p1", "task": kw.get("task") or "omol",
@@ -227,6 +231,9 @@ def level_label(profile_text: Optional[str]) -> str:
     if data.get("engine_name") == "psi4":
         kw = data.get("psi4_engine_kwds") if isinstance(data.get("psi4_engine_kwds"), dict) else {}
         parts.append(f"{kw.get('method') or 'b3lyp'}/{kw.get('basis') or 'def2-svp'}")
+    if data.get("engine_name") == "terachem":
+        kw = data.get("terachem_engine_kwds") if isinstance(data.get("terachem_engine_kwds"), dict) else {}
+        parts.append(f"{kw.get('method') or 'b3lyp'}/{kw.get('basis') or '6-31gs'}")
     model = (data.get("program_kwds") or {}).get("model") if isinstance(data.get("program_kwds"), dict) else None
     if model:
         parts.append("/".join(str(model.get(k)) for k in ("method", "basis") if model.get(k)))

@@ -160,8 +160,11 @@ def simulate(net: Network, c0: Sequence[float], temperature: float, time_s: floa
 
     y0 = np.concatenate([np.asarray(c0, dtype=float), np.zeros(m)])
     t_first = min(1e-12, time_s * 1e-6)
-    t_eval = np.concatenate([[0.0], np.logspace(math.log10(t_first), math.log10(time_s), n_points - 1)])
-    t_eval[-1] = time_s   # logspace can land a rounding error past the end
+    # Log-spaced (fast early steps) and evenly spaced (a linear time axis).
+    t_eval = np.unique(np.concatenate([[0.0], np.logspace(math.log10(t_first), math.log10(time_s), n_points - 1),
+                                       np.linspace(0.0, time_s, n_points // 2 + 1)]))
+    t_eval = t_eval[t_eval <= time_s]      # logspace can land a rounding error past the end
+    t_eval[-1] = time_s
     # The extents ride along but don't steer the step size: a fast step at
     # equilibrium has forward and reverse rates of ~1e12 M/s whose
     # difference is rounding noise, and tracking that noise to `atol` made
@@ -228,12 +231,15 @@ def degree_of_control(net: Network, c0, temperature: float, time_s: float, targe
 
 
 def sweep(net: Network, c0, temperatures: Sequence[float], time_s: float, target: Optional[int] = None, *,
-          held: Sequence[int] = ()) -> dict:
+          held: Sequence[int] = (), energies_at=None) -> dict:
     """The run at each temperature: final amounts, the target's formation
-    rate, and its apparent activation energy (kcal/mol, from d ln r / dT)."""
+    rate, and its apparent activation energy (kcal/mol, from d ln r / dT).
+    `energies_at(T) -> (g, g_ts)`: temperature-dependent energies (free
+    energies), else the network's own at every temperature."""
     finals, rates = [], []
     for t in temperatures:
-        res = simulate(net, c0, t, time_s, held=held, n_points=8)
+        g, g_ts = energies_at(t) if energies_at is not None else (None, None)
+        res = simulate(net, c0, t, time_s, held=held, n_points=8, g=g, g_ts=g_ts)
         finals.append(res.c[-1].tolist())
         rates.append(formation_rate(net, res, target) if target is not None else None)
     ea = []

@@ -43,7 +43,7 @@ MM_METHODS = {
     "gfn1": "GFN1-xTB (semiempirical environment)",
     "amber": "AMBER force field through OpenMM (needs a prmtop, or a PDB of standard residues)",
     "tip3p": "TIP3P water through OpenMM (the environment must be water; for electrostatic embedding)",
-    "terachem": "TeraChem's own QM/MM (prmtop + rst7; needs TeraChem or ChemCloud)",
+    "terachem": "TeraChem's own QM/MM (prmtop + rst7; a local TeraChem or ChemCloud)",
 }
 EMBEDDINGS = ("mechanical", "electrostatic")
 
@@ -142,7 +142,7 @@ def link_ratio(q_symbol: str, m_symbol: str) -> float:
 
 # QM engines (profile engine_name) that take point charges, i.e. can do
 # electrostatic embedding.
-POINT_CHARGE_ENGINES = ("xtb", "psi4")
+POINT_CHARGE_ENGINES = ("xtb", "psi4", "terachem")
 
 
 def embedding_problem(embedding: str, engine_name: str) -> Optional[str]:
@@ -152,8 +152,8 @@ def embedding_problem(embedding: str, engine_name: str) -> Optional[str]:
         return None
     return (f"This QM/MM system uses electrostatic embedding (the environment's charges enter the QM calculation, "
             f"e.g. TIP3P water), which needs a QM level that takes point charges; engine_name = "
-            f"\"{engine_name or 'gxtb'}\" does not. Use an xtb (GFN2-xTB) or Psi4 profile (engine_name = \"xtb\" or "
-            f"\"psi4\"), or rebuild the "
+            f"\"{engine_name or 'gxtb'}\" does not. Use an xtb (GFN2-xTB), Psi4 or TeraChem profile (engine_name = "
+            f"\"xtb\", \"psi4\" or \"terachem\"), or rebuild the "
             f"system with a GFN-FF environment (mechanical embedding).")
 
 

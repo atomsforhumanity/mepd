@@ -47,7 +47,7 @@ function LineChart({ xs, series, xLabel, yLabel, floor = 1e-12, xlog = true, wid
       onMouseMove=${onMove} onMouseLeave=${() => setHover(null)}>
       ${ticksY.map((e) => html`<line class="kn-grid" x1=${pad.l} x2=${pad.l + W} y1=${Y(10 ** e)} y2=${Y(10 ** e)} />
         <text class="kn-tick" x=${pad.l - 6} y=${Y(10 ** e) + 4} text-anchor="end">1e${e}</text>`)}
-      ${ticksX.map((e) => html`<text class="kn-tick" x=${X(xlog ? 10 ** e : e)} y=${pad.t + H + 16} text-anchor="middle">${xlog ? `1e${e}` : Math.round(e)}</text>`)}
+      ${ticksX.map((e) => html`<text class="kn-tick" x=${X(xlog ? 10 ** e : e)} y=${pad.t + H + 16} text-anchor="middle">${xlog ? `1e${e}` : +e.toPrecision(3)}</text>`)}
       <text class="kn-axis" x=${pad.l + W / 2} y=${height - 2} text-anchor="middle">${xLabel}</text>
       <text class="kn-axis" transform=${`translate(12 ${pad.t + H / 2}) rotate(-90)`} text-anchor="middle">${yLabel}</text>
       ${series.map((s) => html`<polyline class="kn-line" style=${{ stroke: `var(--series-${s.slot})` }} points=${pts(s.values)} />`)}
@@ -133,6 +133,7 @@ export function KineticsView() {
   const [target, setTarget] = useState(saved.target || '');
   const [what, setWhat] = useState(saved.what || 'amount');
   const [unverified, setUnverified] = useState(saved.unverified ?? true);
+  const [free, setFree] = useState(saved.free ?? true);
   const [sweepOn, setSweepOn] = useState(saved.sweepOn ?? true);
   const [tLo, setTLo] = useState(saved.tLo ?? 250);
   const [tHi, setTHi] = useState(saved.tHi ?? 650);
@@ -144,11 +145,11 @@ export function KineticsView() {
     const out = await attempt(() => api.post('/api/kinetics', {
       initial: Object.fromEntries(mix.map((m) => [m.id, m.c])), held: mix.filter((m) => m.held).map((m) => m.id),
       temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unverified,
-      control: !!target, control_what: what, sweep }));
+      control: !!target, control_what: what, sweep, free_energy: free }));
     setBusy(false);
     const shown = out ? { ...out, tUnit } : res;
     setRes(shown);
-    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, sweepOn, tLo, tHi, res: shown } });
+    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, free, sweepOn, tLo, tHi, res: shown } });
   };
   const openReaction = (rid) => set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: rid } });
 
@@ -170,6 +171,7 @@ export function KineticsView() {
       <label class="kn-row small"><input type="checkbox" checked=${sweepOn} onChange=${(e) => setSweepOn(e.target.checked)} />
         temperature sweep <input type="number" class="tiny" value=${tLo} onInput=${(e) => setTLo(+e.target.value)} />–<input type="number" class="tiny" value=${tHi} onInput=${(e) => setTHi(+e.target.value)} /> K</label>
       <label class="kn-row small" title="Barriers that are only a path maximum (no TS/IRC confirmed them)"><input type="checkbox" checked=${unverified} onChange=${(e) => setUnverified(e.target.checked)} /> include unverified barriers</label>
+      <label class="kn-row small" title="Quasi-RRHO free energies (zero-point energy, enthalpy and entropy from GFN2-xTB single-point Hessians, computed once per structure and kept). Without it, electronic energies stand in, and complexes look too stable."><input type="checkbox" checked=${free} onChange=${(e) => setFree(e.target.checked)} /> free energies</label>
       <button class="btn primary" disabled=${busy || !mix.length} onClick=${run}>${busy ? 'Running…' : 'Run kinetics'}</button>
     </div>
     <div class="kn-results">${res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} />`
@@ -180,12 +182,23 @@ export function KineticsView() {
 
 function Results({ res, T, onReaction }) {
   const [showAll, setShowAll] = useState(false);
+  const [logTime, setLogTime] = useState(false);
   if (res.error) return html`<p class="warn-box">${res.error}</p>${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}`;
   const byId = Object.fromEntries(res.species.map((s) => [s.id, s]));
   // Series: the species that ever reach a visible amount, largest first; fixed colour by that order.
   const ranked = [...res.species].sort((a, b) => b.max - a.max);
   const shown = ranked.filter((s) => s.max > 1e-12).slice(0, 6);
   const series = shown.map((s, k) => ({ name: s.name, slot: k + 1, values: res.series[s.id] }));
+  // Log time: from a decade before anything visibly changes, not from the
+  // integrator's first instant (1e-12 s), so the axis follows the run's length.
+  let chartFrom = 0;
+  if (logTime) {
+    const top = Math.max(1e-30, ...series.flatMap((s) => s.values));
+    const moved = res.times.findIndex((_, k) => series.some((s) => Math.abs(s.values[k] - s.values[0]) > 1e-4 * top));
+    const t0 = moved > 0 ? res.times[moved] / 10 : 0;
+    chartFrom = Math.max(0, res.times.findIndex((t) => t >= t0) - 1);
+  }
+  const chartT = res.times.slice(chartFrom);
   const tgt = res.target;
   const total = res.species.reduce((a, s) => a + s.c0, 0);
   const allCtl = res.control ? res.steps.map((st, k) => ({ ...st, x: res.control.steps[k] })).filter((r) => Number.isFinite(r.x)) : [];
@@ -199,11 +212,23 @@ function Results({ res, T, onReaction }) {
   const unit = res.tUnit || 's';   // the unit the run was set up in
   const timeLabel = `${+(res.time_s / UNITS[unit]).toPrecision(3)} ${unit}`;
   return html`<div class="kn-out">
-    ${tgt && html`<div class="kn-head">
-      <div class="stat"><span class="stat-v">${fmtC(tgt.final)} M</span><span class="stat-l">${tgt.name} after ${timeLabel} at ${Math.round(res.temperature)} K${total ? ` · ${fmtC((100 * tgt.final) / total)}% of the start` : ''}</span></div>
-      <div class="stat"><span class="stat-v">${fmtC(tgt.rate)} M/s</span><span class="stat-l">formation rate ${res.mode === 'constant feed' ? (res.steady ? '(steady state)' : '(not yet steady)') : 'at the end'}</span></div>
-    </div>`}
-    <p class="small muted">${res.mode}${res.mode === 'batch' ? '' : res.steady ? ': steady state reached' : ': not yet steady, run longer'} · ${res.steps.length} reaction steps in the model.</p>
+    <p class="small kn-summary">${tgt && html`<b>${tgt.name}</b>: ${fmtC(tgt.final)} M after ${timeLabel} at ${Math.round(res.temperature)} K${
+      total ? ` (${fmtC((100 * tgt.final) / total)}% of the start)` : ''}${res.mode === 'constant feed' && res.steady ? `, forming at ${fmtC(tgt.rate)} M/s` : ''} · `}<span class="muted">${
+      res.mode === 'batch' ? (res.steady ? 'finished: nothing changes any more' : 'still changing at the end')
+        : res.steady ? 'constant feed, steady state' : 'constant feed, not yet steady: run longer'} · ${res.steps.length} steps</span></p>
+
+    <section>
+      <div class="section-title">Amounts over time</div>
+      <label class="small kn-row"><input type="checkbox" checked=${logTime} onChange=${(e) => setLogTime(e.target.checked)} /> log time</label>
+      <${LineChart} xs=${chartT.map((t) => t / UNITS[unit])} series=${series.map((s) => ({ ...s, values: s.values.slice(chartFrom) }))}
+        xLabel=${`time (${unit})`} yLabel="amount (M)" xlog=${logTime} />
+      <details class="small"><summary>Table</summary>
+        <table class="rx-table"><thead><tr><th>Species</th><th>start (M)</th><th>end (M)</th><th>peak (M)</th></tr></thead>
+          <tbody>${ranked.slice(0, showAll ? ranked.length : 12).map((s) => html`<tr><td class="rx-eq">${s.name}${s.held ? ' (fixed)' : ''}</td>
+            <td class="mono">${fmtC(s.c0)}</td><td class="mono">${fmtC(s.final)}</td><td class="mono">${fmtC(s.max)}</td></tr>`)}</tbody></table>
+        ${ranked.length > 12 && html`<button class="btn-link small" onClick=${() => setShowAll(!showAll)}>${showAll ? 'fewer' : `all ${ranked.length}`}</button>`}
+      </details>
+    </section>
 
     ${res.control && !ctl.length && html`<section>
       <div class="section-title">What controls ${tgt.name}</div>
@@ -226,16 +251,6 @@ function Results({ res, T, onReaction }) {
         <${ControlBars} rows=${traps} T=${res.temperature} />`}
     </section>`}
 
-    <section>
-      <div class="section-title">Amounts over time</div>
-      <${LineChart} xs=${res.times.map((t) => t / UNITS[unit])} series=${series} xLabel=${`time (${unit})`} yLabel="amount (M)" />
-      <details class="small"><summary>Table</summary>
-        <table class="rx-table"><thead><tr><th>Species</th><th>start (M)</th><th>end (M)</th><th>peak (M)</th></tr></thead>
-          <tbody>${ranked.slice(0, showAll ? ranked.length : 12).map((s) => html`<tr><td class="rx-eq">${s.name}${s.held ? ' (fixed)' : ''}</td>
-            <td class="mono">${fmtC(s.c0)}</td><td class="mono">${fmtC(s.final)}</td><td class="mono">${fmtC(s.max)}</td></tr>`)}</tbody></table>
-        ${ranked.length > 12 && html`<button class="btn-link small" onClick=${() => setShowAll(!showAll)}>${showAll ? 'fewer' : `all ${ranked.length}`}</button>`}
-      </details>
-    </section>
 
     ${res.sweep && html`<${Sweep} sw=${res.sweep} res=${res} />`}
 

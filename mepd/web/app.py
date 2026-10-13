@@ -37,7 +37,7 @@ from mepd.web import chem
 from mepd.web.jobs import Broadcaster, JobManager, _reduce_chain_payload
 from mepd.web.sessions import Sessions
 from mepd.web.operations import OPERATIONS
-from mepd.web.results import MINIMA_KINDS, collect_cached, entry_ts_energy, find_entry, summarize
+from mepd.web.results import MINIMA_KINDS, collect_cached, entry_reverse_barrier, entry_ts_energy, find_entry, summarize
 from mepd.web.workspace import HARTREE_TO_KCAL, Workspace, WorkspaceError, is_ts, validate_profile_text
 from mepd.web.workspace import find_duplicate as _find_duplicate
 
@@ -202,6 +202,7 @@ class KineticsIn(BaseModel):
     control: bool = True
     control_what: Literal["amount", "rate"] = "amount"
     sweep: list[float] = []
+    free_energy: bool = False           # quasi-RRHO free energies (GFN2-xTB single-point Hessians, cached)
 
 
 class ProposeIn(BaseModel):
@@ -515,7 +516,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                      # ...or a solvent comparison from before reaction energies were kept
                      or (j["op"] == "solvent" and "gas_reaction_kcal" not in (j["summary"].get("conditions") or {}))
                      # ...or a barrier from before its TS's energy was kept (kinetics)
-                     or (j["summary"].get("barrier_kcal") is not None and "ts_energy_hartree" not in j["summary"]))]
+                     or (j["summary"].get("barrier_kcal") is not None and "ts_energy_hartree" not in j["summary"])
+                     # ...or from before the reverse barrier was kept (Explore labels both directions)
+                     or (j["summary"].get("barrier_kcal") is not None and "reverse_barrier_kcal" not in j["summary"]))]
         # Edges added from a result's entry before their TS's energy was kept.
         no_ts = [(eid, o) for eid, e in manager.ws.snapshot()["edges"].items()
                  if (o := e.get("origin") or {}).get("barrier_kcal") is not None and not o.get("qmmm_ts")
@@ -1928,6 +1931,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 edge = W().add_edge(ids[0], ids[1], label=entry["label"], origin={
                     "kind": "job", "job": jid, "entry": entry["id"], "barrier_kcal": entry.get("barrier_kcal"),
                     "ts_energy_hartree": entry_ts_energy(entry),
+                    # The barrier is from this edge's source; the reverse one from its target end.
+                    "barrier_from": ids[0], "reverse_barrier_kcal": entry_reverse_barrier(entry),
                     "headline": entry.get("note", ""),
                     # IRC-derived edges know their TS (a VRI search can start from it).
                     "group": group.get("kind"), "has_ts": entry.get("ts_index") is not None})
@@ -2036,7 +2041,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 analyze, ws.snapshot(), dict(J().jobs), level, initial=body.initial, held=body.held,
                 temperature=body.temperature, time_s=body.time_s, target=body.target,
                 include_unverified=body.include_unverified, control=body.control, control_what=body.control_what,
-                sweep=body.sweep[:12])
+                sweep=body.sweep[:12], free_energy=body.free_energy, ws=ws)
         except RuntimeError as exc:
             raise WorkspaceError(str(exc)) from None
 

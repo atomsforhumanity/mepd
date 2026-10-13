@@ -2,17 +2,19 @@
 from neb-dynamics' QMMMEngine.
 
 Each energy/gradient is one TeraChem run with the files
-tc.in / ref.prmtop / ref.rst7 / qmindices.dat, through qccompute (a local
-TeraChem) or ChemCloud. Geometry optimizations, TS searches and IRCs run
+tc.in / ref.prmtop / ref.rst7 / qmindices.dat: a local TeraChem
+(engine_name = "terachem", the command of mepd.engines.terachem), qccompute,
+or ChemCloud. Geometry optimizations, TS searches and IRCs run
 through ASE on these gradients (with the frozen atoms held by
 mepd.engines.frozen.FrozenAtomsEngine), not through TeraChem's minimizer.
 
 Set it up with `[qmmm] mm = "terachem"` (plus `prmtop`, and either `tcin`
-(a tc.in template) or `program_kwds.model` for method/basis), or convert an
-existing TeraChem input with `mepd qmmm from-tc tc.in`.
+(a tc.in template) or method/basis in `terachem_engine_kwds` (local) or
+`program_kwds.model`), or convert an existing TeraChem input with
+`mepd qmmm from-tc tc.in`.
 
-Untested against a live TeraChem in this repository (none is available
-here); the input/output handling is checked against TeraChem output text.
+The input/output handling is checked against TeraChem output text; not yet
+run against a live TeraChem here.
 """
 from __future__ import annotations
 
@@ -177,7 +179,9 @@ class TeraChemQMMMEngine(ModifiedEngine):
     tcin: str = ""                    # tc.in template (gradient run)
     prmtop: str = ""                  # prmtop text
     qm_atoms: list[int] = field(default_factory=list)
-    compute_program: str = "chemcloud"   # or "qccompute" (a local TeraChem)
+    compute_program: str = "chemcloud"   # "local" (mepd's TeraChem command) or "qccompute"
+    command: Optional[str] = None        # local: how to start TeraChem
+    timeout: float = 3600.0
     chemcloud_queue: Optional[str] = None
     base: object = None
 
@@ -198,13 +202,18 @@ class TeraChemQMMMEngine(ModifiedEngine):
         if region.tcin:
             tcin = Path(region.tcin).read_text() if Path(region.tcin).exists() else region.tcin
         else:
-            model = dict(getattr(program_args, "model", None) or {})
+            if isinstance(program_args, dict):        # terachem_engine_kwds
+                model, keywords = program_args, program_args.get("keywords")
+            else:
+                model, keywords = dict(getattr(program_args, "model", None) or {}), getattr(program_args, "keywords", None)
             tcin = f"method {model.get('method', 'b3lyp')}\nbasis {model.get('basis', '6-31gs')}\n"
-            for k, v in dict(getattr(program_args, "keywords", None) or {}).items():
+            for k, v in dict(keywords or {}).items():
                 tcin += f"{k} {v}\n"
         tcin = with_keyword(with_keyword(tcin, "charge", region.qm_charge), "spinmult", region.qm_multiplicity)
+        local = {k: program_args[k] for k in ("command", "timeout") if k in program_args} \
+            if isinstance(program_args, dict) else {}
         return cls(tcin=tcin, prmtop=prmtop, qm_atoms=list(region.qm_atoms), compute_program=compute_program,
-                   chemcloud_queue=chemcloud_queue)
+                   chemcloud_queue=chemcloud_queue, **local)
 
     def _inherit(self) -> None:
         return None
@@ -216,7 +225,31 @@ class TeraChemQMMMEngine(ModifiedEngine):
                                                      "qmindices.dat": self.qmindices, "ref.prmtop": self.prmtop},
                          cmdline_args=["tc.in"])
 
+    def _run_local(self, inp) -> str:
+        """One TeraChem run of `inp`'s files in a fresh directory: its stdout."""
+        import subprocess
+        import tempfile
+
+        from mepd.engines.terachem import INSTALL, ensure_license_env, terachem_command
+
+        cmd = terachem_command(self.command)
+        if not cmd:
+            raise ElectronicStructureError(msg=INSTALL)
+        ensure_license_env()
+        with tempfile.TemporaryDirectory(prefix="tcqmmm_") as tmp:
+            for name, text in inp.files.items():
+                Path(tmp, name).write_text(text)
+            try:
+                proc = subprocess.run([*cmd, "tc.in"], cwd=tmp, capture_output=True, text=True, timeout=self.timeout)
+            except subprocess.TimeoutExpired as exc:
+                raise ElectronicStructureError(msg=f"TeraChem did not finish within {self.timeout:.0f} s") from exc
+        return (proc.stdout or "") + "\n" + (proc.stderr or "")
+
     def _submit(self, inputs: list):
+        if self.compute_program == "local":
+            from types import SimpleNamespace
+
+            return [SimpleNamespace(stdout=self._run_local(inp)) for inp in inputs]
         if self.compute_program == "qccompute":
             from qccompute import compute
 
@@ -238,8 +271,10 @@ class TeraChemQMMMEngine(ModifiedEngine):
 
     def energy_gradient_from_stdout(self, stdout: str, natoms: int) -> tuple[float, np.ndarray]:
         qm, mm = parse_qmmm_gradients(stdout)
-        if len(qm) == 0:
-            raise ElectronicStructureError(msg="TeraChem QM/MM: no QM gradient in the output")
+        if len(qm) == 0 or "FINAL ENERGY:" not in stdout:
+            from mepd.engines.terachem import _failure
+
+            raise ElectronicStructureError(msg=f"TeraChem QM/MM gave no energy/gradient:\n{_failure(stdout)}")
         nlink = n_link_atoms(stdout)
         if nlink:
             qm = qm[:-nlink]

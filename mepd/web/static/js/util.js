@@ -68,19 +68,28 @@ export function edgeStatus(edge, jobs = state.jobs) {
   // keeps its own lowest (Explore shows them side by side), and the one
   // number other views use is the workspace level's, when the edge has it.
   const levelOfJob = (j) => j?.level || null;
-  const found = [];   // {value, verified, steps, job, level: {key, label} | null}
+  // Each barrier also carries the reverse one (the same TS from the product
+  // side) and `from`: the structure the forward barrier is measured from (a
+  // job's start), so both can be put on the right end of the edge.
+  const found = [];   // {value, rev, from, verified, steps, job, level: {key, label} | null}
   for (const j of done) {
     const s = j.summary;
     const ok = s.barrier_verified !== false;
     const steps = s.n_steps ?? 1;   // results from before steps were counted: as before, one step
     const level = levelOfJob(j);
-    if (s.direct_barrier_kcal != null) found.push({ value: s.direct_barrier_kcal, verified: true, steps: 1, job: j.id, level });
-    if (steps > 1 || s.direct_barrier_kcal == null) found.push({ value: s.barrier_kcal, verified: ok, steps, job: j.id, level });
+    const from = j.targets.structures[0] ?? null;
+    // The reverse barrier belongs to the TS behind barrier_kcal only.
+    // (to rounding: some results keep the direct barrier unrounded)
+    const revOf = (v) => (s.reverse_barrier_kcal != null && s.barrier_kcal != null
+      && Math.abs(v - s.barrier_kcal) < 1e-3 ? s.reverse_barrier_kcal : null);
+    if (s.direct_barrier_kcal != null) found.push({ value: s.direct_barrier_kcal, rev: revOf(s.direct_barrier_kcal), from, verified: true, steps: 1, job: j.id, level });
+    if (steps > 1 || s.direct_barrier_kcal == null) found.push({ value: s.barrier_kcal, rev: revOf(s.barrier_kcal), from, verified: ok, steps, job: j.id, level });
   }
   if (edge.origin?.barrier_kcal != null) {
     const o = edge.origin;
     const key = o.level?.key ?? levelOfJob(jobs[o.job])?.key ?? o.qmmm_ts?.level ?? null;
-    found.push({ value: o.barrier_kcal, verified: o.barrier_verified !== false, steps: 1, job: o.job ?? null,
+    found.push({ value: o.barrier_kcal, rev: o.reverse_barrier_kcal ?? null, from: o.barrier_from ?? edge.source,
+      verified: o.barrier_verified !== false, steps: 1, job: o.job ?? null,
       level: key == null ? null : { key, label: o.level?.label ?? levelOfJob(jobs[o.job])?.label ?? levelLabel(key, jobs) } });
   }
   const lowest = (xs) => (xs.length ? xs.reduce((a, b) => (b.value < a.value ? b : a)) : null);
@@ -90,7 +99,8 @@ export function edgeStatus(edge, jobs = state.jobs) {
     const best = lowest(pool.filter((f) => f.verified)) ?? lowest(pool);
     return best && { key: best.level?.key ?? null, label: best.level?.label ?? 'level unknown',
       barrier: best.verified ? best.value : null, barrierUnverified: best.verified ? null : best.value,
-      routeSteps: !direct.length ? best.steps : null, job: best.job ?? null };
+      routeSteps: !direct.length ? best.steps : null, job: best.job ?? null,
+      rev: best.verified ? best.rev : null, from: best.from ?? null };
   };
   const groups = {};
   for (const f of found) (groups[f.level?.key ?? ''] ||= []).push(f);
@@ -107,6 +117,14 @@ export function edgeStatus(edge, jobs = state.jobs) {
   // The calculation that set the barrier shown (its page has the TS and IRC,
   // and Sample more paths).
   const barrierJob = main?.job ?? null;
+  // Both directions on this edge's own orientation: `fwd` to leave its
+  // source, `rev` to leave its target (swapped when the barrier was measured
+  // from the target, e.g. after the edge was reversed).
+  let barrierFwd = null, barrierRev = null;
+  if (barrier != null && main?.rev != null && !routeSteps) {
+    const swap = main.from != null && main.from === edge.target;
+    [barrierFwd, barrierRev] = swap ? [main.rev, barrier] : [barrier, main.rev];
+  }
   let status = 'idle';
   if (has('running')) status = 'running';
   else if (has('queued')) status = 'queued';
@@ -117,7 +135,7 @@ export function edgeStatus(edge, jobs = state.jobs) {
   // A negative barrier is a problem to see, not a small number: say why.
   const warning = edge.origin?.barrier_warning || done.map((j) => j.summary?.barrier_warning).find(Boolean)
     || (barrier != null && barrier < -0.1 ? `Negative barrier (${barrier.toFixed(1)} kcal/mol): the TS lies below an endpoint. With one level of theory, minimized endpoints and a dense enough path this cannot happen: check the endpoints' minimization and level, and the path's density.` : null);
-  return { status, barrier, barrierUnverified, routeSteps, barrierJob, levels, count: related.length, warning };
+  return { status, barrier, barrierUnverified, barrierFwd, barrierRev, routeSteps, barrierJob, levels, count: related.length, warning };
 }
 
 // Complexes. A complex structure (role 'complex': several molecules
@@ -186,7 +204,7 @@ export function lastLine(job, progress = state.progress) {
 export function edgeStatusKey(jobs) {
   return Object.values(jobs)
     .filter((j) => j.targets.edges.length)
-    .map((j) => `${j.id}:${j.status}:${j.summary?.barrier_kcal ?? ''}:${j.summary?.barrier_verified}:${j.summary?.n_steps}:${j.summary?.direct_barrier_kcal}:${j.level?.key}:${j.targets.edges.join(',')}`)
+    .map((j) => `${j.id}:${j.status}:${j.summary?.barrier_kcal ?? ''}:${j.summary?.reverse_barrier_kcal ?? ''}:${j.summary?.barrier_verified}:${j.summary?.n_steps}:${j.summary?.direct_barrier_kcal}:${j.level?.key}:${j.targets.edges.join(',')}`)
     .sort()
     .join('|');
 }

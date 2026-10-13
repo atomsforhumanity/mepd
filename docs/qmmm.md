@@ -9,8 +9,8 @@ endpoint minimization, NEB/FNEB/GSM, TS optimization, IRC, Hessians and
 reaction network expansion.
 
 This replaces neb-dynamics' experimental `QMMMEngine`. That engine needed
-TeraChem for both levels; this one does not. TeraChem's own QM/MM is kept as
-an option for when TeraChem is available (see below).
+TeraChem for both levels; this one does not. TeraChem can be the QM level,
+and TeraChem's own QM/MM is kept as an option (see *TeraChem* below).
 
 ## The model
 
@@ -342,7 +342,8 @@ from the solvent or protein around it.
   region) needs fixed environment charges (TIP3P water, AMBER) and a QM
   level that takes point charges: `engine_name = "xtb"` (GFN2-/GFN1-xTB,
   xtb's own embedding, ~0.05 s per gradient for an 18-atom QM region in
-  ~320 water charges) or `"psi4"` (any Psi4 method; B3LYP/def2-SVP ~8 s).
+  ~320 water charges), `"psi4"` (any Psi4 method; B3LYP/def2-SVP ~8 s) or
+  `"terachem"` (see *TeraChem* below).
   g-xTB and the GFN-FF environment are mechanical embedding only, so
   charged or zwitterionic QM regions in polar environments are described
   less well with them.
@@ -367,6 +368,53 @@ from the solvent or protein around it.
   environment is not present during that MD unless `embedded=true` (web:
   "MD with QM/MM forces"), which runs the hot MD with QM/MM forces and the
   solvent held near room temperature; see network-expansion.md.
-* TeraChem's QM/MM (`mm = "terachem"`) is ported but untested here, since
-  no TeraChem is available. Its optimizations, TS searches and IRCs run
-  through ASE/Sella on TeraChem gradients.
+* The TeraChem routes below are tested against a stand-in that writes
+  TeraChem's input and output formats, not yet against a live TeraChem:
+  the installed docker image has no GPU code for this laptop's RTX 5090
+  (Blackwell, SM 12.0). Run the live check once a Blackwell build is in
+  place (see below).
+
+## TeraChem
+
+`engine_name = "terachem"` runs a local TeraChem as the QM level:
+
+```toml
+engine_name = "terachem"
+
+[terachem_engine_kwds]
+method = "b3lyp"          # TeraChem's names; "u" is added for open shells
+basis = "6-31gs"
+# command = "terachem"    # default: $MEPD_TERACHEM, else terachem on PATH
+# timeout = 3600          # s per run
+[terachem_engine_kwds.keywords]   # any other tc.in lines
+dftd = "d3"
+```
+
+* The command can be a native install or the docker wrapper for the
+  mtzgroup/terachem images. The license is read from
+  `$TERACHEM_LICENSE_PATH`; when that is unset, mepd uses
+  `~/.config/terachem/license.key` (a `key ...` / `server host:port` file).
+* Each gradient is one TeraChem run. The orbitals of the previous run of the
+  same molecule (`c0`, or `ca0`/`cb0`) are the next run's `guess`.
+* Electrostatic embedding: the environment's charges go to TeraChem as a
+  `pointcharges` file (`charge x y z` in Å, with
+  `pointcharges_self_interaction false`, because the force field has the MM–MM
+  part). The gradient on the charges is read from TeraChem's "MM / Point
+  charge part" block, so TeraChem is a QM level for TIP3P water and the
+  protein workflow, the same as xtb and Psi4. The Mulliken charges
+  (`scr/charge_mull.xls`) are what the environment sees during
+  microiterations.
+* TeraChem's own QM/MM (`[qmmm] mm = "terachem"`, prmtop + rst7, e.g. from
+  `mepd qmmm from-tc tc.in`) runs locally with `engine_name = "terachem"`
+  (method/basis from `terachem_engine_kwds` unless the region has a tc.in
+  template). With other engines it goes through ChemCloud. Its
+  optimizations, TS searches and IRCs run through ASE/Sella on TeraChem
+  gradients.
+* Each run starts a new TeraChem process. With docker, that adds container
+  start-up and a license check to every gradient. TeraChem's server mode
+  (TCPB) would remove that, but its protocol carries MM point charges only
+  for interactive MD, so it is not used yet.
+* Live check: `MEPD_TERACHEM_LIVE=1 pytest tests/test_terachem.py` checks,
+  by finite differences on water with two point charges, that TeraChem's
+  energy and its gradients on the atoms and the charges agree (units, signs,
+  the point-charge file).

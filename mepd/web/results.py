@@ -274,6 +274,11 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
             if reactant is not None and _same_connectivity(end, reactant):
                 floor_candidates.append(_node_energy(end))
     floor = _min(floor_candidates + [floor_hint])
+    # The same on the product side, for the reverse barrier.
+    product = mep[-1] if mep is not None else None
+    product_floor = _min(([_node_energy(product)] if product is not None else [])
+                         + [_node_energy(end) for _, irc in ircs for end in (irc[0], irc[-1])
+                            if product is not None and _same_connectivity(end, product)])
 
     groups = []
     if mep is not None:
@@ -294,7 +299,7 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
     failed = {label: why for label, _, _ in ts_items if (why := _irc_failure(out, label))}
     route = _verify_route(reactant, mep[-1] if mep is not None else None, ts_items, floor, failed)
     if _extra is not None:
-        _extra.update(floor=floor, route=route)
+        _extra.update(floor=floor, route=route, product_floor=product_floor)
     for info in route["items"]:
         label, ts_node, irc, barrier = info["label"], info["ts"], info["irc"], info["barrier"]
         entry = _entry(label, label, [ts_node], floor, barrier=barrier, note=info["note"])
@@ -347,6 +352,7 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
     ]
     result = _result(headline, groups, summary, barrier, warnings)
     result["barrier_floor_hartree"] = floor     # barrier_kcal = E(TS) - this (summarize: the TS's energy)
+    result["product_floor_hartree"] = product_floor   # the reverse barrier is E(TS) - this
     result["barrier_verified"] = verified
     # Explore draws the edge start -> end solid only for a direct path: a
     # verified single step, or an unverified path that did not split.
@@ -520,7 +526,7 @@ def _network_group(fp: Path, floor: Optional[float]) -> Optional[dict]:
 
 def collect_tsopt(out: Path, charge: int, multiplicity: int) -> dict:
     ts_items = _ts_dir_items(out, charge, multiplicity)
-    ts_entries, irc_entries, floors = [], [], []
+    ts_entries, irc_entries, floors, other_ends = [], [], [], []
     for label, ts_node, irc in ts_items:
         # No reactant is known: the barrier is from the lower IRC end, so
         # draw the IRC from that end (an edge made from its ends then points
@@ -533,6 +539,7 @@ def collect_tsopt(out: Path, charge: int, multiplicity: int) -> dict:
         e = _node_energy(ts_node)
         barrier = (e - floor) * HARTREE_TO_KCAL if e is not None and floor is not None else None
         floors.append(floor)
+        other_ends.append(_node_energy(irc[-1]) if irc is not None and len(irc) > 1 else None)
         ts_entries.append(_entry(label, label, [ts_node], floor if floor is not None else e,
                                  barrier=barrier, note=_irc_note(irc) if irc is not None else ""))
         if irc is not None:
@@ -552,6 +559,7 @@ def collect_tsopt(out: Path, charge: int, multiplicity: int) -> dict:
                      [{"label": "Barrier reference", "value": "lower IRC end"}],
                      ts_entries[0]["barrier_kcal"] if len(ts_entries) == 1 else None)
     result["barrier_floor_hartree"] = floors[0] if len(floors) == 1 else None
+    result["product_floor_hartree"] = other_ends[0] if len(other_ends) == 1 else None
     return result
 
 
@@ -613,6 +621,14 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
             if _same_connectivity(end, ref_start):
                 floor_candidates.append(_node_energy(end))
     floor = _min(floor_candidates + [floor_hint])
+    # Product side, for the reverse barrier: product conformers and product-side IRC ends.
+    product_candidates = [_node_energy(n) for n in (end_pool.nodes if end_pool is not None else [])]
+    for item in loaded + [s for a in alternates for s in a["steps"]]:
+        irc = item["irc"]
+        if irc is None or ref_end is None:
+            continue
+        product_candidates += [_node_energy(end) for end in (irc[0], irc[-1]) if _same_connectivity(end, ref_end)]
+    product_floor = _min(product_candidates)
 
     def to_entries(items: list[dict], prefix: str) -> list[dict]:
         entries = []
@@ -634,7 +650,7 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
     channels = [i for i in loaded if i["kind"] == "channel"]
     offtarget = [i for i in loaded if i["kind"] == "offtarget"]
     if _extra is not None:
-        _extra.update(floor=floor, channels=channels)
+        _extra.update(floor=floor, channels=channels, product_floor=product_floor)
     channel_entries = to_entries(channels, "channel_")
     offtarget_entries = to_entries(offtarget, "offtarget_")
     alt_entries = []
@@ -709,6 +725,7 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
     ]
     result = _result(headline, groups, summary, best, warnings)
     result["barrier_floor_hartree"] = floor     # every barrier here, routes too, is E(TS) - this
+    result["product_floor_hartree"] = product_floor
     lowest = [i for i in channels if i.get("barrier") is not None and best is not None and abs(i["barrier"] - best) < 1e-6]
     if lowest:
         result["route_ts"] = _route_ts(lowest[0]["title"], lowest[0]["ts"], lowest[0]["barrier"])
@@ -798,6 +815,7 @@ def collect_ts_extended(ts_out: Path, channels_out: Path, charge: int, multiplic
         if lowest is not None and lowest["id"].startswith("first_"):
             ch["route_ts"] = ts.get("route_ts")
     ch["barrier_floor_hartree"] = shared        # both reads are on it
+    ch["product_floor_hartree"] = _min([ts_x.get("product_floor"), ch_x.get("product_floor")])
     b = ts["barrier_kcal"]
     ch["summary"].insert(0, {"label": tag, "value": None if b is None else
                              f"ΔE‡ {b:.1f} kcal/mol" + ("" if ts.get("barrier_verified") else ", not IRC-verified")})
@@ -1747,7 +1765,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 31
+RESULT_VERSION = 32
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:
@@ -1795,6 +1813,9 @@ def summarize(result: dict) -> dict:
             # kinetics puts TSs and species on one scale with it, never adding a
             # barrier measured from one structure to another structure's energy.
             "ts_energy_hartree": ts_energy_hartree(result),
+            # The same TS seen from the product side (lowest product-side
+            # energy in the result): the barrier of the reverse reaction.
+            "reverse_barrier_kcal": reverse_barrier_kcal(result),
             "barrier_warning": negative_barrier_text(result["barrier_kcal"])
             if result.get("barrier_kcal") is not None and result["barrier_kcal"] < NEGATIVE_BARRIER_TOL else None,
             # Which TS sets that barrier (no geometry: that is in route_ts.xyz).
@@ -1820,6 +1841,21 @@ def entry_ts_energy(entry: dict) -> Optional[float]:
     if k is None and len(frames) == 1:
         k = 0
     return frames[k].get("energy_hartree") if k is not None and 0 <= k < len(frames) else None
+
+
+def entry_reverse_barrier(entry: dict) -> Optional[float]:
+    """For an entry's path (an IRC): E(TS) - the energy of its last frame,
+    the end an edge made from it points to."""
+    frames = entry.get("frames") or []
+    e_ts = entry_ts_energy(entry)
+    e_end = frames[-1].get("energy_hartree") if len(frames) > 1 else None
+    return _clean((e_ts - e_end) * HARTREE_TO_KCAL) if e_ts is not None and e_end is not None else None
+
+
+def reverse_barrier_kcal(result: dict) -> Optional[float]:
+    """E(TS) - lowest product-side energy, for the TS behind barrier_kcal."""
+    e_ts, floor = ts_energy_hartree(result), result.get("product_floor_hartree")
+    return _clean((e_ts - floor) * HARTREE_TO_KCAL) if e_ts is not None and floor is not None else None
 
 
 def ts_energy_hartree(result: dict) -> Optional[float]:

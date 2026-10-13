@@ -116,7 +116,7 @@ export function ProteinSites({ job, data }) {
       ${site && html`<div class="qmmm-panel">
         <h4>Build the QM/MM system at site ${site.id}</h4>
         <p class="small muted">The species is the QM region; the protein (AMBER ff14SB) and a TIP3P water shell are the
-          environment, and their charges act on the QM region (needs xTB or Psi4 as the QM level, in Settings).</p>
+          environment, and their charges act on the QM region (needs xTB, Psi4 or TeraChem as the QM level, in Settings).</p>
         <div class="small"><b>Residues in the QM region</b> (click to add their side chains):</div>
         <div class="chip-row">${site.residues.map((t) => html`<button class=${`chip small ${inQm.has(t) ? 'on' : ''}`} onClick=${() => toggleResidue(t)}>${t}</button>`)}</div>
         <div class="row small">

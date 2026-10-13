@@ -191,6 +191,23 @@ def test_built_pairs_are_ranked_together_above_one_floor():
     assert chosen == [2] and lines[2].split()[1] == "searched" and lines[0].split()[1] == "skipped"
 
 
+def test_built_pair_cap_can_apply_per_mechanism():
+    """--built-cap-per-mechanism: the lowest --atom-mapping-candidates of
+    each mechanism are searched, not the lowest of all together."""
+    from mepd.built_pair_mapping import MechanismPair
+    from mepd.cli_channels import _choose_built_pairs
+
+    def pair(key, peak):
+        return MechanismPair(key=key, score=peak, start=None, end=None, n_variants=1, floor=-130.0)
+
+    a, b = "break C1-H1 | form H1-O1", "break C1-C2 | form C2-O1"
+    rows = [("start", k, pair(a, -120.0 + k)) for k in range(3)] + [("end", k, pair(b, -100.0 + k)) for k in range(2)]
+    _, chosen, _ = _choose_built_pairs(rows, 2)
+    assert chosen == [0, 1]                       # both of mechanism a
+    _, chosen, lines = _choose_built_pairs(rows, 2, per_mechanism=True)
+    assert chosen == [0, 1, 3, 4] and lines[2].split()[1] == "skipped"
+
+
 def test_built_pair_list_round_trips(tmp_path):
     """The ranked list a run saves is what --built-pairs reads back: same
     order, structures, scores, and which entries were searched."""

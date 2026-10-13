@@ -92,7 +92,7 @@ function RegionEditor({ rec, xyz, region, onDone }) {
         <input type="checkbox" checked=${embedding === 'electrostatic'} onChange=${(e) => setEmbedding(e.target.checked ? 'electrostatic' : 'mechanical')} /> electrostatic</label>`}
     </div>
     ${(mm === 'tip3p' || embedding === 'electrostatic') && html`<p class="small muted">Electrostatic embedding: the water's charges polarize the QM region (the
-      energy of forming ions is felt). It needs a QM level that takes point charges: choose xTB (GFN2) or Psi4 in Settings.</p>`}
+      energy of forming ions is felt). It needs a QM level that takes point charges: choose xTB (GFN2), Psi4 or TeraChem in Settings.</p>`}
     ${preview?.error && html`<p class="warn-box small">${preview.error}</p>`}
     ${shownRegion && html`<p class="small">${shownRegion.summary}</p>`}
     ${shownRegion?.problems?.map((p) => html`<p class="warn-box small">⚠ ${p}</p>`)}

@@ -147,11 +147,15 @@ def test_kinetics_uses_reactions_with_barriers_and_ranks_what_controls_the_targe
                   time_s=1e-10, target=sid["C=CO"])
     # the shuttled route has its barrier from the run itself (31 kcal/mol, on its edge)
     labels = [s["label"] for s in out["steps"]]
+    # A complex is its molecules, not a species: every step runs between separated molecules.
     assert sorted(labels) == ["CC=O + O -> C=CO + O", "CC=O -> C=CO"]
+    assert all(s["kind"] != "association" for s in out["steps"])
+    assert {s["name"] for s in out["species"]} == {"CC=O", "water", "C=CO"}
     assert out["target"]["final"] > 0
     fwd = {s["label"]: s["barrier_fwd"] for s in out["steps"]}
     assert fwd["CC=O -> C=CO"] == pytest.approx(45.0, abs=1e-6)
-    # (from the separated reactants, 0.01 Hartree above the run's complex)
+    # The run's TS is 31 kcal/mol above its complex, which lies 0.01 Hartree
+    # below the separated molecules: 31 - 6.3 from them.
     assert fwd["CC=O + O -> C=CO + O"] == pytest.approx(31.0 - 0.01 * 627.509474, abs=1e-6)
     ctl = dict(zip(labels, out["control"]["steps"]))
     assert ctl["CC=O + O -> C=CO + O"] > 0.9 > ctl["CC=O -> C=CO"]       # the lower route controls it

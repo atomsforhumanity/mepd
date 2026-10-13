@@ -59,8 +59,12 @@ ENGINES = [
                            "for electrostatically embedded QM/MM (e.g. in TIP3P water)."),
     ("psi4", "Psi4 (local)", "Psi4 (DFT, HF, MP2, …) in its own environment. It takes point charges: the QM level for "
                              "electrostatically embedded QM/MM."),
+    ("terachem", "TeraChem (local GPU)", "TeraChem on this machine's GPU (DFT, HF, …). It takes point charges: the "
+                                         "QM level for electrostatically embedded QM/MM, and runs TeraChem's own "
+                                         "QM/MM for prmtop systems."),
 ]
 XTB_DEFAULTS = {"method": "gfn2", "n_parallel": 4}
+TERACHEM_DEFAULTS = {"method": "b3lyp", "basis": "6-31gs", "command": None, "timeout": 3600.0}
 PSI4_DEFAULTS = {"method": "b3lyp", "basis": "def2-svp", "threads": 4, "memory": "4 GB"}
 MLIP_DEFAULTS = {"device": "", "checkpoint": None, "family": "", "geometry_optimizer": "LBFGSLineSearch"}
 MLIP_PACKAGES = {"aimnet2": "aimnet", "orb": "orb_models", "ani": "torchani", "mace": "mace", "fairchem": "fairchem"}
@@ -145,7 +149,7 @@ KEY_PATH_FIELDS = {
 TYPE_HINTS = {"min_image": "int", "max_nebk": "float", "timeout": "float", "min_timestep": "float",
               "max_timestep": "float", "max_step_norm": "float", "executable": "text", "checkpoint": "text",
               "mlp_checkpoint": "text",
-              "chemcloud_queue": "text", "model_path": "text", "calculator": "text"}
+              "chemcloud_queue": "text", "command": "text", "model_path": "text", "calculator": "text"}
 # Smallest sensible value per setting (else: >= 0 unless the default is negative).
 MINIMUMS = {"nimages": 3, "max_steps": 1, "nnodes": 3, "n_candidates": 1, "n_threads": 1, "batch_size": 1, "maxit": 1,
             "max_opt_iters": 1, "step_opt_iters": 1, "max_grow_iter": 1, "max_min_iter": 1, "min_images": 2,
@@ -253,6 +257,7 @@ HELP = {
     "n_threads": "Threads per g-xTB call. Keep 1 and parallelize across calls instead.",
     "n_parallel": "g-xTB calls at once (0: all cores).",
     "hessian_acc": "SCC accuracy for numerical Hessians (smaller = tighter).",
+    "command": "How to start TeraChem (empty: $MEPD_TERACHEM, else `terachem` on PATH, e.g. the docker wrapper).",
     "timeout_s": "Longest one g-xTB call may run (s) before it is stopped and fails (0: no limit).",
     "coordsys": "Coordinate system for geomeTRIC optimizations.",
     "maxit": "geomeTRIC's maximum iterations.",
@@ -303,6 +308,7 @@ LABELS = {"equilibrate_ps": "Equilibration (ps)", "sample_ps": "Sampling (ps)", 
           "alpha_climb": "Climbing strength",
           "nimages": "Images", "nnodes": "Nodes", "k": "Spring constant k", "delta_k": "Spring spread Δk",
           "n_threads": "Threads per call", "n_parallel": "Calls at once", "timeout_s": "Time limit per call (s)",
+          "command": "TeraChem command",
           "maxit": "Max iterations",
           "n_candidates": "Candidates", "n_min": "Steps before speeding up", "nstep": "Steps"}
 
@@ -675,6 +681,17 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
             issues.append(INSTALL)
         groups.append({"id": "engine", "title": "Psi4", "fields": [
             _field(data, f"psi4_engine_kwds.{k}", v, key=k in ("method", "basis")) for k, v in PSI4_DEFAULTS.items()]})
+    elif engine == "terachem":
+        from mepd.engines.terachem import INSTALL, terachem_command
+
+        tc_kw = _table(data, "terachem_engine_kwds")
+        if not terachem_command(tc_kw.get("command")):
+            issues.append(INSTALL)
+        groups.append({"id": "engine", "title": "TeraChem",
+                       "note": "Other TeraChem keywords (e.g. dftd = \"d3\", convthre = 1e-6) go in "
+                               "[terachem_engine_kwds.keywords] on the TOML tab.",
+                       "fields": [_field(data, f"terachem_engine_kwds.{k}", v, key=k in ("method", "basis"))
+                                  for k, v in TERACHEM_DEFAULTS.items()]})
     elif engine == "fairchem":
         groups.append({"id": "engine", "title": "FAIR-Chem model", "fields": [
             _field(data, f"fairchem_engine_kwds.{k}", v, key=k in ("model", "task", "device"))
@@ -720,6 +737,7 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
                     if _known_method(method) and k not in _used_path_keys(method))
     idle = [s for s, owner in (("gxtb_engine_kwds", {"gxtb"}), ("fairchem_engine_kwds", {"fairchem"}),
                                ("mlip_engine_kwds", {"mlip"}), ("psi4_engine_kwds", {"psi4"}), ("xtb_engine_kwds", {"xtb"}),
+                               ("terachem_engine_kwds", {"terachem"}),
                                ("ase_engine_kwds", {"ase"}), ("program_kwds", {"qccompute", "chemcloud", "ase"}))
             if _table(data, s) and engine not in owner]
     if idle:

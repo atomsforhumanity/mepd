@@ -96,6 +96,93 @@ if __name__ == "__main__":
     main()
 '''
 
+# The same client in C. A Python interpreter start is ~10-17 ms, as much as
+# the g-xTB gradient it asks for, and GSM pays it once per node gradient; a
+# compiled client connects in ~1 ms. Built once with the system C compiler
+# (anyone with a molecularGSM build has one) and cached; without a compiler
+# the Python client above is used. The binary is installed in the GSM
+# working directory under the name GSM runs, `grad.py`.
+_GRAD_CLIENT_C_SOURCE = r"""
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    if (argc < 2) return 2;
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) { perror("grad client: socket"); return 2; }
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "engine.sock", sizeof addr.sun_path - 1);
+    if (connect(s, (struct sockaddr *)&addr, sizeof addr) < 0) { perror("grad client: connect"); return 2; }
+    size_t len = strlen(argv[1]), sent = 0;
+    while (sent < len) {
+        ssize_t n = write(s, argv[1] + sent, len - sent);
+        if (n <= 0) { perror("grad client: write"); return 2; }
+        sent += (size_t)n;
+    }
+    static char buf[1 << 20];
+    size_t got = 0;
+    ssize_t n;
+    while (got < sizeof buf - 1 && (n = read(s, buf + got, sizeof buf - 1 - got)) > 0) got += (size_t)n;
+    buf[got] = 0;
+    close(s);
+    if (strncmp(buf, "OK", 2) != 0) { fputs(buf, stderr); return 1; }
+    return 0;
+}
+"""
+# MEPD_GSM_GRAD_CLIENT=python uses the Python client even when the C one builds.
+_GRAD_CLIENT_ENV = "MEPD_GSM_GRAD_CLIENT"
+_grad_client_cache: dict = {}
+
+
+def _compiled_grad_client() -> Optional[Path]:
+    """The C `grad.py` client, compiled once per source version into the
+    user cache (~/.cache/mepd); None if no C compiler builds it."""
+    if os.environ.get(_GRAD_CLIENT_ENV, "").lower() == "python":
+        return None
+    if "path" in _grad_client_cache:
+        return _grad_client_cache["path"]
+    import hashlib
+
+    path = None
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "mepd"
+    target = cache / f"gsm-grad-client-{hashlib.sha256(_GRAD_CLIENT_C_SOURCE.encode()).hexdigest()[:12]}"
+    if target.exists() and os.access(target, os.X_OK):
+        path = target
+    else:
+        compiler = next((c for c in (os.environ.get("CC"), "cc", "gcc", "clang") if c and shutil.which(c)), None)
+        if compiler is not None:
+            try:
+                cache.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=cache) as tmp:
+                    src = Path(tmp) / "grad_client.c"
+                    src.write_text(_GRAD_CLIENT_C_SOURCE)
+                    out = Path(tmp) / "grad_client"
+                    done = subprocess.run([compiler, "-O2", "-o", str(out), str(src)],
+                                          capture_output=True, text=True, timeout=120)
+                    if done.returncode == 0 and out.exists():
+                        os.replace(out, target)   # atomic: concurrent runs never see half a binary
+                        path = target
+            except (OSError, subprocess.SubprocessError):
+                path = None
+    _grad_client_cache["path"] = path
+    return path
+
+
+def _python_grad_client_source() -> str:
+    """The Python client, started without site-packages (-I -S: it needs
+    only the standard library), which saves ~6 ms per call over a plain
+    `python3`."""
+    head = f"#!{sys.executable} -IS"
+    if len(head) > 120 or " " in sys.executable:   # shebang length / quoting limits
+        head = "#!/usr/bin/env python3"
+    return _GRAD_PY_SOURCE.replace("#!/usr/bin/env python3", head, 1)
+
+
 # Long-lived server `grad.py` clients above talk to. Started once per
 # `optimize_chain()` call (see `_start_engine_server`), killed once GSM's
 # subprocess exits. Unlike `grad.py`, this one does pay the real import/
@@ -675,7 +762,11 @@ class GSM(PathMinimizer):
             )
 
         grad_py = workdir / "grad.py"
-        grad_py.write_text(_GRAD_PY_SOURCE)
+        client = _compiled_grad_client()
+        if client is not None:
+            shutil.copyfile(client, grad_py)
+        else:
+            grad_py.write_text(_python_grad_client_source())
         grad_py.chmod(0o755)
 
         engine_server_py = workdir / "engine_server.py"

@@ -278,7 +278,7 @@ def test_electrostatic_system_at_a_level_without_point_charges_is_refused_before
     client.put(f"/api/qmmm/systems/{sysid}", json={"mm": "tip3p"})
     r = client.post("/api/jobs", json={"op": "optimize", "structures": [sid], "profile": "default",
                                        "params": {}, "dry_run": True})
-    assert r.status_code == 400 and 'engine_name = "xtb" or "psi4"' in r.json()["detail"]
+    assert r.status_code == 400 and 'engine_name = "xtb", "psi4" or "terachem"' in r.json()["detail"]
     # With an xtb (GFN2) profile in the workspace, the builder no longer warns.
     (tmp_path / "ws" / "profiles" / "gfn2.toml").write_text('engine_name = "xtb"\n')
     p = client.post("/api/qmmm/preview", json={"structure": sid, "qm_atoms": "0-5", "mm": "tip3p"}).json()

@@ -33,6 +33,11 @@ function stylesheet() {
       'text-background-color': css('--bg'), 'text-background-opacity': 0.9, 'text-background-padding': 3,
       'text-background-shape': 'roundrectangle',
     } },
+    // Forward barrier at the source end, reverse at the target end (edgeEndLabels).
+    { selector: 'edge[srcLabel][tgtLabel]', style: {
+      'source-label': 'data(srcLabel)', 'target-label': 'data(tgtLabel)',
+      'source-text-offset': 30, 'target-text-offset': 38,
+    } },
     { selector: 'edge[status = "done"]', style: { 'line-style': 'solid', 'line-color': css('--ok'), 'target-arrow-color': css('--ok') } },
     // Only a multi-step route joins the two ends (no single step does): not drawn as a step.
     { selector: 'edge[status = "done"][route = "yes"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [2, 5] } },
@@ -449,6 +454,14 @@ function ViewPanel({ view, setView, collapsed, setCollapsed, kids, shown, total,
   </div>`;
 }
 
+// The barrier to leave each end, drawn at that end: forward at the source,
+// reverse at the target (past the arrowhead). One number per end, so the
+// direction reads off the drawing, however the edge happens to point.
+function edgeEndLabels(st) {
+  if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return { srcLabel: '', tgtLabel: '' };
+  return { srcLabel: st.barrierFwd.toFixed(1), tgtLabel: st.barrierRev.toFixed(1) };
+}
+
 function edgeLabel(e, st, reaction = null) {
   const parts = [];
   // Barriers at several levels of theory: each level's own lowest, side by side.
@@ -458,7 +471,9 @@ function edgeLabel(e, st, reaction = null) {
     return parts.join(' · ');
   }
   if (st.routeSteps > 1) parts.push(`${st.routeSteps} steps`);
-  if (st.barrier != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrier.toFixed(1)}`);
+  // Both directions known: the numbers sit at the edge's ends (edgeEndLabels).
+  if (st.barrierRev != null) { if (st.warning) parts.push('⚠'); }
+  else if (st.barrier != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrier.toFixed(1)}`);
   else if (st.barrierUnverified != null) parts.push(`≈${st.barrierUnverified.toFixed(1)}?`);
   else if (st.status === 'running') parts.push('running…');
   else if (st.status === 'queued') parts.push('queued');
@@ -684,18 +699,20 @@ export function Graph() {
         ids.add(e.id);
         const st = edgeStatus(e, state.jobs);
         const data = { id: e.id, source, target, status: st.status, label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
-          route: st.routeSteps ? 'yes' : '' };
+          route: st.routeSteps ? 'yes' : '', ...edgeEndLabels(st) };
         if (cond && !['running', 'queued'].includes(st.status)) {
           const info = edgeUnderSetup(e, state.jobs, cond);
           data.label = [e.label && !/^Channel|IRC$/.test(e.label) ? e.label : '', setupEdgeLabel(e, info, cond)].filter(Boolean).join(' · ');
           data.runs = info.runs === 'none' ? '' : info.runs;
+          data.srcLabel = data.tgtLabel = '';
         }
         const el = c.getElementById(e.id);
         if (el.nonempty() && (el.data('source') !== source || el.data('target') !== target)) el.remove();
         const cur = c.getElementById(e.id);
         if (cur.nonempty()) {
           if (cur.data('status') !== data.status || cur.data('label') !== data.label || cur.data('runs') !== data.runs
-            || cur.data('route') !== data.route) cur.data(data);
+            || cur.data('route') !== data.route || cur.data('srcLabel') !== data.srcLabel
+            || cur.data('tgtLabel') !== data.tgtLabel) cur.data(data);
         } else c.add({ group: 'edges', data });
       }
       c.elements().forEach((el) => { if (!ids.has(el.id())) el.remove(); });
@@ -953,7 +970,7 @@ export function Graph() {
         <span><i class="lg queued"></i>within 100×</span>
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
-      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified first; ≈x? means the path maximum, not yet confirmed by TS + IRC. Dotted: no single step joins the two, only a route through intermediates (its highest step).">
+      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified first; when both directions are known, each end carries the barrier to leave that end (forward next to where the arrow starts, reverse next to its head); ≈x? means the path maximum, not yet confirmed by TS + IRC. Dotted: no single step joins the two, only a route through intermediates (its highest step).">
         <span><i class="lg idle"></i>not computed</span>
         <span><i class="lg running"></i>running</span>
         <span><i class="lg done"></i>ΔE‡, kcal/mol</span>

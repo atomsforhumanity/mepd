@@ -250,7 +250,8 @@ class DemoPolicy:
         "executable", "checkpoint", "calculator", "calculator_kwds", "family", "model_path", "mlp_checkpoint",
         "file", "input_files", "prmtop", "pdb", "tcin", "debug_dump_dir", "debug_dump_inputs", "chemcloud_queue",
         "hf_token", "model_cache_dir", "model_repo", "keep_workdirs", "collect_files", "qmmm",
-        "python")                       # psi4_engine_kwds.python: the interpreter it launches
+        "python",                       # psi4_engine_kwds.python: the interpreter it launches
+        "command", "workdir")           # terachem_engine_kwds: the program it runs, where
     # Parallelism and size: no more than a visitor's share of the machine.
     # Psi4 asks for its memory as text ("4 GB"); one job must not take the machine.
     psi4_max_memory_gb: float = 16.0

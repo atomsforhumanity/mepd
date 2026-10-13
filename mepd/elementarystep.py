@@ -407,6 +407,9 @@ def _validate_hessian_minimum(
     *,
     frequency_cutoff: float,
 ) -> HessianMinimaValidation:
+    if len(node.structure.symbols) == 1:
+        # A lone atom (e.g. Br-) has no vibrations: always a minimum.
+        return HessianMinimaValidation(is_minimum=True, reason="single atom: no vibrational modes")
     compute_result = getattr(engine, "_compute_hessian_result", None)
     try:
         if callable(compute_result):

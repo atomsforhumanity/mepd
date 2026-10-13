@@ -89,8 +89,8 @@ def _level_problems(ws: Workspace, region: QMMMRegion) -> list[str]:
     engines = [_profile_engine(ws, n) for n in ws.profile_names()] or ["gxtb"]
     if any(embedding_problem("electrostatic", e) is None for e in engines):
         return []
-    return ["Electrostatic embedding needs a QM level that takes point charges (xTB or Psi4), and no profile in "
-            "this workspace uses one: add an xTB (GFN2) or Psi4 profile in Settings before running jobs on this "
+    return ["Electrostatic embedding needs a QM level that takes point charges (xTB, Psi4 or TeraChem), and no profile in "
+            "this workspace uses one: add an xTB (GFN2), Psi4 or TeraChem profile in Settings before running jobs on this "
             "system, or pick a GFN-FF environment (mechanical embedding)."]
 
 

@@ -1186,7 +1186,7 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .kn-mix-name { flex: 1; font-family: var(--font-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .kn-mix-row input[type=number] { width: 64px; }
 .kn-out section { margin: 14px 0 18px; }
-.kn-head { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 4px; }
+.kn-summary { margin: 0 0 4px; }
 .kn-chart { position: relative; max-width: 640px; }
 .kn-chart svg { width: 100%; height: auto; display: block; }
 .kn-grid { stroke: var(--border); stroke-width: 1; }

@@ -860,7 +860,7 @@ def test_demo_settings_offer_the_fairchem_engine_and_grey_out_the_others(demo_ap
         engine = next(f for f in r["form"]["basic"] if f["key"] == "engine")
         disabled = {o["value"] for o in engine["options"] if o["disabled"]}
         assert "fairchem" not in disabled and "mlip" not in disabled and "gxtb" not in disabled
-        assert disabled == {"chemcloud", "qccompute", "ase"}                    # shown, but not pickable
+        assert disabled == {"chemcloud", "qccompute", "ase", "terachem"}                    # shown, but not pickable
         v = c.post("/api/profiles/validate", json={"text": r["text"]}).json()
         assert v["ok"], v
         r = c.post("/api/profiles/form/apply", json={"text": r["text"], "path": "fairchem_engine_kwds.model",

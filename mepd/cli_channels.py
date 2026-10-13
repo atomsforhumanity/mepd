@@ -14,6 +14,7 @@ plumbing used by other commands too lives in `mepd.cli_common`.
 """
 from __future__ import annotations
 
+import collections
 import json
 from pathlib import Path
 from typing import Optional
@@ -384,16 +385,26 @@ def _load_built_pairs(folder: Path, charge: int, multiplicity: int) -> tuple[lis
 
 
 def _choose_built_pairs(rows: list, max_searches: int, picks: Optional[set] = None,
-                        done: frozenset = frozenset()) -> tuple[list, list, list]:
+                        done: frozenset = frozenset(), per_mechanism: bool = False) -> tuple[list, list, list]:
     """All built pairs, both sides and every mechanism together ([(src,
     conformer index, MechanismPair)]), ranked by score (snap-gi-xtb: the xtb
     peak, so above one shared floor, the lowest start among them). Searched:
     the entries labeled in `picks` (built_<rank>), else the lowest
-    `max_searches`; `done`, labels searched in an earlier run. Returns
+    `max_searches` (`per_mechanism`: the lowest `max_searches` of each
+    mechanism); `done`, labels searched in an earlier run. Returns
     (ranked, ranks searched, report lines)."""
     ranked = sorted(rows, key=lambda t: t[2].score)
-    chosen = ([n for n in range(len(ranked)) if f"built_{n}" in picks] if picks is not None
-              else list(range(min(max_searches, len(ranked)))))
+    if picks is not None:
+        chosen = [n for n in range(len(ranked)) if f"built_{n}" in picks]
+    elif per_mechanism:
+        seen: collections.Counter = collections.Counter()
+        chosen = []
+        for n, (_, _, r) in enumerate(ranked):
+            seen[r.key] += 1
+            if seen[r.key] <= max_searches:
+                chosen.append(n)
+    else:
+        chosen = list(range(min(max_searches, len(ranked))))
     floors = [r.floor for _, _, r in rows if r.floor is not None]
     floor = min(floors) if floors else None
     lines = []
@@ -1087,6 +1098,11 @@ def channels(
         "--atom-mapping-candidates the next ones down its list are searched; pairs searched already are "
         "skipped (their folders are done).",
     ),
+    built_cap_per_mechanism: bool = typer.Option(
+        False, "--built-cap-per-mechanism",
+        help="--pair-from with --atom-mapping: search the lowest --atom-mapping-candidates built pairs of "
+        "each mechanism, instead of the lowest of all of them together.",
+    ),
     search_built: Optional[str] = typer.Option(
         None, "--search-built",
         help="With --built-pairs: search exactly these entries of its list (comma-separated labels, e.g. "
@@ -1263,6 +1279,7 @@ def channels(
         built_pairs = None
     if not isinstance(search_built, str):
         search_built = None
+    built_cap_per_mechanism = built_cap_per_mechanism is True
     if search_built and built_pairs is None:
         raise typer.BadParameter("--search-built picks entries of a saved list: give it --built-pairs.")
     if built_pairs is not None and (pair_from == "both" or not atom_mapping):
@@ -1542,7 +1559,8 @@ def channels(
             # --atom-mapping-candidates, the lowest by xtb peak are searched.
             max_searches = run_inputs.atom_mapping_inputs.n_candidates
             picks = {x.strip() for x in search_built.split(",") if x.strip()} if search_built else None
-            ranked, built_chosen, lines = _choose_built_pairs(rows, max_searches, picks, frozenset(searched_before))
+            ranked, built_chosen, lines = _choose_built_pairs(rows, max_searches, picks, frozenset(searched_before),
+                                                            per_mechanism=built_cap_per_mechanism)
             unknown = sorted((picks or set()) - {f"built_{n}" for n in range(len(ranked))})
             if unknown:
                 raise typer.BadParameter(f"--search-built: {', '.join(unknown)} not in {built_pairs} "
@@ -1550,17 +1568,20 @@ def channels(
             metric = run_inputs.atom_mapping_inputs.metric
             how = ("the xtb peak along their interpolation, above the lowest start among them"
                    if metric == "snap-gi-xtb" else metric)
+            n_mech = len({r.key for _, _, r in ranked})
+            each = " of each mechanism" if built_cap_per_mechanism else ""
+            over = (len(ranked) > len(built_chosen))
             if picks is not None:
                 head = f"--search-built: searching {len(built_chosen)} chosen of the {len(ranked)} built pairs:"
             elif built_pairs is not None:
                 head = (f"--pair-from {pair_from}: {len(ranked)} built pair(s) (--built-pairs), ranked by {how}; "
-                        f"the lowest {min(max_searches, len(ranked))} searched (--atom-mapping-candidates):")
+                        f"the lowest {max_searches}{each} searched (--atom-mapping-candidates):")
             else:
                 n_sources = sum(len(pools[s]) for s in sampled_sides)
                 head = (f"--pair-from {pair_from}: {len(ranked)} built pair(s), of at most {n_sources} conformer(s) x "
-                        f"{n_maps} mapping(s) = {n_sources * n_maps}; "
-                        + (f"more than --atom-mapping-candidates ({max_searches}), so all are ranked by {how} "
-                           f"and the lowest {max_searches} searched:" if len(ranked) > max_searches
+                        f"{n_maps} mapping(s) = {n_sources * n_maps}, {n_mech} mechanism(s); "
+                        + (f"more than --atom-mapping-candidates ({max_searches}){each}, so all are ranked by "
+                           f"{how} and the lowest {max_searches}{each} searched:" if over
                            else "all searched:"))
             typer.echo(head)
             for ln in lines:
@@ -1572,7 +1593,8 @@ def channels(
             # ones are searched.
             pairs = [(StructureNode(structure=r.start), StructureNode(structure=r.end)) for _, _, r in ranked]
             stats["pair_from"].update(n_built_pairs=len(ranked), n_mappings=n_maps, max_searches=max_searches,
-                                      n_searched=len(built_chosen), searched=[f"built_{n}" for n in built_chosen])
+                                      n_searched=len(built_chosen), n_mechanisms=n_mech,
+                                      cap_per_mechanism=built_cap_per_mechanism, searched=[f"built_{n}" for n in built_chosen])
         if pairs:
             pools = {"start": [a for a, _ in pairs], "end": [b for _, b in pairs]}
         else:
