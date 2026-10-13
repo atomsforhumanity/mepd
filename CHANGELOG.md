@@ -183,6 +183,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Kinetics started from a whole complex as if it were one species** (the default starting mixture, taken from
+  the latest nanoreactor run). A complex there now starts as its molecules, 1 M each (a molecule twice in it: 2 M).
+
 - **Molecules packed into one geometry could come out bonded to each other** (`mepd.complexes.packed`: a
   reaction SMILES with several molecules, packed complexes). Packmol keeps them 2 Å apart, which is still bonding
   range for e.g. a bromide and a carbon; such a packing is now redone further apart. Seen only where Packmol is

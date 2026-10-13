@@ -112,8 +112,15 @@ function Mixture({ items, onChange, species }) {
 function defaultMixture() {
   // The start of the latest nanoreactor run, 1 M each.
   const jobs = Object.values(state.jobs).filter((j) => j.op === 'nanoreactor').sort((a, b) => b.created - a.created);
-  const ids = (jobs[0]?.targets?.structures || []).filter((id) => state.workspace.structures[id]);
-  return ids.map((id) => ({ id, c: 1, held: false }));
+  // A complex is its molecules (a species twice in it: 2 M).
+  const st = state.workspace.structures;
+  const c = {};
+  for (const id of jobs[0]?.targets?.structures || []) {
+    const rec = st[id];
+    if (!rec) continue;
+    for (const m of rec.role === 'complex' && rec.members?.length ? rec.members : [id]) if (st[m]) c[m] = (c[m] || 0) + 1;
+  }
+  return Object.entries(c).map(([id, n]) => ({ id, c: n, held: false }));
 }
 
 // ------------------------------------------------------------ view
