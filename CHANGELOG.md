@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Run provenance**: every `mepd` command given `--output` (so every web job) writes `provenance.json` there,
+  or `<file>.provenance.json` for a file output. It records the command line, the profile text and level key,
+  mepd's version and git commit/dirty state, external binaries with sha256 (xtb, gxtb-xtb, crest, gsm and any
+  the profile names), library versions, host, timing and exit code. `MEPD_NO_PROVENANCE=1` turns it off.
+  Study scripts can call `mepd.provenance.run_manifest` directly. This is what makes results publishable as
+  findings with captured, rather than reconstructed, provenance.
 - **Stop & analyze** for Find TS, Reaction channels and Sample more paths: next to Cancel on a running search.
   Each running path search (NEB, FSM, FSM-TS, GSM, MLP-GI) ends at its next step with the path it has, no new
   search starts and none is split further; then TS optimization, IRC and channel classification run on those

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -67,13 +68,26 @@ def _teardown_live_display(*_args, **_kwargs) -> None:
 
 class _MepdApp(typer.Typer):
     def __call__(self, *args, **kwargs):
-        from mepd.errors import InputsError
+        import datetime as _dt
 
+        from mepd.errors import InputsError
+        from mepd.provenance import record_cli_run
+
+        started, code = _dt.datetime.now(_dt.timezone.utc), 1
         try:
-            return super().__call__(*args, **kwargs)
+            result = super().__call__(*args, **kwargs)
+            code = 0
+            return result
         except InputsError as exc:      # says what to change: no traceback
             typer.echo(f"Error: {exc}", err=True)
+            code = 2
             raise SystemExit(2)
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+            raise
+        finally:
+            # provenance.json next to the outputs (see mepd.provenance)
+            record_cli_run(kwargs.get("args") or (args[0] if args else sys.argv[1:]), started, code)
 
 
 app = _MepdApp(
