@@ -12,6 +12,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Export a whole workspace** (Analyze › Reactions › Export all; `GET /api/workspace/export`). Covers every
+  reaction Analyze lists, with every channel found for each. Two files:
+  - `report (.html)`: one self-contained page. An index of the reactions (lowest barrier, ΔE, channels, level;
+    filter and sort) opens each reaction's own page: energy diagram, every channel's TS and IRC in 3D.
+    One copy of 3Dmol.js serves all pages; it opens offline and has the CSV in it.
+  - `data (.csv)`: one row per elementary step of every channel, and one row for a reaction with none. Fixed
+    columns with units in their names (`workspace_export.CSV_COLUMNS`): SMILES, charge and multiplicity,
+    channel and step barriers, energies in Hartree, level of theory, and the TS and both step ends as an
+    element list and flat Angstrom coordinates in one atom order.
 - **Network variants** (`mepd/network_variants.py`, `mepd/web/variants.py`, `mepd variant`). Edit a species in
   Design (hydrogens for groups, element or charge swaps), then **Apply to network**. The edit is carried
   through every reaction the species and its products take part in, then each one is recomputed. The result

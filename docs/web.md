@@ -216,6 +216,8 @@ example, a future `mepd discovery nanoreactor` command becomes one `Params` mode
 | `POST /api/delete` `{structures[], edges[]}` | Bulk removal (one save, one event) |
 | `GET /api/structures-export?ids=a,b` | Structures as a multi-frame xyz |
 | `GET /api/jobs/{id}/archive` | Output folder, inputs and logs as a zip |
+| `GET /api/reactions/{id}/export?format=html\|zip` | One reaction's page (self-contained HTML) or its data |
+| `GET /api/workspace/export?format=html\|csv` | Every reaction Analyze lists: one browsable page, or one CSV row per elementary step (`mepd/web/workspace_export.py`, `CSV_COLUMNS`) |
 | `GET /api/sessions`, `POST /api/sessions/new` `{name \| path}`, `POST /api/sessions/open` `{path}` | Sessions |
 
 ## Performance notes

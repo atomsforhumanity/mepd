@@ -1800,6 +1800,38 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return Response(rx.export_html(bundle), media_type="text/html; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{name}.html"'})
 
+    export_builds: dict = {}   # workspace -> the export build in progress
+
+    @app.get("/api/workspace/export")
+    async def workspace_export(format: str = "html"):
+        """Every reaction Analyze lists, with every channel found for each:
+        `html`, one self-contained page to browse them (an index, each
+        reaction's own page on click; opens offline), or `csv`, one row per
+        elementary step of every channel in fixed columns, geometries
+        inline, for loading in bulk."""
+        from mepd.web import workspace_export as wx
+
+        if format not in ("html", "csv"):
+            raise WorkspaceError(f"unknown export format {format!r} (html or csv)")
+        manager, ws = J(), W()
+        # Building it reads every search's result (a minute on a large workspace): requests that come
+        # while one is building (an impatient double click, both formats at once) share that build.
+        task = export_builds.get(id(ws))
+        if task is None:
+            task = asyncio.ensure_future(run_in_threadpool(
+                wx.workspace_bundles, ws, dict(manager.jobs), job_dir=manager.job_dir, page_of=manager.page_job,
+                result_of=lambda job: collect_cached(manager.result_view(job), manager.job_dir(job["id"]))))
+            export_builds[id(ws)] = task
+            task.add_done_callback(lambda t, k=id(ws): export_builds.pop(k, None) if export_builds.get(k) is t else None)
+        bundle = await asyncio.shield(task)   # one request going away does not stop the others' build
+        name = wx.rx._safe(bundle["name"]) or "workspace"
+        if format == "csv":
+            return Response(wx.export_csv(bundle), media_type="text/csv; charset=utf-8",
+                            headers={"Content-Disposition": f'attachment; filename="{name}_reactions.csv"'})
+        page = await run_in_threadpool(wx.export_html, bundle)
+        return Response(page, media_type="text/html; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{name}.html"'})
+
     @app.get("/api/jobs/{jid}/reactor")
     def job_reactor(jid: str, start: int = 0, run: Optional[int] = None):
         """A nanoreactor job's trajectory from raw frame `start` on, and its events (live view)."""

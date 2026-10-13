@@ -217,6 +217,21 @@ def _channels(r: dict, S: dict, edge: Optional[dict], jobs: dict, ladder: dict, 
     return found, offtarget, list(pages.values())
 
 
+def edge_reaction(snap: dict, rid: str) -> Optional[dict]:
+    """`edge:<id>`: an edge no reaction stands for (two structures you
+    connected), as the reaction of its two ends -- as Analyze lists it."""
+    if not rid.startswith("edge:"):
+        return None
+    e = (snap.get("edges") or {}).get(rid[5:])
+    if e is None:
+        return None
+    S = snap["structures"]
+    name = lambda i: (S.get(i) or {}).get("name") or i
+    return {"id": rid, "label": e.get("label") or f"{name(e['source'])} -> {name(e['target'])}",
+            "reactants": [e["source"]], "products": [e["target"]], "complexes": [], "edge": e["id"],
+            "origin": {"kind": "edge"}}
+
+
 def reaction_bundle(ws, jobs: dict, rid: str, *, job_dir: Callable[[str], Path],
                     result_of: Callable[[dict], dict], page_of: Callable[[dict], dict] = lambda j: j) -> dict:
     """Everything the export shows of reaction `rid`, as plain data: its
@@ -225,7 +240,7 @@ def reaction_bundle(ws, jobs: dict, rid: str, *, job_dir: Callable[[str], Path],
     from mepd.web.workspace import WorkspaceError
 
     snap = ws.snapshot()
-    r = (snap.get("reactions") or {}).get(rid)
+    r = (snap.get("reactions") or {}).get(rid) or edge_reaction(snap, rid)
     if r is None:
         raise WorkspaceError(f"no reaction {rid!r}")
     S = snap["structures"]
@@ -654,8 +669,10 @@ for (const c of D.channels) c.steps.forEach((s, k) => { const tag = c.steps.leng
 """
 
 
-def export_html(b: dict) -> str:
-    """One self-contained page: no server and no internet needed."""
+def export_html(b: dict, viewer_js: Optional[str] = None) -> str:
+    """One self-contained page: no server and no internet needed.
+    `viewer_js`: what goes in place of 3Dmol.js (the workspace export puts
+    one copy in its index and a placeholder in each reaction's page)."""
     e = html.escape
     kcal = lambda v: "—" if v is None else f"{v:+.1f}"
     hartree = lambda v: "" if v is None else f"{v:.8f}"
@@ -712,7 +729,7 @@ def export_html(b: dict) -> str:
     levels = sorted({x for x in [c.get("level") for c in chans] + [sp.get("level") for sp in b["reactants"] + b["products"]] if x})
     title = b["label"].replace("->", "→")
     data = json.dumps(_json_data(b), default=str).replace("</", "<\\/")
-    three = _read(_VENDOR) or ""
+    three = _read(_VENDOR) or "" if viewer_js is None else viewer_js
     picker = (f'<label class="note" for="channel">Channel</label><select id="channel">'
               + "".join(f'<option value="{c["id"]}">{e(c["name"])} · {e(c["kind"])} · ΔE‡ {kcal(c["barrier_kcal"])}</option>'
                         for c in chans) + "</select>") if len(chans) > 1 else ""

@@ -1307,3 +1307,10 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
   border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); color: var(--text); }
 .graph-toolbar select.btn { width: auto; max-width: 220px; padding-right: 22px; }
 .kn-out > .warn-box, .kn-out > .level-note { margin: 0 0 6px; }
+
+/* A small spinner beside a control whose work takes a while (Export all). */
+.spinner { display: inline-block; width: 0.9em; height: 0.9em; margin-right: 4px; vertical-align: -0.12em;
+  border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%;
+  animation: spinner-turn 0.8s linear infinite; }
+@keyframes spinner-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

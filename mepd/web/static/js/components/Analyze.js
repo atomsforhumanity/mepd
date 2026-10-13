@@ -9,7 +9,7 @@
 //    or let the bond rules propose them) and turn them into reactions.
 import { html, useMemo, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, select, set, state, useStore } from '../store.js';
+import { openJob, select, set, state, toast, useStore } from '../store.js';
 import { depictUrl, edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
 import { NO_TS_SHORT, ReactionCard, findTs, noTsWhy } from './Reactions.js';
 import { KineticsView } from './Kinetics.js';
@@ -161,6 +161,36 @@ function Composer({ initial, onDone }) {
   </div>`;
 }
 
+// The whole workspace as files: fetched first (building it takes a while on a
+// large workspace), so the link can say so -- and say why if it fails -- rather
+// than look dead until the download starts.
+const EXPORTS = [
+  ['html', 'report (.html)', 'One HTML file to browse every reaction: an index (lowest barrier, ΔE, channels), each opening its page with the energy diagram and every channel\'s TS and IRC in 3D. Opens without a server or internet.'],
+  ['csv', 'data (.csv)', 'One row per elementary step of every channel found (and one per reaction with none): fixed columns with units, SMILES, energies, the TS and step-end geometries inline. For loading in bulk.'],
+];
+function ExportAll() {
+  const [busy, setBusy] = useState(null);
+  const run = async (format) => {
+    if (busy) return;
+    setBusy(format);
+    toast('Preparing the export: on a large workspace this takes a minute.', 'info', 4000);
+    await attempt(async () => {
+      const res = await api.raw(`/api/workspace/export?format=${format}`);
+      const blob = await res.blob();
+      const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') || '')?.[1] || `workspace.${format}`;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      return name;
+    }, (name) => `Saved ${name}`);
+    setBusy(null);
+  };
+  return html`Export all: ${EXPORTS.map(([f, label, title], i) => html`${i ? ', ' : ''}<button class="btn-link small"
+    title=${title} disabled=${!!busy} onClick=${() => run(f)}>${busy === f ? html`<span class="spinner" aria-hidden="true"></span>preparing ${label}…` : label}</button>`)}`;
+}
+
 // ------------------------------------------------------------ the view
 export function AnalyzeView() {
   const mode = useStore((s) => (s.analyze || {}).view) || 'reactions';
@@ -245,7 +275,8 @@ function ReactionsAnalyze() {
       ${filterIds && html`<p class="small an-filter">Reactions of ${filterIds.map((id) => structures[id]?.name || '?').join(' + ')}
         <button class="btn-link small" onClick=${() => set({ analyze: { ...nav, species: null } })}>show all</button></p>`}
       <div class="small muted an-count">${shown.length} reaction${shown.length === 1 ? '' : 's'} · ${ordered.length} transformation${ordered.length === 1 ? '' : 's'}
-        ${todo.length > 0 && html` · <button class="btn-link small" onClick=${findAll}>find TS for the ${todo.length} without one</button>`}</div>
+        ${todo.length > 0 && html` · <button class="btn-link small" onClick=${findAll}>find TS for the ${todo.length} without one</button>`}
+        ${' · '}<${ExportAll} /></div>
       <div class="an-groups">
         ${ordered.map((rs) => html`<div class="an-group">
           <div class="an-net">${netLabel(rs[0], structures)}${rs.length > 1 ? html` <span class="small muted">· ${rs.length} routes</span>` : ''}</div>
