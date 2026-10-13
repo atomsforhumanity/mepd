@@ -1506,7 +1506,9 @@ def collect_nanoreactor(out: Path, charge: int, multiplicity: int) -> dict:
         # (an interactive reactor's run names its saved first frame here: not worth showing)
         {"label": "Reactor", "value": ", ".join(m for m in st.get("molecules") or [] if "first_frame.xyz" not in m) or None},
         {"label": "MD", "value": f"{st.get('method', '').upper()} at {st.get('temperature', 0):.0f} K, "
-                                 f"{st.get('time_ps')} ps, wall {st['radius']:.1f} → "
+                                 + (f"stopped at {st['stopped_at_ps']:.2f} of {st.get('time_ps')} ps"
+                                    if st.get("stopped_at_ps") is not None else f"{st.get('time_ps')} ps")
+                                 + f", wall {st['radius']:.1f} → "
                                  f"{st['radius'] * (st.get('compress') or 1):.1f} Å" if st.get("radius") else
          (f"{'an interactive reactor' if '/sandbox/' in str(data.get('trajectory') or '') else 'an existing'} trajectory "
           f"({(data.get('n_frames') or 0) * (data.get('frame_fs') or 0) / 1000:.1f} ps)")},
@@ -1841,7 +1843,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 34
+RESULT_VERSION = 35
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

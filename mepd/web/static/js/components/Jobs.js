@@ -13,11 +13,26 @@ export function useTick(ms = 1000, on = true) {
   }, [ms, on]);
 }
 
+// Stop & analyze, by what a stop ends (operation.stop_kind).
+const STOP_WORDS = {
+  search: {
+    toast: 'Stopping the searches; the paths found so far are being analyzed',
+    stopping: 'The searches stopped; TS optimization, IRC and the channels run on the paths found, then the result shows them',
+    button: 'End the path searches now and keep what they found: each running search stops with its current path, none start or split further, then TS optimization, IRC and the channels run on those paths. (Cancel discards the unfinished analysis.)',
+  },
+  md: {
+    toast: 'Stopping the MD; the trajectory so far is being analyzed',
+    stopping: 'The MD stopped; its reaction events are being read and each species and reaction refined, then the result shows them',
+    button: 'End the MD now and keep its trajectory: the reaction events in it are found and every species and reaction refined, as at the end of a full run. Run longer continues it later. (Cancel discards the unfinished analysis.)',
+  },
+};
+
 export function JobControls({ job, compact = false }) {
-  const stoppable = useStore((s) => s.operations.find((o) => o.key === job.op)?.stoppable);
+  const op = useStore((s) => s.operations.find((o) => o.key === job.op));
+  const stoppable = op?.stoppable;
+  const words = STOP_WORDS[op?.stop_kind] || STOP_WORDS.search;
   const cancel = () => attempt(() => api.post(`/api/jobs/${job.id}/cancel`), 'Cancelling…');
-  const stopAnalyze = () => attempt(() => api.post(`/api/jobs/${job.id}/stop-analyze`),
-    'Stopping the searches; the paths found so far are being analyzed');
+  const stopAnalyze = () => attempt(() => api.post(`/api/jobs/${job.id}/stop-analyze`), words.toast);
   const retry = () => attempt(() => api.post(`/api/jobs/${job.id}/retry`), 'Re-queued: it resumes from what is already on disk');
   const del = async () => {
     if (!confirm(`Delete "${job.title}"${job.external ? ' from the list (the output directory is left alone)' : ' and its output folder'}?`)) return;
@@ -27,9 +42,8 @@ export function JobControls({ job, compact = false }) {
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
   return html`<span class="job-controls">
     ${job.status === 'running' && stoppable && (job.stopping
-      ? html`<span class="small muted" title="The searches stopped; TS optimization, IRC and the channels run on the paths found, then the result shows them"><span class="spinner" aria-hidden="true"></span>analyzing what was found…</span>`
-      : html`<button class="btn small primary" onClick=${stop(stopAnalyze)}
-          title="End the path searches now and keep what they found: each running search stops with its current path, none start or split further, then TS optimization, IRC and the channels run on those paths. (Cancel discards the unfinished analysis.)">Stop & analyze</button>`)}
+      ? html`<span class="small muted" title=${words.stopping}><span class="spinner" aria-hidden="true"></span>analyzing what was found…</span>`
+      : html`<button class="btn small primary" onClick=${stop(stopAnalyze)} title=${words.button}>Stop & analyze</button>`)}
     ${['queued', 'running'].includes(job.status) && html`<button class="btn small" onClick=${stop(cancel)}>Cancel</button>`}
     ${['failed', 'cancelled', 'interrupted'].includes(job.status) && !job.external && html`<button class="btn small" onClick=${stop(retry)} title="Rerun into the same output folder; finished pieces are skipped">Resume</button>`}
     ${job.status === 'done' && !job.external && !compact && html`<button class="btn small" onClick=${stop(retry)} title="Rerun into the same output folder">Rerun</button>`}

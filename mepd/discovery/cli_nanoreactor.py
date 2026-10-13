@@ -145,6 +145,10 @@ def nanoreactor(
         "and IRC."),
     max_connect: int = typer.Option(20, "--max-connect", help="At most this many reactions get a TS search."),
     maxiter: int = typer.Option(300, "--maxiter", help="Geometry-optimization steps per structure."),
+    refine_workers: int = typer.Option(
+        0, "--refine-workers",
+        help="Species and reactions refined at once after the MD (0 = one per core; an engine not known to be "
+        "thread-safe refines one at a time)."),
     workers: int = typer.Option(2, "--workers", help="Parallel TS searches for --connect."),
     output: Path = typer.Option(Path("mepd_nanoreactor_output"), "--output", "-o", help="Directory to write into."),
 ) -> None:
@@ -236,6 +240,8 @@ def nanoreactor(
             typer.echo(f"Optimizing species {payload['index'] + 1}/{payload['total']}: {payload['smiles']}")
         elif event == "refine_reaction":
             typer.echo(f"Optimizing reaction {payload['index'] + 1}/{payload['total']}: {payload['label']}")
+        elif event == "md_stopped":
+            typer.echo(f"MD stopped at {payload['time_ps']:.2f} / {payload['total_ps']:.2f} ps (stop requested)")
         elif event == "warning":
             typer.echo(f"WARNING: {payload['message']}")
 
@@ -339,6 +345,16 @@ def nanoreactor(
         traj = trajectory
 
     # --- events -> species and reactions -------------------------------------
+    stopped = None
+    if trajectory is None and (output / "md" / "stopped.json").exists():
+        stopped = json.loads((output / "md" / "stopped.json").read_text())
+        typer.echo(f"Stop requested: the MD ended at {stopped['time_ps']:.2f} of {time_ps:g} ps; analyzing the "
+                   "trajectory so far.")
+        if not Path(traj).read_text().strip():
+            typer.echo("The MD had written no frame yet: nothing to analyze.")
+            if refiner is not None:
+                refiner.close(wait=False)
+            return
     if refiner is not None:
         write_live_events(force=True)   # the last settled reactions, too
     typer.echo("Finding reaction events in the trajectory...")
@@ -353,7 +369,8 @@ def nanoreactor(
                                   {**asdict(settings), **{f"detect_{k}": v for k, v in asdict(detect).items()},
                                    "charge": total_charge, "multiplicity": mult,
                                    "molecules": [f"{v}*{n}" for v, n in parsed],
-                                   "inputs": str(inputs) if inputs else None},
+                                   "inputs": str(inputs) if inputs else None,
+                                   **({"stopped_at_ps": stopped["time_ps"]} if stopped else {})},
                                   str(traj), dump_fs, len(frames))
     nr.write_md_species(symbols, frames, species, output)
     nr.write_network(result, output)
@@ -370,8 +387,13 @@ def nanoreactor(
             if event in ("species_refined", "reaction_refined"):
                 nr.write_network(result, output)
 
+        import os
+
+        width = refine_workers or max(1, (os.cpu_count() or 1) // max(1, int(getattr(run_inputs.engine, "n_threads", 1)
+                                                                            or 1)))
         nr.refine(symbols, frames, hist, species, reactions, run_inputs.engine, output, maxiter=maxiter,
-                  on_event=say_refined, cache=nr._Caches(previous, refiner) if previous is not None else refiner)
+                  on_event=say_refined, cache=nr._Caches(previous, refiner) if previous is not None else refiner,
+                  workers=width)
         nr.write_network(result, output)
         if connect:
             by_id = {s.id: s for s in species}

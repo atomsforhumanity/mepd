@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import typer
 from qcdata import Structure
@@ -858,6 +858,7 @@ def _run_msmep_pairs(
     parallel: bool,
     parallel_workers: Optional[int],
     workers: int = 1,
+    follow_up: Optional["PairFollowUp"] = None,
 ) -> None:
     """Runs recursive NEB/MSMEP autosplitting for each (i, j) structure-index
     pair in `candidates`, writing each result to <pairs_dir>/pair_<i>_<j>/tree/.
@@ -872,6 +873,11 @@ def _run_msmep_pairs(
     `workers` > 1 runs that many pairs at once, each in its own forked
     process; pairs share nothing but read-only inputs and write to their
     own pair_<i>_<j>/ directory.
+
+    `follow_up` (`channels`: each pair's TS optimizations and IRCs) starts
+    a pair's follow-up work as soon as its tree is written, in processes of
+    its own, so it neither waits for the other searches nor holds up the
+    next pair (see PairFollowUp).
     """
     from mepd.msmep import MSMEP
     import mepd.chainhelpers as ch
@@ -943,7 +949,84 @@ def _run_msmep_pairs(
     if workers > 1 and len(todo) > 1:
         typer.echo(f"Running {len(todo)} path search(es), {min(workers, len(todo))} at a time "
                    f"({min(workers, len(todo))} worker process(es)).")
-    _fork_map(_one, todo, workers)
+    if follow_up is None or workers <= 1 or not todo or _unsafe_to_fork():
+        _fork_map(_one, todo, workers)
+        return
+    _fork_pairs_with_follow_up(_one, todo, pairs_dir, workers, follow_up)
+
+
+@dataclass
+class PairFollowUp:
+    """Work that follows each finished pair search (`_run_msmep_pairs`):
+    `tasks(pair_dir)` lists it (in the parent, from what the pair wrote) and
+    `run(task)` does one (in a forked process; it writes its own files).
+    At most `during` run at once while searches are still running or
+    queued, `after` once none are (nothing else is left to use the cores).
+    Whatever has not run when the pairs are done is the caller's to finish."""
+
+    tasks: Callable[[Path], list]
+    run: Callable[[object], object]
+    during: int = 1
+    after: int = 1
+
+
+def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, follow_up: PairFollowUp) -> None:
+    """`_fork_map(one, todo, workers)`, with each pair's follow-up tasks
+    queued into the same process pool as soon as that pair is done (pairs
+    first: a free search slot never waits behind follow-up work)."""
+    import collections
+    import multiprocessing
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+    from concurrent.futures.process import BrokenProcessPool
+
+    workers = max(1, workers)
+    size = max(workers + max(1, follow_up.during), follow_up.after)
+    pairs, extra = collections.deque(todo), collections.deque()
+    running: dict = {}
+    _FORK_JOB["fn"] = lambda item: one(item[1]) if item[0] == "pair" else follow_up.run(item[1])
+    typer.echo(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
+               f"{follow_up.during} worker process(es) beside the searches, {follow_up.after} once they are done.")
+    try:
+        with ProcessPoolExecutor(max_workers=size, mp_context=multiprocessing.get_context("fork")) as pool:
+            while pairs or extra or running:
+                n_pairs = sum(kind == "pair" for kind, _ in running.values())
+                while pairs and n_pairs < workers:
+                    pair = pairs.popleft()
+                    running[pool.submit(_fork_call, ("pair", pair))] = ("pair", pair)
+                    n_pairs += 1
+                limit = follow_up.during if (pairs or n_pairs) else follow_up.after
+                while extra and len(running) - n_pairs < limit:
+                    task = extra.popleft()
+                    running[pool.submit(_fork_call, ("task", task))] = ("task", task)
+                if not running:
+                    break
+                done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    kind, item = running.pop(fut)
+                    try:
+                        fut.result()
+                    except BrokenProcessPool:
+                        raise
+                    except Exception as exc:   # left to the caller's own pass
+                        typer.echo(f"{'Pair' if kind == 'pair' else 'Follow-up'} {item!r:.80}: "
+                                   f"{type(exc).__name__}: {exc}")
+                        continue
+                    if kind == "pair":
+                        i, j = item
+                        try:
+                            extra.extend(follow_up.tasks(pairs_dir / f"pair_{i}_{j}"))
+                        except Exception as exc:
+                            typer.echo(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
+    except BrokenProcessPool:
+        typer.echo(
+            "A worker process died without reporting an error (killed by the "
+            "OS, or a crash inside the engine); retrying the remaining work "
+            "serially. Re-run with --workers 1 to skip the failed attempt."
+        )
+        for pair in todo:
+            one(pair)
+    finally:
+        _FORK_JOB.pop("fn", None)
 
 
 @dataclass
@@ -1044,6 +1127,28 @@ def _ts_guess_tasks_from_tree(tree, label_prefix: str) -> list[tuple[str, object
     return tasks
 
 
+def _pair_ts_guess_tasks(pair_dir: Path, charge: int, multiplicity: int) -> list[tuple[str, object]]:
+    """The TS guesses of one `mepd channels` pair (<pairs>/pair_<i>_<j>/),
+    labeled `ts_pair_<i>_<j>_leaf_<index>`; none if its search has not
+    finished or found nothing."""
+    from mepd.inputs import ChainInputs
+    from mepd.TreeNode import TreeNode
+
+    tree_dir = pair_dir / "tree"
+    if not (tree_dir / "adj_matrix.txt").exists():
+        return []
+    if not (tree_dir / "node_0.xyz").exists():
+        return []   # root search failed or was not run (--direct-only): already reported
+    try:
+        pair_tree = TreeNode.read_from_disk(
+            tree_dir, chain_parameters=ChainInputs(), charge=charge, multiplicity=multiplicity,
+        )
+    except Exception as exc:
+        typer.echo(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
+        return []
+    return _ts_guess_tasks_from_tree(pair_tree, f"ts_{pair_dir.name}_")
+
+
 def _ts_guess_tasks_from_network(pot) -> list[tuple[str, object]]:
     """Every edge's TS-guess node(s) from a network.json (`Pot`), labeled
     `ts_edge_<source>_<target>` (or `..._<i>` if an edge holds more than one
@@ -1098,25 +1203,7 @@ def _collect_ts_guess_tasks(
             tasks: list[tuple[str, object]] = []
             if pairs_dir.is_dir():
                 for pair_dir in sorted(pairs_dir.iterdir()):
-                    tree_dir = pair_dir / "tree"
-                    if not (tree_dir / "adj_matrix.txt").exists():
-                        continue
-                    if not (tree_dir / "node_0.xyz").exists():
-                        continue   # root search failed or was not run (--direct-only): already reported
-                    try:
-                        pair_tree = TreeNode.read_from_disk(
-                            tree_dir, chain_parameters=ChainInputs(),
-                            charge=tree_charge, multiplicity=tree_multiplicity,
-                        )
-                    except Exception as exc:
-                        typer.echo(
-                            f"Skipping {pair_dir.name}: could not load tree "
-                            f"({type(exc).__name__}: {exc})"
-                        )
-                        continue
-                    tasks.extend(
-                        _ts_guess_tasks_from_tree(pair_tree, f"ts_{pair_dir.name}_")
-                    )
+                    tasks.extend(_pair_ts_guess_tasks(pair_dir, tree_charge, tree_multiplicity))
             return tasks
 
         raise typer.BadParameter(

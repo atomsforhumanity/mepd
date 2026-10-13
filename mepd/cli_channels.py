@@ -40,6 +40,8 @@ from mepd.cli_common import (
     _minimize_endpoints,
     _open_run_inputs,
     _optimize_ts_and_irc,
+    PairFollowUp,
+    _pair_ts_guess_tasks,
     _run_msmep_pairs,
 )
 from mepd.inputs import NetworkInputs, RunInputs
@@ -689,6 +691,31 @@ def _write_multistep_group(
     (group_dir / "path.txt").write_text("\n".join(lines) + "\n")
 
 
+def _ts_opt_failed_path(ts_dir: Path, label: str) -> Path:
+    return ts_dir / f"{label}_tsopt_failed.txt"
+
+
+def _ts_opt_failed(ts_dir: Path, label: str) -> bool:
+    return _ts_opt_failed_path(ts_dir, label).exists()
+
+
+def _ts_and_irc_once(node, label: str, ts_dir: Path, run_inputs: RunInputs, charge: int, multiplicity: int):
+    """A leaf's TS and IRC: from disk if done before, else computed (and
+    written). A TS optimization that failed is recorded, so a rerun into the
+    same folder (Sample more paths) does not spend the same time failing
+    again; None then."""
+    result = _load_ts_and_irc_from_disk(ts_dir, label, charge, multiplicity)
+    if result is not None:
+        return result
+    if _ts_opt_failed(ts_dir, label):
+        return None
+    result = _optimize_ts_and_irc(node, run_inputs, ts_dir, run_irc=True, label=label)
+    if result is None:
+        ts_dir.mkdir(parents=True, exist_ok=True)
+        _ts_opt_failed_path(ts_dir, label).write_text("transition-state optimization failed\n")
+    return result
+
+
 def _discover_channels(
     output: Path,
     start_node,
@@ -754,15 +781,15 @@ def _discover_channels(
     edge_candidates: dict = {}
     n_failed = 0
 
-    # TS-opt + IRC every leaf not already on disk, `workers` at a time. Each
-    # leaf writes only its own <label>*.xyz, and the classification loop
-    # below reads everything back from disk, so it is identical either way;
-    # leaves whose optimization failed are remembered so they aren't retried.
+    # TS-opt + IRC every leaf not already on disk (most were done in the
+    # pair workers as each search finished), `workers` at a time. Each leaf
+    # writes only its own <label>*.xyz, and the classification loop below
+    # reads everything back from disk, so it is identical either way.
     pending = [
         (label, node) for label, node in tasks
         if _load_ts_and_irc_from_disk(ts_dir, label, tree_charge, tree_multiplicity) is None
+        and not _ts_opt_failed(ts_dir, label)
     ]
-    failed_labels: set = set()
     if workers > 1 and len(pending) > 1:
         typer.echo(
             f"Optimizing {len(pending)} TS guess(es) across "
@@ -771,24 +798,12 @@ def _discover_channels(
 
         def _opt(task):
             label, node = task
-            # As in `_run_msmep_pairs`: `pending` was filtered against the disk
-            # before the first attempt, and `_fork_map` may re-run it serially
-            # after a worker died.
-            result = _load_ts_and_irc_from_disk(ts_dir, label, tree_charge, tree_multiplicity)
-            if result is None:
-                result = _optimize_ts_and_irc(node, run_inputs, ts_dir, run_irc=True, label=label)
-            ok = result is not None and result.irc_chain is not None and len(result.irc_chain) >= 2
-            return label, ok
+            return _ts_and_irc_once(node, label, ts_dir, run_inputs, tree_charge, tree_multiplicity)
 
-        failed_labels = {label for label, ok in _fork_map(_opt, pending, workers) if not ok}
+        _fork_map(_opt, pending, workers)
 
     for label, guess_node in tasks:
-        if label in failed_labels:
-            n_failed += 1
-            continue
-        result = _load_ts_and_irc_from_disk(ts_dir, label, tree_charge, tree_multiplicity)
-        if result is None:
-            result = _optimize_ts_and_irc(guess_node, run_inputs, ts_dir, run_irc=True, label=label)
+        result = _ts_and_irc_once(guess_node, label, ts_dir, run_inputs, tree_charge, tree_multiplicity)
         if result is None or result.irc_chain is None or len(result.irc_chain) < 2:
             n_failed += 1
             continue
@@ -1707,9 +1722,26 @@ def channels(
         # pairs); forked pair workers inherit it with run_inputs.
         setattr(run_inputs.path_min_inputs, "recursive_split_deadline", search_deadline)
         stats["search_budget_seconds"] = search_budget
+    # Each pair's TS optimizations and IRCs start as soon as its search is
+    # done, in processes of their own (one serial chain of gradients each):
+    # alongside the searches still running, a few at a time; once none are
+    # left (all done, or Stop & analyze), on as many processes as the
+    # searches were given (pairs x branches x images), not just --workers.
+    q, m = (charge if charge is not None else 0), (multiplicity if multiplicity is not None else 1)
+    ts_dir = output / "ts"
+    search_procs = workers * (parallel_workers if parallel else 1) * max(1, int(stats.get("engine_parallel") or 1))
+    analysis_width = max(workers, min(search_procs, cpu_count))
+    follow_up = PairFollowUp(
+        tasks=lambda pair_dir: [t for t in _pair_ts_guess_tasks(pair_dir, q, m)
+                                if _load_ts_and_irc_from_disk(ts_dir, t[0], q, m) is None
+                                and not _ts_opt_failed(ts_dir, t[0])],
+        run=lambda task: _ts_and_irc_once(task[1], task[0], ts_dir, run_inputs, q, m) and None,
+        during=workers, after=analysis_width,
+    )
     _run_msmep_pairs(
         structures, candidates, pairs_dir, run_inputs,
         parallel=parallel, parallel_workers=parallel_workers, workers=workers,
+        follow_up=follow_up,
     )
     stats["msmep_seconds"] = round(time.perf_counter() - t0, 3)
     if search_deadline is not None:
@@ -1756,8 +1788,9 @@ def channels(
         )
 
     t0 = time.perf_counter()
+    # What is left (pairs searched before this run, a follow-up that failed): as wide.
     mismatch_warnings = _discover_channels(
-        output, start_node, end_node, run_inputs, charge, multiplicity, workers=workers,
+        output, start_node, end_node, run_inputs, charge, multiplicity, workers=analysis_width,
     )
     if mismatch_warnings:
         stats["endpoint_mismatch_warnings"] = mismatch_warnings

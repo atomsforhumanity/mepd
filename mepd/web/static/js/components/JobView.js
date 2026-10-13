@@ -1054,9 +1054,12 @@ export function JobView({ jobId: openedId }) {
       ${Object.keys(job.live_skipped || {}).length > 0 && html`<p class="level-note small">
         ${Object.keys(job.live_skipped).length} species more than ${job.params?.explore_within ?? job.params?.energy_window} kcal/mol above the seed
         were not added to Explore (the threshold under Explore in this calculation's settings). They are in the results, to add by hand.</p>`}
-      ${run.status === 'done' && run.stopped_early && html`<p class="level-note small">Stopped early (Stop & analyze): the
+      ${run.status === 'done' && run.stopped_early && (['nanoreactor', 'nanoreactor-more'].includes(run.op)
+        ? html`<p class="level-note small">Stopped early (Stop & analyze): the MD ended there, and this result covers the
+        trajectory until then. Run longer continues it.</p>`
+        : html`<p class="level-note small">Stopped early (Stop & analyze): the
         searches running then were kept with the paths they had, and no new ones started, so this result covers only what
-        was found until then.</p>`}
+        was found until then.</p>`)}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
       <div class="tabs">
         ${[['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],

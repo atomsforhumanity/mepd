@@ -17,6 +17,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   search starts and none is split further; then TS optimization, IRC and channel classification run on those
   paths and the run finishes as done, marked as stopped early. Cancel still discards the run.
   From a shell: run with `MEPD_STOP_FILE=<file>` and create that file (`mepd/search_control.py`).
+  Also for the **Nanoreactor** and its Run longer: the MD ends where it is (xtb is stopped mid-segment, its
+  frames kept), then events, species and reactions come from the trajectory so far; the result says where it
+  stopped, and Run longer continues from there.
 - **Export a whole workspace** (Analyze › Reactions › Export all; `GET /api/workspace/export`). Covers every
   reaction Analyze lists, with every channel found for each. Two files:
   - `report (.html)`: one self-contained page. An index of the reactions (lowest barrier, ΔE, channels, level;
@@ -112,6 +115,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **Faster analysis after the path searches** (Reaction channels, Sample more paths, Stop & analyze). Each
+  pair's TS optimizations and IRCs start as soon as its search finishes, in processes of their own beside the
+  searches still running, instead of all waiting for the last search. Once no search is left, they run on as
+  many processes as the searches had (pairs x branches x images) instead of `--workers`. A g-xTB IRC runs its
+  two branches at once (the same path, bit for bit, in about half the time).
+  A TS optimization that failed is recorded (`ts/<label>_tsopt_failed.txt`), so Sample more paths does not
+  spend the same time failing again. Allyl vinyl ether -> pent-4-enal (2 workers): 109 s -> 92 s, 33 s -> 2 s
+  left after the last search.
+- **Nanoreactor refinement runs species and reactions at once** (`--refine-workers`, default one per core,
+  for g-xTB and QCOP engines; others one at a time, as before). Live minimization streams are now per thread.
 
 - **FSM-TS falls back to GSM, not NEB** (`[path_min_inputs] fallback = "GSM" | "NEB" | "none"`,
   overrides in `gsm_inputs` / `neb_inputs`). On 20 KAIST reactions GSM found the lowest channel more often

@@ -45,6 +45,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -53,6 +54,8 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 from qcconst.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
+
+from mepd import search_control
 
 OnEvent = Optional[Callable[[str, dict], None]]
 
@@ -330,6 +333,7 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     cmd = _xtb_command(settings.method, executable)
+    _clear_stopped(workdir)
     schedule = piston_schedule(settings)
     # For viewers: the wall radius at any time.
     (workdir / "schedule.json").write_text(json.dumps({"dump_fs": settings.dump_fs, "time_ps": settings.time_ps,
@@ -352,8 +356,25 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
                 f"   temp={wall_t:.1f}\n   beta={beta:.3f}\n"
                 f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, all\n$end\n")
 
-    def run(argv, what):
-        done = subprocess.run(argv, cwd=workdir, env=env, capture_output=True, text=True, timeout=timeout_s)
+    def run(argv, what, stoppable=False):
+        """The finished xtb run; None if a stop was requested while it ran
+        (`stoppable`: it is killed, what it wrote is kept)."""
+        proc = subprocess.Popen(argv, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                out, err = proc.communicate(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired:
+                stop = stoppable and search_control.stop_requested()
+                if stop or time.monotonic() > deadline:
+                    proc.kill()
+                    proc.communicate()
+                    if stop:
+                        return None
+                    raise RuntimeError(f"xtb {what} took longer than {timeout_s:g} s") from None
+        done = subprocess.CompletedProcess(argv, proc.returncode, out, err)
         with (workdir / "md.log").open("a") as log:
             log.write(done.stdout[-20000:])
         if done.returncode != 0:
@@ -378,12 +399,18 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
             shutil.copy(restart_fp, workdir / "mdrestart")
             t_done += dur
             continue
+        if search_control.stop_requested():
+            return _stopped_trajectory(workdir, k, len(symbols), None, t_done, settings, on_event)
         (workdir / "md.inp").write_text(
             "$md\n"
             f"   temp={settings.temperature:.2f}\n   time={dur:.6f}\n   dump={settings.dump_fs:.4f}\n"
             f"   step={settings.step_fs:.4f}\n   hmass=1\n   shake=0\n   nvt=true\n"
             f"   restart={'true' if k else 'false'}\n$end\n" + wall(r))
-        done = run(_xtb_argv(cmd, "reactor.xyz", "--md", "--input", "md.inp", *common), f"MD (segment {k})")
+        (workdir / "xtb.trj").unlink(missing_ok=True)
+        done = run(_xtb_argv(cmd, "reactor.xyz", "--md", "--input", "md.inp", *common), f"MD (segment {k})",
+                   stoppable=True)
+        if done is None:
+            return _stopped_trajectory(workdir, k, len(symbols), workdir / "xtb.trj", t_done, settings, on_event)
         if not (workdir / "xtb.trj").exists():
             raise RuntimeError(f"xtb MD wrote no trajectory in segment {k}: {done.stdout[-800:]}")
         if "did not converge" in done.stdout:
@@ -497,6 +524,41 @@ def _relax_in_wall(forces: _EngineForces, pos: np.ndarray, radius_bohr: float, m
     return pos
 
 
+def _clear_stopped(workdir: Path) -> None:
+    """A rerun into the folder of a run stopped early: what the stop kept
+    (the partial segment) is redone from that segment's start."""
+    (workdir / "stopped.json").unlink(missing_ok=True)
+    for fp in workdir.glob("segment_*.partial.xyz"):
+        fp.unlink()
+
+
+def _stopped_trajectory(workdir: Path, k: int, natoms: int, running: Optional[Path], t_done: float,
+                        settings: ReactorSettings, on_event: OnEvent) -> Path:
+    """Stop & analyze during the MD: trajectory.xyz is the finished segments
+    and the whole frames segment `k` had written (kept as
+    segment_k.partial.xyz; it is not a finished segment, so a rerun into
+    this folder -- Run longer -- runs segment k again from its start)."""
+    partial = workdir / f"segment_{k:03d}.partial.xyz"
+    n_partial = 0
+    if running is not None and running.exists():
+        lines = running.read_text().splitlines(keepends=True)
+        n_partial = len(lines) // (natoms + 2)
+        partial.write_text("".join(lines[:n_partial * (natoms + 2)]))   # a half-written last frame dropped
+        running.unlink()
+    else:
+        partial.unlink(missing_ok=True)
+    stopped_ps = t_done + n_partial * settings.dump_fs / 1000.0
+    (workdir / "stopped.json").write_text(json.dumps({"time_ps": stopped_ps, "segment": k}))
+    _emit(on_event, "md_stopped", time_ps=stopped_ps, total_ps=settings.time_ps)
+    traj = workdir / "trajectory.xyz"
+    with traj.open("w") as out:
+        for j in range(k):
+            out.write((workdir / f"segment_{j:03d}.xyz").read_text())
+        if n_partial:
+            out.write(partial.read_text())
+    return traj
+
+
 def run_engine_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, settings: ReactorSettings,
                   engine, workdir: Path, on_event: OnEvent = None, friction_per_fs: float = 0.01) -> Path:
     """The piston MD with gradients from any mepd engine (the level of
@@ -508,6 +570,7 @@ def run_engine_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, s
     settings.validate()
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
+    _clear_stopped(workdir)
     schedule = piston_schedule(settings)
     (workdir / "schedule.json").write_text(json.dumps({"dump_fs": settings.dump_fs, "time_ps": settings.time_ps,
                                                        "segments": [[d, r] for d, r in schedule],
@@ -543,6 +606,8 @@ def run_engine_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, s
             pos, vel, grad = state["pos"], state["vel"], None
             t_done += dur
             continue
+        if search_control.stop_requested():
+            return _stopped_trajectory(workdir, k, len(symbols), None, t_done, settings, on_event)
         radius_bohr = r * ANGSTROM_TO_BOHR
         n_steps = max(1, int(round(dur * 1000.0 / dt)))
         running = workdir / "xtb.trj"
@@ -562,8 +627,12 @@ def run_engine_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, s
                     trj.write(f"{len(symbols)}\n energy: {energy:.10f} \n")
                     trj.write("".join(f"{s} {x:.8f} {y:.8f} {z:.8f}\n" for s, (x, y, z) in zip(symbols, xyz)))
                     trj.flush()
+                    if search_control.stop_requested():
+                        break
                 if not np.all(np.isfinite(pos)):
                     raise RuntimeError(f"the MD blew up in segment {k} (step {step}): non-finite positions")
+        if search_control.stop_requested():
+            return _stopped_trajectory(workdir, k, len(symbols), running, t_done, settings, on_event)
         np.savez(restart, pos=pos, vel=vel)
         shutil.move(running, seg)
         t_done += dur
@@ -1201,7 +1270,7 @@ def _optimize_one(engine, structure, maxiter: int, stream: Optional[str] = None,
     """The optimized node. With `stream` and a live viewer attached, the
     optimization is its own live minimization stream (its steps as they
     come where the engine reports them, then its trajectory to replay).
-    Only from one thread at a time: the stream being fed is process-wide."""
+    Each thread feeds its own stream (progress keeps one per thread)."""
     from mepd import progress
     from mepd.discovery.network_expansion import _optimize
     from mepd.nodes.node import StructureNode
@@ -1424,28 +1493,36 @@ def _set_delta_e(rxn, by_id: dict) -> None:
 
 def refine(symbols, frames: np.ndarray, hist: BondHistory, species: list[SpeciesRecord],
            reactions: list[ReactionRecord], engine, output: Path, *, maxiter: int = 300,
-           on_event: OnEvent = None, cache: Optional["LiveRefiner"] = None) -> None:
+           on_event: OnEvent = None, cache: Optional["LiveRefiner"] = None, workers: int = 1) -> None:
     """Optimize every species on its own (lowest instance kept) and every
     reaction's subsystem endpoints; fills energies, delta_e_kcal and
     `complex`. A structure whose bonds change while it is optimized is
     reported, not used (the molecule fell apart or reacted: not a minimum
     of that species at this level). What `cache` (a LiveRefiner) already
-    refined while the MD ran is reused, by identity."""
+    refined while the MD ran is reused, by identity.
+
+    `workers` > 1: that many species and reactions at once (an engine that
+    is not known to be thread-safe still runs them one at a time). Each is
+    refined on a copy in its thread; the records here change, and
+    `on_event` is called, only from this thread, as each one finishes."""
+    import copy
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from mepd.chain import Chain  # noqa: F401  (engines import chains lazily)
 
     sp_dir, rx_dir = output / "species", output / "reactions"
     sp_dir.mkdir(parents=True, exist_ok=True)
     rx_dir.mkdir(parents=True, exist_ok=True)
     done_sp, done_rx = cache.results() if cache is not None else ({}, {})
+    by_id = {r.id: r for r in species}
+    todo = []                                    # (kind, index, record)
     for n, rec in enumerate(species):
         prev = done_sp.get(species_key(rec))
         if prev is not None:
             rec.energy, rec.file, rec.note = prev.energy, prev.file, prev.note
             continue
-        _emit(on_event, "refine_species", index=n, total=len(species), smiles=rec.smiles)
-        refine_species_one(rec, _species_cuts(symbols, frames, hist, rec), engine, sp_dir, maxiter, live=True)
-        _emit(on_event, "species_refined", index=n, total=len(species))
-    by_id = {r.id: r for r in species}
+        todo.append(("species", n, rec))
     for n, rxn in enumerate(reactions):
         _set_delta_e(rxn, by_id)
         prev = done_rx.get(reaction_key(rxn, by_id))
@@ -1459,12 +1536,56 @@ def refine(symbols, frames: np.ndarray, hist: BondHistory, species: list[Species
                 c["reactant_energy"], c["product_energy"] = c["product_energy"], c["reactant_energy"]
                 c["delta_e_kcal"] = -c["delta_e_kcal"]
             continue
-        _emit(on_event, "refine_reaction", index=n, total=len(reactions), label=rxn.label)
-        refine_reaction_one(rxn, _reaction_cuts(symbols, frames, hist, rxn), engine, rx_dir / f"reaction_{rxn.id}",
-                            maxiter, live=True)
+        todo.append(("reaction", n, rxn))
+
+    def finish_reaction(rxn) -> None:
+        _set_delta_e(rxn, by_id)
         if (rxn.complex or {}).get("relaxed"):      # relabelled: its energy change is its relaxed ends'
             rxn.delta_e_kcal = rxn.complex.get("delta_e_kcal")
-        _emit(on_event, "reaction_refined", index=n, total=len(reactions))
+
+    def run(kind, n, rec) -> None:
+        if kind == "species":
+            _emit(on_event, "refine_species", index=n, total=len(species), smiles=rec.smiles)
+            refine_species_one(rec, _species_cuts(symbols, frames, hist, rec), engine, sp_dir, maxiter, live=True)
+        else:
+            _emit(on_event, "refine_reaction", index=n, total=len(reactions), label=rec.label)
+            refine_reaction_one(rec, _reaction_cuts(symbols, frames, hist, rec), engine, rx_dir / f"reaction_{rec.id}",
+                                maxiter, live=True)
+
+    width = min(int(workers), len(todo)) if type(engine).__name__ in LiveRefiner.THREAD_SAFE else 1
+    if width <= 1:
+        for kind, n, rec in todo:
+            run(kind, n, rec)
+            if kind == "reaction":
+                finish_reaction(rec)
+            _emit(on_event, f"{kind}_refined", index=n, total=len(species if kind == "species" else reactions))
+        return
+
+    say_lock = threading.Lock()
+    caller_event = on_event
+
+    def locked_event(event, payload):
+        with say_lock:
+            caller_event(event, payload)
+
+    on_event = locked_event if caller_event is not None else None   # run() reports from the worker threads
+
+    def work(kind, n, rec):
+        run(kind, n, rec)
+        return rec
+
+    # Species first in the queue: a reaction's energy change needs its species'.
+    with ThreadPoolExecutor(max_workers=width, thread_name_prefix="refine") as pool:
+        futures = {pool.submit(work, kind, n, copy.deepcopy(rec)): (kind, n, rec) for kind, n, rec in todo}
+        for fut in as_completed(futures):
+            kind, n, rec = futures[fut]
+            vars(rec).update(vars(fut.result()))
+            if kind == "reaction":
+                finish_reaction(rec)
+            _emit(on_event, f"{kind}_refined", index=n, total=len(species if kind == "species" else reactions))
+    for kind, n, rec in todo:          # species that finished after their reactions
+        if kind == "reaction":
+            finish_reaction(rec)
 
 
 class PreviousRefinement:

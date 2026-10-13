@@ -54,8 +54,20 @@ runs the exploration on the big system and extracts each reaction event as a sma
    - every reaction's subsystem is cut at a frame before and after the event (same atoms, same order:
      atom-mapped for free) and optimized. A side whose bonds change while it is optimized (e.g. two
      radicals that recombine) is reported and not used.
+   - Species and reactions are refined `--refine-workers` at a time (default: one per core) with a
+     g-xTB or QCOP engine; another engine refines them one at a time.
 8. **TS** (`--connect`): MSMEP between the optimized subsystem ends, then TS optimization and IRC. The
    lowest TS whose IRC connects the same bonds wins.
+
+## Stop & analyze
+
+A running nanoreactor (or Run longer) can be stopped early without losing what it found: web,
+**Stop & analyze** next to Cancel; shell, run with `MEPD_STOP_FILE=<file>` and create that file. The
+MD ends at once (xtb is stopped mid-segment and the frames it wrote are kept; the engine MD stops at
+its next frame), then steps 3-8 run on the trajectory so far, as at the end of a full run. The result
+says where the MD stopped (`settings.stopped_at_ps` in network.json, `md/stopped.json`). Run longer
+continues from the start of the segment the stop cut short (it is kept as
+`segment_<k>.partial.xyz` only for that analysis).
 
 ## Refining as reactions appear (`--refine-live`)
 

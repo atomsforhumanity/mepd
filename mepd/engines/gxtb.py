@@ -658,7 +658,7 @@ class GXTBCalculator(Engine):
             charge=int(node.structure.charge),
             multiplicity=int(node.structure.multiplicity),
         )
-        return ASEEngine(calculator=calculator)
+        return ASEEngine(calculator=calculator, irc_branches_at_once=True)
 
     def compute_transition_state(
         self,

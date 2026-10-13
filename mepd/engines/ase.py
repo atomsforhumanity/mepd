@@ -140,6 +140,11 @@ class ASEEngine(Engine):
     transition_state_optimizer: str = "SELLA"
     # Atoms held in place (ase FixAtoms) in optimizations, TS searches and IRCs.
     fixed_atoms: list | None = None
+    # The IRC's two branches at once, each in a thread with its own copy of
+    # the calculator (the same path, in about half the time). For calculators
+    # that are cheap to copy and run outside Python (g-xTB's subprocess);
+    # not for an in-process model, which a copy would duplicate in memory.
+    irc_branches_at_once: bool = False
 
     def __post_init__(self):
         if self.ase_optimizer is None:
@@ -543,8 +548,15 @@ class ASEEngine(Engine):
             update_node_cache(node_list=traj_nodes, results=all_results)
             return traj_nodes
 
-        reverse_nodes = _run_direction("reverse")
-        forward_nodes = _run_direction("forward")
+        if self.irc_branches_at_once:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="irc") as pool:
+                reverse, forward = pool.submit(_run_direction, "reverse"), pool.submit(_run_direction, "forward")
+                reverse_nodes, forward_nodes = reverse.result(), forward.result()
+        else:
+            reverse_nodes = _run_direction("reverse")
+            forward_nodes = _run_direction("forward")
 
         if len(reverse_nodes) == 0 and len(forward_nodes) == 0:
             raise ElectronicStructureError(

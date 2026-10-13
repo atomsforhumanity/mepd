@@ -610,9 +610,12 @@ class Operation:
     same_atoms: bool = False
     # Started by the app itself (e.g. a network variant's jobs), never offered in the action panel.
     hidden: bool = False
-    # Its path searches can be stopped early and what they found analyzed (Stop & analyze;
-    # mepd.search_control): runs whose command uses MSMEP's recursive search.
+    # It can be stopped early and what it found analyzed (Stop & analyze; mepd.search_control):
+    # runs whose command uses MSMEP's recursive search, and the nanoreactor's MD.
     stoppable: bool = False
+    # What a stop ends: "search" (path searches) or "md" (the nanoreactor's MD, then its trajectory so far
+    # is analyzed and refined); the button's wording.
+    stop_kind: str = "search"
 
     def cli_problem(self) -> Optional[str]:
         if not self.cli_path:
@@ -656,6 +659,7 @@ class Operation:
             "same_atoms": self.same_atoms,
             "hidden": self.hidden,
             "stoppable": self.stoppable,
+            "stop_kind": self.stop_kind,
             "qmmm": self.key in QMMM_OPS,
         }
 
@@ -1796,7 +1800,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "them, and watch what reacts. Each reaction is cut out with only the molecules it needs (a water that "
         "relays a proton is part of it; bystanders are not), refined at your level of theory, and joins Explore "
         "as a reaction dot. (`mepd discovery nanoreactor`)",
-        "set", EXPLORE, NanoreactorParams, _build_nanoreactor, min_structures=1,
+        "set", EXPLORE, NanoreactorParams, _build_nanoreactor, min_structures=1, stoppable=True, stop_kind="md",
         produces=["species", "reactions with only the molecules they need", "TSs on those subsystems"],
         cli_path=("discovery", "nanoreactor"), cli_extra_flags=("--charge", "--inputs", "--output"),
         family=NETWORK, methods=({
@@ -1826,7 +1830,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "nanoreactor-more", "Run longer", "Continue the reactor's MD from its last frame for more time: new "
         "reactions join this page and Explore; everything refined before is reused. (`mepd discovery nanoreactor`)",
-        "job", "Reaction discovery", NanoreactorMoreParams, _build_nanoreactor_more,
+        "job", "Reaction discovery", NanoreactorMoreParams, _build_nanoreactor_more, stoppable=True, stop_kind="md",
         source_ops=("nanoreactor",), cli_path=("discovery", "nanoreactor")),
     Operation(
         "vri-check", "Check the bifurcation", "Converge the exact VRI, test that sideways pushes off the IRC "

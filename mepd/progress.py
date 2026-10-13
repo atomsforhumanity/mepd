@@ -192,7 +192,21 @@ def _write_progress_chain_payload(payload: dict | None) -> None:
 _HARTREE_TO_KCAL = 627.5094740631
 _MAX_REPLAY_FRAMES = 60
 _minimizations: dict[str, dict] = {}   # stream -> state, for this process
-_active_minimization: str | None = None
+# The minimization each thread is running (refinements run several at once,
+# one per thread; an engine reports its steps from the thread that runs it).
+# A thread that never began one (an engine's pool thread working for a
+# caller that did) sees the one begun last, in any thread.
+_active = threading.local()
+_last_begun: list = [None]
+
+
+def _active_stream() -> str | None:
+    return getattr(_active, "stream", _last_begun[0])
+
+
+def _set_active(stream: str | None) -> None:
+    _active.stream = stream
+    _last_begun[0] = stream
 
 
 def _stream_path(stream: str) -> Path | None:
@@ -240,16 +254,15 @@ def begin_minimization(stream: str, *, label: str = "", caption: str = "", refer
                        start_xyz: str | None = None, start_energy: float | None = None) -> None:
     """Start reporting one geometry minimization as its own live stream.
     No-op unless a live viewer is attached (MEPD_DRIVE_CHAIN_DIR)."""
-    global _active_minimization
     if _stream_path(stream) is None:
-        _active_minimization = None
+        _set_active(None)
         return
     state = {"stream": stream, "label": label, "caption": caption, "reference": reference_energy,
              "energies": [start_energy] if start_energy is not None else [],
              "frames": [start_xyz] if start_xyz else [], "frame_steps": [0] if start_xyz else [],
              "finished": False, "status": None, "outcome": None, "last_write": 0.0}
     _minimizations[stream] = state
-    _active_minimization = stream
+    _set_active(stream)
     _write_minimization(state)
 
 
@@ -286,7 +299,7 @@ def minimization_sink():
     every step, or just the latest one), or None when nobody watches. Only
     the newest frame is published while it runs; all of them are kept so the
     replay exists as soon as the minimization ends."""
-    state = _minimizations.get(_active_minimization or "")
+    state = _minimizations.get(_active_stream() or "")
     if state is None or state["finished"]:
         return None
 
@@ -310,8 +323,7 @@ def end_minimization(stream: str | None = None, *, trajectory=None, status: str 
                      error: str | None = None) -> None:
     """Finish a minimization stream (default: the active one). A
     `trajectory` (nodes with energies) becomes a subsampled replay."""
-    global _active_minimization
-    stream = stream or _active_minimization
+    stream = stream or _active_stream()
     state = _minimizations.get(stream or "")
     if state is None:
         return
@@ -344,8 +356,10 @@ def end_minimization(stream: str | None = None, *, trajectory=None, status: str 
     state.update(finished=True, status=status)
     state.pop("all_frames", None)
     _write_minimization(state)
-    if _active_minimization == stream:
-        _active_minimization = None
+    if getattr(_active, "stream", None) == stream:
+        _active.stream = None
+    if _last_begun[0] == stream:
+        _last_begun[0] = None
 
 
 def set_minimization_outcome(stream: str, outcome: str) -> None:

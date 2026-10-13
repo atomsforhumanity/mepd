@@ -211,7 +211,7 @@ example, a future `mepd discovery nanoreactor` command becomes one `Params` mode
 | `GET /api/jobs/{id}/result` | Parsed result (cached once finished) |
 | `POST /api/jobs/{id}/import-entry` `{entry, frames: endpoints\|ts\|one\|all, frame?, connect}` | Result → library/graph |
 | `POST /api/jobs/{id}/cancel` \| `retry` | Queue control. `DELETE /api/jobs/{id}` removes the job |
-| `POST /api/jobs/{id}/stop-analyze` | Stop & analyze (Find TS, Reaction channels, Sample more paths): the path searches end now with the paths they have, then TS optimization, IRC and the channels run on them (`mepd.search_control`) |
+| `POST /api/jobs/{id}/stop-analyze` | Stop & analyze (Find TS, Reaction channels, Sample more paths): the path searches end now with the paths they have, then TS optimization, IRC and the channels run on them; (Nanoreactor, Run longer): the MD ends now and its trajectory so far is analyzed and refined (`mepd.search_control`) |
 | `GET /api/jobs/{id}/log?which=stdout\|progress&offset=` | Incremental log (`X-Log-Size` header) |
 | `GET/PUT/DELETE /api/profiles/{name}`, `POST /api/profiles/validate` | Profiles |
 | `POST /api/delete` `{structures[], edges[]}` | Bulk removal (one save, one event) |
