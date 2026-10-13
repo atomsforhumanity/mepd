@@ -104,7 +104,10 @@ class ModifiedEngine(Engine):
     def compute_geometry_optimizations(self, nodes: list[StructureNode], keywords: dict | None = None):
         from concurrent.futures import ThreadPoolExecutor
 
-        width = max(1, min(len(nodes), os.cpu_count() or 1))
+        # The base engine's calls-at-once setting (0: all cores); each
+        # optimization here also runs the term's own calculations.
+        width = int(getattr(self.base, "n_parallel", 0) or 0) or (os.cpu_count() or 1)
+        width = max(1, min(len(nodes), width))
         with ThreadPoolExecutor(max_workers=width) as pool:
             return list(pool.map(lambda nd: self.compute_geometry_optimization(nd, keywords), nodes))
 

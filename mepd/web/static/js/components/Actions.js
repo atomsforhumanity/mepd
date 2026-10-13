@@ -11,6 +11,7 @@ import { ComplexMethodForm, memberCounts } from './ComplexBuild.js';
 
 // How many jobs an operation would create for this selection (0 = not applicable).
 export function applicability(op, sel) {
+  if (op.hidden) return null;   // started by the app itself (e.g. a network variant's jobs)
   const nS = sel.structures.length, nE = sel.edges.length;
   // A QM/MM system takes only the operations that run embedded (the rest
   // need whole molecules); and is already embedded.

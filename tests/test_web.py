@@ -1263,6 +1263,8 @@ def test_every_web_operation_emits_only_real_cli_flags(client, tmp_path):
             continue
         if op["key"] in ("qmmm-inspect", "qmmm-embed", "qmmm-protein-build"):
             continue   # need a QM/MM system or site search: tests/test_qmmm_web.py checks their flags
+        if op["key"] in ("variant-fast", "variant-reopt"):
+            continue   # need a network variant's edge: tests/test_variants_web.py checks their flags
         body = {"op": op["key"], "dry_run": True, "profile": "default"}
         if op["target"] == "pair":
             body["structures"] = [a["id"], b["id"]]

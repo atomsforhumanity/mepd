@@ -38,7 +38,7 @@ from mepd.web.jobs import Broadcaster, JobManager, _reduce_chain_payload
 from mepd.web.sessions import Sessions
 from mepd.web.operations import OPERATIONS
 from mepd.web.results import MINIMA_KINDS, collect_cached, entry_reverse_barrier, entry_ts_energy, find_entry, summarize
-from mepd.web.workspace import HARTREE_TO_KCAL, Workspace, WorkspaceError, is_ts, validate_profile_text
+from mepd.web.workspace import HARTREE_TO_KCAL, Workspace, WorkspaceError, is_species, is_ts, validate_profile_text
 from mepd.web.workspace import find_duplicate as _find_duplicate
 
 STATIC = Path(__file__).parent / "static"
@@ -82,6 +82,7 @@ class DesignNew(BaseModel):
 class DesignLoad(BaseModel):
     structure: str
     conformer: Optional[str] = None
+    network: Optional[str] = None      # the network variant Explore shows (Apply to network builds on it)
 
 
 class DesignEdit(BaseModel):
@@ -203,6 +204,13 @@ class KineticsIn(BaseModel):
     control_what: Literal["amount", "rate"] = "amount"
     sweep: list[float] = []
     free_energy: bool = False           # quasi-RRHO free energies (GFN2-xTB single-point Hessians, cached)
+    network: Optional[str] = None       # a network variant's id (mepd.web.variants); None: the parent network
+    compare: Optional[str] = None       # a variant to run side by side with the parent, same conditions
+    compare_parent: bool = False        # a stacked variant: with the parent, not the variant it is built on
+
+
+class VariantIn(BaseModel):
+    name: str = ""
 
 
 class ProposeIn(BaseModel):
@@ -417,9 +425,18 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                     if await run_in_threadpool(attach_conformers, manager.ws, job, result):
                         bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
             except Exception as exc:
+                result = None
                 job["summary"] = {"headline": f"result not readable: {type(exc).__name__}: {exc}",
                                   "barrier_kcal": None, "counts": {}}
             manager._update(job)
+            if job["op"] in ("variant-fast", "variant-reopt") and result is not None and not job.get("external"):
+                from mepd.web.variants import after_job
+
+                try:
+                    await run_in_threadpool(after_job, manager, job, result)
+                except WorkspaceError:
+                    logging.getLogger(__name__).exception("network variant follow-up of %s", job["id"])
+                bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
             page = manager.page_job(job)
             if page is not job and page.get("id") != job.get("source_job"):
                 # Sample more paths from a TS search: its page now shows these paths too.
@@ -1187,10 +1204,19 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                     "\u201cPut into this QM/MM system\u201d."]
         info, warnings = design.from_xyz(xyz, charge)
         info["warnings"] = note + warnings
+        parent_molblock = None
+        if is_species(rec) and not rec.get("qmmm"):
+            # Every atom keeps its index in this species (as its atom-map
+            # number), so an edit can be carried through the network
+            # (Apply to network, mepd.web.variants).
+            info = {**design.tag_atoms(info["molblock"], sanitized=not warnings), "warnings": info["warnings"]}
+            parent_molblock = info["molblock"]
         out = _store_design(info, name=f"{name} (edited)", charge=charge,
                             multiplicity=mult, keep={},
                             source={"kind": "graph", "structure": rec["id"], "conformer": body.conformer,
-                                    "name": rec["name"], "ts": is_ts(rec), "qmmm": rec.get("qmmm")})
+                                    "name": rec["name"], "ts": is_ts(rec), "qmmm": rec.get("qmmm"),
+                                    "parent_molblock": parent_molblock,
+                                    "network": body.network if body.network in ws.variants else None})
         publish_ws()
         return out
 
@@ -2036,14 +2062,105 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
 
         ws = W()
         level = ws.level_of(ws.level_profile).get("key")
+        snap, jobs = ws.snapshot(), dict(J().jobs)
+
+        def run(network, initial, held, target):
+            return analyze(snap, jobs, level, initial=initial, held=held,
+                           temperature=body.temperature, time_s=body.time_s, target=target,
+                           include_unverified=body.include_unverified, control=body.control,
+                           control_what=body.control_what, sweep=body.sweep[:12], free_energy=body.free_energy,
+                           ws=ws, network=network)
+
         try:
-            return await run_in_threadpool(
-                analyze, ws.snapshot(), dict(J().jobs), level, initial=body.initial, held=body.held,
-                temperature=body.temperature, time_s=body.time_s, target=body.target,
-                include_unverified=body.include_unverified, control=body.control, control_what=body.control_what,
-                sweep=body.sweep[:12], free_energy=body.free_energy, ws=ws)
+            if not body.compare:
+                return await run_in_threadpool(run, body.network, body.initial, body.held, body.target)
+            from mepd.web.variants import compare_inputs
+
+            v_initial, v_held, v_target, match, notes = compare_inputs(snap, body.compare, body.initial,
+                                                                       body.held, body.target)
+            # A variant built on another one is compared with that one.
+            on = None if body.compare_parent else ((snap.get("variants") or {}).get(body.compare) or {}).get("on")
+            b_initial, b_held, b_target = body.initial, body.held, body.target
+            if on:
+                b_initial, b_held, b_target, _, _ = compare_inputs(snap, on, body.initial, body.held, body.target)
+                # Rows line up from the base variant's species to this one's.
+                match = {}
+                for sid, parent in (snap["variants"][body.compare].get("species_parent") or {}).items():
+                    match.setdefault(parent, []).append(sid)
+            parent = await run_in_threadpool(run, on, b_initial, b_held, b_target)
+            variant = await run_in_threadpool(run, body.compare, v_initial, v_held, v_target)
+            return {"compare": True, "parent": parent, "variant": variant, "match": match, "notes": notes,
+                    "variant_id": body.compare, "base_id": on}
         except RuntimeError as exc:
             raise WorkspaceError(str(exc)) from None
+
+    # ------------------------------------------------------ network variants
+    def _variant_level():
+        ws = W()
+        return ws.level_of(ws.level_profile).get("key")
+
+    @app.post("/api/variants/preview")
+    async def variants_preview():
+        """What Apply to network would do with the current design (no calculations yet)."""
+        from mepd.web import variants
+
+        d = _current_design()
+        return await run_in_threadpool(variants.preview, W(), dict(J().jobs), d, _variant_level())
+
+    @app.post("/api/variants")
+    async def variants_create(body: VariantIn):
+        """Carry the current design's edit through the network: its species and
+        reactions join the workspace as a variant, and their calculations start."""
+        from mepd.web import variants
+
+        d = _current_design()
+        if demo is not None:
+            # A variant starts one calculation per reaction at once: within the visitor's limits.
+            demo.check_op("variant-fast", {})
+            demo.check_capacity(J().list())
+            need = (await run_in_threadpool(variants.preview, W(), dict(J().jobs), d, _variant_level()))["jobs"]
+            active = sum(1 for j in J().list() if j["status"] in ("queued", "running"))
+            if active + need > demo.max_active_jobs:
+                raise WorkspaceError(f"this variant needs {need} calculations; the demo runs at most "
+                                     f"{demo.max_active_jobs} of yours at a time")
+            demo.check_structures(len(W().snapshot()["structures"]), [0] * (need * 2))
+        made = await run_in_threadpool(variants.create, W(), dict(J().jobs), d, _variant_level(),
+                                       name=body.name.strip())
+        return _start_variant(made)
+
+    def _start_variant(made: dict) -> dict:
+        from mepd.web import variants
+
+        if made["species"]:
+            with contextlib.suppress(WorkspaceError):
+                queue_optimization(made["species"])
+        jobs = variants.start_jobs(J(), made, W().level_profile)
+        publish_ws()
+        return {"variant": made["variant"], "jobs": [j["id"] for j in jobs]}
+
+    @app.post("/api/variants/{vid}/update")
+    async def variants_update(vid: str):
+        """Reactions the network gained since the variant was made: carry the
+        same edit into them (the ones it already has are kept)."""
+        from mepd.web import variants
+
+        var = W().variants.get(vid)
+        if var is None:
+            raise HTTPException(404, f"unknown variant {vid!r}")
+        design = {"molblock": var["design_molblock"],
+                  "source": {"kind": "graph", "structure": var["base"], "parent_molblock": var["parent_molblock"],
+                             "network": var.get("on")}}
+        made = await run_in_threadpool(variants.create, W(), dict(J().jobs), design, _variant_level(),
+                                       name=var["name"], vid=vid)
+        return _start_variant(made)
+
+    @app.delete("/api/variants/{vid}")
+    def variants_delete(vid: str):
+        from mepd.web import variants
+
+        variants.delete(W(), vid)
+        publish_ws()
+        return {"ok": True}
 
     @app.post("/api/reactions/propose")
     async def reactions_propose(body: ProposeIn):

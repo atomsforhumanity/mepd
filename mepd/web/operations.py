@@ -608,6 +608,8 @@ class Operation:
     methods: tuple = ()
     # target "set": every selected structure must have the same atoms (isomers).
     same_atoms: bool = False
+    # Started by the app itself (e.g. a network variant's jobs), never offered in the action panel.
+    hidden: bool = False
 
     def cli_problem(self) -> Optional[str]:
         if not self.cli_path:
@@ -649,6 +651,7 @@ class Operation:
             "family": self.family,
             "methods": [_method_view(m) for m in self.methods],
             "same_atoms": self.same_atoms,
+            "hidden": self.hidden,
             "qmmm": self.key in QMMM_OPS,
         }
 
@@ -1454,6 +1457,35 @@ def _build_substituents(ctx: JobContext, p: SubstituentParams) -> list[str]:
     return [*argv, *generic_flags(p), "--output", str(ctx.output_dir)]
 
 
+class VariantParams(Params):
+    pass
+
+
+def _build_variant(mode: str):
+    def build(ctx: JobContext, p: VariantParams) -> list[str]:
+        """A network variant's reaction (mepd.web.variants): its spec,
+        written when the variant was made, travels with the edge."""
+        if not ctx.edge_ids:
+            raise WorkspaceError("a variant calculation runs on a variant reaction's edge")
+        spec = (ctx.ws.edge(ctx.edge_ids[0]).get("origin") or {}).get("spec")
+        if not spec or not Path(spec).exists():
+            raise WorkspaceError("this edge is not a network variant's reaction (no spec)")
+        dst = ctx.job_dir / "inputs" / "variant.json"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(spec, dst)
+        out = ctx.output_dir
+        if mode == "reoptimize":
+            # The fast estimate's frames are the starting point: work in its folder.
+            fast = next((j for j in sorted(ctx.jobs.values(), key=lambda j: j.get("created") or 0, reverse=True)
+                         if j["op"] == "variant-fast" and ctx.edge_ids[0] in j["targets"]["edges"]
+                         and j["status"] == "done"), None)
+            if fast is not None and (Path(fast["output_dir"]) / "fast").is_dir():
+                out.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(Path(fast["output_dir"]) / "fast", out / "fast", dirs_exist_ok=True)
+        return ["variant", str(dst), "--mode", mode, *ctx.common_flags(), "--output", str(out)]
+    return build
+
+
 PAIR = "Connect two structures"
 EXPLORE = "Explore around a structure"
 SET = "Across a set of structures"
@@ -1820,6 +1852,18 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         # run from here, results not shown. `mepd force` still works on the command line.
         available=False, unavailable_reason="Mechanical force is off in the web UI for now; `mepd force` runs it "
         "on the command line."),
+    Operation(
+        "variant-fast", "Network variant: fast estimate", "A network variant's reaction with the edit built in: "
+        "only the new atoms relaxed, the rest at the parent's geometries. (`mepd variant`)",
+        "pair", "Reaction conditions", VariantParams, _build_variant("fast"), hidden=True,
+        cli_path=("variant",), cli_extra_flags=("--mode", "--charge", "--multiplicity", "--inputs", "--output"),
+        produces=["barrier shift against the parent"]),
+    Operation(
+        "variant-reopt", "Network variant: re-optimize", "A network variant's reaction re-optimized: both ends "
+        "minimized, the TS optimized from the substituted one, its IRC checked against the ends. (`mepd variant`)",
+        "pair", "Reaction conditions", VariantParams, _build_variant("reoptimize"), hidden=True,
+        cli_path=("variant",), cli_extra_flags=("--mode", "--charge", "--multiplicity", "--inputs", "--output"),
+        produces=["a verified TS for the variant reaction"]),
     Operation(
         "substituents", "Substituent effects", "Swap hydrogens for functional groups, one at a time, and see how "
         "each shifts the barrier and which channel wins. (`mepd substituents`)",

@@ -960,6 +960,63 @@ class Workspace:
             self._save()
         return {"structures": gone_s, "edges": sorted(gone_e), "reactions": sorted(gone_r)}
 
+    # ------------------------------------------------------------ variants
+    # (mepd.web.variants: an edit of one species carried through the network)
+    @property
+    def variants(self) -> dict:
+        return self._data.get("variants") or {}
+
+    def put_variant(self, rec: dict) -> dict:
+        with self._lock:
+            self._data.setdefault("variants", {})[rec["id"]] = rec
+            self._save()
+            return rec
+
+    def drop_variant(self, vid: str) -> None:
+        with self._lock:
+            (self._data.get("variants") or {}).pop(vid, None)
+            self._save()
+
+    def tag_variant(self, ids: list, vid: str, parent_of: dict, kind: str = "structures") -> None:
+        """Mark records as a variant's own (`parent`: the record each stands for)."""
+        with self._lock:
+            for i in ids:
+                rec = self._data[kind][i]
+                rec["variant"] = vid
+                if parent_of.get(i):
+                    rec["parent"] = parent_of[i]
+            self._save()
+
+    def patch_edge_origin(self, eid: str, **fields: Any) -> dict:
+        with self._lock:
+            rec = self.edge(eid)
+            rec["origin"] = {**(rec.get("origin") or {}), **fields}
+            self._save()
+            return rec
+
+    def add_complex(self, structure: Structure, members: list, *, origin: dict, name: Optional[str] = None,
+                    variant: Optional[str] = None) -> dict:
+        """A complex of these molecules (species ids, repeated for 2 A) with
+        this exact geometry, without re-reading which molecule is which from
+        it (a variant's frames know; their stereo may be either mirror
+        image of the species node)."""
+        members = sorted(self._flat_members(members))
+        sid = new_id("s_")
+        rec = {"id": sid, "name": name or complex_name(members, self._data["structures"]),
+               "smiles": ".".join(self._data["structures"][m].get("smiles") or "" for m in members),
+               "formula": chem.formula(structure), "natoms": len(structure.symbols),
+               "charge": int(structure.charge), "multiplicity": int(structure.multiplicity), "energy": None,
+               "optimized": False, "level": None, "status": "ready", "role": "complex", "validation": None,
+               "origin": origin, "created": time.time(), "members": members}
+        if variant:
+            rec["variant"] = variant
+        with self._lock:
+            structure.save(str(self.structures_dir / f"{sid}.xyz"))
+            self._data["structures"][sid] = rec
+            self._ensure_conformers(rec)
+            self._save()
+        return rec
+
     def set_intact(self, sid: str, intact: Optional[bool]) -> None:
         """Whether a complex's minimized geometry still holds exactly its
         `members` (False: they reacted or fell apart, no minimum of them)."""

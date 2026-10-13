@@ -6,7 +6,7 @@
 import { html, useMemo, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { set, state, useStore } from '../store.js';
-import { depictUrl, isSpecies } from '../util.js';
+import { depictUrl, isSpecies, variantScope } from '../util.js';
 
 const fmtC = (x) => (x == null ? '—' : x === 0 ? '0' : Math.abs(x) >= 0.01 && Math.abs(x) < 1000 ? x.toPrecision(3) : x.toExponential(1));
 const UNITS = { s: 1, min: 60, h: 3600, d: 86400 };
@@ -120,12 +120,21 @@ function defaultMixture() {
 export function KineticsView() {
   const structures = useStore((s) => s.workspace.structures);
   const reactions = useStore((s) => s.workspace.reactions || {});
-  const species = useMemo(() => {
-    const ids = new Set(Object.values(reactions).flatMap((r) => [...r.reactants, ...r.products]));
-    return Object.values(structures).filter((s) => isSpecies(s) && (ids.has(s.id) || s.energy != null))
-      .sort((a, b) => (ids.has(b.id) - ids.has(a.id)) || a.name.localeCompare(b.name));
-  }, [structures, reactions]);
+  const variants = useStore((s) => s.workspace.variants || {});
   const saved = state.kinetics || {};
+  // Which network: '' the parent, else a variant (mepd.web.variants); `cmp`:
+  // the parent and that variant side by side, from the parent's mixture.
+  const [net, setNet] = useState(saved.net && variants[saved.net] ? saved.net : '');
+  // `cmp`: true (with the parent), or for a stacked variant 'on' (the variant it is built on) or 'parent'.
+  const [cmp, setCmp] = useState(saved.cmp && variants[saved.net] ? saved.cmp : false);
+  const species = useMemo(() => {
+    // Compared runs start from the base network's mixture (the parent's, or the variant it is built on).
+    const scope = variantScope(state.workspace, !net ? '' : !cmp ? net : cmp === 'on' ? variants[net]?.on : '');
+    const ids = new Set(Object.values(reactions).flatMap((r) => [...r.reactants, ...r.products]));
+    return Object.values(structures).filter((s) => isSpecies(s) && (ids.has(s.id) || s.energy != null)
+      && (!s.variant || scope.keep.has(s.variant) || scope.mine.has(s.id)) && !scope.replaced.has(s.id))
+      .sort((a, b) => (ids.has(b.id) - ids.has(a.id)) || a.name.localeCompare(b.name));
+  }, [structures, reactions, variants, net, cmp]);
   const [mix, setMix] = useState(saved.mix || defaultMixture());
   const [T, setT] = useState(saved.T ?? 298.15);
   const [tVal, setTVal] = useState(saved.tVal ?? 1);
@@ -145,16 +154,26 @@ export function KineticsView() {
     const out = await attempt(() => api.post('/api/kinetics', {
       initial: Object.fromEntries(mix.map((m) => [m.id, m.c])), held: mix.filter((m) => m.held).map((m) => m.id),
       temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unverified,
-      control: !!target, control_what: what, sweep, free_energy: free }));
+      control: !!target, control_what: what, sweep, free_energy: free,
+      network: net && !cmp ? net : null, compare: net && cmp ? net : null, compare_parent: cmp === 'parent' }));
     setBusy(false);
     const shown = out ? { ...out, tUnit } : res;
     setRes(shown);
-    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, free, sweepOn, tLo, tHi, res: shown } });
+    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, free, sweepOn, tLo, tHi, res: shown, net, cmp } });
   };
   const openReaction = (rid) => set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: rid } });
 
   return html`<div class="kinetics">
     <div class="kn-setup">
+      ${Object.keys(variants).length > 0 && html`<div class="kn-row"><label>Network <select value=${net}
+        onChange=${(e) => { setNet(e.target.value); if (!e.target.value) setCmp(false); }}>
+        <option value="">parent</option>
+        ${Object.values(variants).map((v) => html`<option value=${v.id}>${v.name}</option>`)}</select></label>
+        ${net && !variants[net]?.on && html`<label class="small" title="Run the parent and this variant from the same mixture: amounts of a replaced species go to its variant">
+          <input type="checkbox" checked=${!!cmp} onChange=${(e) => setCmp(e.target.checked)} /> compare with parent</label>`}
+        ${net && variants[net]?.on && html`<label class="small" title="Run this variant and another network from the same mixture: amounts of a replaced species go to its variant">compare with
+          <select value=${cmp || ''} onChange=${(e) => setCmp(e.target.value)}>
+            <option value="">—</option><option value="on">${variants[variants[net].on]?.name || 'its base'}</option><option value="parent">parent</option></select></label>`}</div>`}
       <div class="section-title">Start</div>
       <${Mixture} items=${mix} onChange=${setMix} species=${species} />
       <p class="small muted">"fixed" = a constant feed (held at that amount): the run then heads to a steady state. Without any, it is a closed flask.</p>
@@ -174,7 +193,8 @@ export function KineticsView() {
       <label class="kn-row small" title="Quasi-RRHO free energies (zero-point energy, enthalpy and entropy from GFN2-xTB single-point Hessians, computed once per structure and kept). Without it, electronic energies stand in, and complexes look too stable."><input type="checkbox" checked=${free} onChange=${(e) => setFree(e.target.checked)} /> free energies</label>
       <button class="btn primary" disabled=${busy || !mix.length} onClick=${run}>${busy ? 'Running…' : 'Run kinetics'}</button>
     </div>
-    <div class="kn-results">${res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} />`
+    <div class="kn-results">${res?.compare ? html`<${Compare} res=${res} T=${T} onReaction=${openReaction} />`
+      : res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} />`
       : html`<div class="empty-hint"><p>Pick a starting mixture and (optionally) a target species, then run. The model uses every
           reaction with a barrier: the lower its TS, the faster it goes, forward and back.</p></div>`}</div>
   </div>`;
@@ -258,11 +278,67 @@ function Results({ res, T, onReaction }) {
       <div class="section-title">Where the material went</div>
       <table class="rx-table"><thead><tr><th>Reaction</th><th title="Forward barrier from the separated reactants">ΔE‡</th><th title="Net amount converted over the run">converted (M)</th></tr></thead>
         <tbody>${flows.slice(0, 10).map((st) => html`<tr class=${st.reaction ? 'clickable' : ''} onClick=${() => st.reaction && onReaction(st.reaction)}>
-          <td class="rx-eq">${st.label}${st.copies > 1 ? html` <span class="small muted">(${st.copies} runs; lowest TS)</span>` : ''}${!st.verified ? html` <span class="small muted" title="path maximum, not TS/IRC-verified">≈</span>` : ''}</td>
+          <td class="rx-eq">${st.label}${st.copies > 1 ? html` <span class="small muted">(${st.copies} runs; lowest TS)</span>` : ''}${st.estimate ? html` <span class="small muted" title="fast estimate: the parent's barrier shifted by the edit, until the re-optimized TS is in">est.</span>`
+            : !st.verified ? html` <span class="small muted" title="path maximum, not TS/IRC-verified">≈</span>` : ''}</td>
           <td class="mono">${st.barrier_fwd.toFixed(1)}</td><td class="mono">${fmtC(st.extent)}</td></tr>`)}</tbody></table>
     </section>
     ${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}
     ${res.warnings.map((w) => html`<p class="small muted">⚠ ${w}</p>`)}
+  </div>`;
+}
+
+// The parent network and a variant, run from the same mixture: what changes
+// in the outcome and in each step's barrier.
+function Compare({ res, T, onReaction }) {
+  const [open, setOpen] = useState('');
+  const { parent: a, variant: b, match } = res;
+  const v = state.workspace.variants?.[res.variant_id];
+  // A variant built on another one is compared with that one.
+  const base = res.base_id ? state.workspace.variants?.[res.base_id]?.name || 'base' : 'parent';
+  const rx = state.workspace.reactions || {};
+  if (a.error || b.error) return html`${a.error && html`<p class="warn-box">${base}: ${a.error}</p>`}${b.error && html`<p class="warn-box">Variant: ${b.error}</p>`}`;
+  const endOf = (r, ids) => ids.reduce((t, id) => t + (r.species.find((s) => s.id === id)?.final || 0), 0);
+  const rows = [...a.species].sort((x, y) => y.max - x.max).filter((s) => s.max > 1e-9).slice(0, 10)
+    .map((s) => ({ s, ids: match[s.id] || [s.id] }));
+  // A variant's step stands for the step it was made from (through each variant it is built on).
+  const from = (rid, target) => { for (let r = rid, k = 0; r && k < 20; r = rx[r]?.parent, k += 1) if (r === target) return true; return false; };
+  const steps = a.steps.map((st) => ({ st, mine: b.steps.filter((x) => x.reaction && from(x.reaction, st.reaction)) }));
+  const tgt = a.target;
+  const tb = tgt ? endOf(b, match[tgt.id] || [tgt.id]) : null;
+  // Parent steps the variant has no barrier for yet (still computing, or not carried): the variant is missing them.
+  const missing = steps.filter(({ mine }) => !mine.length).map(({ st }) => st.label);
+  // And variant steps whose base step has no barrier (e.g. the base variant's re-optimization failed).
+  const matched = new Set(steps.flatMap(({ mine }) => mine));
+  const baseMissing = b.steps.filter((x) => !matched.has(x)).map((x) => x.label);
+  const nEst = b.steps.filter((x) => x.estimate).length;
+  return html`<div class="kn-out">
+    ${missing.length > 0 && html`<p class="warn-box small">Not in the variant yet: ${missing.join('; ')}. Until these have
+      barriers the variant is missing those steps, so the comparison is incomplete.</p>`}
+    ${baseMissing.length > 0 && html`<p class="warn-box small">Not in ${base}: ${baseMissing.join('; ')}. ${base} is missing
+      those steps, so the comparison is incomplete.</p>`}
+    ${nEst > 0 && html`<p class="level-note small">${nEst} variant step${nEst > 1 ? 's are' : ' is'} a fast estimate (est.):
+      re-optimizations are running.</p>`}
+    <p class="small kn-summary">${tgt && html`<b>${tgt.name}</b>: ${fmtC(tgt.final)} M → <b>${fmtC(tb)} M</b> with ${v?.name || 'the variant'}${
+      tgt.final > 0 && tb != null ? ` (${(tb / tgt.final).toPrecision(2)}×)` : ''} · `}<span class="muted">${v?.edit.join('; ')}</span></p>
+    <section>
+      <div class="section-title">Amounts at the end (M)</div>
+      <table class="rx-table"><thead><tr><th>Species</th><th>${base}</th><th>variant</th></tr></thead>
+        <tbody>${rows.map(({ s, ids }) => html`<tr><td class="rx-eq" title=${ids.map((id) => state.workspace.structures[id]?.name || id).join(' + ')}>${s.name}${ids.length > 1 ? html` <span class="small muted">(${ids.length})</span>` : ''}</td>
+          <td class="mono">${fmtC(s.final)}</td><td class="mono">${fmtC(endOf(b, ids))}</td></tr>`)}</tbody></table>
+    </section>
+    <section>
+      <div class="section-title">Barriers ΔE‡ (kcal/mol)</div>
+      <table class="rx-table"><thead><tr><th>Step</th><th>${base}</th><th>variant</th></tr></thead>
+        <tbody>${steps.map(({ st, mine }) => html`<tr class=${st.reaction ? 'clickable' : ''} onClick=${() => st.reaction && onReaction(st.reaction)}>
+          <td class="rx-eq">${st.label}</td><td class="mono">${st.barrier_fwd.toFixed(1)}</td>
+          <td class="mono">${mine.length ? mine.map((x, k) => html`${k ? ' / ' : ''}<span title=${x.label}>${x.barrier_fwd.toFixed(1)}${x.estimate ? ' est.' : ''}</span>`) : '—'}</td></tr>`)}</tbody></table>
+    </section>
+    <div class="kn-row segmented">
+      <button class=${open === 'a' ? 'on' : ''} onClick=${() => setOpen(open === 'a' ? '' : 'a')}>${base} in full</button>
+      <button class=${open === 'b' ? 'on' : ''} onClick=${() => setOpen(open === 'b' ? '' : 'b')}>variant in full</button>
+    </div>
+    ${open && html`<${Results} res=${{ ...(open === 'a' ? a : b), tUnit: res.tUnit }} T=${T} onReaction=${onReaction} />`}
+    ${(res.notes || []).map((w) => html`<p class="small muted">⚠ ${w}</p>`)}
   </div>`;
 }
 

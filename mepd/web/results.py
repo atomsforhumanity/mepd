@@ -647,8 +647,8 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
                                   barrier=barrier, ts_index=ts_index))
         return entries
 
-    channels = [i for i in loaded if i["kind"] == "channel"]
-    offtarget = [i for i in loaded if i["kind"] == "offtarget"]
+    channels = _merge_same_ts([i for i in loaded if i["kind"] == "channel"])
+    offtarget = _merge_same_ts([i for i in loaded if i["kind"] == "offtarget"])
     if _extra is not None:
         _extra.update(floor=floor, channels=channels, product_floor=product_floor)
     channel_entries = to_entries(channels, "channel_")
@@ -738,6 +738,26 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
     if not channels and routes:
         result["barrier_kcal"], result["n_steps"] = _clean(min(routes)[0]), min(routes)[1]
     return result
+
+
+def _merge_same_ts(items: list[dict]) -> list[dict]:
+    """One entry per TS: runs written before `_same_ts` saw through a
+    half-formed bond's ambiguous perception can hold one TS as two channels."""
+    from mepd.cli_channels import _same_ts
+    from mepd.inputs import ChainInputs
+
+    cutoffs = ChainInputs()
+    kept: list[dict] = []
+    for item in items:
+        same = next((k for k in kept if _same_ts(item["ts"], k["ts"], cutoffs.node_rms_thre,
+                                                 cutoffs.node_ene_thre)), None)
+        if same is None:
+            kept.append(item)
+            continue
+        same["members"] = same["members"] + item["members"]
+        if (_node_energy(item["ts"]) or 0.0) < (_node_energy(same["ts"]) or 0.0):
+            same.update(ts=item["ts"], irc=item["irc"])
+    return kept
 
 
 def collect_ts_extended(ts_out: Path, channels_out: Path, charge: int, multiplicity: int) -> dict:
@@ -1310,6 +1330,60 @@ def _reword_mechano(m: dict) -> None:
         pass    # keep what the run wrote
 
 
+def collect_variant(out: Path, charge: int, multiplicity: int) -> dict:
+    """`mepd variant` output: fast/ (the substituted parent frames with only
+    the new atoms relaxed: barrier and reaction shifts, no barrier of its
+    own) and reopt/ (minimized ends, re-optimized TS, IRC). Only a
+    re-optimized TS whose IRC connects the substituted ends is a verified
+    barrier."""
+    fast, reopt = _read_json(out / "fast" / "summary.json"), _read_json(out / "reopt" / "summary.json")
+    groups, result = [], None
+    if reopt:
+        entries = []
+        irc = _load_chain(out / "reopt" / "irc.xyz", charge, multiplicity)
+        ts = _load_chain(out / "reopt" / "ts.xyz", charge, multiplicity)
+        floor = reopt.get("barrier_floor_hartree")
+        if irc is not None:
+            entries.append(_entry("variant_irc", "Re-optimized TS · IRC", irc.nodes, floor,
+                                  barrier=reopt.get("barrier_kcal"), note=reopt.get("headline", "")))
+        elif ts is not None:
+            entries.append(_entry("variant_ts", "Re-optimized TS", ts.nodes, floor,
+                                  barrier=reopt.get("barrier_kcal"), note=reopt.get("headline", "")))
+        ends = [_load_chain(out / "reopt" / f, charge, multiplicity) for f in ("start.xyz", "end.xyz")]
+        if all(c is not None for c in ends):
+            entries.append(_entry("variant_ends", "Minimized ends", [ends[0][0], ends[1][0]],
+                                  _node_energy(ends[0][0]), note="reactant end · product end"))
+        groups.append(_group("Re-optimized", "variant", entries))
+        verified = bool(reopt.get("barrier_verified"))
+        barrier = reopt.get("barrier_kcal") if reopt.get("status") in ("ok", "ends_changed") else None
+        result = _result(reopt.get("headline") or reopt.get("status", ""), groups, [
+            {"label": "Status", "value": reopt.get("status")},
+            {"label": "Notes", "value": "; ".join(reopt.get("notes") or [])}], barrier)
+        result["barrier_floor_hartree"] = floor
+        result["product_floor_hartree"] = reopt.get("product_floor_hartree")
+        result["barrier_verified"] = verified
+    if fast:
+        chain = _load_chain(out / "fast" / "frames.xyz", charge, multiplicity)
+        entries = []
+        if chain is not None:
+            entries.append(_entry("variant_fast", "Fast estimate", chain.nodes, _node_energy(chain[0]),
+                                  ts_index=1 if len(chain) == 3 else None,
+                                  note="new atoms relaxed, the rest at the parent's geometries"))
+        g = _group("Fast estimate", "variant-fast", entries)
+        if result is None:
+            result = _result(fast.get("headline") or fast.get("status", ""), [g], [
+                {"label": "Barrier shift", "value": None if fast.get("barrier_shift") is None
+                 else f"{fast['barrier_shift']:+.1f} kcal/mol"},
+                {"label": "Reaction shift", "value": f"{fast['reaction_shift']:+.1f} kcal/mol"
+                 if fast.get("reaction_shift") is not None else None}])
+        else:
+            result["groups"].append(g)
+    if result is None:
+        return _result("No variant results yet", [], [])
+    result["variant"] = {"fast": fast, "reopt": reopt}
+    return result
+
+
 def collect_substituents(out: Path, charge: int, multiplicity: int) -> dict:
     """`mepd substituents` output: summary.json (shift per channel x site x
     group) plus <channel>/<site>_<h>_<group>.xyz (substituted reactant, TS,
@@ -1613,6 +1687,8 @@ COLLECTORS = {
     "solvent": collect_solvent,
     "mechanochem": collect_mechanochem,
     "substituents": collect_substituents,
+    "variant-fast": collect_variant,
+    "variant-reopt": collect_variant,
 }
 
 
@@ -1765,7 +1841,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 32
+RESULT_VERSION = 34
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

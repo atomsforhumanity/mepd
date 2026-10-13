@@ -9,6 +9,7 @@ import { html, useEffect, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, openTab, prefs, select, toast, useStore } from '../store.js';
 import { conformerRows, conformerLabel } from './Inspector.js';
+import { ApplyToNetwork } from './Variants.js';
 
 const COMMON = ['H', 'C', 'N', 'O', 'F', 'P', 'S', 'Cl', 'Br', 'I', 'B', 'Si'];
 // The periodic table as [symbol, row, column] (lanthanides/actinides on rows 8-9).
@@ -670,6 +671,7 @@ export function DesignView() {
             ${rx && html`<a class="btn" href="/api/design/xyz?side=product" download=${`${design.name || 'design'}_product.xyz`}>Download xyz (product)</a>`}
             <button class="btn-link small" onClick=${() => { if (confirm('Start a new design? The current one is not kept (add it to the graph first if you want it).')) attempt(() => api.del('/api/design')); }}>New design…</button>
           </div>
+          <${ApplyToNetwork} design=${design} busy=${busy || running} />
           <details class="advanced"><summary>Load another</summary><${Start} structures=${structures} /></details>
         </aside>
       </div>`}

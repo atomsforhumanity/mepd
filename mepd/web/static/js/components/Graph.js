@@ -4,9 +4,10 @@ import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
 import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
-import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, playgroundFitMargins, reactionOfEdge } from '../util.js';
+import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, playgroundFitMargins, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
+import { VariantTools } from './Variants.js';
 
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -358,10 +359,21 @@ function childrenOf(structures) {
 // Which structures and edges the view shows. Returns {hide, dim, folded}:
 // sets of ids, and collapsed node -> how many structures it folds away.
 // Selected structures always stay visible.
-function computeView(workspace, view, collapsed, selected, focusIds, cyc) {
+function computeView(workspace, view, collapsed, selected, focusIds, cyc, network = '') {
   const { structures, edges } = workspace;
   const kids = childrenOf(structures);
   const hide = new Set(), dim = new Set(), folded = {};
+  // Network variants: only the shown network's own records; in a variant,
+  // the parent species and reactions it replaces are faded.
+  // A variant built on another one shows that one's records too.
+  const scope = variantScope(workspace, network);
+  const replaced = scope.replaced;
+  const replacedEdges = new Set(scope.replacedReactions.map((rid) => rid.startsWith('edge:')
+    ? rid.slice(5) : workspace.reactions?.[rid]?.edge).filter(Boolean));
+  for (const s of Object.values(structures)) {
+    if (s.variant && !scope.keep.has(s.variant) && !scope.mine.has(s.id)) hide.add(s.id);
+    else if (replaced.has(s.id)) dim.add(s.id);
+  }
   for (const cid of collapsed) {
     if (!structures[cid] || hide.has(cid)) continue;
     const stack = [...(kids[cid] || [])];
@@ -403,6 +415,8 @@ function computeView(workspace, view, collapsed, selected, focusIds, cyc) {
     else if (cx.members.every((id) => dim.has(id))) dim.add(cx.id);
   }
   for (const e of Object.values(edges)) {
+    if (e.variant && !scope.keep.has(e.variant)) { hide.add(e.id); continue; }
+    if (replacedEdges.has(e.id)) dim.add(e.id);
     const st = edgeStatus(e, state.jobs).status;
     if (view.hideProposed && e.origin?.proposed && !['done', 'running', 'queued'].includes(st)) hide.add(e.id);
     if (view.hideFailed && st === 'failed') hide.add(e.id);
@@ -410,6 +424,20 @@ function computeView(workspace, view, collapsed, selected, focusIds, cyc) {
     if (dim.has(a) && dim.has(b)) dim.add(e.id);
   }
   return { hide, dim, folded, kids };
+}
+
+// Which network Explore shows: the parent, or one of its variants (an edit
+// of a species carried through every reaction; made in Design).
+function NetworkPicker({ workspace, network }) {
+  const variants = Object.values(workspace.variants || {});
+  if (!variants.length) return null;
+  const v = network ? workspace.variants?.[network] : null;
+  return html`<select class=${`btn small ${v ? 'primary' : 'ghost'}`} value=${v ? network : ''}
+    title=${v ? `${v.name}: ${v.edit.join('; ')}. Faded: what it replaces.` : 'Show the network, or one of its variants'}
+    onChange=${(e) => set({ network: e.target.value })}>
+    <option value="">Network: parent</option>
+    ${variants.map((x) => html`<option value=${x.id}>Variant: ${x.name}${x.on ? ` (on ${workspace.variants[x.on]?.name || '?'})` : ''}</option>`)}
+  </select>${v && html`<${VariantTools} vid=${network} />`}`;
 }
 
 function ViewPanel({ view, setView, collapsed, setCollapsed, kids, shown, total, onClose, focusCount }) {
@@ -475,6 +503,9 @@ function edgeLabel(e, st, reaction = null) {
   if (st.barrierRev != null) { if (st.warning) parts.push('⚠'); }
   else if (st.barrier != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrier.toFixed(1)}`);
   else if (st.barrierUnverified != null) parts.push(`≈${st.barrierUnverified.toFixed(1)}?`);
+  else if (e.origin?.estimate?.barrier_shift != null && e.origin.estimate.status === 'ok')
+    // A network variant's fast estimate: the shift from its parent reaction, until re-optimized.
+    parts.push(`est. ${e.origin.estimate.barrier_shift >= 0 ? '+' : ''}${e.origin.estimate.barrier_shift.toFixed(1)}`);
   else if (st.status === 'running') parts.push('running…');
   else if (st.status === 'queued') parts.push('queued');
   else if (st.status === 'failed') parts.push('failed');
@@ -500,6 +531,7 @@ export function Graph() {
   const treeRef = useRef(() => {});
   const selection = useStore((s) => s.selection);
   const connectMode = useStore((s) => s.connectMode);
+  const network = useStore((s) => s.network);
   const howToHidden = useStore((s) => s.howToHidden);
   const [drag, setDrag] = useState(false);
   const [view, setViewState] = useState(() => ({ ...VIEW_DEFAULT, ...prefs.get('graphView', {}) }));
@@ -824,7 +856,7 @@ export function Graph() {
     if (!c) return;
     const sel = new Set(selection.structures);
     const { hide, dim, folded, kids } = computeView(workspace, view, collapsed, sel,
-      view.focusHops > 0 ? selection.structures : null, c);
+      view.focusHops > 0 ? selection.structures : null, c, network);
     c.batch(() => {
       c.elements().forEach((el) => {
         const id = el.id();
@@ -842,7 +874,7 @@ export function Graph() {
     const shownStructures = Object.values(workspace.structures).filter((s) => !isComplex(s));
     const total = shownStructures.length;
     setCounts({ shown: total - shownStructures.filter((s) => hide.has(s.id)).length, total, kids });
-  }, [workspace, statusKey, view, collapsed, focusKey]);
+  }, [workspace, statusKey, view, collapsed, focusKey, network]);
 
   const layout = () => {
     const c = cy.current;
@@ -960,6 +992,7 @@ export function Graph() {
         <button class=${`btn small ${setupPanel || setup ? 'primary' : 'ghost'}`} onClick=${() => { setPanel(false); setSetupPanel(!setupPanel); }}
           title="Experimental conditions: solvent, temperature, reaction time. See which steps run, and predict the outcome.">
           ${setup ? `Conditions · ${setup.name}` : 'Conditions'}</button>
+        <${NetworkPicker} workspace=${workspace} network=${network} />
         ${howToHidden && html`<button class="btn small ghost" title="Show 'How it works'" aria-label="How it works"
           onClick=${() => { prefs.set('hideHowTo', false); set({ howToHidden: false }); }}>?</button>`}
         ${nSelected > 0 && html`<button class="btn small ghost danger-text" onClick=${deleteSelection}

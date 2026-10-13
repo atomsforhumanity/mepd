@@ -143,7 +143,9 @@ def describe(mol, *, sanitized: bool = True) -> dict:
 
     mol.UpdatePropertyCache(strict=False)
     try:
-        m = _sanitized(mol) if sanitized else mol
+        m = Chem.Mol(_sanitized(mol) if sanitized else mol)
+        for a in m.GetAtoms():      # atoms tagged with their origin (tag_atoms) are not drawn mapped
+            a.SetAtomMapNum(0)
         smiles = Chem.MolToSmiles(Chem.RemoveHs(m))
     except Exception:
         smiles = None
@@ -156,6 +158,17 @@ def describe(mol, *, sanitized: bool = True) -> dict:
         "charge": int(sum(a.GetFormalCharge() for a in mol.GetAtoms())),
         "multiplicity": int(radicals) + 1,
     }
+
+
+def tag_atoms(molblock: str, *, sanitized: bool = True) -> dict:
+    """The molecule with every atom's index + 1 as its atom-map number: an
+    edit keeps them on the atoms it does not replace (new atoms have none),
+    so the edit can be read off against the original
+    (mepd.network_variants.derive_edit)."""
+    mol = read(molblock)
+    for a in mol.GetAtoms():
+        a.SetAtomMapNum(a.GetIdx() + 1)
+    return describe(mol, sanitized=sanitized)
 
 
 def to_xyz(molblock: str, charge: Optional[int] = None, multiplicity: Optional[int] = None) -> str:
@@ -225,6 +238,8 @@ def mol_from_xyz(xyz: str, charge: int = 0):
     try:
         trial = Chem.Mol(mol)
         rdDetermineBonds.DetermineBonds(trial, charge=int(charge))
+        if trial.GetNumAtoms() == 1:    # a bare ion: DetermineBonds leaves its charge at 0
+            trial.GetAtomWithIdx(0).SetFormalCharge(int(charge))
         mol = trial
         Chem.SanitizeMol(mol)
     except Exception:

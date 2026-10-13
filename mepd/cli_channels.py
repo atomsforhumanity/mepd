@@ -500,9 +500,11 @@ def _same_ts(a, b, rmsd_cutoff: float, kcal_mol_cutoff: float) -> bool:
     swapped, and mirror-image pairs return its mirror image. So: energies
     within `kcal_mol_cutoff`, then snap-RMSD (permutation-aware) to b or its
     mirror image under `rmsd_cutoff`. snap-RMSD perceives connectivity from
-    geometry, which is ambiguous at a saddle point's half-formed bonds; when
-    it can't, fall back to the sorted interatomic-distance list, which is
-    itself invariant to permutation, rotation and reflection."""
+    geometry, which is ambiguous at a saddle point's half-formed bonds (it
+    can fail, or align badly: an SN2 TS against its own copy came back at
+    5.2 bohr), so the sorted interatomic-distance list, itself invariant to
+    permutation, rotation and reflection, is checked first: matching
+    distances are the same TS whatever snap-RMSD says."""
     import numpy as np
 
     from mepd._qcinf_compat import snap_rmsd
@@ -513,22 +515,22 @@ def _same_ts(a, b, rmsd_cutoff: float, kcal_mol_cutoff: float) -> bool:
             return False
     except Exception:
         pass
-    try:
-        return min(
-            snap_rmsd(a.structure, b.structure),
-            snap_rmsd(a.structure, mirror_image(b.structure)),
-        ) < rmsd_cutoff
-    except Exception:
-        pass
-    if list(a.structure.symbols) != list(b.structure.symbols):
-        return False
 
     def _fingerprint(node):
         g = np.asarray(node.structure.geometry, dtype=float)
         d = np.linalg.norm(g[:, None, :] - g[None, :, :], axis=-1)
         return np.sort(d[np.triu_indices(len(g), 1)])
 
-    return float(np.abs(_fingerprint(a) - _fingerprint(b)).max()) < _TS_FINGERPRINT_TOL_BOHR
+    if sorted(a.structure.symbols) == sorted(b.structure.symbols) and \
+            float(np.abs(_fingerprint(a) - _fingerprint(b)).max()) < _TS_FINGERPRINT_TOL_BOHR:
+        return True
+    try:
+        return min(
+            snap_rmsd(a.structure, b.structure),
+            snap_rmsd(a.structure, mirror_image(b.structure)),
+        ) < rmsd_cutoff
+    except Exception:
+        return False
 
 
 def _cluster_by_ts_identity(candidates: list[tuple], run_inputs: RunInputs) -> list[list[tuple]]:

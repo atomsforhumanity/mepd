@@ -29,6 +29,7 @@ from mepd.cli_conformers import conformers
 from mepd.cli_solvent import solvent
 from mepd.cli_force import force
 from mepd.cli_substituents import substituents
+from mepd.cli_variant import variant
 from mepd.cli_complex import complex_
 from mepd.cli_common import (
     _check_endpoint_atom_mapping,
@@ -1400,6 +1401,7 @@ app.command("conformers")(conformers)
 app.command("solvent")(solvent)
 app.command("force")(force)
 app.command("substituents")(substituents)
+app.command("variant")(variant)
 app.command("complex")(complex_)
 
 

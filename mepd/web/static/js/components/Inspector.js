@@ -1,7 +1,7 @@
 // Right panel: what is selected, what we know about it, what can be run on it.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, openJob, openTab, prefs, select, set, useStore } from '../store.js';
+import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
@@ -117,7 +117,7 @@ function ComplexDetail({ rec }) {
       ${rec.energy != null && html`<dt>Energy</dt><dd class="mono">${rec.energy.toFixed(6)} Eh</dd>`}
     </dl>
     <div class="row-actions">
-      <button class="btn" onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
+      <button class="btn" onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
     </div>
     <${ComplexSandbox} key=${rec.id} rec=${rec} />
     ${built && html`<button class="btn-link danger small" onClick=${() => attempt(() => api.post('/api/delete', { structures: [rec.id] }), 'Complex removed').then(() => clearSelection())}>Remove complex</button>`}
@@ -171,7 +171,7 @@ function StructureDetail({ rec }) {
       </dl>
       <div class="row-actions">
         <button class="btn small" title="Open this structure (the conformer shown) in the Design tab to edit it"
-          onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, conformer: shown }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
+          onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, conformer: shown, network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
         <button class="btn-link danger small" onClick=${del}>Delete structure</button>
       </div>
     </section>

@@ -12,6 +12,31 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Network variants** (`mepd/network_variants.py`, `mepd/web/variants.py`, `mepd variant`). Edit a species in
+  Design (hydrogens for groups, element or charge swaps), then **Apply to network**. The edit is carried
+  through every reaction the species and its products take part in, then each one is recomputed. The result
+  is a variant of the network, kept next to the parent in the same workspace.
+  - Atoms are matched by graph isomorphism of each species onto each reaction's end geometries, all
+    automorphisms included. Placements that differ in the reaction (regio- and diastereomers) become separate
+    reactions; mirror images count as one. A wrong stereoisomer of the edited species is never produced.
+  - A reaction's frames come from the TS kinetics uses (that job's IRC through it). Otherwise they come from
+    the edge's pinned ends; SLAPMapper renumbers an end whose order does not fit the start.
+  - A step in which an edited hydrogen takes part is `blocked`. Reactions without an edited species are shared.
+  - Of equivalent placements on a molecule that does not react (which methyl of NMe4+ gets an OH), the one
+    nearest the reacting atoms is used. Of two parent records of one step, the variant starts from the one
+    with a TS (the lowest).
+  - Edits stack: Apply to network from a species opened while Explore shows a variant builds a variant on top
+    of it (e.g. choline for NMe4+, then iodide for bromide), carried through that variant's re-optimized
+    reactions and compared with it.
+  - Edits are made on one molecule. A design opened from a complex offers buttons to open each of its
+    molecules instead.
+  - Each variant reaction gets a fast estimate first: only the new atoms are relaxed, then single points, and
+    the barrier shift is applied to the parent's TS. It is then re-optimized: both ends are minimized, the TS
+    is optimized from the substituted one, and its IRC must connect the substituted ends. If that fails, the
+    parent's own path search runs on the variant's ends.
+  - Kinetics has a network picker (parent or a variant) and **compare with parent**: the same mixture, with
+    end amounts and per-step barriers side by side. Explore has a network picker; the records a variant
+    replaces are faded.
 - **Container image of the full web app** (`Dockerfile`, `.dockerignore`,
   `deploy/docker/`). `docker build -t mepd .` builds one image with:
   - mepd and every `web` extra, from `uv.lock`;
@@ -130,6 +155,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- A solvated engine (g-xTB + ALPB correction) ran one geometry optimization per core at once, ignoring the
+  profile's **Calls at once** (`n_parallel`): a channels run minimizing its conformer pools started 24
+  optimizations, each with a g-xTB and two xtb processes.
+- Design lost the charge of a bare ion (Br⁻ loaded as a neutral Br atom), so swapping its element was refused
+  as leaving an unpaired electron.
+- `channels` reported one TS as two identical channels when its half-formed bonds confused snap-RMSD
+  (Cl⁻ + CH₃Br): matching interatomic distances now count as the same TS, and results already on disk
+  merge such duplicates when shown.
 - **NEB stopped on a barrier that was still falling.** The TS-region stop (`ts_converged_stop`) checked only
   that the barrier moved less than `barrier_thre` since the last step; a band still relaxing drifts by less
   than that (0.07 kcal/mol a step on a KAIST pair) and stopped 25 kcal/mol high (114 vs 90 kcal/mol). The

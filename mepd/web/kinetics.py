@@ -65,9 +65,20 @@ def edge_ts(edge: dict, jobs: dict, level_key: Optional[str],
     return None, False, None, why
 
 
-def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverified: bool = False):
-    """(Network, species ids, step info, excluded) for the workspace."""
+def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverified: bool = False,
+          full: Optional[dict] = None):
+    """(Network, species ids, step info, excluded) for the workspace (or
+    one network of it: `snap` as mepd.web.variants.network_view gives it,
+    `full` the whole workspace, for a variant's fast estimates)."""
     st = snap["structures"]
+
+    def estimate(edge):
+        """A network variant's fast estimate, until its re-optimized TS is in."""
+        if not edge.get("variant"):
+            return None
+        from mepd.web.variants import estimate_ts
+
+        return estimate_ts(edge, full or snap, jobs, level_key)
 
     def usable(rec):
         return rec and rec.get("energy") is not None and (level_key is None or (rec.get("level") or {}).get("key") == level_key)
@@ -93,18 +104,24 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
                              "reaction": r["id"]})
             continue
         e_ts, verified, jid, why = edge_ts(edge, jobs, level_key, include_unverified)
+        est = None
         if e_ts is None:
-            excluded.append({"label": label, "reason": why, "reaction": r["id"]})
-            continue
+            est = estimate(edge)
+            if est is None:
+                excluded.append({"label": label, "reason": "fast estimate not in yet" if edge.get("variant")
+                                 and why == "no barrier yet" else why, "reaction": r["id"]})
+                continue
+            e_ts, verified, jid = est, False, None
         missing = [st.get(s, {}).get("name", s) for s in r["reactants"] + r["products"] if s not in index]
         if missing:
             excluded.append({"label": label, "reaction": r["id"],
                              "reason": "energies missing at this level: " + ", ".join(missing)})
             continue
         steps.append(mk.Step([index[s] for s in r["reactants"]], [index[s] for s in r["products"]],
-                             e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts)}))
+                             e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts) if jid else None}))
         info.append({"kind": "reaction", "reaction": r["id"], "edge": edge["id"], "label": label,
-                     "verified": verified, "job": jid, "shuttles": r.get("shuttles") or []})
+                     "verified": verified, "job": jid, "shuttles": r.get("shuttles") or [],
+                     "estimate": est is not None})
     complexes = {sid for sid, rec in st.items() if rec.get("role") == "complex"}
     for e in snap["edges"].values():
         if e["source"] in complexes or e["target"] in complexes:
@@ -256,12 +273,21 @@ def free_energies(ws, jobs: dict, net: mk.Network, *, workers: int = 2) -> tuple
 def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, held: list, temperature: float,
             time_s: float, target: Optional[str], include_unverified: bool = False, control: bool = True,
             sweep: Optional[list] = None, control_what: str = "amount", free_energy: bool = False,
-            ws=None) -> dict:
-    net, ids, info, excluded = build(snap, jobs, level_key, include_unverified=include_unverified)
+            ws=None, network: Optional[str] = None) -> dict:
+    """`network`: a variant's id (mepd.web.variants), else the parent network."""
+    from mepd.web.variants import network_view
+
+    full = snap
+    snap = network_view(snap, network)
+    net, ids, info, excluded = build(snap, jobs, level_key, include_unverified=include_unverified, full=full)
     warnings = [] if free_energy and ws is not None else [
         "Electronic energies stand in for free energies: absolute rates (bimolecular ones especially, "
         "which lack the entropy cost of meeting) are orders of magnitude; read ratios, controlling steps "
         "and trends."]
+    n_est = sum(1 for i in info if i.get("estimate"))
+    if n_est:
+        warnings.append(f"{n_est} step{'s' if n_est != 1 else ''} use{'' if n_est != 1 else 's'} a fast estimate "
+                        "(est.): the parent's barrier shifted by the edit, until the re-optimized TS is in.")
     if not net.steps:
         return {"error": "No reaction in this workspace has a barrier yet: run TS searches first"
                 + (" (or include unverified barriers)" if not include_unverified else "") + ".",

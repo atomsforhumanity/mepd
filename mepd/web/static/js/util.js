@@ -334,3 +334,19 @@ export function conformerLabel(r) {
   return `#${r.index + 1} · ${e}${r.rep ? ' · lowest' : ''}`;
 }
 
+
+// A network variant as Explore and Kinetics show it (mepd.web.variants.network_view):
+// it and the variants it is built on (`keep`), the species they list as their own
+// (also ones that merged into another variant's record), and what they replace.
+export function variantScope(workspace, id) {
+  const vs = workspace.variants || {};
+  const chain = [];
+  for (let v = id; v && vs[v] && !chain.includes(v); v = vs[v].on) chain.push(v);
+  const mine = new Set(), replaced = new Set(), replacedReactions = [];
+  for (const v of chain) {
+    Object.values(vs[v].labels || {}).forEach((x) => mine.add(x));
+    (vs[v].replaced || []).forEach((x) => replaced.add(x));
+    replacedReactions.push(...(vs[v].replaced_reactions || []));
+  }
+  return { chain, keep: new Set(chain), mine, replaced, replacedReactions };
+}

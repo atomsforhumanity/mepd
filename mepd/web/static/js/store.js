@@ -33,6 +33,7 @@ export const state = {
   selection: { structures: [], edges: [] },  // click order preserved
   view: { tab: 'graph', jobId: null },
   connectMode: false,
+  network: '',           // which network Explore shows: '' the parent, else a variant id (mepd.web.variants)
   toasts: [],
   modal: null,           // {kind, ...}
 };

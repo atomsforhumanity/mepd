@@ -311,3 +311,35 @@ def test_web_setups_round_trip_and_predict(client):
     assert r.status_code == 400 and "starts from" in r.json()["detail"]
     bad = client.put("/api/setups", json={"setups": [{"solvent": "unobtainium"}]})
     assert bad.status_code == 400
+
+
+def test_batched_optimizations_respect_calls_at_once():
+    # A solvated engine ran one optimization per core at once, whatever the
+    # profile's n_parallel ("Calls at once"): 24 optimizations, each with its
+    # g-xTB and two xtb calls, from one channels job.
+    import threading
+    import time
+
+    from mepd.engines.modified import ModifiedEngine
+
+    class Base:
+        n_parallel = 2
+
+    class Probe(ModifiedEngine):
+        def __init__(self):
+            self.base = Base()
+            self.now = self.peak = 0
+            self.lock = threading.Lock()
+
+        def compute_geometry_optimization(self, node, keywords=None):
+            with self.lock:
+                self.now += 1
+                self.peak = max(self.peak, self.now)
+            time.sleep(0.05)
+            with self.lock:
+                self.now -= 1
+            return [node]
+
+    e = Probe()
+    assert e.compute_geometry_optimizations(list(range(8))) == [[k] for k in range(8)]
+    assert e.peak == 2

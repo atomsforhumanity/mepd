@@ -921,3 +921,39 @@ def test_rebuild_splits_from_replaces_each_leg_s_other_end(source):
     dist = lambda x, y: float(np.abs(np.asarray(x.coords) - np.asarray(y.coords)).max())
     other = b if source == "start" else a
     assert dist(rebuilt, kept) < 0.2 < dist(rebuilt, other)
+
+
+_SN2_TS = [
+    """6
+Frame 1
+C -0.000833799877 0.001843672267 -0.017700546779
+Br 0.059742906251 -0.191412907265 2.427902306981
+H 0.001698238757 1.077589675176 0.062906820997
+H 0.931683871116 -0.536085892040 -0.084969081239
+H -0.936289294429 -0.534840130372 -0.040987231483
+Cl -0.056001921818 0.182905582234 -2.347152268477
+""",
+    """6
+Frame 1
+C 0.003008038364 -0.000824649822 0.017210071163
+Br -0.135222683358 0.214078032571 -2.423727291613
+H 0.007012248967 1.073302966829 0.117504307355
+H 0.935028370799 -0.536143414324 -0.075750300899
+H -0.930730644980 -0.540400913754 0.023750027837
+Cl 0.120904670208 -0.210012021501 2.341013186158
+""",
+]
+
+
+def test_one_sn2_ts_found_twice_counts_once():
+    """Cl- + CH3Br: the same TS from two pairs, turned over. Its two
+    half-formed bonds confuse snap-RMSD's bond perception (5.2 bohr between
+    the copies), so two identical channels were reported."""
+    from mepd.cli_channels import _same_ts
+
+    a, b = (StructureNode(structure=Structure.from_xyz(x, charge=-1)) for x in _SN2_TS)
+    a._cached_energy, b._cached_energy = -3074.26051172718, -3074.26050793283
+    assert _same_ts(a, b, rmsd_cutoff=1.0, kcal_mol_cutoff=1.0)
+    stretched = b.update_coords(np.asarray(b.coords) * np.array([1.0, 1.0, 1.15]))
+    stretched._cached_energy = b._cached_energy
+    assert not _same_ts(a, stretched, rmsd_cutoff=1.0, kcal_mol_cutoff=1.0)

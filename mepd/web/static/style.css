@@ -1292,3 +1292,18 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .atom-mapping .mapping-interp { margin-top: 10px; }
 @media (prefers-color-scheme: dark) { .atom-mapping .mapping-pair img { filter: invert(0.9) hue-rotate(180deg); } }
 .atom-mapping .chip .chip-detail { opacity: 0.75; font-weight: 400; }
+
+/* Network variants (Design › Across the network; Explore's network picker) */
+.variant-box { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 8px; }
+.variant-box .section-title { margin-bottom: 4px; }
+.variant-preview { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.variant-preview .chip { cursor: default; margin: 0 3px 2px 0; display: inline-block; }
+.variant-preview .chip.st-ok { border-color: var(--ok); color: var(--ok); }
+.variant-preview .chip.st-no_ts { border-color: var(--warn); color: var(--warn); }
+.variant-preview .chip.st-blocked { border-color: var(--border-strong); color: var(--muted); text-decoration: line-through; }
+.variant-preview .rx-table td { vertical-align: top; }
+.variant-run { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.variant-run .tiny-text { flex: 1 1 120px; min-width: 0; font: inherit; font-size: 13px; padding: 3px 6px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); color: var(--text); }
+.graph-toolbar select.btn { width: auto; max-width: 220px; padding-right: 22px; }
+.kn-out > .warn-box, .kn-out > .level-note { margin: 0 0 6px; }
