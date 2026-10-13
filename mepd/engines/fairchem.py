@@ -31,13 +31,41 @@ from mepd.qcdata_structure_helpers import structure_to_ase_atoms
 _EV_PER_ANG_TO_HARTREE_PER_BOHR = 1.0 / (Hartree * ANGSTROM_TO_BOHR)
 
 
+def _inference_settings(name):
+    """fairchem InferenceSettings for mepd's `inference_settings` name (see
+    FAIRChemEngine). "default": uncompiled and unmerged, without the
+    activation checkpointing of fairchem's "batch" (which recomputes the
+    network for the forces: about 20% slower per call, for memory mepd does
+    not need); its energies match fairchem's default to 1e-7 Eh."""
+    if not isinstance(name, str):
+        return name
+    if name == "default":
+        from fairchem.core.units.mlip_unit.api.inference import InferenceSettings
+
+        return InferenceSettings(tf32=False, activation_checkpointing=False, merge_mole=False, compile=False,
+                                 external_graph_gen=False, internal_graph_gen_version=2)
+    return "default" if name == FAIRChemEngine.COMPILED else name
+
+
 class FAIRChemEngine(ASEEngine):
     """A fairchem MLIP. `model` is a pretrained model name (e.g. "uma-s-1p2p1",
     "uma-m-1p1"); `checkpoint`, if given, is a local checkpoint file used
     instead. `task` selects the UMA head ("omol" for molecules, which reads
     charge and spin multiplicity from each structure). `device` defaults to
     CUDA when available. `batch_size` caps how many structures go through
-    one forward pass."""
+    one forward pass.
+
+    `inference_settings`: "default" is mepd's, the model as it is (no
+    torch.compile, experts not merged): ready in seconds, any molecules in
+    one batch. "compile" is fairchem's own default (merged experts and
+    torch.compile): about 2.5x faster per call once compiled, but the
+    compile costs 20-40 s in every process that loads the model and again
+    for each new batch size, and it holds for one molecule only -- worth it
+    for a long MD of one system, not for path searches. "turbo" (compiled,
+    TF32), "batch" and "traineval" are fairchem's presets."""
+
+    # mepd's names for fairchem InferenceSettings; anything else goes to fairchem as is.
+    COMPILED = "compile"
 
     def __init__(
         self,
@@ -97,14 +125,11 @@ class FAIRChemEngine(ASEEngine):
                 "the UMA models also need a Hugging Face login with access to facebook/UMA."
             ) from exc
         device = self._resolved_device()
+        settings = _inference_settings(self.inference_settings)
         if self.checkpoint:
-            return pretrained_mlip.load_predict_unit(
-                self.checkpoint, inference_settings=self.inference_settings, device=device
-            )
+            return pretrained_mlip.load_predict_unit(self.checkpoint, inference_settings=settings, device=device)
         try:
-            return pretrained_mlip.get_predict_unit(
-                self.model, inference_settings=self.inference_settings, device=device
-            )
+            return pretrained_mlip.get_predict_unit(self.model, inference_settings=settings, device=device)
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}"
             if "Gated" in type(exc).__name__ or any(code in text for code in ("401", "403", "restricted")):

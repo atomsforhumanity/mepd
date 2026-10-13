@@ -143,3 +143,17 @@ def test_fairchem_engine_runs_a_neb_step_on_a_chain():
     chain = Chain.model_validate({"nodes": _nodes(6)})
     assert eng.compute_gradients(chain).shape == (6, 3, 3)
     assert eng.batches == [6]
+
+
+def test_inference_settings_default_to_no_compile_and_compile_is_fairchems_default():
+    """torch.compile costs 20-40 s in every process that loads the model (and
+    again per batch size); mepd's "default" is the uncompiled model, "compile"
+    asks for fairchem's own fast path."""
+    pytest.importorskip("fairchem.core")
+    from mepd.engines.fairchem import _inference_settings
+
+    plain = _inference_settings("default")
+    assert not plain.compile and not plain.merge_mole and not plain.activation_checkpointing
+    assert _inference_settings("compile") == "default"
+    assert _inference_settings("turbo") == "turbo" and _inference_settings("batch") == "batch"
+    assert _inference_settings(plain) is plain

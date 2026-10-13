@@ -122,6 +122,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **FAIR-Chem (UMA) no longer compiles the model by default** (`fairchem_engine_kwds.inference_settings`).
+  mepd's `default` is now the uncompiled model; `compile` is fairchem's own default (merged experts plus
+  torch.compile), and `turbo` stays. Compiling cost 20-40 s in every process that loads the model, and again
+  for each new batch size, while mepd starts one per job and per parallel worker (the demo log showed 7
+  compiles in one Find TS). On an RTX 5090 (21 atoms): ready in 8 s instead of 21-40 s, 0.025 s per gradient
+  instead of 0.010 s once compiled, the same energies to 1e-7 Eh. A Find TS (FSM-TS, allyl vinyl ether, same
+  endpoints, two runs each): 148 and 172 s instead of 278 and 191 s. Saved profiles with `default` get the new
+  behavior.
+
 - **Faster analysis after the path searches** (Reaction channels, Sample more paths, Stop & analyze). Each
   pair's TS optimizations and IRCs start as soon as its search finishes, in processes of their own beside the
   searches still running, instead of all waiting for the last search. Once no search is left, they run on as

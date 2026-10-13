@@ -169,7 +169,8 @@ OPTIONS = {
     "ase_engine_kwds.geometry_optimizer": [(o, o) for o in ("LBFGSLineSearch", "LBFGS", "BFGS", "FIRE", "MDMin")],
     "fairchem_engine_kwds.geometry_optimizer": [(o, o) for o in ("LBFGSLineSearch", "LBFGS", "BFGS", "FIRE", "MDMin")],
     "fairchem_engine_kwds.task": [(t, t) for t in ("omol", "omat", "oc20", "odac", "omc")],
-    "fairchem_engine_kwds.inference_settings": [("default", "default"), ("turbo", "turbo")],
+    "fairchem_engine_kwds.inference_settings": [("default", "default (no compile)"), ("compile", "compile (one molecule, long runs)"),
+                                                ("turbo", "turbo (compile + TF32)")],
     "fairchem_engine_kwds.device": [("", "automatic (GPU if available)"), ("cuda", "GPU (cuda)"), ("cpu", "CPU")],
     "mlip_engine_kwds.device": [("", "automatic (GPU if available)"), ("cuda", "GPU (cuda)"), ("cpu", "CPU")],
     "mlip_engine_kwds.family": [("", "from the model name"), *((f, f) for f in ("aimnet2", "orb", "mace", "ani", "fairchem"))],
@@ -288,7 +289,9 @@ HELP = {
     "model": "Pretrained FAIR-Chem model name (e.g. uma-s-1p2p1, uma-m-1p1).",
     "task": "Which UMA head: omol for molecules (reads charge and multiplicity).",
     "checkpoint": "A local checkpoint file used instead of the named model.",
-    "inference_settings": "FAIR-Chem inference settings (turbo trades some accuracy for speed).",
+    "inference_settings": "default: ready in seconds, any molecules. compile: ~2.5x faster per call, but 20-40 s "
+                          "to compile in every process, for one molecule only (long MD). turbo: compile + TF32, "
+                          "some accuracy for speed.",
     "batch_size": "Structures per forward pass.",
     "calculator": "Import path of an ASE calculator class or factory, e.g. my_package.calculator:MyCalculator.",
     "calculator_kwds": "Arguments for the calculator, written as TOML key = value pairs separated by commas, "
