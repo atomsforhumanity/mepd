@@ -29,14 +29,13 @@ function TopBar() {
   const active = counts.running + counts.queued;
   // Interactive reactors still running in this workspace: a way back to them.
   const sandboxes = useStore((s) => s.sandboxes || []);
-  useEffect(() => {
-    if (demo) return undefined;
+  useEffect(() => {   // (a demo visitor's: only their own)
     let alive = true;
     const refresh = () => api.get('/api/sandboxes').then((list) => { if (alive) set({ sandboxes: list }); }).catch(() => {});
     refresh();
     const timer = setInterval(refresh, 10000);
     return () => { alive = false; clearInterval(timer); };
-  }, [demo, root, view.tab]);
+  }, [root, view.tab]);
   return html`
     <header class="topbar">
       <div class="brand">

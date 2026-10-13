@@ -164,6 +164,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **The public demo showed no Interactive reactor.** The server has allowed it since the per-visitor limits
+  (two at once, one per visitor), but Explore still hid its buttons, and the top bar's way back to it, in demo
+  mode.
 - A solvated engine (g-xTB + ALPB correction) ran one geometry optimization per core at once, ignoring the
   profile's **Calls at once** (`n_parallel`): a channels run minimizing its conformer pools started 24
   optimizations, each with a g-xTB and two xtb processes.

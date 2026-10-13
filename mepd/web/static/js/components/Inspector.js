@@ -296,11 +296,10 @@ function usePhone() {
 // Species selected: so many of each, combined into one complex (a new
 // complex node, minimized at the workspace level).
 // A complex: a live MD from its geometry as it is (Sandbox.js).
+// The demo offers it too, within DemoPolicy.sandbox (two at once, one per visitor).
 function ComplexSandbox({ rec }) {
-  const demo = useStore((s) => s.demo);
   const [temperature, setTemperature] = useState(800);
   const [busy, setBusy] = useState(false);
-  if (demo) return null;
   const start = async () => {
     setBusy(true);
     const out = await attempt(() => api.post('/api/sandbox', { structure: rec.id, temperature }));
@@ -317,12 +316,10 @@ function ComplexSandbox({ rec }) {
 // Species selected: a live MD of them to steer by hand (Sandbox.js).
 function SandboxLauncher({ sids }) {
   const structures = useStore((s) => s.workspace.structures);
-  const demo = useStore((s) => s.demo);
   const [open, setOpen] = useState(false);
   const [counts, setCounts] = useState({});
   const [temperature, setTemperature] = useState(800);
   const [busy, setBusy] = useState(false);
-  if (demo) return null;
   const n = (id) => counts[id] ?? (sids.length === 1 ? 6 : 3);
   const atoms = sids.reduce((t, id) => t + n(id) * (structures[id]?.natoms || 0), 0);
   if (!open) return html`<a href="#" onClick=${(e) => { e.preventDefault(); setOpen(true); }}>Interactive reactor →</a>`;
