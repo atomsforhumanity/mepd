@@ -12,6 +12,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Stop & analyze** for Find TS, Reaction channels and Sample more paths: next to Cancel on a running search.
+  Each running path search (NEB, FSM, FSM-TS, GSM, MLP-GI) ends at its next step with the path it has, no new
+  search starts and none is split further; then TS optimization, IRC and channel classification run on those
+  paths and the run finishes as done, marked as stopped early. Cancel still discards the run.
+  From a shell: run with `MEPD_STOP_FILE=<file>` and create that file (`mepd/search_control.py`).
 - **Export a whole workspace** (Analyze › Reactions › Export all; `GET /api/workspace/export`). Covers every
   reaction Analyze lists, with every channel found for each. Two files:
   - `report (.html)`: one self-contained page. An index of the reactions (lowest barrier, ΔE, channels, level;

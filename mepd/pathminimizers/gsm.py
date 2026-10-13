@@ -43,6 +43,7 @@ class GSMHelperError(ElectronicStructureError):
 from mepd.inputs import RunInputs
 from mepd.pathminimizers.pathminimizer import PathMinimizer
 from mepd.engines.gxtb import _SETPRIV
+from mepd import search_control
 from mepd.progress import log_at_level
 
 # Same magic numbers the C++ ASE driver (GSM/ase.cpp) uses to convert between
@@ -578,15 +579,19 @@ class GSM(PathMinimizer):
 
             server_proc = self._start_engine_server(workdir)
             self._log("Running molecularGSM (DE-GSM)...")
-            history, early_stopped = self._run_gsm(
-                workdir,
-                reactant,
-                product,
-                e_reactant,
-                chain.parameters,
-                allow_early_stop=allow_early_stop,
-                seed_nodes=seed_nodes,
-            )
+            try:
+                history, early_stopped = self._run_gsm(
+                    workdir,
+                    reactant,
+                    product,
+                    e_reactant,
+                    chain.parameters,
+                    allow_early_stop=allow_early_stop,
+                    seed_nodes=seed_nodes,
+                )
+            except search_control.SearchStopped:   # Stop & analyze: end the binary, keep its last string
+                self._end_gsm_process()
+                raise
 
             n_calls = counter_fp.read_text().count("\n")
             self.grad_calls_made += n_calls
@@ -930,6 +935,7 @@ class GSM(PathMinimizer):
                     "or path_min_inputs.executable to the resulting `gsm` binary."
                 )
             ) from exc
+        self._gsm_proc = proc
 
         # Drain stdout continuously (see _start_stdout_drain's docstring) --
         # GSM produces substantial output over a run, and without an active
@@ -995,6 +1001,8 @@ class GSM(PathMinimizer):
         # the live line, or a frozen live view looks broken.
         last_activity, quiet_minutes = start_time, 0
         while proc.poll() is None:
+            # Stop & analyze, also while GSM is quiet between strings: its latest one is the path.
+            search_control.check(history[-1] if history else None)
             if timeout is not None and (time.time() - start_time) > timeout:
                 proc.kill()
                 proc.wait()
@@ -1090,6 +1098,18 @@ class GSM(PathMinimizer):
 
         self._last_stdout = stdout_chunks
         return history, early_stopped
+
+    def _end_gsm_process(self) -> None:
+        """Stop the molecularGSM binary of an interrupted run."""
+        proc = getattr(self, "_gsm_proc", None)
+        if proc is None or proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5.0)
 
     @staticmethod
     def _gsm_outcome(stdout: str, *, seeded: bool, early_stopped: bool, n_calls: int) -> dict:

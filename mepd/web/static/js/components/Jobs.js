@@ -14,7 +14,10 @@ export function useTick(ms = 1000, on = true) {
 }
 
 export function JobControls({ job, compact = false }) {
+  const stoppable = useStore((s) => s.operations.find((o) => o.key === job.op)?.stoppable);
   const cancel = () => attempt(() => api.post(`/api/jobs/${job.id}/cancel`), 'Cancelling…');
+  const stopAnalyze = () => attempt(() => api.post(`/api/jobs/${job.id}/stop-analyze`),
+    'Stopping the searches; the paths found so far are being analyzed');
   const retry = () => attempt(() => api.post(`/api/jobs/${job.id}/retry`), 'Re-queued: it resumes from what is already on disk');
   const del = async () => {
     if (!confirm(`Delete "${job.title}"${job.external ? ' from the list (the output directory is left alone)' : ' and its output folder'}?`)) return;
@@ -23,6 +26,10 @@ export function JobControls({ job, compact = false }) {
   };
   const stop = (fn) => (e) => { e.stopPropagation(); fn(); };
   return html`<span class="job-controls">
+    ${job.status === 'running' && stoppable && (job.stopping
+      ? html`<span class="small muted" title="The searches stopped; TS optimization, IRC and the channels run on the paths found, then the result shows them"><span class="spinner" aria-hidden="true"></span>analyzing what was found…</span>`
+      : html`<button class="btn small primary" onClick=${stop(stopAnalyze)}
+          title="End the path searches now and keep what they found: each running search stops with its current path, none start or split further, then TS optimization, IRC and the channels run on those paths. (Cancel discards the unfinished analysis.)">Stop & analyze</button>`)}
     ${['queued', 'running'].includes(job.status) && html`<button class="btn small" onClick=${stop(cancel)}>Cancel</button>`}
     ${['failed', 'cancelled', 'interrupted'].includes(job.status) && !job.external && html`<button class="btn small" onClick=${stop(retry)} title="Rerun into the same output folder; finished pieces are skipped">Resume</button>`}
     ${job.status === 'done' && !job.external && !compact && html`<button class="btn small" onClick=${stop(retry)} title="Rerun into the same output folder">Rerun</button>`}

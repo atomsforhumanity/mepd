@@ -23,7 +23,7 @@ from mepd.neb import NEB, NoneConvergedException
 from mepd.nodes.nodehelpers import is_identical
 
 from mepd.TreeNode import TreeNode
-from mepd import tree_log
+from mepd import search_control, tree_log
 from mepd.errors import (
     ElectronicStructureError,
     extract_electronic_structure_error_details,
@@ -877,6 +877,18 @@ class MSMEP:
             set_monitor_verdict("elementary")
             return history_node, []
 
+        over = search_control.search_over(self.inputs.path_min_inputs)
+        if over is not None:
+            # Stop & analyze, or --search-budget: keep this search's own path as the leaf (the
+            # output stays continuous; TS discovery still runs on it).
+            self._say("Search stopped on request; keeping this path as a leaf instead of splitting it."
+                      if over == "stopped" else
+                      "Search budget reached; keeping this path as a leaf instead of splitting it.",
+                      snapshot=True, warn=True)
+            history_node.leaf_status = over
+            set_monitor_verdict("unresolved")
+            return history_node, []
+
         def _record_split_count(n: int) -> None:
             history_node.consecutive_same_pair_splits = int(n)
             if attempt_payload is not None:
@@ -903,16 +915,6 @@ class MSMEP:
         if resolved_max_depth is not None and tree_depth >= resolved_max_depth:
             return self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
                                       "max_depth_reached"), []
-
-        deadline = getattr(self.inputs.path_min_inputs, "recursive_split_deadline", None)
-        if deadline is not None and time.time() > deadline:
-            # --search-budget: keep this search's own path as the leaf (the
-            # output stays continuous; TS discovery still runs on it).
-            self._say("Search budget reached; keeping this path as a leaf instead of splitting it.",
-                      snapshot=True, warn=True)
-            history_node.leaf_status = "time_budget"
-            set_monitor_verdict("unresolved")
-            return history_node, []
 
         if self._repeats_an_ancestor(input_chain):
             # Keep this node's own minimized chain as the leaf so the
@@ -1319,12 +1321,27 @@ class MSMEP:
 
         try:
             n = self._construct_path_minimizer(initial_chain=interpolation)
-            elem_step_results = n.optimize_chain()
+            with search_control.interruptible():
+                elem_step_results = n.optimize_chain()
             setattr(n, "converged", True)
             out_chain = n.optimized
             from mepd.engines.mean_force import apply_free_energy_profile
 
             apply_free_energy_profile(out_chain, self.inputs.engine)   # free energies on the mean-force surface
+
+        except search_control.SearchStopped as stop:
+            # Stop & analyze: this search's path as it stood. Not checked or split (MSMEP keeps it as
+            # a "stopped" leaf); TS discovery runs on it like on any leaf.
+            setattr(n, "converged", False)
+            setattr(n, "stopped", True)
+            out_chain = stop.chain if isinstance(stop.chain, Chain) else self._last_or_initial_chain(n, interpolation)
+            if getattr(n, "chain_trajectory", None) is not None and (not n.chain_trajectory
+                                                                     or n.chain_trajectory[-1] is not out_chain):
+                n.chain_trajectory.append(out_chain)
+            n.optimized = out_chain
+            self._say("Stop requested: ending this path search with its current path.")
+            elem_step_results = ElemStepResults(is_elem_step=False, is_concave=None, splitting_criterion=None,
+                                                minimization_results=[], number_grad_calls=0)
 
         except NoneConvergedException:
             setattr(n, "converged", False)

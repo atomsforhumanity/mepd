@@ -893,9 +893,12 @@ def _run_msmep_pairs(
         if (tree_dir / "adj_matrix.txt").exists():
             typer.echo(f"Skipping pair ({i}, {j}): already completed.")
             return
-        deadline = getattr(run_inputs.path_min_inputs, "recursive_split_deadline", None)
-        if deadline is not None and time.time() > deadline:
-            typer.echo(f"Skipping pair ({i}, {j}): --search-budget reached before it started.")
+        from mepd import search_control
+
+        over = search_control.search_over(run_inputs.path_min_inputs)
+        if over is not None:
+            typer.echo(f"Skipping pair ({i}, {j}): " + ("stop requested before it started." if over == "stopped"
+                                                         else "--search-budget reached before it started."))
             return
         pair_dir.mkdir(parents=True, exist_ok=True)
         typer.echo(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")

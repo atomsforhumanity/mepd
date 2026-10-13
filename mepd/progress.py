@@ -1559,6 +1559,10 @@ def print_chain_step(chain, caption: str, force_update: bool = False):
     printer.record_chain_plot(chain, caption)
     printer.print_chain_ascii(ascii_plot, caption, force_update=force_update)
     _log_chain_step(chain, caption, force_update)
+    # Every path search reports each step here: where a requested stop ends it (mepd.search_control).
+    from mepd import search_control
+
+    search_control.check(chain)
 
 
 def preserve_chain_snapshot(note: Optional[str] = None):

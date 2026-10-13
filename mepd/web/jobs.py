@@ -29,6 +29,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from mepd import search_control
 from mepd.web.operations import OPERATIONS, JobContext, get_operation
 from mepd.web.workspace import Workspace, WorkspaceError, _atomic_write, new_id, remove_tree
 
@@ -43,6 +44,7 @@ def extends(job: dict) -> Optional[str]:
 
 
 EXIT_FILE = "exit_code"   # written by mepd.web.job_runner when the run ends
+STOP_FILE = "stop_search"   # Stop & analyze: created to end the run's searches early
 
 
 def _alive(pid: int, jdir: Path) -> bool:
@@ -665,6 +667,21 @@ class JobManager:
             asyncio.get_running_loop().call_later(8, self._kill, jid, signal.SIGKILL)
         return job
 
+    def stop_and_analyze(self, jid: str) -> dict:
+        """End a running search early and keep what it found: its path
+        searches stop at their next step and start no more, then the run
+        analyzes the paths it has (TS optimization, IRC, channels) and
+        finishes as done."""
+        job = self.get(jid)
+        op = OPERATIONS.get(job.get("op"))
+        if op is None or not op.stoppable:
+            raise WorkspaceError("this calculation cannot be stopped early; cancel it instead")
+        if job["status"] != "running":
+            raise WorkspaceError(f"the calculation is {job['status']}, not running")
+        (self.job_dir(jid) / STOP_FILE).touch()
+        self._update(job, stopping=True)
+        return job
+
     def _still_running(self, job: dict) -> bool:
         """A job left 'running' by a server that went away: is its run
         still going, or did it end since and record its exit code?"""
@@ -692,7 +709,8 @@ class JobManager:
         op = OPERATIONS.get(job.get("op"))
         if op is not None and not op.available:   # e.g. switched off in the web UI since it ran
             raise WorkspaceError(op.unavailable_reason or f"{op.title} is not available")
-        self._update(job, status="queued", error=None, returncode=None, finished=None, summary=None)
+        self._update(job, status="queued", error=None, returncode=None, finished=None, summary=None,
+                     stopping=False, stopped_early=False)
         (self.job_dir(jid) / "result.json").unlink(missing_ok=True)
         self._wake.set()
         return job
@@ -728,6 +746,8 @@ class JobManager:
             "MEPD_DRIVE_CHAIN_JSON": str(jdir / "chain.json"),
             # One file per concurrent path search (e.g. per channels pair).
             "MEPD_DRIVE_CHAIN_DIR": str(jdir / "live"),
+            # Stop & analyze: this file appearing ends the run's searches (mepd.search_control).
+            search_control.STOP_ENV: str(jdir / STOP_FILE),
             "COLUMNS": "160",
             "TERM": "dumb",
             "NO_COLOR": "1",
@@ -736,6 +756,7 @@ class JobManager:
         log.write(f"\n$ {job['command']}\n".encode())
         log.flush()
         (jdir / EXIT_FILE).unlink(missing_ok=True)
+        (jdir / STOP_FILE).unlink(missing_ok=True)   # a resumed run searches again
         try:
             # Through the runner (it records the exit code), so a server that
             # restarts meanwhile can pick the run back up.
@@ -767,11 +788,13 @@ class JobManager:
             status, error = "cancelled", "cancelled by user; resume to continue where it left off"
         elif rc == 0:
             status, error = "done", None
+            if job.get("stopping"):
+                job["stopped_early"] = True
         else:
             status = "failed"
             error = "\n".join(_tail_lines(self.job_dir(jid) / "stdout.log", 12)) or f"exit code {rc}"
         if jid in self.jobs:
-            self._update(job, status=status, returncode=rc, finished=time.time(), error=error)
+            self._update(job, status=status, returncode=rc, finished=time.time(), error=error, stopping=False)
             self._publish_progress(job, force=True)
             if self.on_finished:
                 self.on_finished(job)

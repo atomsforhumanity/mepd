@@ -610,6 +610,9 @@ class Operation:
     same_atoms: bool = False
     # Started by the app itself (e.g. a network variant's jobs), never offered in the action panel.
     hidden: bool = False
+    # Its path searches can be stopped early and what they found analyzed (Stop & analyze;
+    # mepd.search_control): runs whose command uses MSMEP's recursive search.
+    stoppable: bool = False
 
     def cli_problem(self) -> Optional[str]:
         if not self.cli_path:
@@ -652,6 +655,7 @@ class Operation:
             "methods": [_method_view(m) for m in self.methods],
             "same_atoms": self.same_atoms,
             "hidden": self.hidden,
+            "stoppable": self.stoppable,
             "qmmm": self.key in QMMM_OPS,
         }
 
@@ -1682,7 +1686,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "ts", "Transition state", "Find the minimum-energy path and its transition state(s) between "
         "two structures, optionally refined by TS optimization and IRC. (`mepd run`)",
-        "pair", PAIR, TsParams, _build_ts, min_structures=2,
+        "pair", PAIR, TsParams, _build_ts, min_structures=2, stoppable=True,
         produces=["transition states", "IRC endpoints", "intermediates"], family=TS_FAMILY, methods=({
             "label": "These endpoints", "rank": 0,
             "summary": "One path search between these two structures (the chosen conformers): its TS(s), "
@@ -1692,7 +1696,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "channels", "Reaction channels", "Sample reactant/product conformers and atom mappings, search "
         "every distinct mechanism, and classify the TSs into direct, multi-step and off-target "
         "channels. (`mepd channels`)",
-        "pair", PAIR, ChannelsParams, _build_channels, min_structures=2,
+        "pair", PAIR, ChannelsParams, _build_channels, min_structures=2, stoppable=True,
         produces=["transition states per channel", "conformers", "off-target products"],
         cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--start-pool", "--end-pool"),
         family=TS_FAMILY, methods=({
@@ -1817,7 +1821,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "channels-more", "Sample more paths", "Search more conformer pairs per mechanism for a finished "
         "Reaction channels run, reusing everything it computed (its conformers, and every path already searched) "
         "and running only the new pairs; the result then covers all of them. (`mepd channels`)",
-        "job", PAIR, ChannelsMoreParams, _build_channels_more,
+        "job", PAIR, ChannelsMoreParams, _build_channels_more, stoppable=True,
         source_ops=("channels",), cli_path=("channels",)),
     Operation(
         "nanoreactor-more", "Run longer", "Continue the reactor's MD from its last frame for more time: new "

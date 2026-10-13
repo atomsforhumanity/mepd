@@ -1920,6 +1920,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     async def cancel(jid: str):
         return J().cancel(jid)
 
+    @app.post("/api/jobs/{jid}/stop-analyze")
+    async def stop_and_analyze(jid: str):
+        """End a running search early and analyze what it found (Stop & analyze)."""
+        return J().stop_and_analyze(jid)
+
     @app.post("/api/jobs/{jid}/retry")
     async def retry(jid: str):
         return J().retry(jid)

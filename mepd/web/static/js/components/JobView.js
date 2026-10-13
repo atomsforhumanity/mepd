@@ -989,7 +989,7 @@ export function JobView({ jobId: openedId }) {
   const jobId = useStore(() => pageJobId(openedId));
   const job = useStore((s) => s.jobs[jobId]);
   const familyKey = useStore((s) => familyOf(s.jobs, jobId)
-    .map((j) => `${j.id}:${j.status}:${j.finished || 0}:${j.result_rev || 0}`).join('|'));
+    .map((j) => `${j.id}:${j.status}:${j.finished || 0}:${j.result_rev || 0}:${j.stopping ? 1 : 0}`).join('|'));
   const family = useMemo(() => familyOf(state.jobs, jobId), [familyKey]);
   const askedRun = useStore((s) => s.view.run);
   const askedTab = useStore((s) => s.view.jobTab);
@@ -1054,6 +1054,9 @@ export function JobView({ jobId: openedId }) {
       ${Object.keys(job.live_skipped || {}).length > 0 && html`<p class="level-note small">
         ${Object.keys(job.live_skipped).length} species more than ${job.params?.explore_within ?? job.params?.energy_window} kcal/mol above the seed
         were not added to Explore (the threshold under Explore in this calculation's settings). They are in the results, to add by hand.</p>`}
+      ${run.status === 'done' && run.stopped_early && html`<p class="level-note small">Stopped early (Stop & analyze): the
+        searches running then were kept with the paths they had, and no new ones started, so this result covers only what
+        was found until then.</p>`}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
       <div class="tabs">
         ${[['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],

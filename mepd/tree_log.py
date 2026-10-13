@@ -37,6 +37,7 @@ _LEAF = {
                                                     "new, so it is not split again; the path was optimized to "
                                                     "convergence and treated as one step."),
     "time_budget": ("unresolved", "The search budget ran out; the path is kept without splitting it."),
+    "stopped": ("unresolved", "Stopped on request (Stop & analyze); the path is kept as it was, without splitting it."),
     "cycle": ("elementary", "The endpoint pair repeats an ancestor's (a cycle), so it is not split again; the "
                             "path was optimized to convergence and treated as one step."),
     "electronic_structure_error": ("failed", "The electronic-structure calculation failed."),

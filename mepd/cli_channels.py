@@ -1714,6 +1714,10 @@ def channels(
     stats["msmep_seconds"] = round(time.perf_counter() - t0, 3)
     if search_deadline is not None:
         stats["search_budget_reached"] = time.time() > search_deadline
+    from mepd import search_control
+
+    if search_control.stop_requested():   # Stop & analyze: what follows runs on the paths found so far
+        stats["stopped_on_request"] = True
     if getattr(run_inputs.path_min_inputs, "direct_only", False):
         # Legs through other species that were not run; pairs left with
         # nothing to search, and pairs with some legs dropped.
