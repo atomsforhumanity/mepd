@@ -164,6 +164,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Molecules packed into one geometry could come out bonded to each other** (`mepd.complexes.packed`: a
+  reaction SMILES with several molecules, packed complexes). Packmol keeps them 2 Å apart, which is still bonding
+  range for e.g. a bromide and a carbon; such a packing is now redone further apart. Seen only where Packmol is
+  installed, as in the container image, where it failed the network-variants tests.
+- **Network variants: a new group could land within bonding range of a neighbouring molecule** (a methyl 1.5 Å
+  from CO2) and the frame then read as one molecule. A group is now turned about its bond whenever a new atom
+  is within bonding range of an existing one, not only when closer than 1 Å.
 - **The public demo showed no Interactive reactor.** The server has allowed it since the per-visitor limits
   (two at once, one per visitor), but Explore still hid its buttons, and the top bar's way back to it, in demo
   mode.

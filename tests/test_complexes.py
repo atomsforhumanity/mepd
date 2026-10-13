@@ -41,6 +41,27 @@ def test_packing_is_compact_and_seeded():
     assert np.linalg.norm(xyz, axis=1).max() < 3 * (extent + 2.0)   # inside a sphere near the packing radius
 
 
+def test_packing_redoes_molecules_left_within_bonding_range(monkeypatch):
+    """Packmol keeps molecules `min_distance` (2 A) apart, which is still bonding range for a bromide
+    and a carbon: such a packing is redone further apart, so the result reads as the molecules given."""
+    from qcdata import Structure
+
+    br = Structure(symbols=["Br"], geometry=np.zeros((1, 3)), charge=-1, multiplicity=1)
+    (w,) = chem.structures_from_xyz_text(WATER)
+    tries = []
+
+    def fake_packmol(structures, radius, seed, tolerance, exe):
+        tries.append(tolerance)
+        o_h = np.array([[0, 0, 0], [0.758, 0, 0.504], [-0.758, 0, 0.504]])
+        return ["Br", "O", "H", "H"], np.vstack([[0, 0, -tolerance], o_h])   # Br `tolerance` from the O
+    monkeypatch.setattr(complexes.shutil, "which", lambda name: "/fake/packmol")
+    monkeypatch.setattr(complexes, "_packmol", fake_packmol)
+    out = complexes.packed([br, w])
+    assert tries[0] == 2.0 and len(tries) > 1     # Br-O at 2.0 A reads as bonded (1.25 x (1.20 + 0.66) = 2.3)
+    xyz = np.asarray(out.geometry).reshape(-1, 3) / 1.8897259886
+    assert np.linalg.norm(xyz[0] - xyz[1]) >= complexes.UNBONDED * (1.20 + 0.66) and out.charge == -1
+
+
 def test_a_smiles_of_several_molecules_is_packed_not_lined_up():
     from mepd.cli_common import _load_structure_from_smiles_or_xyz
 

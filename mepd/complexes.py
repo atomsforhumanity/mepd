@@ -52,26 +52,56 @@ def _structure(symbols, coords_angstrom, charge: int):
                      charge=int(charge), multiplicity=1 if electrons % 2 == 0 else 2)
 
 
+# Molecules packed together must not look bonded to each other: atoms of two
+# of them at least this x the sum of their covalent radii apart (bonds are
+# perceived below 1.25x, mepd.discovery.nanoreactor.perceive_bonds).
+UNBONDED = 1.35
+
+
+def _bonded_across(symbols, coords, owner) -> bool:
+    """Whether atoms of two different molecules are within bonding range."""
+    from mepd.discovery.nanoreactor import COVALENT_RADII
+
+    c = np.asarray(coords, dtype=float)
+    r = np.array([COVALENT_RADII.get(x, 1.5) for x in symbols])
+    d = np.linalg.norm(c[:, None] - c[None], axis=-1)
+    own = np.asarray(owner)
+    return bool(np.any((own[:, None] != own[None]) & (d < UNBONDED * (r[:, None] + r[None]))))
+
+
 def packed(structures: Sequence, *, seed: int = 0, min_distance: float = 2.0):
     """Random orientations in the smallest sphere they fit in (grown 8% at
     a time from the largest molecule's size): Packmol when installed, else
     the nanoreactor's packer. Atoms come out in input order (the molecules
-    in the order given, each in its own order)."""
+    in the order given, each in its own order).
+
+    `min_distance` is the closest two molecules' atoms may come; a packing
+    that still leaves two molecules within bonding range of each other (a
+    bromide 2 A from a carbon reads as bonded) is redone with them further
+    apart, so the result holds the molecules' own bonds only."""
     from mepd.discovery.nanoreactor import pack_reactor
 
     charge = sum(int(s.charge) for s in structures)
     extent = max(float(np.max(np.linalg.norm(_coords(s) - _coords(s).mean(axis=0), axis=1))) for s in structures)
     radius = extent + min_distance
     exe = shutil.which("packmol")
+    owner = [k for k, s in enumerate(structures) for _ in s.symbols]
     for _ in range(60):
         try:
             if exe:
-                return _structure(*_packmol(structures, radius, seed, min_distance, exe), charge)
-            symbols, coords, _, owner = pack_reactor(structures, radius, seed=seed, min_distance=min_distance, tries=400)
-            order = sorted(range(len(owner)), key=lambda i: (owner[i], i))   # back to input order
-            return _structure([symbols[i] for i in order], np.asarray(coords)[order], charge)
+                symbols, coords = _packmol(structures, radius, seed, min_distance, exe)
+            else:
+                symbols, coords, _, own = pack_reactor(structures, radius, seed=seed, min_distance=min_distance,
+                                                       tries=400)
+                order = sorted(range(len(own)), key=lambda i: (own[i], i))   # back to input order
+                symbols, coords = [symbols[i] for i in order], np.asarray(coords)[order]
         except RuntimeError:
             radius *= 1.08
+            continue
+        if not _bonded_across(symbols, coords, owner):
+            return _structure(symbols, coords, charge)
+        min_distance += 0.25
+        radius += 0.25
     raise RuntimeError("could not pack these molecules")
 
 

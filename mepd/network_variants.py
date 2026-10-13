@@ -46,6 +46,8 @@ import numpy as np
 
 ADJ_SCALE = 1.25        # bonded: closer than 1.25 x the sum of covalent radii (as mepd.substituents)
 CLASH = 1.0             # Å: a new atom closer than this to a kept one is re-spun about its bond
+# ... as is one within bonding range of a kept atom (closer than ADJ_SCALE x the sum
+# of covalent radii): it would read as bonded to it, e.g. a methyl 1.5 Å from CO2.
 MANY_PLACEMENTS = 4     # the preview warns when one parent reaction gives more variants than this
 
 
@@ -667,28 +669,33 @@ def apply_edit(edits: list[tuple], symbols, coords, frame_adj: Optional[np.ndarr
     kept_idx = [i for i in range(len(sym)) if i not in removed]
     gone = removed | {sigma[h] for _, sigma, _, _, h, _ in placed_groups if h is not None}
     others = np.array([c[i] for i in kept_idx if i not in gone]) if len(kept_idx) else np.zeros((0, 3))
+    others_r = np.array([_rcov(sym[i]) for i in kept_idx if i not in gone])
     worst = 9.9
     for gi, (edit, sigma, anchor, comp, h, xyz) in enumerate(placed_groups):
         a_xyz = c[sigma[anchor]]
         mask = np.ones(len(others), dtype=bool)
         anchor_pos = [k for k, i in enumerate([i for i in kept_idx if i not in gone]) if i == sigma[anchor]]
         mask[anchor_pos] = False
-        rest = others[mask]
+        rest, rest_r = others[mask], others_r[mask]
         movable = [k for k in range(len(comp)) if h is None or comp[k] != edit.replaced[h]]
+        bond_range = ADJ_SCALE * (np.array([_rcov(edit.new_symbols[comp[k] - edit.n]) for k in movable])[:, None]
+                                  + rest_r[None]) if movable and len(rest) else None
 
-        def dmin(x):
-            if not len(rest) or not movable:
-                return 9.9
-            return float(np.min(np.linalg.norm(x[movable][:, None] - rest[None], axis=-1)))
+        def contact(x):
+            """(closest new-to-kept distance, closest as a fraction of bonding range: < 1 reads as a bond)."""
+            if bond_range is None:
+                return 9.9, 9.9
+            d = np.linalg.norm(x[movable][:, None] - rest[None], axis=-1)
+            return float(d.min()), float((d / bond_range).min())
 
-        best = dmin(xyz)
-        if best < CLASH and h is not None:
+        best, fraction = contact(xyz)
+        if (best < CLASH or fraction < 1.0) and h is not None:
             axis = c[sigma[h]] - a_xyz
             for k in range(1, 24):
                 trial = (xyz - a_xyz) @ _axis_rotation(axis, 2 * np.pi * k / 24).T + a_xyz
-                d = dmin(trial)
-                if d > best:
-                    best, xyz = d, trial
+                d, f = contact(trial)
+                if f > fraction:
+                    best, fraction, xyz = d, f, trial
             placed_groups[gi] = (edit, sigma, anchor, comp, h, xyz)
         worst = min(worst, best)
     for edit, sigma, anchor, comp, h, xyz in placed_groups:
