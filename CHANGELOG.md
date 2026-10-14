@@ -202,6 +202,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Geodesic interpolation ran on Bohr coordinates with Angstrom parameters** (since the first mepd import).
+  Its covalent radii, 3 A pair cutoff, 1.8 A bonded threshold and nudges are Angstrom, but `run_geodesic` passed
+  mepd's Bohr coordinates. Every bond read as 1.9x stretched (C-H w = 0.2 instead of ~1), the pair cutoff acted as
+  1.6 A, and about half the atom pairs (those defining bond angles) were missing, so some motions cost nothing in
+  the metric. `run_geodesic` now converts to Angstrom and back. On 30 benchmark reactions the 12-image
+  geodesic's highest g-xTB energy is lower in 23 (median -22 kcal/mol; two old paths reached 2400 and 4000
+  kcal/mol). This changes every geodesic path (NEB/FNEB/MSMEP starting paths, GSM seeding): results from
+  earlier versions that used geodesic interpolation should be regenerated.
 - **Kinetics started from a whole complex as if it were one species** (the default starting mixture, taken from
   the latest nanoreactor run). A complex there now starts as its molecules, 1 M each (a molecule twice in it: 2 M).
 
