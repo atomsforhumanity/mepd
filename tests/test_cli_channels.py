@@ -605,6 +605,25 @@ def _write_fake_pair_tree(output, pair_name: str) -> None:
     tree.write_to_disk(tree_dir)
 
 
+def test_ts_guesses_skip_a_leaf_whose_search_left_no_energies():
+    """A leaf whose path has no energies (its engine's SCF failed) is skipped;
+    the analysis does not crash and the other leaves keep their guesses."""
+    from mepd.cli_common import _ts_guess_tasks_from_tree
+
+    def leaf(index, with_energies):
+        chain = _water_chain_for_guess()
+        if not with_energies:
+            for node in chain.nodes:
+                node._cached_energy = None
+        neb = NEB(initial_chain=chain, optimizer=VelocityProjectedOptimizer(), parameters=NEBInputs(),
+                  engine=None, optimized=chain, chain_trajectory=[chain])
+        return TreeNode(data=neb, children=[], index=index)
+
+    root = TreeNode(data=None, children=[leaf(1, True), leaf(2, False)], index=0)
+    tasks = _ts_guess_tasks_from_tree(root, "ts_pair_0_1_")
+    assert [label for label, _ in tasks] == ["ts_pair_0_1_leaf_1"]
+
+
 def test_discover_channels_classifies_channel_vs_offtarget_exit(tmp_path, monkeypatch):
     import mepd.cli_channels as cli_module
 

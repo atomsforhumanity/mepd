@@ -207,6 +207,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Reaction channels no longer crash when a path search ended without energies** (e.g. g-xTB's SCF failed on
+  it): that leaf is skipped with a note, and the other leaves are still analyzed. It cost NEB its result on one
+  benchmark reaction.
 - **Geodesic interpolation ran on Bohr coordinates with Angstrom parameters** (since the first mepd import).
   Its covalent radii, 3 A pair cutoff, 1.8 A bonded threshold and nudges are Angstrom, but `run_geodesic` passed
   mepd's Bohr coordinates. Every bond read as 1.9x stretched (C-H w = 0.2 instead of ~1), the pair cutoff acted as

@@ -1118,12 +1118,21 @@ def _ts_guess_tasks_from_tree(tree, label_prefix: str) -> list[tuple[str, object
     `<label_prefix>leaf_<leaf.index>` -- matches the naming `mepd run
     --use-tsopt` already uses for a bare tree (`ts_leaf_<index>`), so the two
     commands' outputs land on the same files in a shared --output directory."""
+    from mepd.errors import EnergiesNotComputedError
+
     tasks = []
     for leaf in tree.ordered_leaves:
         if not leaf.data or not leaf.data.chain_trajectory:
             continue
-        guess_node = leaf.data.chain_trajectory[-1].get_ts_node()
-        tasks.append((f"{label_prefix}leaf_{leaf.index}", guess_node))
+        label = f"{label_prefix}leaf_{leaf.index}"
+        try:
+            guess_node = leaf.data.chain_trajectory[-1].get_ts_node()
+        except EnergiesNotComputedError:
+            # Its search ended without energies (e.g. the engine's SCF failed
+            # on it): no TS guess, but the other leaves still get theirs.
+            typer.echo(f"Skipping {label}: its path has no energies (the search on it failed).")
+            continue
+        tasks.append((label, guess_node))
     return tasks
 
 
