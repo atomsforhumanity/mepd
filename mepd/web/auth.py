@@ -128,9 +128,10 @@ class VisitorAuth:
 
     COOKIE = "mepd_visitor"
 
-    def __init__(self, password: str, secret: bytes):
+    def __init__(self, password: str, secret: bytes, on_logout=None):
         self._password = password
         self._secret = secret
+        self._on_logout = on_logout        # async (visitor) -> None: deletes their workspace
 
     def _sign(self, visitor: str) -> str:
         return hmac.new(self._secret, visitor.encode(), hashlib.sha256).hexdigest()
@@ -144,7 +145,8 @@ class VisitorAuth:
 
     async def login(self, request: Request) -> Response:
         if request.method != "POST":
-            return login_page(demo=True)
+            note = "You were logged out and your workspace was deleted." if request.query_params.get("deleted") else ""
+            return login_page(demo=True, note=note)
         form = await request.form()
         candidate = str(form.get("password") or "")
         if not (candidate and hmac.compare_digest(candidate, self._password)):   # no lockout: see Auth.login
@@ -156,10 +158,15 @@ class VisitorAuth:
                             samesite="lax", path="/")
         return response
 
-    def logout(self) -> Response:
-        # Drops the visitor cookie: logging in again starts a new private
-        # workspace (the old one stays on disk for the admin).
-        response = RedirectResponse("/login", status_code=303)
+    async def logout(self, request: Request) -> Response:
+        # Logging out deletes the visitor's workspace, so a GET (the topbar
+        # link, a prefetch) only asks; the page's button POSTs.
+        vid = self.visitor(request)
+        if request.method != "POST":
+            return logout_page() if vid else RedirectResponse("/login", status_code=303)
+        if vid and self._on_logout is not None:
+            await self._on_logout(vid)
+        response = RedirectResponse("/login?deleted=1" if vid else "/login", status_code=303)
         response.delete_cookie(self.COOKIE, path="/")
         return response
 
@@ -186,11 +193,10 @@ def load_or_create_secret(fp: Path) -> bytes:
     return data
 
 
-def login_page(error: str = "", status: int = 200, demo: bool = False) -> HTMLResponse:
-    msg = f'<p class="err">{html.escape(error)}</p>' if error else ""
+def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mepd · log in</title>
+<title>mepd · {title}</title>
 <style>
   @font-face {{ font-family:"Source Sans 3 Variable"; font-weight:200 900; font-display:swap; src:url(/static/vendor/fonts/source-sans-3-latin-wght-normal.woff2) format("woff2-variations"); }}
   @font-face {{ font-family:"Source Serif 4 Variable"; font-weight:200 900; font-display:swap; src:url(/static/vendor/fonts/source-serif-4-latin-wght-normal.woff2) format("woff2-variations"); }}
@@ -207,11 +213,37 @@ def login_page(error: str = "", status: int = 200, demo: bool = False) -> HTMLRe
   button {{ width:100%; font:inherit; font-weight:600; padding:11px; border:1px solid var(--accent); border-radius:3px; background:var(--accent); color:#fff; cursor:pointer; }}
   button:hover {{ background:var(--accent-strong); border-color:var(--accent-strong); }}
   .err {{ color:var(--err); font-weight:600; }}
+  .warn {{ color:var(--text); }}
+  button.danger {{ background:#b23b3b; border-color:#b23b3b; }}
+  button.danger:hover {{ filter:brightness(.9); }}
+  .cancel {{ display:block; text-align:center; margin-top:12px; color:var(--accent); }}
 </style></head><body>
-<form method="post" action="/login">
+{body}</body></html>""", status_code=status)
+
+
+def login_page(error: str = "", status: int = 200, demo: bool = False, note: str = "") -> HTMLResponse:
+    msg = f'<p class="err">{html.escape(error)}</p>' if error else ""
+    msg += f'<p class="warn">{html.escape(note)}</p>' if note else ""
+    intro = ("Enter the demo password you were given. You get your own private workspace; "
+             "logging out deletes it." if demo else
+             "Enter your password (<code>mepd web --password</code>), or the access token <code>mepd web --auth</code> printed.")
+    return _page("log in", f"""<form method="post" action="/login">
   <h1>mepd</h1>
-  <p>{"Enter the demo password you were given. You get your own private workspace." if demo else "Enter your password (<code>mepd web --password</code>), or the access token <code>mepd web --auth</code> printed."}</p>
+  <p>{intro}</p>
   {msg}
   <input name="{"password" if demo else "token"}" type="password" autocomplete="current-password" autofocus placeholder="{"password" if demo else "access token"}" required>
   <button type="submit">Log in</button>
-</form></body></html>""", status_code=status)
+</form>""", status)
+
+
+def logout_page() -> HTMLResponse:
+    """Demo: the warning before logging out deletes the visitor's workspace."""
+    return _page("log out", """<form method="post" action="/logout">
+  <h1>Log out?</h1>
+  <p class="warn"><strong>Logging out deletes your demo workspace</strong>: every session, structure,
+  calculation and result in it. Running calculations are stopped. This cannot be undone.</p>
+  <p>To keep results, download them first (Analyze › Export all, in each session). Or just close
+  the tab: your workspace stays for as long as this browser keeps its login.</p>
+  <button type="submit" class="danger">Delete my workspace and log out</button>
+  <a class="cancel" href="/">Cancel</a>
+</form>""")

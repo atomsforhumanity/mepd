@@ -269,6 +269,35 @@ class Sessions:
         self.bus.publish("session", {"path": shown}, key=key)
         return self._open[key]
 
+    async def delete_visitor(self, visitor: str) -> None:
+        """Logging out of the demo: stop the visitor's jobs and interactive
+        reactors and delete everything they made. Their folder is first
+        renamed out of reach (at once), then removed in the background."""
+        from mepd.web import sandbox
+
+        vdir = self._visitor_dir(visitor).resolve()
+        self._visitor_current.pop(visitor, None)
+        for key in [k for k in self._open if vdir in Path(k).parents]:
+            jobs = self._open.pop(key).jobs
+            jobs.closed = True       # a result still being parsed must not write the folder back
+            await jobs.stop()
+            for box in sandbox.running(key):
+                sandbox.stop(box["id"])
+        self._wake_all()
+        if not vdir.exists():
+            return
+        gone = vdir.parent / f".deleted-{visitor}-{time.time_ns()}"
+        os.replace(vdir, gone)
+
+        def remove():
+            time.sleep(2.0)            # let the stopped jobs' processes exit
+            shutil.rmtree(gone, ignore_errors=True)
+            # A late write may have made the folder again; unless the visitor is back, it goes too.
+            if vdir.exists() and visitor not in self._visitor_current:
+                shutil.rmtree(vdir, ignore_errors=True)
+
+        asyncio.get_running_loop().run_in_executor(None, remove)
+
     async def stop_all(self) -> None:
         for s in self._open.values():
             await s.jobs.stop()

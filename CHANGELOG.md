@@ -122,6 +122,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Demo: logging out deletes the visitor's workspace.** Log out now opens a warning page; its button stops
+  the visitor's calculations and interactive reactors and deletes everything under `visitors/<id>/`. Before,
+  logging out only dropped the cookie and left the workspace on disk, unreachable. A visitor who closes the tab
+  instead keeps their workspace. A GET of `/logout` only shows the warning; deletion needs the page's POST.
 - **FAIR-Chem (UMA) no longer compiles the model by default** (`fairchem_engine_kwds.inference_settings`).
   mepd's `default` is now the uncompiled model; `compile` is fairchem's own default (merged experts plus
   torch.compile), and `turbo` stays. Compiling cost 20-40 s in every process that loads the model, and again

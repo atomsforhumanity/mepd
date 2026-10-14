@@ -229,6 +229,7 @@ class JobManager:
         self.on_slot_freed = on_slot_freed
         self.max_runtime = max_runtime
         self.op_runtime = dict(op_runtime or {})
+        self.closed = False          # its workspace is being deleted: write nothing more
         self.jobs: dict[str, dict] = {}
         self._procs: dict[str, asyncio.subprocess.Process] = {}
         self._cancel_requested: set[str] = set()
@@ -282,6 +283,8 @@ class JobManager:
         return self.ws.jobs_dir / jid
 
     def _write(self, job: dict) -> None:
+        if self.closed:
+            return
         d = self.job_dir(job["id"])
         d.mkdir(parents=True, exist_ok=True)
         _atomic_write(d / "job.json", json.dumps(job, indent=1))

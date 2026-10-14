@@ -31,6 +31,7 @@ Without either, a random password is generated once.
 ## What visitors get
 
 - **Their own workspace.** Every browser that logs in is a separate visitor. Their workspaces live in `~/mepd_demo/root/visitors/<id>/`, and no visitor can see another's work.
+- **Logging out deletes it.** Log out first shows a warning page; its button stops the visitor's calculations and interactive reactors and deletes `visitors/<id>/`. A visitor who just closes the tab keeps their workspace for as long as their browser keeps the cookie (30 days), and it stays on disk until you remove it.
 - **The full app, minus admin powers.** They can add structures, build the graph, run calculations (with the live view) and download results.
 - **Your compute profiles, read-only.** They use the profiles in `~/mepd_demo/root/profiles/`, starting with `default` (g-xTB NEB) and `gsm` (g-xTB GSM). Edit those files on disk to change what visitors run with.
 - **Limits** (`mepd/web/demo.py`, `DemoPolicy`):
@@ -58,7 +59,7 @@ Four layers stack:
    - One shared password, compared in constant time.
    - No lockout after failed logins (behind a proxy every visitor can share one address); a wrong password
      waits half a second. Use a long random password; rate-limit at the proxy if needed.
-   - Each visitor gets a signed, HttpOnly cookie. The signing key is `~/mepd_demo/root/.demo_secret`; delete it to log everyone out.
+   - Each visitor gets a signed, HttpOnly cookie. The signing key is `~/mepd_demo/root/.demo_secret`; delete it to log everyone out (their workspaces stay on disk).
 3. **The container (`run.sh`).**
    - Runs as your uid, not root, with no Linux capabilities and no privilege escalation.
    - Read-only root filesystem, and capped CPU, memory and process count.

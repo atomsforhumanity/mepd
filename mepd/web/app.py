@@ -627,10 +627,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     if demo is not None:
         from mepd.web.auth import VisitorAuth, load_or_create_secret
 
-        vauth = VisitorAuth(demo_password, load_or_create_secret(Path(workspace_root) / ".demo_secret"))
+        vauth = VisitorAuth(demo_password, load_or_create_secret(Path(workspace_root) / ".demo_secret"),
+                            on_logout=sessions.delete_visitor)
         app.middleware("http")(vauth.middleware)
         app.add_api_route("/login", vauth.login, methods=["GET", "POST"], include_in_schema=False)
-        app.add_api_route("/logout", lambda: vauth.logout(), methods=["GET", "POST"], include_in_schema=False)
+        app.add_api_route("/logout", vauth.logout, methods=["GET", "POST"], include_in_schema=False)
     elif auth_token:
         from mepd.web.auth import Auth
 

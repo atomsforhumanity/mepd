@@ -1862,15 +1862,18 @@ def collect_cached(job: dict, job_dir: Path) -> dict:
         except Exception:
             pass
     result = collect(job, job_dir)
-    route_ts = result.get("route_ts")
-    if route_ts and terminal:
-        job_dir.mkdir(parents=True, exist_ok=True)
-        (job_dir / "route_ts.xyz").write_text(route_ts["xyz"])
-    if terminal:
+    # Not when the folder holding the job is gone (a demo visitor logged out
+    # and was deleted while this was parsed): writing would bring it back.
+    if terminal and job_dir.parent.is_dir():
+        job_dir.mkdir(exist_ok=True)
+        route_ts = result.get("route_ts")
+        if route_ts:
+            (job_dir / "route_ts.xyz").write_text(route_ts["xyz"])
         result["_finished"] = stamp
         result["_version"] = RESULT_VERSION
-        job_dir.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(result))
+    elif terminal:
+        result["_finished"], result["_version"] = stamp, RESULT_VERSION
     return result
 
 

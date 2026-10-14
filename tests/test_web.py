@@ -787,6 +787,38 @@ def test_demo_visitor_cookie_is_signed(demo_app):
         assert c.get("/api/state").status_code == 401
 
 
+def test_demo_logout_warns_then_deletes_the_visitors_workspace(demo_app):
+    root, app = demo_app
+    with TestClient(app, follow_redirects=False):
+        alice, bob = _visitor(app), _visitor(app)
+        try:
+            alice.post("/api/structures", json={"text": WATER_XYZ, "optimize": False})
+            assert alice.post("/api/sessions/new", json={"name": "second"}).status_code == 200
+            bob.post("/api/structures", json={"text": WATER_XYZ, "optimize": False})
+            mine = [d for d in (root / "visitors").iterdir() if (d / "second").exists()]
+            assert len(mine) == 1
+
+            # A GET (the topbar link, a prefetch) only asks.
+            r = alice.get("/logout")
+            assert r.status_code == 200 and "deletes your demo workspace" in r.text
+            assert mine[0].exists() and alice.get("/api/state").status_code == 200
+
+            r = alice.post("/logout")
+            assert r.status_code == 303 and r.headers["location"] == "/login?deleted=1"
+            assert "mepd_visitor" in r.headers["set-cookie"] and 'mepd_visitor=""' in r.headers["set-cookie"]
+            assert not mine[0].exists()
+            assert "workspace was deleted" in alice.get("/login?deleted=1").text
+            # The other visitor keeps theirs.
+            assert len(bob.get("/api/state").json()["workspace"]["structures"]) == 1
+            # The same cookie again (say a second tab) gets a fresh, empty workspace.
+            assert alice.get("/api/state").json()["workspace"]["structures"] == {}
+        finally:
+            alice.__exit__(None, None, None)
+            bob.__exit__(None, None, None)
+    time.sleep(2.5)
+    assert not [d for d in (root / "visitors").iterdir() if d.name.startswith(".deleted-")]
+
+
 def test_long_poll_fallback_delivers_events(client):
     """/api/poll: same events as SSE, for proxies that buffer streams."""
     first = client.get("/api/poll").json()
