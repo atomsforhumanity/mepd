@@ -91,12 +91,12 @@ function newer(a, b) {
 
 function applyState(data) {
   update((s) => {
-    // First load of an empty workspace (nothing built, nothing run): start on Design.
+    // First load of an empty workspace (nothing built, nothing run): start on the first screen.
     if (!s.landed) {
       s.landed = true;
       const ws = data.workspace || {};
       if (s.view.tab === 'graph' && !Object.keys(ws.structures || {}).length && !ws.design && !(data.jobs || []).length) {
-        s.view = { ...s.view, tab: 'design' };
+        s.view = { ...s.view, tab: 'welcome' };
       }
     }
     s.workspace = data.workspace;
@@ -180,6 +180,7 @@ const handlers = {
       s.progress = {};
       s.view = { tab: 'graph', jobId: null };
       s.connectMode = false;
+      s.landed = false;   // an empty one opens on the first screen
     });
     refreshState().catch((e) => toast(e.message, 'error'));
   },

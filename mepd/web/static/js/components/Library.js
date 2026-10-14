@@ -5,6 +5,8 @@ import { api, attempt, refreshState } from '../api.js';
 import { openTab, prefs, select, state, useStore } from '../store.js';
 import { cls, depictUrl, isComplex, isSpecies, levelStatus } from '../util.js';
 import { QmmmAdd } from './QMMM.js';
+import { useMap } from '../quests.js';
+import { Why } from './Why.js';
 
 // "Added 2 structures · 1 new conformer of CCO · 1 already there"
 function addedSummary(list) {
@@ -85,7 +87,10 @@ export function LevelChip({ rec }) {
   return html`<span class=${`level-chip level-${st.kind}`} title=${st.title}>${st.text}</span>`;
 }
 
-export function LevelBar() {
+// `status`: only the line saying what is not at the level yet (the sidebar's);
+// the choice itself lives in Settings.
+export function LevelBar({ status = false, always = false }) {
+  const map = useMap();
   const levelProfile = useStore((s) => s.levelProfile);
   const profiles = useStore((s) => s.profiles);
   const levels = useStore((s) => s.levels);
@@ -97,10 +102,18 @@ export function LevelBar() {
   const setLevel = (profile) => attempt(() => api.put('/api/level', { profile: profile || null }));
   const reopt = () => attempt(() => api.post('/api/structures/reoptimize', { structures: off.map((r) => r.id) }),
     (js) => `Re-optimizing ${off.length} structure${off.length > 1 ? 's' : ''} (${js.length} job${js.length > 1 ? 's' : ''})`);
+  if (!always && !map.feature('level')) return null;   // opens with "A better method" (quests.js)
+  const note = (busy > 0 || off.length > 0) && html`<div class="level-status small">
+    ${busy > 0 && html`<span class="muted">${busy} minimizing…</span>`}
+    ${off.length > 0 && html`<button class="btn-link small warn-text" onClick=${reopt}
+      title="Minimize every structure that is not yet a minimum at this level (force-field embeddings, other levels, failed optimizations)">
+      ${off.length} not at ${levels[levelProfile ?? '']?.label ?? 'this level'} · re-optimize</button>`}
+  </div>`;
+  if (status) return note ? html`<div class="level-bar">${note}</div>` : null;
   return html`
     <div class="level-bar">
       <label class="level-field" title="Every structure in this session is minimized at this level of theory, so all energies are comparable. Edit a profile's engine and method under Settings.">
-        <span class="field-label">Level of theory</span>
+        <span class="field-label">Level of theory<${Why} id="level.profile" /></span>
         <select value=${levelProfile ?? ''} onChange=${(e) => setLevel(e.target.value)}>
           ${profiles.map((p) => html`<option value=${p}>${levels[p]?.label ?? p} · ${p}</option>`)}
           <option value="">${levels['']?.label ?? ''} · mepd defaults</option>
@@ -110,14 +123,9 @@ export function LevelBar() {
         <input type="checkbox" class="switch" checked=${validate}
           onChange=${(e) => attempt(() => api.put('/api/level', { validate_minima: e.target.checked }))
             .then((r) => r && refreshState())} />
-        Confirm minima with a Hessian
+        Confirm minima with a Hessian<${Why} id="level.validate_minima" />
       </label>
-      ${(busy > 0 || off.length > 0) && html`<div class="level-status small">
-        ${busy > 0 && html`<span class="muted">${busy} minimizing…</span>`}
-        ${off.length > 0 && html`<button class="btn-link small warn-text" onClick=${reopt}
-          title="Minimize every structure that is not yet a minimum at this level (force-field embeddings, other levels, failed optimizations)">
-          ${off.length} not at this level · re-optimize</button>`}
-      </div>`}
+      ${note}
     </div>`;
 }
 
@@ -159,7 +167,6 @@ export function Library() {
   const selected = useStore((s) => s.selection.structures);
   const [q, setQ] = useState('');
   const [drag, setDrag] = useState(false);
-  const [adding, setAdding] = useState(false);
   // A reaction's hidden subsystem ends (role "complex") are not library entries.
   const list = Object.values(structures)
     .filter((r) => !isComplex(r))
@@ -172,7 +179,6 @@ export function Library() {
     if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]);
   };
   const empty = !Object.values(structures).some((r) => !isComplex(r));
-  const showAdd = adding || empty;
   // Nodes that are the same molecule (graphs from before conformers were
   // merged into one node): offer to fold them together.
   const seen = {};
@@ -189,17 +195,14 @@ export function Library() {
       onDrop=${onDrop}>
       <div class="pane-head">
         <h2>Structures${!empty && html` <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>`}</h2>
-        ${!empty && html`<button class=${cls('btn small', !adding && 'primary')} onClick=${() => setAdding(!adding)}
-          title="Add structures from SMILES or XYZ">${adding ? 'Close' : '＋ Add'}</button>`}
       </div>
-      <${LevelBar} />
+      <${LevelBar} status />
       ${dupes > 0 && html`<p class="level-note small">${dupes} structure${dupes > 1 ? 's are' : ' is'} the same molecule as another node.
         <button class="btn-link small" onClick=${() => attempt(() => api.post('/api/structures/merge-duplicates'), 'Merged into one node per molecule')}>Merge into conformers</button></p>`}
-      ${showAdd && html`<${AddBox} onDone=${() => setAdding(false)} />`}
-      ${Object.values(structures).filter((r) => !isComplex(r)).length > 6 && html`
-        <input class="search" type="search" placeholder="Filter by name, SMILES or formula" value=${q} onInput=${(e) => setQ(e.target.value)} />`}
+      ${Object.values(structures).filter((r) => !isComplex(r)).length > 12 && html`
+        <input class="search" type="search" placeholder="Filter" title="By name, SMILES or formula" value=${q} onInput=${(e) => setQ(e.target.value)} />`}
       ${empty
-        ? html`<p class="empty-hint small muted">Add the reactants, products or any structure you want to explore. Each becomes a node in the graph.</p>`
+        ? html`<p class="empty-hint small muted">Molecules you <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>build or open in Design</a> show up here. You can also drop .xyz files here.</p>`
         : html`<ul class="cards">
             ${list.map((r) => html`<${Card} key=${r.id} rec=${r} selected=${selected.includes(r.id)}
               order=${selected.length > 1 ? selected.indexOf(r.id) + 1 : 0} />`)}

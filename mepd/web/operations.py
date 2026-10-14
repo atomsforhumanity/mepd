@@ -1523,7 +1523,7 @@ class QmmmBuildParams(Params):
     mm: Literal["gfnff", "tip3p", "gfn2", "gfn1"] = P(
         "gfnff", "Environment level", "How the solvent is described. TIP3P water: fixed charges that the QM "
         "calculation feels (electrostatic embedding: needed when charges separate, e.g. ions forming); it needs "
-        "a QM level that takes point charges (Psi4, in Settings). The others: mechanical embedding, any QM level.",
+        "a QM level that takes point charges (xTB, Psi4 or TeraChem, in Settings). The others: mechanical embedding, any QM level.",
         cli="--mm", labels={"gfnff": "GFN-FF force field", "tip3p": "TIP3P water, electrostatic embedding",
                             "gfn2": "GFN2-xTB", "gfn1": "GFN1-xTB"})
     relax: bool = P(True, "Relax the solvent", "GFN-FF minimization of the solvent around the fixed molecule.",

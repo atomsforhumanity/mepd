@@ -2,8 +2,12 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { prefs, set, state, toast, useStore } from '../store.js';
+import { setEverything } from '../quests.js';
+import { Why } from './Why.js';
+import { LevelBar } from './Library.js';
 
 export function ProfilesView() {
+  const everything = useStore((s) => s.everything);
   const profiles = useStore((s) => s.profiles);
   const summaries = useStore((s) => s.pathSummaries);
   // The demo: the built-in profiles are read-only; a visitor's own (Save as…) are theirs to edit.
@@ -75,6 +79,9 @@ export function ProfilesView() {
     <div class="profiles-view">
       <div class="view-head">
         <h2>Settings</h2>
+        <label class="check small everything-switch" title="Every tab and tool at once">
+          <input type="checkbox" class="switch" checked=${everything} onChange=${(e) => setEverything(e.target.checked)} /> Show everything</label>
+        <div class="settings-level"><${LevelBar} always /></div>
         <p class="small muted">Each profile is a <code>RunInputs</code> TOML (the file <code>mepd … --inputs</code> takes): engine, program and level of theory, path minimizer, optimizer, thresholds. A job copies its profile into its own folder, so editing one later never changes past results.</p>
       </div>
       <div class="profiles-body">
@@ -197,7 +204,7 @@ function ProfileForm({ text, onText, readOnly }) {
 function ChoiceField({ choice, onChange, readOnly }) {
   const current = choice.options.find((o) => o.value === choice.value);
   return html`<label class="pfield">
-    <span class="field-label">${choice.label}</span>
+    <span class="field-label">${choice.label}<${Why} id=${`profile.${choice.key}`} label=${choice.label} /></span>
     <select value=${choice.value} disabled=${readOnly}
       onChange=${(e) => { const el = e.target; Promise.resolve(onChange(el.value)).then((ok) => { if (ok === false) el.value = choice.value; }); }}>
       ${choice.options.map((o) => html`<option value=${o.value} disabled=${!!o.disabled && o.value !== choice.value}>
@@ -232,7 +239,7 @@ function Field({ f, onChange, readOnly, bare = false }) {
     const on = set ? !!f.value : !!f.default;
     return html`<label class=${`pfield pfield-bool ${f.key ? 'key' : ''}`} title=${f.help}>
       <input type="checkbox" class="switch" checked=${on} disabled=${readOnly} onChange=${(e) => onChange(f.path, e.target.checked)} />
-      <span class="field-label">${f.label}</span>${reset}
+      <span class="field-label">${f.label}<${Why} id=${`profile.${f.path}`} label=${f.label} /></span>${reset}
       ${f.help && html`<span class="field-help">${f.help}</span>`}
     </label>`;
   }
@@ -258,9 +265,9 @@ function Field({ f, onChange, readOnly, bare = false }) {
         Promise.resolve(onChange(f.path, v)).then((ok) => { if (ok === false) e.target.value = set ? f.value : ''; });
       }} />`;
   }
-  if (bare) return html`<span class="pform-bare" title=${f.help}>${input}<span class="field-help">${f.label}</span></span>`;
+  if (bare) return html`<span class="pform-bare" title=${f.help}>${input}<span class="field-help">${f.label}<${Why} id=${`profile.${f.path}`} label=${f.label} /></span></span>`;
   return html`<label class=${`pfield ${f.key ? 'key' : ''}`} title=${f.help}>
-    <span class="field-label">${f.label}${reset}</span>
+    <span class="field-label">${f.label}<${Why} id=${`profile.${f.path}`} label=${f.label} />${reset}</span>
     ${input}
     ${f.help && html`<span class="field-help">${f.help}</span>`}
   </label>`;

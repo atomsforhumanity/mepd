@@ -1,0 +1,3822 @@
+{
+ "op.ts": {
+  "title": "Transition state",
+  "does": "Finds a minimum-energy path between two structures, its TS(s), and (by default) optimizes each TS and follows its IRC. Multi-step paths are split into elementary steps, adding intermediates.",
+  "how": [
+   "Snapshots both geometries into the job folder and runs `mepd run --start --end` with the job's profile as --inputs (operations._build_ts).",
+   "Minimizes endpoints not yet minima at this level (engine geometry optimization, up to 500 cycles), then SLAPMapper checks and, if on, fixes the atom correspondence.",
+   "Builds the initial path (the profile's interpolation, default geodesic, 10 images) and relaxes it with the profile's path method (default NEB).",
+   "Recursive: MSMEP checks each path for intermediate minima and pseudo-IRC endpoints and splits it into new searches (msmep.MSMEP.run_recursive_minimize).",
+   "TS optimization from each leaf's highest image, then IRC; for g-xTB both through ASE/Sella (cli_common._optimize_ts_and_irc)."
+  ],
+  "default": "Recursive splitting, TS optimization and IRC on, atom-mapping check on: a path with an intermediate otherwise gives one meaningless TS guess.",
+  "swap": [
+   {
+    "option": "Single path minimization or parallel branches",
+    "where": "Path search in this form"
+   },
+   {
+    "option": "Path method (NEB, FNEB, FSM-TS, GSM, MLPGI, NEB-DLF, geomeTRIC NEB)",
+    "where": "Settings › profile, path_min_method"
+   },
+   {
+    "option": "Engine / level of theory",
+    "where": "Settings › profile (Compute profile in this form)"
+   },
+   {
+    "option": "Sample conformers and mappings",
+    "where": "Reaction channels operation"
+   }
+  ],
+  "caveats": [
+   "The TS found is the one nearest these two conformers; a lower channel may exist (use Reaction channels).",
+   "A failed TS optimization is a warning: the path result still stands."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_ts",
+   "mepd/cli.py:run",
+   "mepd/msmep.py:MSMEP.run_recursive_minimize",
+   "mepd/elementarystep.py:check_if_elem_step",
+   "mepd/cli_common.py:_optimize_ts_and_irc"
+  ],
+  "cli": "mepd run --start a.xyz --end b.xyz --recursive --use-tsopt --irc --atom-mapping -i profile.toml",
+  "refs": "Path search"
+ },
+ "param.ts.path_mode": {
+  "title": "Path search",
+  "does": "Chooses between one path minimization and recursive splitting of multi-step paths into elementary steps.",
+  "how": [
+   "single: the profile's path minimizer runs once on the initial path (cli._build_path_minimizer); the highest image is the TS guess.",
+   "recursive (--recursive): after each minimization, check_if_elem_step minimizes interior minima and runs a pseudo-IRC from the peak; if new minima appear, the path is split there and each leg searched again (MSMEP).",
+   "parallel (--parallel): the same, with split branches run concurrently (threads; processes for local QCCompute), up to min(4, CPUs) unless Parallel workers is set."
+  ],
+  "default": "recursive: the most reliable way to get elementary steps with verifiable TSs.",
+  "swap": [
+   {
+    "option": "Single or parallel",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "Network completion with 'single' still turns on recursive splitting."
+  ],
+  "code": [
+   "mepd/cli.py:run",
+   "mepd/msmep.py:MSMEP.run_recursive_minimize",
+   "mepd/msmep.py:MSMEP.run_parallel_recursive_minimize",
+   "mepd/elementarystep.py:check_if_elem_step"
+  ],
+  "cli": "mepd run ... --recursive | --parallel [--parallel-workers N]",
+  "refs": "Path search"
+ },
+ "param.ts.use_tsopt": {
+  "title": "Optimize TS",
+  "does": "Refines each path's highest-energy image to a first-order saddle point, written as ts*.xyz.",
+  "how": [
+   "Takes each leaf's highest-energy image (QM/MM: the interpolated maximum plus the path tangent) as the guess (cli._ts_guess).",
+   "Calls engine.compute_transition_state: for g-xTB and ASE engines Sella with order=1, fmax 0.01 eV/Å, up to 500 steps; for QCCompute engines geomeTRIC's transition_state run.",
+   "A failed optimization is reported and skipped; the path stays."
+  ],
+  "default": "On: path images are only TS guesses.",
+  "swap": [
+   {
+    "option": "Another TS optimizer",
+    "where": "not exposed: engine.compute_transition_state in mepd/engines/*.py (ASEEngine.transition_state_optimizer only accepts SELLA)"
+   }
+  ],
+  "code": [
+   "mepd/cli_common.py:_optimize_ts_and_irc",
+   "mepd/engines/gxtb.py:GXTBCalculator.compute_transition_state",
+   "mepd/engines/ase.py:ASEEngine.compute_transition_state",
+   "mepd/engines/qccompute.py:QCComputeEngine._compute_ts_result"
+  ],
+  "cli": "mepd run ... --use-tsopt"
+ },
+ "param.ts.irc": {
+  "title": "Run IRC",
+  "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
+  "how": [
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric)."
+  ],
+  "default": "On; needs Optimize TS.",
+  "swap": [
+   {
+    "option": "geomeTRIC IRC",
+    "where": "used automatically for engines without compute_irc_chain (mepd/irc.py)"
+   }
+  ],
+  "caveats": [
+   "A failed IRC leaves the TS written, with irc_failed.txt saying why."
+  ],
+  "code": [
+   "mepd/cli_common.py:_optimize_ts_and_irc",
+   "mepd/engines/ase.py:ASEEngine.compute_irc_chain",
+   "mepd/irc.py:compute_irc_chain_with_geometric"
+  ],
+  "cli": "mepd run ... --use-tsopt --irc"
+ },
+ "param.ts.minimize_ends": {
+  "title": "Minimize endpoints",
+  "does": "Optimizes start and end at the job's level before the path is built, so the path connects real minima.",
+  "how": [
+   "auto: minimize unless both structures are already optimized, ready, and at this job's level fingerprint (JobContext.at_job_level).",
+   "Uses the engine's geometry optimization (g-xTB: `gxtb --opt --cycles 500`), batched when the engine can (cli_common._minimize_endpoints).",
+   "A reported non-convergence stops the run; other failures keep the input geometry with a warning."
+  ],
+  "default": "auto: a structure from another profile or a force-field embedding is re-minimized so both ends and the path share one surface.",
+  "swap": [
+   {
+    "option": "Always / never",
+    "where": "yes / no in this field"
+   }
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_ts",
+   "mepd/cli_common.py:_minimize_endpoints"
+  ],
+  "cli": "mepd run ... --minimize-ends | --no-minimize-ends"
+ },
+ "param.ts.atom_mapping": {
+  "title": "Check atom mapping",
+  "does": "Makes sure atom i in the start is atom i in the end; if another numbering fits better, the end's atoms are renumbered before the search.",
+  "how": [
+   "SLAPMapper (Koda 2025) maps start to end (atom_mapping.check_atom_mapping).",
+   "Candidates: SLAPMapper's mappings plus relabelings of symmetric atoms (up to 200), plus Explore mechanisms if set (cli_common._candidate_atom_maps).",
+   "They are compared by the Mapping metric (atom_mapping_selection.select_best_candidate) and the best end numbering is used.",
+   "Off: SLAPMapper still checks and only reports."
+  ],
+  "default": "On in the web form (the CLI default is off): a wrong numbering forces unphysical atom swaps onto the path.",
+  "swap": [
+   {
+    "option": "Metric",
+    "where": "Mapping metric (advanced, Atom mapping)"
+   }
+  ],
+  "caveats": [
+   "Skipped for QM/MM systems and when atom counts differ; needs the slapmapper package."
+  ],
+  "code": [
+   "mepd/cli_common.py:_check_endpoint_atom_mapping",
+   "mepd/atom_mapping_selection.py:select_best_candidate",
+   "mepd/atom_mapping.py:check_atom_mapping"
+  ],
+  "cli": "mepd run ... --atom-mapping",
+  "refs": "Atom mapping"
+ },
+ "param.ts.endpoints": {
+  "title": "Endpoint source",
+  "does": "Chooses whether mepd gets the stored geometries or the SMILES the structures were entered as.",
+  "how": [
+   "xyz: each structure's geometry (the chosen conformer, else the lowest one) is copied into the job's inputs folder.",
+   "smiles: both SMILES are passed; mepd maps the pair with SLAPMapper and embeds a consistently numbered 3D pair (atom_mapping.map_smiles_pair), then minimizes it.",
+   "auto: SMILES only when both were entered as SMILES and neither has been minimized yet; otherwise xyz."
+  ],
+  "default": "auto: once a structure is minimized, that geometry is the structure.",
+  "swap": [
+   {
+    "option": "Force xyz or smiles",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/web/operations.py:JobContext.endpoint_flags",
+   "mepd/atom_mapping.py:map_smiles_pair"
+  ]
+ },
+ "param.ts.pair_from": {
+  "title": "Build endpoint",
+  "does": "Replaces one endpoint with a geometry built in the other's frame, so only the atoms that react move along the path.",
+  "how": [
+   "The target's bonds are embedded on the source's atom positions (each atom stays, new bonds pulled to length; network_expansion.embed_product).",
+   "The built partner is minimized with the engine; it is dropped if its bonds or stereochemistry changed (network_expansion.build_partners).",
+   "With Check atom mapping on, one partner per candidate mechanism is built and minimized, and the pair with the best path wins (built_pair_mapping.build_and_rank)."
+  ],
+  "default": "Both as given.",
+  "swap": [
+   {
+    "option": "Product built from reactant / reactant built from product",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "The run fails if the built partner changes bonds on minimization."
+  ],
+  "code": [
+   "mepd/cli.py:run",
+   "mepd/cli_common.py:_map_and_build_pair",
+   "mepd/discovery/network_expansion.py:build_partners",
+   "mepd/built_pair_mapping.py"
+  ],
+  "cli": "mepd run ... --pair-from start|end"
+ },
+ "param.ts.rebuild_splits_from": {
+  "title": "Rebuild at splits",
+  "does": "Experimental. At every recursive split, each new leg's product is rebuilt in its start's frame (or the start in its product's frame), so legs meet at different conformers of an intermediate.",
+  "how": [
+   "After MSMEP makes the split's legs, each leg's other endpoint is built like 'Build endpoint' and minimized (MSMEP._rebuild_leg_endpoint).",
+   "The rebuilt endpoint is kept only if bonds and stereochemistry survive; otherwise the leg keeps the found endpoint."
+  ],
+  "default": "Off: legs end where the search found them.",
+  "swap": [
+   {
+    "option": "start / end",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/msmep.py:MSMEP.make_sequence_of_chains",
+   "mepd/msmep.py:MSMEP._rebuild_leg_endpoint"
+  ],
+  "cli": "mepd run ... --rebuild-splits-from start|end"
+ },
+ "param.ts.atom_mapping_metric": {
+  "title": "Mapping metric",
+  "does": "Sets how candidate atom mappings (and in channels, conformer pairs) are compared.",
+  "how": [
+   "Snap + GI + xtb: candidates ranked by endpoint RMSD of snap's pick (reactant's symmetric groups permuted one at a time); for those kept, snap's few picks are geodesically interpolated and scored by GFN2-xTB energy along the path; the lowest peak wins.",
+   "Then the top 'Rank mappings' mechanisms are relaxed with changing bonds held (xtb --gfn 2) and compared by relaxed barrier.",
+   "Endpoint RMSD: aligned RMSD of the two ends. GI path: geodesic interpolation length. Filtered GI path: RMSD first, GI only near the lowest."
+  ],
+  "default": "snap-gi-xtb. Without xtb it falls back to the shortest interpolation, without interpolation to the lowest RMSD.",
+  "swap": [
+   {
+    "option": "Endpoint RMSD, GI path, Filtered GI path",
+    "where": "this field"
+   },
+   {
+    "option": "gi-energy, path-rmsd, snap (older profiles)",
+    "where": "CLI --atom-mapping-metric only"
+   }
+  ],
+  "caveats": [
+   "xtb scoring uses GFN2-xTB from the xtb binary, not your profile's engine."
+  ],
+  "code": [
+   "mepd/atom_mapping_metrics.py",
+   "mepd/atom_mapping_selection.py:select_best_candidate",
+   "mepd/atom_mapping_selection.py:snap_choice",
+   "mepd/atom_mapping_selection.py:_relaxed_choice"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd run ... --atom-mapping --atom-mapping-metric snap-gi-xtb"
+ },
+ "param.ts.explore_mechanisms": {
+  "title": "Explore mechanisms",
+  "does": "Adds mechanisms beyond SLAPMapper's minimal bond-edit ones, e.g. a proton relayed through a catalyst or solvent, as candidates scored like the others.",
+  "how": [
+   "Starting from SLAPMapper's mappings, swap the images of two same-element atoms or two groups, keeping swaps that add at most 2 bond edits; 5 rounds (atom_mapping.explore_mechanisms).",
+   "Up to N new routes, fewest edits first; ties: fewest H–C bond changes.",
+   "Each is scored by snap + GI + xtb; one that uses and regenerates a molecule is labelled [catalytic: ...]."
+  ],
+  "default": "0 (off). 20 is a reasonable start.",
+  "swap": [
+   {
+    "option": "Count",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "A mechanism with more bond changes only wins if its relaxed barrier beats SLAPMapper's by more than the margin."
+  ],
+  "code": [
+   "mepd/atom_mapping.py:explore_mechanisms",
+   "mepd/cli_common.py:_candidate_atom_maps"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd run ... --atom-mapping --explore-mechanisms 20"
+ },
+ "param.ts.relax_mechanisms": {
+  "title": "Rank mappings by relaxed path energy (top N)",
+  "does": "Compares the best mappings by a relaxed barrier instead of the raw interpolation peak, which is mostly atoms colliding mid-path.",
+  "how": [
+   "Takes the N best mechanisms by raw xtb peak, plus SLAPMapper's minimal one always (atom_mapping_selection._relaxed_choice).",
+   "Every 2nd interior frame and the peak are optimized with GFN2-xTB (xtb --gfn 2), with the distances of the bonds that change held fixed (_relaxed_barrier).",
+   "The lowest relaxed barrier wins, subject to the margin for extra bond changes."
+  ],
+  "default": "4 (atom_mapping_inputs.relax_top). 0 = raw peaks only.",
+  "swap": [
+   {
+    "option": "Raw peaks",
+    "where": "set 0"
+   }
+  ],
+  "code": [
+   "mepd/atom_mapping_selection.py:_relaxed_choice",
+   "mepd/atom_mapping_selection.py:_relaxed_barrier"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd run ... --relax-mechanisms 4"
+ },
+ "param.ts.relax_margin": {
+  "title": "Margin for extra bond changes (kcal/mol)",
+  "does": "A mapping with more bond changes than SLAPMapper's minimal one must have a relaxed barrier lower by more than this, or SLAPMapper's mapping is kept.",
+  "how": [
+   "Applied in atom_mapping_selection._relaxed_choice after the relaxed barriers are computed; the log lists every compared mechanism and the deciding rule."
+  ],
+  "default": "5 kcal/mol (atom_mapping_inputs.relax_margin): a bias toward the minimal-edit mechanism.",
+  "code": [
+   "mepd/atom_mapping_selection.py:_relaxed_choice"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd run ... --relax-margin 5"
+ },
+ "param.ts.validate_minima_with_hessian": {
+  "title": "Validate minima with Hessian",
+  "does": "Every intermediate a recursive split proposes must be a true minimum; a saddle point is pushed off and re-optimized, or rejected as a split point.",
+  "how": [
+   "Hessian of each optimized split candidate (g-xTB: `gxtb --hess --acc 0.001`, frequencies from its g98.out).",
+   "Accepted if the lowest frequency ≥ the cutoff (default −20 cm⁻¹).",
+   "Otherwise displaced ±0.3 bohr along the lowest mode, re-optimized and re-checked; the first that passes is used, else rejected (elementarystep._hessian_rescue_failed_candidate)."
+  ],
+  "default": "On: a correctness check, so splits never happen at saddle points.",
+  "swap": [
+   {
+    "option": "Cutoff and rescue push",
+    "where": "Hessian validation (advanced)"
+   },
+   {
+    "option": "Gradient finite-difference Hessian",
+    "where": "not exposed here: engine.compute_hessian (mepd/engines/*.py)"
+   }
+  ],
+  "code": [
+   "mepd/elementarystep.py:_validate_hessian_split_candidates",
+   "mepd/elementarystep.py:_validate_hessian_minimum",
+   "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
+  ],
+  "cli": "mepd run ... --validate-minima-with-hessian"
+ },
+ "param.ts.hessian_minimum_frequency_cutoff": {
+  "title": "Lowest allowed frequency (cm⁻¹)",
+  "does": "The threshold for calling a structure a minimum: its lowest frequency must be at or above this value (imaginary frequencies are negative).",
+  "how": [
+   "Compared with min(frequencies) from the Hessian check (elementarystep._validate_hessian_minimum)."
+  ],
+  "default": "−20 cm⁻¹: tolerates small numerical imaginary modes from soft torsions.",
+  "code": [
+   "mepd/elementarystep.py:_validate_hessian_minimum"
+  ],
+  "cli": "--hessian-minimum-frequency-cutoff -20"
+ },
+ "param.ts.network_completion": {
+  "title": "Network completion",
+  "does": "After the search, runs extra path searches between intermediates the split tree found and the start/end, and builds one network from all of them.",
+  "how": [
+   "Loads every structure in the split tree (NetworkBuilder).",
+   "linear: each intermediate paired with the original start and end; all-to-all: every pair. Pairs already joined by an edge are skipped.",
+   "Up to Max follow-ups pairs (default 25) run as recursive searches (cli_common._run_msmep_pairs); network.json is rebuilt from all trees."
+  ],
+  "default": "Off; Completion mode linear.",
+  "swap": [
+   {
+    "option": "linear / all-to-all",
+    "where": "Completion mode"
+   }
+  ],
+  "code": [
+   "mepd/cli.py:_run_network_completion",
+   "mepd/NetworkBuilder.py:NetworkBuilder.create_rxn_network_from_paths"
+  ],
+  "cli": "mepd run ... --network-completion --network-completion-mode linear --network-max-followups 25"
+ },
+ "param.ts.same_pair_split_limit": {
+  "title": "Same-pair split limit",
+  "does": "Stops splitting a branch that repeats the same start/end pair this many times in a row without finding new chemistry.",
+  "how": [
+   "MSMEP counts consecutive splits of a branch that reproduce the same endpoint pair (MSMEP._consecutive_same_pair_split_count); a split that finds a new molecule or conformer is never cut off."
+  ],
+  "default": "5. Raise it for floppy systems that need more attempts.",
+  "code": [
+   "mepd/msmep.py:MSMEP._consecutive_same_pair_split_count"
+  ],
+  "cli": "--same-pair-split-limit 5"
+ },
+ "op.channels": {
+  "title": "Reaction channels",
+  "does": "Samples conformers of both ends and every atom mapping, searches each distinct mechanism, and sorts the TSs into direct, multi-step and off-target channels. Finds the lowest channel rather than the nearest one.",
+  "how": [
+   "Minimizes SMILES endpoints, checks the endpoint atom mapping (SLAPMapper), then samples conformers (RDKit ETKDG + MMFF94, or CREST) and minimizes each with the engine; dedups by snap-RMSD and merges mirror images.",
+   "Pairs every reactant conformer with every product conformer; maps each pair per mechanism and keeps the best-scoring pairs per mechanism (_expand_pairs_by_mechanism).",
+   "Runs a recursive path search (MSMEP) per kept pair, in parallel processes.",
+   "TS optimization + IRC for every leaf, then classifies by walking the graph the IRCs span; equal TSs (energy + snap-RMSD) are merged (_discover_channels)."
+  ],
+  "default": "RDKit conformers, 3 searches per mechanism, snap-gi-xtb mapping, 4 workers.",
+  "swap": [
+   {
+    "option": "CREST conformers",
+    "where": "Conformer backend in this form"
+   },
+   {
+    "option": "Build one side from the other",
+    "where": "Pairs from (advanced)"
+   },
+   {
+    "option": "Other seed strategies than conformers",
+    "where": "not exposed: --method only accepts 'conformers'; would plug in at mepd/sampling.py:generate_seed_pairs"
+   }
+  ],
+  "caveats": [
+   "Costly: number of path searches ≈ mechanisms × searches per mechanism.",
+   "Off-target channels end at products other than the requested one."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_channels",
+   "mepd/cli_channels.py:channels",
+   "mepd/cli_channels.py:_expand_pairs_by_mechanism",
+   "mepd/cli_channels.py:_discover_channels",
+   "mepd/conformers.py:generate_conformers"
+  ],
+  "cli": "mepd channels --start a.xyz --end b.xyz --backend rdkit --pairs-per-mechanism 3 --workers 4 -i profile.toml",
+  "refs": "Reaction channels"
+ },
+ "param.channels.backend": {
+  "title": "Conformer backend",
+  "does": "Chooses the program that samples each endpoint's conformers before they are minimized at your level of theory.",
+  "how": [
+   "rdkit: bonds perceived from the geometry (RDKit, else Open Babel), ETKDG embeddings with and without torsion preferences pooled, each relaxed with MMFF94 (conformers._generate_conformers_rdkit).",
+   "Embeddings: 50 / 200 / 300 for ≤7 / 8–12 / >12 rotatable bonds unless set.",
+   "crest: `crest <xyz> --gfn2 --ewin 6 -T 1` (iterative metadynamics), NCI mode for complexes, 3600 s limit.",
+   "Both: dedup by snap-RMSD (0.1 bohr), then every conformer is minimized with the engine and deduplicated again."
+  ],
+  "default": "rdkit: seconds and no external program; CREST takes minutes per molecule.",
+  "swap": [
+   {
+    "option": "CREST (GFN2, GFN-FF or GFN2//GFN-FF)",
+    "where": "this field, then CREST method (advanced)"
+   },
+   {
+    "option": "Reuse an earlier run's pools",
+    "where": "Reuse conformer pools"
+   }
+  ],
+  "caveats": [
+   "If bond orders can't be perceived (radicals, unusual charges), RDKit keeps only the input geometry."
+  ],
+  "code": [
+   "mepd/conformers.py:generate_conformers",
+   "mepd/conformers.py:_generate_conformers_rdkit",
+   "mepd/conformers.py:_generate_conformers_crest",
+   "mepd/conformers.py:_auto_n_embed"
+  ],
+  "cli": "mepd channels ... --backend rdkit|crest",
+  "refs": "Conformers"
+ },
+ "param.channels.pairs_per_mechanism": {
+  "title": "Searches per mechanism",
+  "does": "How many conformer pairs get a path search for each bond-change mechanism; the rest are not searched.",
+  "how": [
+   "Every reactant × product pair is mapped once per mechanism (atom_mapping_selection.select_per_mechanism), scored by the metric's first stage (snap endpoint RMSD for snap-gi-xtb).",
+   "Per mechanism, the K lowest-scoring pairs are kept.",
+   "For snap-gi-xtb, each kept pair's numbering is then chosen among snap's picks by GI + GFN2-xTB."
+  ],
+  "default": "3: pairs within a mechanism mostly converge to the same TS.",
+  "swap": [
+   {
+    "option": "All pairs × all mechanisms",
+    "where": "set 0"
+   },
+   {
+    "option": "More later, reusing this run",
+    "where": "Sample more paths on the finished run"
+   }
+  ],
+  "code": [
+   "mepd/cli_channels.py:_expand_pairs_by_mechanism"
+  ],
+  "cli": "mepd channels ... --pairs-per-mechanism 3",
+  "refs": "Reaction channels"
+ },
+ "param.channels.built_cap_per_mechanism": {
+  "title": "Built searches per mechanism",
+  "does": "With built endpoints, applies the Built path searches cap to each mechanism instead of to all built pairs together.",
+  "how": [
+   "Built pairs are ranked by the xtb peak along their interpolation, above the lowest start among them; the lowest per mechanism (on) or overall (off) are searched (cli_channels._choose_built_pairs)."
+  ],
+  "default": "Off.",
+  "code": [
+   "mepd/cli_channels.py:_choose_built_pairs"
+  ],
+  "cli": "mepd channels ... --pair-from start --built-cap-per-mechanism"
+ },
+ "param.channels.direct_only": {
+  "title": "Only legs touching start or end",
+  "does": "When a path search splits, runs only the legs with at least one end at the start or end species; legs between two other species are skipped.",
+  "how": [
+   "Sets path_min_inputs.direct_only; MSMEP drops split pieces whose both ends are other species (any conformer or stereoisomer of start/end counts) (MSMEP._split_pieces_on_target).",
+   "stats.json reports pairs left uncharacterized."
+  ],
+  "default": "Off: every piece is followed.",
+  "caveats": [
+   "Multi-step routes through two unknown intermediates are not completed."
+  ],
+  "code": [
+   "mepd/msmep.py:MSMEP._split_pieces_on_target",
+   "mepd/cli_common.py:direct_only_counts"
+  ],
+  "cli": "mepd channels ... --direct-only"
+ },
+ "param.channels.minimize_ends": {
+  "title": "Minimize endpoints",
+  "does": "Minimizes SMILES endpoints before sampling, and every sampled conformer before pairing, at the profile's level.",
+  "how": [
+   "SMILES endpoints: engine geometry optimization first; non-convergence stops the run (cli_common._minimize_endpoints).",
+   "Each conformer: engine optimization; failures are dropped; duplicates within 0.1 bohr snap-RMSD and degenerate complex arrangements (within 0.5 kcal/mol) are merged (cli_channels.channels)."
+  ],
+  "default": "On: RDKit/MMFF conformers are not minima of your engine.",
+  "code": [
+   "mepd/cli_channels.py:_minimize_conformer_pool",
+   "mepd/conformers.py:merge_degenerate_complex_conformers"
+  ],
+  "cli": "mepd channels ... --minimize-ends"
+ },
+ "param.channels.endpoints": {
+  "title": "Endpoint source",
+  "does": "Chooses whether mepd gets the stored geometries or the SMILES the structures were entered as.",
+  "how": [
+   "xyz: each structure's geometry (the chosen conformer, else the lowest one) is copied into the job's inputs folder.",
+   "smiles: both SMILES are passed; mepd maps the pair with SLAPMapper and embeds a consistently numbered 3D pair (atom_mapping.map_smiles_pair), then minimizes it.",
+   "auto: SMILES only when both were entered as SMILES and neither has been minimized yet; otherwise xyz."
+  ],
+  "default": "auto: once a structure is minimized, that geometry is the structure.",
+  "swap": [
+   {
+    "option": "Force xyz or smiles",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/web/operations.py:JobContext.endpoint_flags",
+   "mepd/atom_mapping.py:map_smiles_pair"
+  ]
+ },
+ "param.channels.reuse_conformers": {
+  "title": "Reuse conformer pools",
+  "does": "Takes an endpoint's conformers from an earlier finished Reaction channels run on the same molecule instead of sampling and minimizing them again.",
+  "how": [
+   "Finds the newest finished channels job on this structure with the same charge, spin, sampler settings (backend, cap, RMSD, seed, backend-specific settings) and, when minimized, the same level fingerprint (operations._reusable_pool).",
+   "Copies its saved <side>_pool.xyz (+ energies, gradients) into the job and passes --start-pool/--end-pool; used as is."
+  ],
+  "default": "On.",
+  "code": [
+   "mepd/web/operations.py:_reusable_pool",
+   "mepd/web/operations.py:_build_channels"
+  ],
+  "cli": "mepd channels ... --start-pool start_pool.xyz --end-pool end_pool.xyz"
+ },
+ "param.channels.pair_from": {
+  "title": "Pairs from",
+  "does": "Pairs every reactant conformer with every product conformer, or samples one side and builds each conformer's partner in its frame, so only what reacts moves.",
+  "how": [
+   "both: sampled × sampled pairs.",
+   "start / end / start+end: for each sampled conformer, a partner is built per candidate mechanism (atoms stay, new bonds pulled to length) and minimized; partners whose bonds or stereochemistry change are dropped.",
+   "All built pairs are ranked by the xtb peak along their interpolation; the lowest Built path searches (default 3) are searched. If none can be built, falls back to both."
+  ],
+  "default": "Both sides sampled.",
+  "swap": [
+   {
+    "option": "Reactant conformers, products built; and the reverse; or both",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/cli_channels.py:_built_pairs_by_mechanism",
+   "mepd/cli_channels.py:_choose_built_pairs",
+   "mepd/discovery/network_expansion.py:build_partners"
+  ],
+  "cli": "mepd channels ... --pair-from start|end|start+end --atom-mapping-candidates 3"
+ },
+ "param.channels.rebuild_splits_from": {
+  "title": "Rebuild at splits",
+  "does": "Experimental. At every recursive split, each new leg's product is rebuilt in its start's frame (or the start in its product's frame), so legs meet at different conformers of an intermediate.",
+  "how": [
+   "After MSMEP makes the split's legs, each leg's other endpoint is built like 'Build endpoint' and minimized (MSMEP._rebuild_leg_endpoint).",
+   "The rebuilt endpoint is kept only if bonds and stereochemistry survive; otherwise the leg keeps the found endpoint."
+  ],
+  "default": "Off: legs end where the search found them.",
+  "swap": [
+   {
+    "option": "start / end",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/msmep.py:MSMEP.make_sequence_of_chains",
+   "mepd/msmep.py:MSMEP._rebuild_leg_endpoint"
+  ],
+  "cli": "mepd channels ... --rebuild-splits-from start|end"
+ },
+ "param.channels.atom_mapping": {
+  "title": "Atom mapping per pair",
+  "does": "Maps each conformer pair separately and runs one path search per mechanism (which bonds break and form), with the best atom numbering for that pair's geometry.",
+  "how": [
+   "The endpoint pair is first checked and renumbered as in Transition state (cli_common._check_endpoint_atom_mapping).",
+   "Per pair: SLAPMapper's equal-cost mappings grouped into mechanisms; within each, symmetric relabelings scored against this pair's geometry (atom_mapping_selection.select_per_mechanism).",
+   "Writes pair_mechanisms.json: pair, mechanism, score."
+  ],
+  "default": "On.",
+  "swap": [
+   {
+    "option": "Metric",
+    "where": "Mapping metric"
+   }
+  ],
+  "caveats": [
+   "Off: each pair keeps the input numbering; one search per pair."
+  ],
+  "code": [
+   "mepd/cli_channels.py:_expand_pairs_by_mechanism",
+   "mepd/atom_mapping_selection.py:select_per_mechanism"
+  ],
+  "cli": "mepd channels ... --atom-mapping | --no-atom-mapping",
+  "refs": "Atom mapping"
+ },
+ "param.channels.atom_mapping_metric": {
+  "title": "Mapping metric",
+  "does": "Sets how candidate atom mappings (and in channels, conformer pairs) are compared.",
+  "how": [
+   "Snap + GI + xtb: candidates ranked by endpoint RMSD of snap's pick (reactant's symmetric groups permuted one at a time); for those kept, snap's few picks are geodesically interpolated and scored by GFN2-xTB energy along the path; the lowest peak wins.",
+   "Then the top 'Rank mappings' mechanisms are relaxed with changing bonds held (xtb --gfn 2) and compared by relaxed barrier.",
+   "Endpoint RMSD: aligned RMSD of the two ends. GI path: geodesic interpolation length. Filtered GI path: RMSD first, GI only near the lowest."
+  ],
+  "default": "snap-gi-xtb. Without xtb it falls back to the shortest interpolation, without interpolation to the lowest RMSD.",
+  "swap": [
+   {
+    "option": "Endpoint RMSD, GI path, Filtered GI path",
+    "where": "this field"
+   },
+   {
+    "option": "gi-energy, path-rmsd, snap (older profiles)",
+    "where": "CLI --atom-mapping-metric only"
+   }
+  ],
+  "caveats": [
+   "xtb scoring uses GFN2-xTB from the xtb binary, not your profile's engine."
+  ],
+  "code": [
+   "mepd/atom_mapping_metrics.py",
+   "mepd/atom_mapping_selection.py:select_best_candidate",
+   "mepd/atom_mapping_selection.py:snap_choice",
+   "mepd/atom_mapping_selection.py:_relaxed_choice"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd channels ... --atom-mapping-metric snap-gi-xtb"
+ },
+ "param.channels.explore_mechanisms": {
+  "title": "Explore mechanisms",
+  "does": "Adds mechanisms beyond SLAPMapper's minimal bond-edit ones, e.g. a proton relayed through a catalyst or solvent, as candidates scored like the others. In channels each is searched as its own mechanism.",
+  "how": [
+   "Starting from SLAPMapper's mappings, swap the images of two same-element atoms or two groups, keeping swaps that add at most 2 bond edits; 5 rounds (atom_mapping.explore_mechanisms).",
+   "Up to N new routes, fewest edits first; ties: fewest H–C bond changes.",
+   "Each is scored by snap + GI + xtb; one that uses and regenerates a molecule is labelled [catalytic: ...]."
+  ],
+  "default": "0 (off). 20 is a reasonable start.",
+  "swap": [
+   {
+    "option": "Count",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "A mechanism with more bond changes only wins if its relaxed barrier beats SLAPMapper's by more than the margin."
+  ],
+  "code": [
+   "mepd/atom_mapping.py:explore_mechanisms",
+   "mepd/cli_common.py:_candidate_atom_maps"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd channels ... --explore-mechanisms 20"
+ },
+ "param.channels.relax_mechanisms": {
+  "title": "Rank mappings by relaxed path energy (top N)",
+  "does": "Compares the best mappings by a relaxed barrier instead of the raw interpolation peak, which is mostly atoms colliding mid-path.",
+  "how": [
+   "Takes the N best mechanisms by raw xtb peak, plus SLAPMapper's minimal one always (atom_mapping_selection._relaxed_choice).",
+   "Every 2nd interior frame and the peak are optimized with GFN2-xTB (xtb --gfn 2), with the distances of the bonds that change held fixed (_relaxed_barrier).",
+   "The lowest relaxed barrier wins, subject to the margin for extra bond changes."
+  ],
+  "default": "4 (atom_mapping_inputs.relax_top). 0 = raw peaks only.",
+  "swap": [
+   {
+    "option": "Raw peaks",
+    "where": "set 0"
+   }
+  ],
+  "code": [
+   "mepd/atom_mapping_selection.py:_relaxed_choice",
+   "mepd/atom_mapping_selection.py:_relaxed_barrier"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd channels ... --relax-mechanisms 4"
+ },
+ "param.channels.relax_margin": {
+  "title": "Margin for extra bond changes (kcal/mol)",
+  "does": "A mapping with more bond changes than SLAPMapper's minimal one must have a relaxed barrier lower by more than this, or SLAPMapper's mapping is kept.",
+  "how": [
+   "Applied in atom_mapping_selection._relaxed_choice after the relaxed barriers are computed; the log lists every compared mechanism and the deciding rule."
+  ],
+  "default": "5 kcal/mol (atom_mapping_inputs.relax_margin): a bias toward the minimal-edit mechanism.",
+  "code": [
+   "mepd/atom_mapping_selection.py:_relaxed_choice"
+  ],
+  "refs": "Atom mapping",
+  "cli": "mepd channels ... --relax-margin 5"
+ },
+ "param.channels.atom_mapping_rmsd_window": {
+  "title": "RMSD window (σ)",
+  "does": "Filtered GI path only: how many conformer pairs get a geodesic-interpolation score, by distance from each mechanism's lowest endpoint RMSD.",
+  "how": [
+   "Every pair is first scored by endpoint RMSD.",
+   "Pairs within this many standard deviations of the mechanism's lowest RMSD get GI paths, for at most 20 lowest-RMSD symmetry variants each (cli_channels._gi_near_lowest_rmsd)."
+  ],
+  "default": "1σ. On the KAIST set 1σ kept 6% of pairs and 56% of what GI over every pair would pick; 2σ 21%/82%; 3σ 51%/96%.",
+  "code": [
+   "mepd/cli_channels.py:_gi_near_lowest_rmsd",
+   "mepd/atom_mapping_selection.py:rmsd_window"
+  ],
+  "cli": "mepd channels ... --atom-mapping-metric rmsd-geodesic --atom-mapping-rmsd-window 1"
+ },
+ "param.channels.validate_minima_with_hessian": {
+  "title": "Validate minima with Hessian",
+  "does": "Every intermediate a recursive split proposes must be a true minimum; a saddle point is pushed off and re-optimized, or rejected as a split point.",
+  "how": [
+   "Hessian of each optimized split candidate (g-xTB: `gxtb --hess --acc 0.001`, frequencies from its g98.out).",
+   "Accepted if the lowest frequency ≥ the cutoff (default −20 cm⁻¹).",
+   "Otherwise displaced ±0.3 bohr along the lowest mode, re-optimized and re-checked; the first that passes is used, else rejected (elementarystep._hessian_rescue_failed_candidate)."
+  ],
+  "default": "On: a correctness check, so splits never happen at saddle points.",
+  "swap": [
+   {
+    "option": "Cutoff and rescue push",
+    "where": "Hessian validation (advanced)"
+   },
+   {
+    "option": "Gradient finite-difference Hessian",
+    "where": "not exposed here: engine.compute_hessian (mepd/engines/*.py)"
+   }
+  ],
+  "code": [
+   "mepd/elementarystep.py:_validate_hessian_split_candidates",
+   "mepd/elementarystep.py:_validate_hessian_minimum",
+   "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
+  ],
+  "cli": "mepd channels ... --validate-minima-with-hessian"
+ },
+ "param.channels.crest_method": {
+  "title": "CREST method",
+  "does": "The level CREST runs its metadynamics at.",
+  "how": [
+   "Passed as CREST's level flag: `crest <xyz> --gfn2|--gfnff|--gfn2//gfnff --ewin 6 -T 1` (conformers._build_crest_argv). The result is then minimized at your profile's level."
+  ],
+  "default": "--gfn2.",
+  "swap": [
+   {
+    "option": "GFN-FF (faster), GFN2//GFN-FF",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/conformers.py:_build_crest_argv",
+   "mepd/conformers.py:_generate_conformers_crest"
+  ],
+  "cli": "mepd channels ... --backend crest --crest-method --gfn2",
+  "refs": "Conformers"
+ },
+ "param.channels.rmsd_cutoff": {
+  "title": "Dedup RMSD (bohr)",
+  "does": "Two conformers of one endpoint closer than this count as the same and one is dropped.",
+  "how": [
+   "qcinf snap_rmsd: permutation-aware (symmetric atoms relabelled) and Kabsch-aligned (conformers._subselect_conformers); applied after sampling and again after minimization."
+  ],
+  "default": "0.1 bohr.",
+  "code": [
+   "mepd/conformers.py:_subselect_conformers"
+  ],
+  "cli": "mepd channels ... --rmsd-cutoff 0.1"
+ },
+ "param.channels.n_conformers": {
+  "title": "Max conformers",
+  "does": "Caps each endpoint's pool after dedup.",
+  "how": [
+   "If more remain, picks by farthest-point selection (each new pick farthest from those kept), not truncation (conformers._diverse_subset)."
+  ],
+  "default": "0 in the web form (no cap); the CLI default is 50.",
+  "code": [
+   "mepd/conformers.py:_subselect_conformers",
+   "mepd/conformers.py:_diverse_subset"
+  ],
+  "cli": "mepd channels ... --n-conformers 0"
+ },
+ "op.channels-more": {
+  "title": "Sample more paths",
+  "does": "Extends a finished Reaction channels run with more conformer pairs per mechanism (or more built pairs), reusing its conformers and every path already searched.",
+  "how": [
+   "Reruns the source job's exact command in its own output folder with a higher --pairs-per-mechanism and its saved start_pool/end_pool (operations._build_channels_more).",
+   "Pair labels come from pair_mechanisms.json, so finished pairs are found by folder name and skipped.",
+   "Built-endpoint runs: reruns on the saved built_pairs list with a higher --atom-mapping-candidates, or exactly the entries named.",
+   "TS/IRC and classification then run over all pairs."
+  ],
+  "default": "6 per mechanism; for built runs 3 more searches.",
+  "caveats": [
+   "Older runs without saved pools or pair table cannot be extended."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_channels_more",
+   "mepd/web/operations.py:_channels_more_built",
+   "mepd/cli_channels.py:channels"
+  ],
+  "cli": "mepd channels <same args> --pairs-per-mechanism 6 --start-pool <out>/conformers/start_pool.xyz --end-pool <out>/conformers/end_pool.xyz --output <same out>",
+  "refs": "Reaction channels"
+ },
+ "param.channels-more.pairs_per_mechanism": {
+  "title": "Searches per mechanism",
+  "does": "The new per-mechanism cap; must exceed the old one (or 0 = all pairs).",
+  "how": [
+   "Replaces --pairs-per-mechanism in the source run's command; already searched pairs keep their labels and are skipped."
+  ],
+  "default": "6.",
+  "code": [
+   "mepd/web/operations.py:_build_channels_more"
+  ]
+ },
+ "param.channels-more.path_searches": {
+  "title": "Built path searches",
+  "does": "Runs with built endpoints: the new total cap on path searches, so the next built pairs down the ranked list are searched.",
+  "how": [
+   "Passes --built-pairs <out>/built_pairs and --atom-mapping-candidates <cap>; --max-pairs is dropped (operations._channels_more_built)."
+  ],
+  "default": "Empty: 3 more than already searched.",
+  "code": [
+   "mepd/web/operations.py:_channels_more_built"
+  ]
+ },
+ "param.channels-more.rmsd_window": {
+  "title": "RMSD window (σ)",
+  "does": "Filtered GI path only: widen the window so more conformer pairs get GI-scored.",
+  "how": [
+   "Replaces --atom-mapping-rmsd-window in the rerun."
+  ],
+  "default": "Empty: as before.",
+  "code": [
+   "mepd/web/operations.py:_build_channels_more"
+  ]
+ },
+ "op.tsopt": {
+  "title": "Optimize TS from guess",
+  "does": "Treats the structure as a TS guess: optimizes it to a first-order saddle point and, by default, follows its IRC to the two minima it connects.",
+  "how": [
+   "The structure (or design) is written as guess.xyz and `mepd ts --guess` runs with the job's profile.",
+   "engine.compute_transition_state: for g-xTB and ASE engines, Sella (order 1, fmax 0.01 eV/Å, up to 500 steps); for QCCompute engines, geomeTRIC's transition_state.",
+   "With IRC: Sella IRC both ways (fmax 0.1 eV/Å, 1000 steps), or geomeTRIC IRC for engines without one."
+  ],
+  "default": "IRC on (the CLI default is off).",
+  "swap": [
+   {
+    "option": "Engine",
+    "where": "Compute profile"
+   },
+   {
+    "option": "Another TS optimizer",
+    "where": "not exposed: engine.compute_transition_state in mepd/engines/*.py"
+   }
+  ],
+  "caveats": [
+   "The result is not Hessian-checked here; check the imaginary-mode count before trusting it."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_tsopt",
+   "mepd/cli.py:ts",
+   "mepd/cli_common.py:_optimize_ts_and_irc",
+   "mepd/engines/ase.py:ASEEngine.compute_transition_state"
+  ],
+  "cli": "mepd ts --guess guess.xyz --irc -i profile.toml"
+ },
+ "param.tsopt.irc": {
+  "title": "Run IRC",
+  "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
+  "how": [
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric)."
+  ],
+  "default": "On in the web form; the CLI default is off.",
+  "swap": [
+   {
+    "option": "geomeTRIC IRC",
+    "where": "used automatically for engines without compute_irc_chain (mepd/irc.py)"
+   }
+  ],
+  "caveats": [
+   "A failed IRC leaves the TS written, with irc_failed.txt saying why."
+  ],
+  "code": [
+   "mepd/cli_common.py:_optimize_ts_and_irc",
+   "mepd/engines/ase.py:ASEEngine.compute_irc_chain",
+   "mepd/irc.py:compute_irc_chain_with_geometric"
+  ],
+  "cli": "mepd ts --guess guess.xyz --irc"
+ },
+ "op.design-tsopt": {
+  "title": "Optimize the design as a TS",
+  "does": "Treats the Design tab's molecule as a TS guess: saddle optimization, then an IRC to the reactant and product it connects. If it does not converge, the design goes back to the submitted structure.",
+  "how": [
+   "The design's molblock is converted to xyz (web.design.to_xyz) and written as inputs/guess.xyz.",
+   "engine.compute_transition_state: for g-xTB and ASE engines, Sella (order 1, fmax 0.01 eV/Å, up to 500 steps); for QCCompute engines, geomeTRIC's transition_state.",
+   "With IRC: Sella IRC both ways (fmax 0.1 eV/Å, 1000 steps), or geomeTRIC IRC for engines without one."
+  ],
+  "default": "IRC on.",
+  "swap": [
+   {
+    "option": "Engine",
+    "where": "the workspace level of theory (or the profile passed)"
+   }
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_design_tsopt",
+   "mepd/web/app.py:design_tsopt",
+   "mepd/cli.py:ts",
+   "mepd/cli_common.py:_optimize_ts_and_irc"
+  ],
+  "cli": "mepd ts --guess guess.xyz --irc -i profile.toml"
+ },
+ "param.design-tsopt.irc": {
+  "title": "Run IRC",
+  "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
+  "how": [
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric)."
+  ],
+  "default": "On in the web form; the CLI default is off.",
+  "swap": [
+   {
+    "option": "geomeTRIC IRC",
+    "where": "used automatically for engines without compute_irc_chain (mepd/irc.py)"
+   }
+  ],
+  "caveats": [
+   "A failed IRC leaves the TS written, with irc_failed.txt saying why."
+  ],
+  "code": [
+   "mepd/cli_common.py:_optimize_ts_and_irc",
+   "mepd/engines/ase.py:ASEEngine.compute_irc_chain",
+   "mepd/irc.py:compute_irc_chain_with_geometric"
+  ],
+  "cli": "mepd ts --guess guess.xyz --irc"
+ },
+ "op.optimize": {
+  "title": "Optimize geometry",
+  "does": "Minimizes the selected structures at the chosen profile's level, replacing their geometry and energy in place.",
+  "how": [
+   "Runs `mepd optimize` on snapshots of the structures with the job's profile; one job per charge/spin group.",
+   "engine.compute_geometry_optimization; g-xTB: `gxtb --opt --cycles 500` per structure, run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.01 eV/Å.",
+   "Optional Hessian check with rescue (elementarystep.validate_minimum_with_rescue).",
+   "Geometry, energy and level replace the structure's in place; if bonds changed it is flagged 'reacted while being minimized' (Workspace.apply_optimization)."
+  ],
+  "default": "Hessian check follows the workspace 'Confirm minima with a Hessian' switch (on).",
+  "swap": [
+   {
+    "option": "Engine / optimizer settings",
+    "where": "Settings › profile ([geometry_optimizer_kwds], engine)"
+   }
+  ],
+  "caveats": [
+   "Transition states are refused (use Optimize TS from guess).",
+   "A converged saddle point is kept but flagged 'not a minimum'."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_optimize",
+   "mepd/cli.py:optimize",
+   "mepd/engines/gxtb.py:GXTBCalculator.compute_geometry_optimization",
+   "mepd/web/app.py:apply_optimization",
+   "mepd/web/workspace.py:Workspace.replace_geometry"
+  ],
+  "cli": "mepd optimize s1.xyz s2.xyz --validate-minima-with-hessian -i profile.toml"
+ },
+ "param.optimize.validate_minima_with_hessian": {
+  "title": "Verify minima with Hessian",
+  "does": "After optimizing, requires no imaginary frequency below the cutoff; a structure stuck on a saddle is pushed off and re-optimized, else flagged 'not a minimum'.",
+  "how": [
+   "Hessian at the optimized geometry; g-xTB: `gxtb --hess --acc 0.001`, frequencies from its g98.out.",
+   "Minimum if the lowest frequency ≥ −20 cm⁻¹ (cutoff).",
+   "Else displaced ±0.3 bohr along the lowest mode, re-optimized and re-checked; the first that passes replaces the geometry (validate_minimum_with_rescue)."
+  ],
+  "default": "On (the CLI default is off).",
+  "swap": [
+   {
+    "option": "Cutoff and push size",
+    "where": "Hessian validation (advanced)"
+   }
+  ],
+  "caveats": [
+   "For large or floppy structures (explicit solvent) the Hessian and rescue can take minutes."
+  ],
+  "code": [
+   "mepd/elementarystep.py:validate_minimum_with_rescue",
+   "mepd/elementarystep.py:_hessian_rescue_failed_candidate",
+   "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
+  ],
+  "cli": "mepd optimize ... --validate-minima-with-hessian"
+ },
+ "param.optimize.hessian_minimum_frequency_cutoff": {
+  "title": "Lowest allowed frequency (cm⁻¹)",
+  "does": "The threshold for calling a structure a minimum: its lowest frequency must be at or above this value (imaginary frequencies are negative).",
+  "how": [
+   "Compared with min(frequencies) from the Hessian check (elementarystep._validate_hessian_minimum)."
+  ],
+  "default": "−20 cm⁻¹: tolerates small numerical imaginary modes from soft torsions.",
+  "code": [
+   "mepd/elementarystep.py:_validate_hessian_minimum"
+  ],
+  "cli": "--hessian-minimum-frequency-cutoff -20"
+ },
+ "param.optimize.hessian_minima_rescue_displacement": {
+  "title": "Rescue push (bohr)",
+  "does": "How far a structure that failed the Hessian check is displaced along its lowest mode, both ways, before re-optimizing.",
+  "how": [
+   "displace_by_dr along the lowest-frequency normal mode by +d and −d; each is re-optimized and re-checked; no larger pushes are retried (elementarystep._hessian_rescue_failed_candidate)."
+  ],
+  "default": "0.3 bohr. Larger pushes on g-xTB mostly fell back to the same soft saddle.",
+  "code": [
+   "mepd/elementarystep.py:_hessian_rescue_failed_candidate"
+  ],
+  "cli": "--hessian-minima-rescue-displacement 0.3"
+ },
+ "op.design-optimize": {
+  "title": "Minimize the design",
+  "does": "Minimizes the Design tab's molecule at the chosen profile's level; its geometry and energy are replaced in place.",
+  "how": [
+   "The design's molblock is converted to xyz (web.design.to_xyz) and written as inputs/design.xyz.",
+   "engine.compute_geometry_optimization; g-xTB: `gxtb --opt --cycles 500` per structure, run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.01 eV/Å.",
+   "Optional Hessian check with rescue (elementarystep.validate_minimum_with_rescue)."
+  ],
+  "default": "Hessian check follows the workspace 'Confirm minima with a Hessian' switch.",
+  "caveats": [
+   "A reaction design is not minimized here: its ends are minimized when the path search starts."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_design_optimize",
+   "mepd/web/app.py:design_minimize",
+   "mepd/cli.py:optimize"
+  ],
+  "cli": "mepd optimize design.xyz -i profile.toml"
+ },
+ "param.design-optimize.validate_minima_with_hessian": {
+  "title": "Verify minima with Hessian",
+  "does": "After optimizing, requires no imaginary frequency below the cutoff; a structure stuck on a saddle is pushed off and re-optimized, else flagged 'not a minimum'.",
+  "how": [
+   "Hessian at the optimized geometry; g-xTB: `gxtb --hess --acc 0.001`, frequencies from its g98.out.",
+   "Minimum if the lowest frequency ≥ −20 cm⁻¹ (cutoff).",
+   "Else displaced ±0.3 bohr along the lowest mode, re-optimized and re-checked; the first that passes replaces the geometry (validate_minimum_with_rescue)."
+  ],
+  "default": "On (the CLI default is off).",
+  "swap": [
+   {
+    "option": "Cutoff and push size",
+    "where": "Hessian validation (advanced)"
+   }
+  ],
+  "caveats": [
+   "For large or floppy structures (explicit solvent) the Hessian and rescue can take minutes."
+  ],
+  "code": [
+   "mepd/elementarystep.py:validate_minimum_with_rescue",
+   "mepd/elementarystep.py:_hessian_rescue_failed_candidate",
+   "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
+  ],
+  "cli": "mepd optimize ... --validate-minima-with-hessian"
+ },
+ "op.network-splits": {
+  "title": "Paths between isomers",
+  "does": "Searches a path between every pair of the selected isomers and joins the steps found, with any intermediates, into one network.",
+  "how": [
+   "Snapshots each structure; all must share atoms, charge and spin (operations._build_network_splits).",
+   "Forms every pair (all-to-all), skipping pairs with identical connectivity; at most Max pairs (default 100).",
+   "Runs a recursive path search (MSMEP) for each pair (cli_common._run_msmep_pairs).",
+   "Builds network.json from all completed split trees (NetworkBuilder.create_rxn_network_from_paths)."
+  ],
+  "default": "All-to-all pairing, sequential branches, Hessian validation on.",
+  "swap": [
+   {
+    "option": "Other pairing heuristics",
+    "where": "not exposed: --mode only accepts all-to-all (mepd/cli.py:network_splits)"
+   },
+   {
+    "option": "Molecules with different atoms",
+    "where": "Nanoreactor"
+   }
+  ],
+  "caveats": [
+   "No TS optimization or IRC here: edges come from path searches."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_network_splits",
+   "mepd/cli.py:network_splits",
+   "mepd/cli_common.py:_run_msmep_pairs",
+   "mepd/NetworkBuilder.py:NetworkBuilder.create_rxn_network_from_paths"
+  ],
+  "cli": "mepd network-splits a.xyz b.xyz c.xyz --max-pairs 100 -i profile.toml",
+  "refs": "Path search"
+ },
+ "param.network-splits.parallel": {
+  "title": "Parallel branches",
+  "does": "Runs each pair's split branches concurrently.",
+  "how": [
+   "MSMEP.run_parallel_recursive_minimize with up to min(4, CPUs) workers (threads; processes for local QCCompute)."
+  ],
+  "default": "Off.",
+  "code": [
+   "mepd/msmep.py:MSMEP.run_parallel_recursive_minimize"
+  ],
+  "cli": "mepd network-splits ... --parallel"
+ },
+ "param.network-splits.validate_minima_with_hessian": {
+  "title": "Validate minima with Hessian",
+  "does": "Every intermediate a recursive split proposes must be a true minimum; a saddle point is pushed off and re-optimized, or rejected as a split point.",
+  "how": [
+   "Hessian of each optimized split candidate (g-xTB: `gxtb --hess --acc 0.001`, frequencies from its g98.out).",
+   "Accepted if the lowest frequency ≥ the cutoff (default −20 cm⁻¹).",
+   "Otherwise displaced ±0.3 bohr along the lowest mode, re-optimized and re-checked; the first that passes is used, else rejected (elementarystep._hessian_rescue_failed_candidate)."
+  ],
+  "default": "On: a correctness check, so splits never happen at saddle points.",
+  "swap": [
+   {
+    "option": "Cutoff and rescue push",
+    "where": "Hessian validation (advanced)"
+   },
+   {
+    "option": "Gradient finite-difference Hessian",
+    "where": "not exposed here: engine.compute_hessian (mepd/engines/*.py)"
+   }
+  ],
+  "code": [
+   "mepd/elementarystep.py:_validate_hessian_split_candidates",
+   "mepd/elementarystep.py:_validate_hessian_minimum",
+   "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
+  ],
+  "cli": "mepd network-splits ... --validate-minima-with-hessian"
+ },
+ "op.vri": {
+  "title": "Valley-ridge inflection",
+  "does": "Scans the IRC from this edge's TS for a valley-ridge transition, where the path can split after the TS into two products (P1, P2), and tests whether it really bifurcates.",
+  "how": [
+   "Takes the lowest IRC-verified TS known for the edge (operations.edge_route_ts); checks it has an imaginary mode.",
+   "Tight IRC (Sella dx 0.05, fmax 0.01 eV/Å), Hessians along it; lowest frequency orthogonal to the path (Miller–Handy–Adams projection); sign change bisected → VRT (vri.scan_irc_for_vrt).",
+   "Pushes along the ridge mode past the VRT and optimizes to find P2; searches TS2 between P1 and P2.",
+   "Basin test: sideways pushes off the IRC drained by optimization; split into P1 and P2 = bifurcation. Repeats from symmetrized TS1 candidates."
+  ],
+  "default": "Both branches, Hessian every 2nd IRC point, TS2 search, symmetrized TS1, exact VRI on, 4 parallel Hessians.",
+  "swap": [
+   {
+    "option": "Gradient finite-difference Hessians",
+    "where": "Hessian source (advanced)"
+   },
+   {
+    "option": "Trajectories for P1:P2",
+    "where": "Trajectories from TS1 (advanced) or Check the bifurcation"
+   }
+  ],
+  "caveats": [
+   "When the VRI lies off the IRC, projected frequencies may never turn imaginary; trajectories can still split."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_vri",
+   "mepd/discovery/cli.py:vri_search",
+   "mepd/discovery/cli.py:_vri_single",
+   "mepd/discovery/vri.py:scan_irc_for_vrt",
+   "mepd/discovery/vri.py:find_bifurcation_products",
+   "mepd/discovery/vri_checks.py:check_branch"
+  ],
+  "cli": "mepd discovery vri ts1.xyz --stride 2 --workers 4 -i profile.toml",
+  "refs": "Valley-ridge inflection"
+ },
+ "param.vri.branches": {
+  "title": "IRC branches",
+  "does": "Which side(s) of TS1 are scanned for a valley-ridge transition.",
+  "how": [
+   "The IRC is split at TS1 (vri.split_irc_branches); only the chosen branches get Hessians, product searches and checks."
+  ],
+  "default": "both.",
+  "code": [
+   "mepd/discovery/vri.py:scan_irc_for_vrt"
+  ],
+  "cli": "--branches both|forward|reverse"
+ },
+ "param.vri.stride": {
+  "title": "Hessian every Nth IRC point",
+  "does": "Sets how densely the IRC is scanned; the VRT is bracketed between scanned points and then bisected.",
+  "how": [
+   "Hessian at every Nth IRC point; then n_bisect (default 4) bisection steps between the bracketing points (vri.scan_irc_for_vrt)."
+  ],
+  "default": "2 in the web form (halves the cost); the CLI default is 1.",
+  "code": [
+   "mepd/discovery/vri.py:scan_irc_for_vrt"
+  ],
+  "cli": "--stride 2 --n-bisect 4"
+ },
+ "param.vri.find_ts2": {
+  "title": "Find TS2",
+  "does": "Searches for the second saddle (TS2) between P1 and P2 and verifies it.",
+  "how": [
+   "auto: TS-optimize the top of the geodesic P1→P2 path; if that fails verification, relax the path with the profile's path method first (discovery.cli._locate_ts2).",
+   "Verified: one imaginary mode, below TS1, IRC connects P1 and P2, and ridge-connected to TS1 (downhill, no intermediate) (vri.verify_ts2, vri_candidates.ridge_connected)."
+  ],
+  "default": "On; method auto.",
+  "swap": [
+   {
+    "option": "geodesic only / NEB only",
+    "where": "TS2 search (advanced)"
+   }
+  ],
+  "code": [
+   "mepd/discovery/cli.py:_search_ts2",
+   "mepd/discovery/cli.py:_locate_ts2",
+   "mepd/discovery/vri.py:verify_ts2"
+  ],
+  "cli": "--find-ts2 | --skip-ts2, --ts2-method auto"
+ },
+ "param.vri.ts2_method": {
+  "title": "TS2 search",
+  "does": "How the TS2 guess between P1 and P2 is made.",
+  "how": [
+   "geodesic: highest image of the geodesic P1→P2 interpolation, TS-optimized (seconds). neb: that path relaxed with the profile's path minimizer first. auto: geodesic, then NEB if not verified (discovery.cli._search_ts2)."
+  ],
+  "default": "auto.",
+  "code": [
+   "mepd/discovery/cli.py:_locate_ts2"
+  ],
+  "cli": "--ts2-method auto|geodesic|neb"
+ },
+ "param.vri.symmetric_ts": {
+  "title": "Try symmetrized TS1",
+  "does": "Also starts from TS1 candidates made by symmetrizing TS1 under near-symmetries of its bond graph; finds ridge saddles such as bispericyclic TSs.",
+  "how": [
+   "Permutations of TS1's partial-bond graph (networkx GraphMatcher, up to 200) whose permuted geometry aligns onto TS1 within 0.05–1.0 Å count as near-symmetries.",
+   "Symmetrized geometries are re-optimized; distinct first-order saddles each get the full search in symmetric_<k>/ (vri_candidates.symmetric_ts_candidates)."
+  ],
+  "default": "On.",
+  "code": [
+   "mepd/discovery/vri_candidates.py:symmetric_ts_candidates"
+  ],
+  "cli": "--symmetric-ts | --no-symmetric-ts"
+ },
+ "param.vri.exact_vri": {
+  "title": "Converge the exact VRI",
+  "does": "From the VRT, converges to the exact valley-ridge inflection point (H v = 0, v perpendicular to the gradient) on every branch with a second product.",
+  "how": [
+   "Gauss–Newton with the Moore–Penrose pseudoinverse, after Schmidt & Quapp (vri_checks.refine_vri); writes vri_<branch>.xyz."
+  ],
+  "default": "On; a few seconds per branch.",
+  "code": [
+   "mepd/discovery/vri_checks.py:refine_vri"
+  ],
+  "cli": "--exact-vri | --no-exact-vri",
+  "refs": "Valley-ridge inflection"
+ },
+ "param.vri.trajectories": {
+  "title": "Trajectories from TS1",
+  "does": "Quasiclassical trajectories from TS1 into each confirmed bifurcation; counts P1 vs P2 for a product ratio.",
+  "how": [
+   "Initial conditions: each real mode gets a Boltzmann-sampled quantum level (mostly zero-point) with random phase; the reaction mode gets Boltzmann kinetic energy toward the branch (Progdyn/Milo-style).",
+   "Velocity Verlet with engine gradients for the trajectory length (default 400 fs).",
+   "Each final frame is optimized and classified as P1, P2 or other (discovery.qct)."
+  ],
+  "caveats": [
+   "100 trajectories resolve shares above a few percent."
+  ],
+  "code": [
+   "mepd/discovery/qct.py",
+   "mepd/discovery/vri_checks.py:check_branch"
+  ],
+  "refs": "Valley-ridge inflection",
+  "default": "0 (none) in VRI search; run them only on confirmed bifurcations.",
+  "cli": "--trajectories 100 --traj-fs 400"
+ },
+ "param.vri.hessian": {
+  "title": "Hessian source",
+  "does": "Chooses how the Hessians along the IRC (and at TS1, the VRI) are computed.",
+  "how": [
+   "engine (= auto): the engine's own compute_hessian; for g-xTB one `gxtb --hess --acc 0.001` call with the rigid-body part restored from the gradient, ~2–4× cheaper.",
+   "gradients: central differences of engine gradients, step 0.005 bohr, 6N calls, shared concurrency limit (vri.GradientHessianEngine).",
+   "Only the VRI analysis uses the wrapper; IRC, path minimizers and TS optimizations use the plain engine."
+  ],
+  "default": "auto = engine (cheaper).",
+  "swap": [
+   {
+    "option": "gradients",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "g-xTB's --hess matrix can differ from its own gradients by ~0.02 Eh/bohr²; at non-stationary IRC points that can flip soft projected frequencies. Use gradients to confirm a borderline VRT."
+  ],
+  "code": [
+   "mepd/discovery/vri.py:GradientHessianEngine",
+   "mepd/discovery/vri.py:compute_cartesian_hessian",
+   "mepd/engines/gxtb.py:GXTBCalculator.compute_hessian"
+  ],
+  "cli": "--hessian auto|engine|gradients"
+ },
+ "param.vri.irc_step": {
+  "title": "IRC step (Å·amu½)",
+  "does": "Step size of the tighter IRC the scan runs on; smaller resolves the VRT better.",
+  "how": [
+   "Passed as Sella's dx for g-xTB/ASE engines (discovery.cli._run_vri_irc); other engines use their own IRC defaults, or geomeTRIC on failure."
+  ],
+  "default": "0.05, with stopping force 0.01 eV/Å (mepd's usual IRC uses Sella defaults and fmax 0.1).",
+  "code": [
+   "mepd/discovery/cli.py:_run_vri_irc"
+  ],
+  "cli": "--irc-step 0.05 --irc-fmax 0.01"
+ },
+ "param.vri.vrt_threshold": {
+  "title": "Imaginary threshold (cm⁻¹)",
+  "does": "A projected frequency must fall below minus this value to count as imaginary along the IRC.",
+  "how": [
+   "Used with Consecutive imaginary points (default 2) to reject noise when locating the VRT (vri.scan_irc_for_vrt)."
+  ],
+  "default": "50 cm⁻¹.",
+  "code": [
+   "mepd/discovery/vri.py:scan_irc_for_vrt"
+  ],
+  "cli": "--vrt-threshold 50 --persist 2"
+ },
+ "param.vri.max_vrt_depth": {
+  "title": "Max VRT depth below TS1 (kcal/mol)",
+  "does": "Imaginary dips more than this far below TS1 are reported as late softening, not a VRT.",
+  "how": [
+   "Applied in vri.scan_irc_for_vrt; deep in a product valley a soft torsion is not a bifurcation of TS1."
+  ],
+  "default": "30 kcal/mol.",
+  "code": [
+   "mepd/discovery/vri.py:scan_irc_for_vrt"
+  ],
+  "cli": "--max-vrt-depth 30"
+ },
+ "param.vri.push_amplitude": {
+  "title": "Ridge push (bohr)",
+  "does": "How far points past the VRT are displaced along the ridge mode, both ways, before optimizing to find P2.",
+  "how": [
+   "Largest single-atom move; pushes from 3 points (the VRT and after), each optimized with the engine (vri.find_bifurcation_products)."
+  ],
+  "default": "0.3 bohr.",
+  "code": [
+   "mepd/discovery/vri.py:find_bifurcation_products"
+  ],
+  "cli": "--push-amplitude 0.3"
+ },
+ "op.vri-check": {
+  "title": "Check the bifurcation",
+  "does": "For a finished VRI search: converges the exact VRI, tests that sideways pushes off the IRC drain into both P1 and P2, and counts trajectories into each.",
+  "how": [
+   "For every branch with a VRT or second product (vri_checks.check_branch):",
+   "Exact VRI: Gauss–Newton with pseudoinverse to H v = 0, v ⊥ gradient (Schmidt & Quapp).",
+   "Basin test: at 5 IRC points, displacements 0.05/0.1/0.2/0.3 bohr both ways along the softest perpendicular mode, then optimized; outcomes P1, P2, R or other.",
+   "Quasiclassical trajectories from TS1 (default 150, 400 fs); the verdict is updated (vri.verdict_after_checks)."
+  ],
+  "default": "All three checks on, 150 trajectories, 4 parallel engine calls.",
+  "caveats": [
+   "If the search found no P2, the first other product the basin test reaches becomes P2."
+  ],
+  "code": [
+   "mepd/discovery/cli.py:vri_check",
+   "mepd/discovery/vri_checks.py:check_branch",
+   "mepd/discovery/vri_checks.py:refine_vri",
+   "mepd/discovery/vri_checks.py:basin_test",
+   "mepd/discovery/qct.py"
+  ],
+  "cli": "mepd discovery vri-check <vri output> --trajectories 150 --workers 4 -i profile.toml",
+  "refs": "Valley-ridge inflection"
+ },
+ "param.vri-check.trajectories": {
+  "title": "Trajectories from TS1",
+  "does": "Quasiclassical trajectories from TS1 into each confirmed bifurcation; counts P1 vs P2 for a product ratio.",
+  "how": [
+   "Initial conditions: each real mode gets a Boltzmann-sampled quantum level (mostly zero-point) with random phase; the reaction mode gets Boltzmann kinetic energy toward the branch (Progdyn/Milo-style).",
+   "Velocity Verlet with engine gradients for the trajectory length (default 400 fs).",
+   "Each final frame is optimized and classified as P1, P2 or other (discovery.qct)."
+  ],
+  "caveats": [
+   "100 trajectories resolve shares above a few percent."
+  ],
+  "code": [
+   "mepd/discovery/qct.py",
+   "mepd/discovery/vri_checks.py:check_branch"
+  ],
+  "refs": "Valley-ridge inflection",
+  "default": "150 per branch; 0 skips.",
+  "cli": "--trajectories 150 --traj-fs 400"
+ },
+ "param.vri-check.refine": {
+  "title": "Converge the exact VRI",
+  "does": "From the VRT, converges to the exact valley-ridge inflection point (H v = 0, v perpendicular to the gradient) on every branch with a second product.",
+  "how": [
+   "Gauss–Newton with the Moore–Penrose pseudoinverse, after Schmidt & Quapp (vri_checks.refine_vri); writes vri_<branch>.xyz."
+  ],
+  "default": "On; a few seconds per branch.",
+  "code": [
+   "mepd/discovery/vri_checks.py:refine_vri"
+  ],
+  "cli": "--refine | --no-refine",
+  "refs": "Valley-ridge inflection"
+ },
+ "param.vri-check.basin": {
+  "title": "Basin test",
+  "does": "Optimizes from sideways pushes off the IRC past TS1; a real bifurcation drains into both P1 and P2. This test decides the verdict.",
+  "how": [
+   "At IRC points past TS1, displace along the softest perpendicular mode (and the second where also imaginary) by 0.05, 0.1, 0.2, 0.3 bohr, both ways.",
+   "Optimize each with the engine; classify the end as P1, P2, R (reactant side), P3… or failed (vri_checks.basin_test)."
+  ],
+  "default": "On.",
+  "caveats": [
+   "Symmetry-equivalent products can appear as P3."
+  ],
+  "code": [
+   "mepd/discovery/vri_checks.py:basin_test",
+   "mepd/discovery/vri.py:branch_verdict"
+  ],
+  "cli": "--basin | --no-basin"
+ },
+ "op.vri-surface": {
+  "title": "Map the 2D surface",
+  "does": "Reconstructs the energy surface around each bifurcation, with TS1, VRI, TS2, P1 and P2 on one map, from a relaxed 2D scan.",
+  "how": [
+   "Axes: x = displacement along TS1's imaginary mode (Å); y = mean length of P2-only bonds minus P1-only bonds (Å).",
+   "At each grid node, an engine optimization (scipy L-BFGS-B, steps boxed to 0.4 Å) with harmonic restraints (3000 kcal/mol/Å²) on x, y and the other reactive bonds, from the nearest computed structure (vri_surface.relaxed_grid).",
+   "IRCs and stationary points are overlaid as an independent check; writes surface_<branch>.json."
+  ],
+  "default": "13 × 13 grid, 4 parallel gradient calls.",
+  "caveats": [
+   "Partially relaxed scan: passes and basins are approximate; check that the overlaid stationary points sit on them.",
+   "Only branches with a P2 are mapped."
+  ],
+  "code": [
+   "mepd/discovery/cli.py:vri_surface",
+   "mepd/discovery/vri_surface.py:build_surfaces",
+   "mepd/discovery/vri_surface.py:relaxed_grid"
+  ],
+  "cli": "mepd discovery vri-surface <vri output> --grid 13 --workers 4 -i profile.toml",
+  "refs": "Valley-ridge inflection"
+ },
+ "param.vri-surface.grid": {
+  "title": "Grid nodes per axis",
+  "does": "Resolution of the map; each node is one restrained optimization, so cost grows with its square.",
+  "how": [
+   "grid × grid restrained optimizations (vri_surface.relaxed_grid), run Parallel gradient calls at a time."
+  ],
+  "default": "13 (169 optimizations).",
+  "code": [
+   "mepd/discovery/vri_surface.py:relaxed_grid"
+  ],
+  "cli": "--grid 13"
+ },
+ "level.profile": {
+  "title": "Level of theory",
+  "does": "Sets the profile (a RunInputs TOML) every structure in the workspace is minimized at and new jobs run with, so energies are comparable.",
+  "how": [
+   "PUT /api/level stores the profile; new structures, re-optimizations and design jobs use it by default (app.queue_optimization).",
+   "Each profile gets a level fingerprint: engine, method/model and implicit solvent only; threads, optimizer and path settings are left out (workspace.effective_level).",
+   "Structures whose fingerprint differs are counted as off-level; 're-optimize' minimizes them at this level.",
+   "Each node's representative conformer is re-picked; energies from different levels are never compared."
+  ],
+  "default": "The 'default' profile, seeded by `mepd init`: g-xTB (gxtb, fetched on first use) with NEB.",
+  "swap": [
+   {
+    "option": "Other engines: xTB, MLIPs (AIMNet2, ORB, UMA), FAIR-Chem, ASE calculators, Psi4, TeraChem, QCCompute/ChemCloud",
+    "where": "Settings › profile, engine"
+   },
+   {
+    "option": "A different profile for one job",
+    "where": "Compute profile in a job's form"
+   }
+  ],
+  "caveats": [
+   "Changing it doesn't re-optimize anything by itself."
+  ],
+  "code": [
+   "mepd/web/app.py:set_level",
+   "mepd/web/workspace.py:Workspace.level_of",
+   "mepd/web/workspace.py:effective_level",
+   "mepd/web/workspace.py:Workspace._pick_representative",
+   "mepd/web/operations.py:JobContext.common_flags"
+  ],
+  "cli": "mepd <command> -i profile.toml"
+ },
+ "level.validate_minima": {
+  "title": "Confirm minima with a Hessian",
+  "does": "After a structure is minimized at the workspace level, checks it has no imaginary frequency beyond 20i cm⁻¹; a structure on a saddle is pushed off and re-minimized, else flagged 'not a minimum'.",
+  "how": [
+   "Stored in workspace.json; passed as validate_minima_with_hessian to automatic Optimize jobs and design minimization.",
+   "Hessian at the optimized geometry (g-xTB: `gxtb --hess --acc 0.001`, frequencies from g98.out); minimum if lowest ≥ −20 cm⁻¹.",
+   "Else ±0.3 bohr along the lowest mode, re-optimized, re-checked (validate_minimum_with_rescue).",
+   "A failed node keeps its geometry, status 'not_minimum', and never represents the node."
+  ],
+  "default": "On: roughly one Hessian per structure, and it catches structures stuck on saddles.",
+  "swap": [
+   {
+    "option": "Other cutoff or push",
+    "where": "Optimize geometry form, Hessian validation (advanced)"
+   }
+  ],
+  "caveats": [
+   "Path searches have their own 'Validate minima with Hessian' for split intermediates."
+  ],
+  "code": [
+   "mepd/web/app.py:set_level",
+   "mepd/web/app.py:queue_optimization",
+   "mepd/cli.py:optimize",
+   "mepd/elementarystep.py:validate_minimum_with_rescue",
+   "mepd/web/app.py:apply_optimization",
+   "mepd/web/workspace.py:Workspace.replace_geometry"
+  ],
+  "cli": "mepd optimize ... --validate-minima-with-hessian"
+ },
+ "op.conformers": {
+  "title": "Conformers",
+  "does": "Samples other 3D shapes of the selected molecule, keeps the distinct ones, and, by default, minimizes each at the profile's level. They join the node as conformers. The lowest-energy one then stands for the molecule.",
+  "how": [
+   "Sample with RDKit (ETKDGv3 + MMFF94) or CREST (crest subprocess). mepd/conformers.py:generate_conformers",
+   "The input geometry is always kept first. Candidates closer than the RMSD cutoff (qcinf snap_rmsd: symmetry-aware, Kabsch-aligned, bohr) to one already kept are dropped. Candidates that are not isomorphic to the input are discarded.",
+   "If more than 'Keep at most' remain, a farthest-point (max-min RMSD) subset is kept. The list is not just cut off by energy (_diverse_subset).",
+   "With 'Minimize' on, `mepd optimize` runs on each one at the profile's level. Optionally each gets a Hessian check.",
+   "The web app adds each one to the node (app.py:attach conformers). Energies count only if they were minimized. A conformer that minimized into a different molecule is skipped."
+  ],
+  "default": "RDKit sampler, keep 20, minimize on, Hessian check off, RMSD cutoff 0.1 bohr. RDKit takes seconds and needs nothing extra installed.",
+  "swap": [
+   {
+    "option": "CREST metadynamics (GFN2, GFN-FF or GFN2//GFN-FF)",
+    "where": "Sampler: CREST in this form (needs `crest` on PATH)"
+   },
+   {
+    "option": "Other samplers (e.g. OpenMM MD, confab)",
+    "where": "not exposed: add a backend branch in mepd/conformers.py:generate_conformers"
+   }
+  ],
+  "caveats": [
+   "Sampler energies (MMFF, CREST) are not mepd energies. Without minimizing, the conformers have no energy and cannot represent the node.",
+   "Transition states are refused: conformers are sampled for minima only."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_conformers",
+   "mepd/cli_conformers.py:conformers",
+   "mepd/conformers.py:generate_conformers",
+   "mepd/conformers.py:_subselect_conformers",
+   "mepd/web/app.py:attach_conformers"
+  ],
+  "cli": "mepd conformers <xyz|SMILES> --backend rdkit --n-conformers 20 --minimize -i level.toml -o out",
+  "refs": "Conformers"
+ },
+ "param.conformers.backend": {
+  "title": "Sampler",
+  "does": "Chooses the program that generates conformer candidates.",
+  "how": [
+   "RDKit: ETKDGv3 embeddings, with and without experimental torsion preferences (pooled, so e.g. s-cis dienes appear). The input counts as conformer 0.",
+   "The embedding budget depends on rotatable bonds: 50 for 7 or fewer, 200 for 8–12, 300 above (_auto_n_embed). Each embedding is then relaxed with MMFF94 (maxIters 2000).",
+   "For several molecules, each fragment is aligned back to where it sits in the input (Kabsch).",
+   "CREST: `crest input.xyz <level> --ewin <window> -T 1`, plus --chrg/--uhf. --nci is added automatically for more than one molecule. Atoms must come back in the input order; frames that don't are dropped. Timeout 3600 s."
+  ],
+  "default": "RDKit: seconds, nothing to install. CREST takes minutes and runs single-threaded.",
+  "swap": [
+   {
+    "option": "CREST",
+    "where": "Sampler: CREST (only if `crest` is on PATH)"
+   },
+   {
+    "option": "Another sampler",
+    "where": "not exposed: mepd/conformers.py:generate_conformers (backend switch)"
+   }
+  ],
+  "caveats": [
+   "The RDKit embedding seed is fixed (random_seed 0), so rerunning with the same settings gives the same pool."
+  ],
+  "code": [
+   "mepd/conformers.py:_generate_conformers_rdkit",
+   "mepd/conformers.py:_auto_n_embed",
+   "mepd/conformers.py:_generate_conformers_crest",
+   "mepd/conformers.py:_build_crest_argv"
+  ],
+  "cli": "mepd conformers <mol> --backend crest --crest-method --gfn2 --crest-ewin 6",
+  "refs": "Conformers"
+ },
+ "param.conformers.minimize": {
+  "title": "Minimize at the profile's level",
+  "does": "Re-optimizes every kept conformer with the profile's engine, so their energies can be compared and the lowest can represent the molecule.",
+  "how": [
+   "Calls mepd.cli.optimize on conformers.xyz, writing to optimized/.",
+   "With 'Hessian-check each', the frequency cutoff is -20 cm⁻¹ and the rescue push is 0.3 bohr (fixed values in cli_conformers.py).",
+   "The web app keeps a minimized conformer's energy only if it still has the node's SMILES."
+  ],
+  "default": "On. Without it there are no mepd energies, so the conformers are geometry only.",
+  "code": [
+   "mepd/cli_conformers.py:conformers",
+   "mepd/web/app.py:attach_conformers"
+  ],
+  "cli": "mepd conformers <mol> --minimize/--no-minimize"
+ },
+ "param.conformers.crest_method": {
+  "title": "CREST level",
+  "does": "Sets CREST's own Hamiltonian for the metadynamics. This is not mepd's level of theory.",
+  "how": [
+   "Passed straight to crest as its level flag: --gfn2, --gfnff (force field, much faster) or --gfn2//gfnff (GFN-FF sampling, GFN2 reranking)."
+  ],
+  "default": "--gfn2 (CrestInputs.method).",
+  "caveats": [
+   "Conformers are re-minimized at the profile's level afterwards if 'Minimize' is on, so this only changes which shapes are found."
+  ],
+  "code": [
+   "mepd/conformers.py:CrestInputs",
+   "mepd/conformers.py:_build_crest_argv"
+  ],
+  "cli": "mepd conformers <mol> --backend crest --crest-method --gfnff",
+  "refs": "Conformers"
+ },
+ "param.conformers.rmsd_cutoff": {
+  "title": "Distinct beyond RMSD (bohr)",
+  "does": "Two candidates count as the same conformer if their RMSD is below this.",
+  "how": [
+   "Uses qcinf snap_rmsd (permutation/symmetry-aware, Kabsch-aligned, bohr). The dedup runs to completion before any cap is applied (_subselect_conformers)."
+  ],
+  "default": "0.1 bohr.",
+  "code": [
+   "mepd/conformers.py:_subselect_conformers",
+   "mepd/_qcinf_compat.py:snap_rmsd"
+  ],
+  "cli": "mepd conformers <mol> --rmsd-cutoff 0.1"
+ },
+ "op.hessian-sample": {
+  "title": "Hessian sampling",
+  "does": "Finds the minima one vibration away from the structure (conformers, nearby isomers): it displaces along every normal mode in both directions and re-optimizes.",
+  "how": [
+   "Compute the seed's energy and its Hessian with the profile's engine (engine._compute_hessian_result or compute_hessian). Program Hessians come via qcop. ASE/MLIP engines use central differences of gradients.",
+   "prepare_modes drops translations and rotations, sorts modes by frequency (imaginary first), and normalizes them.",
+   "Displace ± along each mode until 'Max candidates' is reached (low frequencies first). Each displaced geometry is optimized with the engine (batch if supported; Cartesian coordinates; maxiter 500).",
+   "Classify each result: back to seed, found before, or new minimum. Deduplicate with is_identical (graph + RunInputs node_rms_thre/node_ene_thre).",
+   "Optionally Hessian-check each unique minimum. Saddles get a push along the unstable mode, are re-optimized, or are rejected."
+  ],
+  "default": "Fixed-Cartesian displacement 0.1 bohr per-atom RMS, 100 candidates, Hessian validation on (the web default; off in the CLI).",
+  "swap": [
+   {
+    "option": "Energy-calibrated displacements",
+    "where": "Displacement policy: energy"
+   },
+   {
+    "option": "Several displacement sizes per mode",
+    "where": "CLI only: mepd discovery hessian-sample --full-dr-scan --dr-scan-values"
+   }
+  ],
+  "caveats": [
+   "Minima are merged by graph identity plus loose thresholds (node_rms_thre 5 bohr, node_ene_thre 5 kcal/mol by default), so close conformers may count as one.",
+   "One Hessian plus up to 100 optimizations: cost grows quickly with size at a DFT level."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_discovery",
+   "mepd/discovery/cli.py:hessian_sample",
+   "mepd/discovery/hessian_sample.py:run_hessian_sample",
+   "mepd/elementarystep.py:prepare_modes",
+   "mepd/discovery/hessian_sample.py:_validate_unique_minima"
+  ],
+  "cli": "mepd discovery hessian-sample seed.xyz -i level.toml --dr 0.1 --max-candidates 100 --validate-minima-with-hessian"
+ },
+ "param.hessian-sample.amplitude_policy": {
+  "title": "Displacement policy",
+  "does": "Sets how far each normal mode is pushed before re-optimizing.",
+  "how": [
+   "fixed-cartesian: every mode moves the same distance. That is the per-atom RMS dr (bohr), scaled by sqrt(N atoms) on the 3N vector (_effective_dr).",
+   "energy: each mode's amplitude is a = sqrt(2 E_target / k), with k = uᵀHu from the Hessian. Each push then costs about E_target in the harmonic approximation.",
+   "Under energy, modes with k < 1e-4 Eh/bohr² are skipped. Imaginary modes get the fixed 'Imaginary-mode amplitude' (0.3 bohr)."
+  ],
+  "default": "fixed-cartesian, 0.1 bohr: simple and independent of the Hessian's quality. It can over-stretch stiff bonds or under-push soft torsions; 'energy' evens that out.",
+  "code": [
+   "mepd/discovery/hessian_sample.py:_amplitudes_for_modes",
+   "mepd/discovery/hessian_sample.py:_effective_dr"
+  ],
+  "cli": "mepd discovery hessian-sample seed.xyz --amplitude-policy energy --target-energy-kcal 25"
+ },
+ "param.hessian-sample.validate_minima_with_hessian": {
+  "title": "Validate minima with Hessian",
+  "does": "Keeps only true minima. A structure that stopped on a saddle point is pushed off it and re-optimized, or is dropped as rejected.",
+  "how": [
+   "A Hessian of each unique minimum at the profile's level. It passes if the lowest frequency is at or above the cutoff (elementarystep.validate_minimum_with_rescue).",
+   "On failure: push ± the rescue displacement along the lowest mode, re-optimize, and check again.",
+   "The survivors are deduplicated again, since a rescue can land on a minimum already found."
+  ],
+  "default": "On, with a cutoff of -20 cm⁻¹ and a 0.3 bohr push.",
+  "caveats": [
+   "One extra Hessian per minimum (two if rescued)."
+  ],
+  "code": [
+   "mepd/discovery/hessian_sample.py:_validate_unique_minima",
+   "mepd/elementarystep.py:validate_minimum_with_rescue"
+  ],
+  "cli": "--validate-minima-with-hessian --hessian-minimum-frequency-cutoff -20 --hessian-minima-rescue-displacement 0.3"
+ },
+ "op.hessian-global": {
+  "title": "Hessian basin hopping",
+  "does": "Repeats Hessian sampling from every accepted minimum, accepting new minima by the Metropolis test. It is a breadth-first global search over the minima reachable from the seed.",
+  "how": [
+   "Round 1 Hessian-samples the seed (run_hessian_sample, fixed-Cartesian dr). Later rounds sample every minimum accepted in the round before.",
+   "Each candidate minimum is compared with the acceptance baseline. Differences within 'Energy tolerance' count as flat. Uphill moves are accepted with probability exp(-ΔE/RT).",
+   "Minima already accepted (is_identical, including the seed) are skipped. Only Hessian-validated minima are accepted when validation is on.",
+   "Stops when no new minimum is accepted (queue exhausted) or after 'Max rounds'."
+  ],
+  "default": "Up to 100 rounds, 298.15 K, 'connected' baseline, dr 0.1 bohr, 100 candidates per source, validation on.",
+  "swap": [
+   {
+    "option": "Displacement scan per round",
+    "where": "Advanced › Full displacement scan + Scan values"
+   },
+   {
+    "option": "Energy-calibrated displacements",
+    "where": "not exposed here: only in Hessian sampling (run_hessian_global_optimization has no amplitude_policy)"
+   }
+  ],
+  "caveats": [
+   "The search is breadth-first: every accepted minimum is a new source, so cost can grow fast. Max rounds is the only hard limit.",
+   "Without a random seed the accept/reject draws are not reproducible. With one, each draw is a hash of (seed, index)."
+  ],
+  "code": [
+   "mepd/discovery/cli.py:hessian_global",
+   "mepd/discovery/hessian_sample.py:run_hessian_global_optimization",
+   "mepd/discovery/hessian_sample.py:_boltzmann_acceptance_probability"
+  ],
+  "cli": "mepd discovery hessian-global seed.xyz -i level.toml --max-rounds 100 --temperature 298.15 --acceptance-baseline connected"
+ },
+ "param.hessian-global.acceptance_baseline": {
+  "title": "Acceptance baseline",
+  "does": "Sets the energy each new minimum's Metropolis test is measured against.",
+  "how": [
+   "connected: the minimum it was sampled from (standard basin hopping).",
+   "seed: always the original seed. Seeded from a high-energy structure, everything then looks downhill and is accepted.",
+   "running_best: the lowest energy found so far. This is greedier."
+  ],
+  "default": "connected. The baseline follows the search, so the test keeps discriminating.",
+  "code": [
+   "mepd/discovery/hessian_sample.py:run_hessian_global_optimization"
+  ],
+  "cli": "--acceptance-baseline connected|seed|running_best"
+ },
+ "param.hessian-global.temperature": {
+  "title": "Temperature (K)",
+  "does": "Sets how readily uphill minima are accepted: P = exp(-ΔE/RT). It is a search knob, not a physical condition.",
+  "how": [
+   "Used only in _boltzmann_acceptance_probability. R comes from qcconst (CODATA)."
+  ],
+  "default": "298.15 K. At this temperature a 2 kcal/mol uphill step is accepted about 3% of the time.",
+  "code": [
+   "mepd/discovery/hessian_sample.py:_boltzmann_acceptance_probability"
+  ],
+  "cli": "--temperature 298.15"
+ },
+ "op.graph-enumeration": {
+  "title": "Reaction network expansion",
+  "does": "Proposes products of the selected species, optimizes them at the profile's level, and adds the new species and proposed reactions to Explore. With more rounds, the network grows from the species that the kinetics (or an energy window) say matter.",
+  "how": [
+   "The seed is minimized first (and Hessian-checked), so every energy is relative to a minimum at this level.",
+   "The product generator proposes products in the seed's atom order. Bond rules: up to n breaks and m formations. Alternatives: CREST msreact or nanoreactor MD.",
+   "For bond rules, each product's 3D guess is a restrained relaxation of the seed geometry onto the new bonds (embed_product, mepd's own heuristic).",
+   "Each guess is optimized with the engine. Species identity is connectivity + stereo; the lowest conformer is kept. New species can be Hessian-validated.",
+   "steer=flux: each reaction gets a recursive path search (MSMEP), TS opt and IRC. Eyring first-order microkinetics from the seed then picks which species to expand next."
+  ],
+  "default": "Bond rules, 1 round, 2 breaks / 2 forms, 50 proposals per species, 60 kcal/mol window, no path search.",
+  "swap": [
+   {
+    "option": "CREST msreact",
+    "where": "Method switch: CREST msreact (needs crest + xtb)"
+   },
+   {
+    "option": "Your own generator (autodE, Chemoton...)",
+    "where": "CLI: mepd discovery expand --generator package.module:function, or --products file.xyz"
+   },
+   {
+    "option": "Register a named generator",
+    "where": "not exposed in the UI: mepd/discovery/generators.py:GENERATORS"
+   }
+  ],
+  "caveats": [
+   "Without 'Connect by path search' (or flux), edges are proposals with no barrier yet.",
+   "Flux barriers are electronic, not free energies, each from the species' lowest conformer."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_expand",
+   "mepd/discovery/cli_expand.py:expand",
+   "mepd/discovery/network_expansion.py:expand_network",
+   "mepd/discovery/network_expansion.py:enumerate_bond_changes",
+   "mepd/discovery/kinetics.py"
+  ],
+  "cli": "mepd discovery expand seed.xyz -i level.toml --rounds 1 --n-break 2 --n-form 2 --max-products 50",
+  "refs": "Reaction network expansion"
+ },
+ "param.graph-enumeration.generator": {
+  "title": "Product generator",
+  "does": "Chooses what proposes the products. Everything after that (optimization, identity, edges, path searches) is the same for every generator.",
+  "how": [
+   "Bond rules (mepd): every combination of ≤ n breaks and ≤ m formations between atoms within 'Form bonds within' (4 Å). Products must pass coordination limits and have an RDKit DetermineBondOrders (xyz2mol) Lewis structure. Fewest changes first; at most 500,000 combinations.",
+   "CREST msreact: `crest --msreact -T 1 -msnbonds n` (plus -msnoiso / -msiso by mode). Biased GFN2-xTB optimizations; products are ranked lowest GFN2 energy first.",
+   "Nanoreactor (QM/MM systems only): hot piston MD of the QM region. Its state after each event is a product."
+  ],
+  "default": "Bond rules: built in, deterministic, nothing to install.",
+  "swap": [
+   {
+    "option": "CREST msreact",
+    "where": "Method switch on the Network card"
+   },
+   {
+    "option": "Any Python callable",
+    "where": "CLI: --generator package.module:function (returns product Structures in the same atom order)"
+   },
+   {
+    "option": "Precomputed products (autodE, Chemoton...)",
+    "where": "CLI: --products file.xyz (multi-frame, reactant atom order)"
+   }
+  ],
+  "caveats": [
+   "msreact fragments one molecule only: a cluster of several gets no products."
+  ],
+  "code": [
+   "mepd/discovery/generators.py:GENERATORS",
+   "mepd/discovery/network_expansion.py:enumerate_bond_changes",
+   "mepd/discovery/crest_msreact.py:msreact_products",
+   "mepd/discovery/nanoreactor_generator.py"
+  ],
+  "cli": "mepd discovery expand seed.xyz --generator crest-msreact --generator-option mode=all",
+  "refs": "Reaction network expansion"
+ },
+ "param.graph-enumeration.steer": {
+  "title": "Grow the network by",
+  "does": "Decides which new species get expanded in the next round.",
+  "how": [
+   "window: every new species within 'Expand species within' (kcal/mol) of the seed.",
+   "flux: each new reaction gets a recursive path search (MSMEP), TS optimization and IRC. Then k = (kBT/h)·exp(-ΔE‡/RT) both ways from one TS energy, so detailed balance holds; this is integrated from pure seed over the simulated time.",
+   "A species is expanded once the material that flowed into it reaches the threshold (Bensberg–Reiher concentration flux). Growth stops when nothing new does.",
+   "auto: flux when rounds > 1, else window."
+  ],
+  "default": "auto (so window for 1 round). Flux defaults: 298.15 K, 3600 s, threshold 0.01.",
+  "caveats": [
+   "Flux runs a TS search for every proposed reaction each round, which makes it far slower than window."
+  ],
+  "code": [
+   "mepd/discovery/cli_expand.py:expand",
+   "mepd/discovery/cli_expand.py:_ts_connector",
+   "mepd/discovery/kinetics.py"
+  ],
+  "cli": "mepd discovery expand seed.xyz --steer flux --temperature 298.15 --time 3600 --flux-threshold 0.01",
+  "refs": "Reaction network expansion"
+ },
+ "param.graph-enumeration.connect": {
+  "title": "Connect by path search",
+  "does": "Runs a recursive path search for each proposed reaction that reached a new species. Edges then carry real paths, not just proposals.",
+  "how": [
+   "Runs mepd's recursive MSMEP over the species pairs, as in `mepd network-splits` (cli_common._run_msmep_pairs), capped at 'Max path searches'. It builds network.json from the resulting trees."
+  ],
+  "default": "Off: proposals come back fast. Run 'Find TS' on the ones you care about.",
+  "caveats": [
+   "With steer=flux the path searches run anyway (each round); this switch is then implied."
+  ],
+  "code": [
+   "mepd/discovery/cli_expand.py:expand",
+   "mepd/cli_common.py:_run_msmep_pairs"
+  ],
+  "cli": "mepd discovery expand seed.xyz --connect --max-pairs 50"
+ },
+ "op.retrosynthesis": {
+  "title": "Retrosynthesis",
+  "does": "Searches for routes from purchasable building blocks to the target. The best route's steps join Explore as proposed reactions (no barriers unless checked).",
+  "how": [
+   "The chosen method proposes single steps for a molecule.",
+   "AND-OR best-first search in the manner of Retro*. A step costs -log(score); a molecule in stock costs 0; an unsolved molecule is estimated by its SA score (mepd/retro/search.py).",
+   "Molecules in the stock, or with ≤ 2 heavy atoms, count as available. The search stops at the budget (100 expansions or 120 s); the 5 cheapest solved routes are reported.",
+   "Optionally, each step is balanced and atom-mapped (SLAPMapper), then `mepd run --recursive --use-tsopt --irc --minimize-ends` at the profile's level.",
+   "The web adds route 1 to Explore (web/retro.py:adopt_best_route). The others are added from the result page."
+  ],
+  "default": "Templates method, automatic stock, verify off.",
+  "swap": [
+   {
+    "option": "ReactionT5, local LLM, AiZynthFinder",
+    "where": "Method switch on the Network card"
+   },
+   {
+    "option": "Another single-step model",
+    "where": "not exposed: add a Proposer to mepd/retro/proposers.py:PROPOSERS"
+   },
+   {
+    "option": "Retro*-0 (no SA estimate)",
+    "where": "CLI only: mepd retro plan --value zero"
+   }
+  ],
+  "caveats": [
+   "Route cost is model confidence, not chemistry. Barriers exist only for verified steps.",
+   "Everything runs locally; data and weights download on first use."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_retro",
+   "mepd/cli_retro.py:plan",
+   "mepd/retro/search.py",
+   "mepd/retro/proposers.py",
+   "mepd/retro/steps.py",
+   "mepd/web/retro.py:adopt_best_route"
+  ],
+  "cli": "mepd retro plan '<SMILES>' --method templates --routes 5 --max-depth 6 --iterations 100 --time-limit 120",
+  "refs": "Retrosynthesis"
+ },
+ "param.retrosynthesis.method": {
+  "title": "Method",
+  "does": "Chooses the single-step model that proposes disconnections. The route search around it is the same, except for AiZynthFinder.",
+  "how": [
+   "Templates: rdchiral applies USPTO templates. AiZynthFinder's ONNX policy (onnxruntime, CPU) ranks the top 50 (cumulative 0.995); its filter network drops outcomes below 0.05. Without onnxruntime, templates are ranked by USPTO frequency.",
+   "ReactionT5: sagawa/ReactionT5v2-retrosynthesis via transformers, beam 10. Metal and carbon-free ions become reagents. Optional forward-model round-trip check.",
+   "Local LLM: an OpenAI-compatible /chat/completions call with a JSON prompt. RDKit keeps only valid answers whose reactants supply the target's heavy atoms.",
+   "AiZynthFinder: its own MCTS run as a separate program, in its own environment."
+  ],
+  "default": "Templates: seconds on CPU, ~110 MB of data on first use.",
+  "swap": [
+   {
+    "option": "Any proposer",
+    "where": "not exposed: mepd/retro/proposers.py:PROPOSERS (a callable smiles,k -> [Step])"
+   },
+   {
+    "option": "Other ReactionT5 weights",
+    "where": "CLI: mepd retro plan --option model=<HF id>"
+   }
+  ],
+  "code": [
+   "mepd/retro/proposers.py:_Templates",
+   "mepd/retro/proposers.py:_ReactionT5",
+   "mepd/retro/proposers.py:_LocalLLM",
+   "mepd/retro/aizynth.py:plan"
+  ],
+  "cli": "mepd retro plan '<SMILES>' --method templates|reactiont5|local-llm|aizynthfinder",
+  "refs": "Retrosynthesis"
+ },
+ "param.retrosynthesis.stock": {
+  "title": "Building blocks",
+  "does": "Sets what a route may start from. A molecule in the stock ends a branch at zero cost.",
+  "how": [
+   "PaRoutes: the n1 and n5 building-block sets together (downloaded, 0.8 MB).",
+   "ZINC: AiZynthFinder's in-stock InChIKeys (after `mepd retro setup --aizynthfinder`), matched without stereo.",
+   "Automatic passes no --stock: the CLI uses ZINC if it is set up, else PaRoutes n1+n5 (cli_retro._default_stock).",
+   "'Also these (file)' adds your SMILES/InChIKey list. Molecules with ≤ 'Small molecules' heavy atoms (2) also count as available."
+  ],
+  "default": "Automatic.",
+  "caveats": [
+   "Automatic plus a file sends '--stock auto --stock <file>'. stock.load does not know 'auto' and fails. Pick PaRoutes or ZINC explicitly when adding a file."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_retro",
+   "mepd/cli_retro.py:_default_stock",
+   "mepd/retro/stock.py:load"
+  ],
+  "cli": "mepd retro plan '<SMILES>' --stock paroutes-n1 --stock paroutes-n5 --stock my_blocks.txt --max-heavy 2",
+  "refs": "Retrosynthesis"
+ },
+ "param.retrosynthesis.verify": {
+  "title": "Check steps with path searches",
+  "does": "Gives route steps real barriers: path search, TS and IRC at the profile's level. Without it, steps are proposals only.",
+  "how": [
+   "Each step is balanced with byproducts and co-reactants (chem.balance_step). An unbalanceable step is shown but not verified.",
+   "Runs `mepd run --reaction 'A.B>>P.X' --recursive --use-tsopt --irc --minimize-ends` per step. SLAPMapper maps the atoms.",
+   "A barrier counts as verified only when the IRC connects start to end."
+  ],
+  "default": "Off: routes come back in seconds. Verification takes minutes to hours per step.",
+  "code": [
+   "mepd/retro/steps.py",
+   "mepd/cli_retro.py:plan"
+  ],
+  "cli": "mepd retro plan '<SMILES>' --verify top -i level.toml",
+  "refs": "Retrosynthesis"
+ },
+ "param.retrosynthesis.roundtrip": {
+  "title": "Round-trip check",
+  "does": "Lowers the rank of ReactionT5 proposals that its forward model cannot turn back into the target.",
+  "how": [
+   "sagawa/ReactionT5v2-forward predicts the top 3 products of each proposal (with its reagents). If the target is not among them, the proposal keeps 0.2 of its score (_ReactionT5._roundtrip)."
+  ],
+  "default": "On. It is a soft check: the forward model also misses valid reactions written without reagents.",
+  "code": [
+   "mepd/retro/proposers.py:_ReactionT5"
+  ],
+  "cli": "mepd retro plan '<SMILES>' --method reactiont5 --option roundtrip=true",
+  "refs": "Retrosynthesis"
+ },
+ "op.nanoreactor": {
+  "title": "Nanoreactor",
+  "does": "Puts copies of the selected molecules in a hot sphere whose wall periodically squeezes them. Each reaction seen is cut out with only the molecules it needs, refined at your level, and added to Explore as a reaction dot.",
+  "how": [
+   "Pack the molecules at random orientations in a sphere (sized from the atom count), then relax with the wall (xtb --opt crude, or engine steps).",
+   "Piston MD: wide for 75% of each 1 ps period, then closed to 0.6× over 100 fs. Soft logfermi wall at 20 kcal/mol/Å. Step 0.5 fs, frames every 2 fs.",
+   "Bonds come from Cordero radii with hysteresis (form < 1.15×, break > 1.45×). States shorter than 20 fs are ignored; changes within 100 fs on shared molecules are one event.",
+   "Each event's subsystem is the molecules whose bonds change (shuttles included). Its ends are cut out with the same atom order and optimized at the profile's level; each molecule is optimized alone too."
+  ],
+  "default": "4 copies of each, 2000 K, 5 ps, MD on your level of theory, 3 occurrences refined per reaction.",
+  "swap": [
+   {
+    "option": "xtb's own MD (GFN2/GFN1/g-xTB)",
+    "where": "MD level in this form"
+   },
+   {
+    "option": "A different MD calculator than the refinement level",
+    "where": "CLI only: --md-method level --md-inputs md.toml"
+   },
+   {
+    "option": "Any external trajectory",
+    "where": "CLI: mepd discovery nanoreactor --trajectory traj.xyz --dump <fs>"
+   }
+  ],
+  "caveats": [
+   "Energies are compared only within one reaction's subsystem; different reactions have different atoms.",
+   "High temperature finds what can happen, not what is fast at room temperature: get barriers from the TS searches."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_nanoreactor",
+   "mepd/discovery/cli_nanoreactor.py:nanoreactor",
+   "mepd/discovery/nanoreactor.py:run_reactor_md",
+   "mepd/discovery/nanoreactor.py:run_engine_md",
+   "mepd/discovery/nanoreactor.py:detect_events",
+   "mepd/discovery/nanoreactor.py:refine",
+   "mepd/web/nanoreactor.py"
+  ],
+  "cli": "mepd discovery nanoreactor 'CC=O*4' 'O*4' -i level.toml --temperature 2000 --time 5 --compress 0.6 --md-method level",
+  "refs": "Nanoreactor"
+ },
+ "param.nanoreactor.md_method": {
+  "title": "MD level",
+  "does": "Chooses what computes forces for the discovery MD. Refinement always uses the profile's level.",
+  "how": [
+   "Your level of theory: run_engine_md. Langevin (BAOAB, friction 0.01/fs) with gradients from the profile's engine (MLIP, ASE, g-xTB...) and the same logfermi wall.",
+   "GFN2/GFN1/g-xTB: xtb's own --md per piston segment (nvt, hmass=1, no SHAKE). Electronic temperature 3000 K so bonds break cleanly; one thread.",
+   "Automatic: GFN2 if xtb is installed, else g-xTB if found, else your level (nanoreactor.pick_md_method).",
+   "Molecule charges for labeling always come from an xtb single point when xtb or g-xTB is present."
+  ],
+  "default": "Your level of theory: the MD sees the same chemistry as the rest of the workspace. The CLI's own default is auto.",
+  "caveats": [
+   "With g-xTB the MD takes about 4 min per ps for a few dozen atoms; an MLIP is much faster."
+  ],
+  "code": [
+   "mepd/discovery/nanoreactor.py:pick_md_method",
+   "mepd/discovery/nanoreactor.py:run_engine_md",
+   "mepd/discovery/nanoreactor.py:run_reactor_md"
+  ],
+  "cli": "--md-method level|auto|gfn2|gfn1|gxtb",
+  "refs": "Nanoreactor"
+ },
+ "param.nanoreactor.connect": {
+  "title": "Find each reaction's TS",
+  "does": "Starts an ordinary TS search for each refined reaction, on its subsystem only. The barrier then lands on the reaction dot.",
+  "how": [
+   "Handled by the web app, not the CLI. web/nanoreactor.py:spawn_ts_searches submits a 'ts' job on each reaction's subsystem edge as soon as the edge exists.",
+   "Smallest subsystems go first. Edges that already have a TS or channels job are skipped, up to 'Max TS searches' (20)."
+  ],
+  "default": "Off. 'Stop & analyze' from the interactive reactor turns it on.",
+  "code": [
+   "mepd/web/nanoreactor.py:spawn_ts_searches"
+  ]
+ },
+ "param.nanoreactor.refine_live": {
+  "title": "Refine reactions as they appear",
+  "does": "Refines each reaction while the MD is still running, so it reaches Explore and Analyze (and its TS search can start) before the run ends.",
+  "how": [
+   "A LiveRefiner optimizes each settled event's species and subsystem ends with 'Refinement workers' (2) in parallel and writes live_network.json. The final pass reuses this work."
+  ],
+  "default": "Off: everything is refined after the MD, leaving the CPU to the MD.",
+  "code": [
+   "mepd/discovery/nanoreactor.py:LiveRefiner",
+   "mepd/discovery/cli_nanoreactor.py:nanoreactor"
+  ],
+  "cli": "--refine-live --live-workers 2"
+ },
+ "op.nanoreactor-more": {
+  "title": "Run longer",
+  "does": "Continues a finished nanoreactor's MD from its last frame with the same reactor, piston and settings. New reactions are added; earlier ones are not recomputed.",
+  "how": [
+   "Reruns the original command in the same folder with --time = old time + more time, rounded up to whole piston periods.",
+   "Finished MD segments (segment_k.xyz + .mdrestart) are kept; the MD resumes after them.",
+   "The whole trajectory is analyzed again. Species and reactions refined before are reused by identity (nanoreactor.PreviousRefinement)."
+  ],
+  "default": "10 ps more.",
+  "caveats": [
+   "Not possible for a run that analyzed an external trajectory, or one that was stopped partway through a piston period."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_nanoreactor_more",
+   "mepd/discovery/nanoreactor.py:PreviousRefinement"
+  ],
+  "cli": "mepd discovery nanoreactor <same args> --time <old+more> --output <same folder>",
+  "refs": "Nanoreactor"
+ },
+ "op.complex": {
+  "title": "Build a complex",
+  "does": "Places several species from the graph together, unbonded, as a new complex node. It is then minimized at the workspace level.",
+  "how": [
+   "Builds geometries with the chosen method (mepd.complexes.build): dock, NCI ensemble, solvation shell or packed. Screening energies are not used.",
+   "Drops any geometry whose molecules bonded or fell apart (fragment formulas must match the request) (app.py:adopt_complexes).",
+   "Adds each surviving geometry as a complex (a repeat is recognized) and queues a minimization at the workspace level."
+  ],
+  "default": "Dock (xtb aISS), keep 3, one of each.",
+  "swap": [
+   {
+    "option": "CREST NCI ensemble, CREST QCG shell, packed",
+    "where": "Method switch on the Complexes card"
+   },
+   {
+    "option": "Another builder (e.g. Packmol options, docking codes)",
+    "where": "not exposed: mepd/complexes.py:build"
+   }
+  ],
+  "caveats": [
+   "At most 12 molecules in one complex (compose.complex_members)."
+  ],
+  "code": [
+   "mepd/web/operations.py:_build_complex",
+   "mepd/cli_complex.py:complex_",
+   "mepd/complexes.py:build",
+   "mepd/web/app.py:adopt_complexes"
+  ],
+  "cli": "mepd complex 'CC=O' 'O*3' --method dock --keep 3",
+  "refs": "Complexes"
+ },
+ "param.complex.method": {
+  "title": "How",
+  "does": "Chooses how the molecules are arranged.",
+  "how": [
+   "dock: `xtb dock host guest --nfinal ≥3` (aISS), largest molecule first, adding one molecule at a time onto the best pose. Uses $MEPD_XTB_DOCK, else the g-xTB xtb build.",
+   "nci: start from the docked complex (packed if docking fails), then `crest --nci --T 1`. Keeps the best few; retries with --noreftopo if the topology changed.",
+   "qcg: one solute plus N copies of one solvent: `crest solute.xyz --qcg solvent.xyz --nsolv N --T 1`.",
+   "packed: random orientations in the smallest sphere (Packmol if on PATH, else the nanoreactor packer). Repacked further apart if two molecules look bonded."
+  ],
+  "default": "dock: seconds, and it finds H-bonds and stacking.",
+  "caveats": [
+   "The xtb/CREST ranking is GFN2 level. The final order comes from the workspace-level minimization."
+  ],
+  "code": [
+   "mepd/complexes.py:dock",
+   "mepd/complexes.py:nci",
+   "mepd/complexes.py:qcg",
+   "mepd/complexes.py:packed"
+  ],
+  "cli": "mepd complex <mols> --method dock|nci|qcg|packed",
+  "refs": "Complexes"
+ },
+ "other.reactor": {
+  "title": "Interactive reactor",
+  "does": "A live MD of the chosen molecules that you steer: drag atoms, shrink the wall, set the temperature. 'Stop & analyze' turns what happened into reactions with TS searches.",
+  "how": [
+   "Packs the molecules like the nanoreactor (wall 1.15× the packing radius). A complex starts as it is, with the wall 2 Å beyond its farthest atom.",
+   "A separate process runs Langevin BAOAB (0.5 fs, friction 0.02/fs) on GFN2-xTB from tblite, in-process. Fermi smearing at 3000 K; the wavefunction is reused each step.",
+   "Drag = harmonic spring to the pointer (2–300 kcal/mol/Å², Shift ×5), force capped at 0.08 Eh/bohr. Wall: logfermi, 20 kcal/mol/Å.",
+   "Every 1.5 s, frames 2 fs apart go through the nanoreactor's event detection (events_in_frames).",
+   "Stop & analyze saves the trajectory and runs a nanoreactor job on it with TS searches on."
+  ],
+  "default": "800 K. Stops after 15 min unwatched; at most 2 reactors run at once.",
+  "swap": [
+   {
+    "option": "Other force fields/MLIPs for the live MD",
+    "where": "not exposed: GFN2-xTB is hard-coded in mepd/web/sandbox.py:_run (tblite Calculator)"
+   },
+   {
+    "option": "Unattended discovery MD at any level",
+    "where": "Nanoreactor operation"
+   }
+  ],
+  "caveats": [
+   "Live dynamics are always GFN2-xTB, whatever the profile. Refinement and TS searches after Stop & analyze use the workspace level.",
+   "Limited element set (H–Br, I) and slider ranges: 0–5000 K, wall 3–60 Å."
+  ],
+  "code": [
+   "mepd/web/sandbox.py:_run",
+   "mepd/web/sandbox.py:Sandbox",
+   "mepd/web/sandbox.py:start",
+   "mepd/web/static/js/components/Sandbox.js",
+   "mepd/web/app.py:sandbox_analyze"
+  ],
+  "refs": "Nanoreactor"
+ },
+ "other.products": {
+  "title": "Products",
+  "does": "Shows what the chosen reactants could become together. The products you pick become reactions with both ends minimized, ready for 'Find TS'.",
+  "how": [
+   "Pack the reactants (and any partner) into one complex (complexes.packed: Packmol if installed, else random packing, seed 0).",
+   "Perceive bonds (openbabel), then run the bond-rules generator: ≤ 2 breaks, ≤ 2 forms within 4.5 Å, Lewis-valid, no radicals or zwitterions, at most 40, fewest changes first.",
+   "Each product gets a 3D guess in the complex's atom order (embed_product). Products already in the graph are marked.",
+   "A picked product becomes a reaction: hidden reactant and product complexes joined by an edge, plus product species. All are queued for minimization at the workspace level."
+  ],
+  "default": "Bond rules with 2 breaks / 2 forms (the propose API allows up to 3; the UI uses 2).",
+  "swap": [
+   {
+    "option": "Pick products from your graph",
+    "where": "'Pick products from your graph' link: both sides are packed separately, and the TS search maps the atoms"
+   },
+   {
+    "option": "Draw the product",
+    "where": "'Draw it in Design' link"
+   },
+   {
+    "option": "CREST msreact or other generators",
+    "where": "not exposed here: mepd/web/compose.py:propose calls generators.propose('bond-rules', ...)"
+   }
+  ],
+  "caveats": [
+   "Which bonds can form depends on the random packing: only atom pairs within 4.5 Å in that arrangement are tried."
+  ],
+  "code": [
+   "mepd/web/compose.py:propose",
+   "mepd/web/compose.py:compose",
+   "mepd/discovery/network_expansion.py:enumerate_bond_changes",
+   "mepd/web/static/js/components/NewReaction.js:ProductPicker"
+  ],
+  "refs": "Reaction network expansion"
+ },
+ "op.solvent": {
+  "title": "Solvent effects",
+  "does": "Recomputes a finished gas-phase TS search in implicit solvents. Gives barrier, shift vs gas, half-life and the temperature for a 1 h half-life per solvent, plus insights.",
+  "how": [
+   "Reads the source folder's mep_output.xyz, ts*.xyz and their IRCs (gas-phase energies at the profile's level).",
+   "Per solvent: dG_solv = E(GFN2-xTB + model) − E(GFN2-xTB gas) on each frame, two xtb runs per geometry (solvation.py:SolvationCorrection). SCC failures retry with --etemp/--iterations.",
+   "Solvent energy = E(engine) + dG_solv. Native GFN2-xTB solvent only when the engine itself is local GFN2 xtb.",
+   "Barrier = highest point along the TS's IRC minus the lowest reactant-side energy, one floor per phase.",
+   "Half-lives from Eyring with the electronic barrier (conditions.py:kinetics_row)."
+  ],
+  "default": "Six solvents (water, methanol, DMSO, acetonitrile, THF, toluene), keep gas-phase geometries, ALPB, 298.15 K. Covers protic, polar aprotic and nonpolar; single points take seconds.",
+  "swap": [
+   {
+    "option": "Re-optimize in solvent",
+    "where": "Geometries in this form (--mode reoptimize)"
+   },
+   {
+    "option": "GBSA or CPCM-X",
+    "where": "Solvent model (advanced) in this form (--model)"
+   },
+   {
+    "option": "Other solvation source than GFN2-xTB",
+    "where": "not exposed: would plug in at mepd/solvation.py:SolvationCorrection"
+   }
+  ],
+  "caveats": [
+   "Composite model: gas energy from your engine, solvation from GFN2-xTB. Not free energies: no thermal or entropy terms.",
+   "Refuses to run if the profile already has a [solvation] table, or if the model does not change the energy (e.g. g-xTB binary)."
+  ],
+  "code": [
+   "mepd/cli_solvent.py:solvent",
+   "mepd/cli_solvent.py:_single_points",
+   "mepd/cli_solvent.py:_reoptimize",
+   "mepd/solvation.py:SolvationCorrection",
+   "mepd/solvation.py:solvate_engine",
+   "mepd/conditions.py:solvent_insights",
+   "mepd/web/operations.py:_build_solvent"
+  ],
+  "cli": "mepd solvent <ts-run-folder> --solvent water --solvent dmso --mode single-point --model alpb -i profile.toml",
+  "refs": "Solvent effects and reaction conditions"
+ },
+ "param.solvent.mode": {
+  "title": "Geometries",
+  "does": "Whether the stationary points stay at their gas-phase geometries or are found again on the solvated surface.",
+  "how": [
+   "Keep gas-phase: E_gas + dG_solv on every frame of the gas-phase path, TSs and IRCs. Flags when the solvated peak along an IRC moves >0.5 kcal/mol off the gas TS.",
+   "Re-optimize: single points first (kept in single-point/), then the engine is wrapped in the solvent (solvate_engine).",
+   "Path ends re-minimized with the profile's geometry optimizer.",
+   "Each TS re-optimized from the solvated IRC peak, then from the gas TS; accepted only if its IRC ends have the same bonds as the gas IRC ends."
+  ],
+  "default": "Keep gas-phase: seconds, and fair while the solvent does not move the TS much.",
+  "swap": [
+   {
+    "option": "Re-optimize in solvent (minutes per solvent)",
+    "where": "this field; CLI --mode reoptimize"
+   }
+  ],
+  "caveats": [
+   "For charged or strongly polar TSs, single points can be off: confirm with Re-optimize."
+  ],
+  "code": [
+   "mepd/cli_solvent.py:_single_points",
+   "mepd/cli_solvent.py:_reoptimize",
+   "mepd/cli_solvent.py:_peak_moved"
+  ],
+  "cli": "mepd solvent <folder> --mode reoptimize",
+  "refs": "Solvent effects and reaction conditions"
+ },
+ "param.solvent.model": {
+  "title": "Solvent model",
+  "does": "Which GFN2-xTB implicit solvent model gives the solvation free energy.",
+  "how": [
+   "Passed to xtb as --alpb, --gbsa or --cpcmx with the solvent name (solvation.py:SolvationCorrection).",
+   "Same flags for the gas/solvent pair on every frame, so dG_solv is a clean difference."
+  ],
+  "default": "ALPB: parametrized for all 17 listed solvents.",
+  "swap": [
+   {
+    "option": "GBSA",
+    "where": "this field (--model gbsa); not for octanol, nitromethane, ethyl acetate, dioxane"
+   },
+   {
+    "option": "CPCM-X",
+    "where": "this field (--model cpcmx)"
+   }
+  ],
+  "caveats": [
+   "Needs an xtb binary that runs GFN2-xTB; the g-xTB-only gxtb binary has no solvent model."
+  ],
+  "code": [
+   "mepd/solvation.py:SOLVENTS",
+   "mepd/solvation.py:MODELS",
+   "mepd/solvation.py:_xtb_executable"
+  ],
+  "cli": "mepd solvent <folder> --model gbsa",
+  "refs": "Solvent effects and reaction conditions"
+ },
+ "op.mechanochem": {
+  "title": "Mechanical force",
+  "does": "Ranks atom pairs to pull apart that speed up or slow down each channel, the force for a 1 h half-life, and forces at which a slower channel overtakes the fastest.",
+  "how": [
+   "Loads each channel's reactant, TS and product from a ts/tsopt/channels result (cli_force.py:load_channels).",
+   "For every heavy-atom pair: dq = d(TS) − d(reactant). Bell: ΔE‡(F) = ΔE‡(0) − F·dq; 1 nN·Å = 14.39 kcal/mol (mechanochem.py:analyze).",
+   "Levers need |dq| > 0.05 Å; top 5 per direction. Crossovers scanned up to the largest force.",
+   "Check under force: ForcedEngine adds −F·d_ij (EFEI); reactant minimized, TS + IRC re-optimized at each force for the main levers."
+  ],
+  "default": "Estimate (Bell, instant), heavy atoms only, scan to 2.5 nN, 298.15 K.",
+  "swap": [
+   {
+    "option": "Check under force (EFEI re-optimization)",
+    "where": "CLI --mode reoptimize --force 0.5 --force 1"
+   },
+   {
+    "option": "Extended Bell (compliance from Hessians)",
+    "where": "not exposed: would plug in at mepd/mechanochem.py:analyze"
+   }
+  ],
+  "caveats": [
+   "Off in the web UI for now; `mepd force` runs it on the command line.",
+   "Bell is first order: trusted to ~1 nN. Does not say which atoms can carry a handle."
+  ],
+  "code": [
+   "mepd/cli_force.py:force",
+   "mepd/mechanochem.py:analyze",
+   "mepd/mechanochem.py:ForcedEngine",
+   "mepd/cli_force.py:_reoptimize"
+  ],
+  "cli": "mepd force <folder> --mode bell --max-force 2.5"
+ },
+ "param.mechanochem.mode": {
+  "title": "Method",
+  "does": "First-order estimate from existing geometries, or barriers recomputed on the force-modified surface.",
+  "how": [
+   "Estimate: Bell's ΔE‡ − F·dq from the reactant–TS distance change of each pair.",
+   "Check under force: ForcedEngine (E − F·Σd_ij) around the profile's engine; reactant minimized, TS optimized and IRC run at each force (default 0.5, 1, 1.5 nN).",
+   "Done for the fastest channel's strongest lever and the leading selectivity switch; IRC must connect the same minima."
+  ],
+  "default": "Estimate: instant, no engine calls.",
+  "swap": [
+   {
+    "option": "Check under force",
+    "where": "this field; CLI --mode reoptimize"
+   }
+  ],
+  "caveats": [
+   "Mechanical force is off in the web UI."
+  ],
+  "code": [
+   "mepd/mechanochem.py:bell_barrier",
+   "mepd/mechanochem.py:ForcedEngine",
+   "mepd/cli_force.py:_reoptimize"
+  ],
+  "cli": "mepd force <folder> --mode reoptimize --force 1"
+ },
+ "op.substituents": {
+  "title": "Substituent effects",
+  "does": "Replaces one hydrogen at a time with functional groups and reports each barrier shift, a Hammett slope per site, and groups that change which channel wins.",
+  "how": [
+   "Sites: H bonded to the same heavy atom at both IRC ends; symmetry-equivalent H merged (Weisfeiler–Lehman ranks). Closest to the reacting atoms first.",
+   "Group built once in 3D with RDKit (ETKDG embed, MMFF94), placed along the old X–H bond at covalent length, spun to avoid clashes (substituents.py:attach).",
+   "Same group added to reactant end, TS and product end in the same atom order.",
+   "Fast: only new atoms relaxed (ASE LBFGS on the profile's engine), single points; parent gets the same protocol.",
+   "Shift = barrier(variant) − barrier(parent); slope by least squares vs Hammett σp (≥4 groups)."
+  ],
+  "default": "NH2, OH, OMe, Me, F, Cl, CF3, CN, NO2 (donor to acceptor), fast mode, up to 8 sites.",
+  "swap": [
+   {
+    "option": "Re-optimize the TS",
+    "where": "Geometries in this form (--mode reoptimize)"
+   },
+   {
+    "option": "Other groups (Design's group list)",
+    "where": "Groups in this form (--group)"
+   }
+  ],
+  "caveats": [
+   "Fast shifts: TS is no longer a saddle; re-optimize before trusting shifts ≥8 kcal/mol.",
+   "σp is a para-aryl scale; elsewhere a rough donor/acceptor ranking.",
+   "Variants where the group forms/breaks bonds or clashes (<1.2 Å) are flagged."
+  ],
+  "code": [
+   "mepd/cli_substituents.py:substituents",
+   "mepd/cli_substituents.py:_variant",
+   "mepd/substituents.py:find_sites",
+   "mepd/substituents.py:template",
+   "mepd/substituents.py:attach",
+   "mepd/substituents.py:relax_group",
+   "mepd/substituents.py:hammett"
+  ],
+  "cli": "mepd substituents <folder> --group methyl --group nitro --mode fast --max-sites 8",
+  "refs": "Substituent effects"
+ },
+ "param.substituents.mode": {
+  "title": "Geometries",
+  "does": "Whether only the new group relaxes, or each variant's TS and reactant are optimized again.",
+  "how": [
+   "Fast: new group atoms minimized with the rest fixed (ASE FixAtoms + LBFGS, fmax 0.05, ≤300 steps), then single points of reactant, TS, product.",
+   "Re-optimize: reactant minimized, TS optimized, IRC run; status other_minima if the IRC ends lack the substituted ends' bonds.",
+   "Parent goes through the same protocol so shifts compare like with like."
+  ],
+  "default": "Fast: seconds per variant. Checked on Menshutkin: within ~2 kcal/mol of re-optimized shifts.",
+  "swap": [
+   {
+    "option": "Re-optimize the TS (about a minute each)",
+    "where": "this field; CLI --mode reoptimize"
+   }
+  ],
+  "code": [
+   "mepd/substituents.py:relax_group",
+   "mepd/cli_substituents.py:_parent",
+   "mepd/cli_substituents.py:_variant"
+  ],
+  "cli": "mepd substituents <folder> --mode reoptimize",
+  "refs": "Substituent effects"
+ },
+ "param.substituents.groups": {
+  "title": "Groups",
+  "does": "Which functional groups replace the hydrogen at each site.",
+  "how": [
+   "Each group's SMILES comes from Design's group list (web/design.py:GROUPS).",
+   "Embedded with RDKit (seed 7) and MMFF94-optimized once, then cached.",
+   "Labels show Hammett σp (Hansch, Leo, Taft 1991) where known."
+  ],
+  "default": "NH2, OH, OMe, Me, F, Cl, CF3, CN, NO2: strong donor to strong acceptor, small enough to be quick.",
+  "code": [
+   "mepd/substituents.py:group_smiles",
+   "mepd/substituents.py:SIGMA_P",
+   "mepd/substituents.py:template"
+  ],
+  "cli": "mepd substituents <folder> --group amino --group cyano",
+  "refs": "Substituent effects"
+ },
+ "op.variant-fast": {
+  "title": "Network variant: fast estimate",
+  "does": "Estimates a network variant reaction's barrier and reaction-energy shift against its parent, with the edit built into the parent's geometries.",
+  "how": [
+   "Variant spec (JSON) written when the variant is made: edit carried through the network by graph matching (network_variants.py:propagate, apply_edit).",
+   "New atoms relaxed with everything else fixed (substituents.relax_group, ASE LBFGS on the profile's engine).",
+   "Single points on reactant, TS, product; shifts vs parent energies at the same level.",
+   "Status 'reacted' if the new atoms formed or broke bonds.",
+   "When done, the re-optimization is queued automatically (web/variants.py:after_job)."
+  ],
+  "caveats": [
+   "The TS is not a saddle of the new molecule: a first estimate."
+  ],
+  "code": [
+   "mepd/cli_variant.py:_fast",
+   "mepd/network_variants.py:apply_edit",
+   "mepd/web/variants.py:start_jobs",
+   "mepd/web/variants.py:after_job"
+  ],
+  "cli": "mepd variant variant.json --mode fast -i profile.toml -o out"
+ },
+ "op.variant-reopt": {
+  "title": "Network variant: re-optimize",
+  "does": "Gives the variant reaction a verified TS: ends minimized, TS optimized from the substituted guess, IRC checked against the ends.",
+  "how": [
+   "Starts from the fast estimate's frames when it succeeded.",
+   "Both ends minimized with the profile's optimizer; flagged ends_changed if bonds or tetrahedral configurations change.",
+   "TS optimized and IRC run (cli_common._optimize_ts_and_irc); verified if the IRC ends have the substituted ends' bonds.",
+   "Barrier from the lower of the minimized end and IRC end. Minimized ends become the edge's conformers.",
+   "If no verified TS: the parent's own path search (ts or channels) is queued on the variant's ends."
+  ],
+  "code": [
+   "mepd/cli_variant.py:_reoptimize",
+   "mepd/web/variants.py:after_job",
+   "mepd/web/variants.py:_fallback"
+  ],
+  "cli": "mepd variant variant.json --mode reoptimize -i profile.toml -o out"
+ },
+ "op.qmmm-build": {
+  "title": "Put in explicit solvent (QM/MM)",
+  "does": "Makes a new QM/MM system: the molecule (QM) inside a droplet of explicit solvent molecules (environment). Every later job on it runs embedded.",
+  "how": [
+   "Solvent molecules placed at random orientations at the liquid's number density, ≥2.1 Å from any atom, out to the shell thickness (qmmm_build.py:solvate).",
+   "Shell relaxed with GFN-FF (xtb), molecule held fixed (relax_environment).",
+   "Region: molecule = QM atoms; environment beyond the moving-shell radius frozen (QMMMRegion.build).",
+   "Result added as a QM/MM node and minimized at the workspace level, with [qmmm] added to the profile."
+  ],
+  "default": "Water, 6 Å shell, 5 Å moving shell, GFN-FF environment (mechanical embedding: any QM level).",
+  "swap": [
+   {
+    "option": "Environment level: TIP3P / GFN2-xTB / GFN1-xTB",
+    "where": "Environment level in this form (--mm)"
+   },
+   {
+    "option": "AMBER via OpenMM, TeraChem QM/MM, your own region on an XYZ/PDB",
+    "where": "CLI mepd qmmm region / from-tc"
+   },
+   {
+    "option": "Equilibrated solvent (MD)",
+    "where": "not exposed: would plug in at mepd/qmmm_build.py:solvate"
+   }
+  ],
+  "caveats": [
+   "The droplet is a starting structure, not an equilibrated liquid.",
+   "A TS cannot be embedded here: find it again inside the solvent."
+  ],
+  "code": [
+   "mepd/qmmm_build.py:solvated_system",
+   "mepd/qmmm_build.py:solvate",
+   "mepd/qmmm_build.py:relax_environment",
+   "mepd/qmmm.py:QMMMRegion",
+   "mepd/engines/qmmm.py:QMMMEngine",
+   "mepd/web/qmmm.py:adopt_build"
+  ],
+  "cli": "mepd qmmm build mol.xyz --solvent water --shell 6 --active-radius 5 --mm gfnff",
+  "refs": "QM/MM"
+ },
+ "param.qmmm-build.mm": {
+  "title": "Environment level",
+  "does": "How the solvent is computed and how it acts on the QM region.",
+  "how": [
+   "GFN-FF / GFN2-xTB / GFN1-xTB: subtractive ONIOM, E = E_QM(model) + E_low(real) − E_low(model), low level via xtb (engines/qmmm.py:_XTBLow).",
+   "Model = QM atoms capped with link hydrogens on cut bonds.",
+   "TIP3P: additive, OpenMM with TIP3P charges (flexible), QM atoms get UFF Lennard-Jones; QM feels the point charges (electrostatic embedding, tip3p_system).",
+   "OpenMM environments use microiterations: the environment relaxed with force-field steps between QM steps."
+  ],
+  "default": "GFN-FF: no parameters needed, any element, works with any QM level (mechanical embedding).",
+  "swap": [
+   {
+    "option": "TIP3P water, electrostatic embedding",
+    "where": "this field; needs a point-charge QM level (engine xtb, psi4 or terachem)"
+   },
+   {
+    "option": "GFN2-xTB / GFN1-xTB environment",
+    "where": "this field"
+   },
+   {
+    "option": "AMBER (OpenMM) or TeraChem",
+    "where": "CLI mepd qmmm region --mm amber|terachem"
+   }
+  ],
+  "caveats": [
+   "Mechanical embedding: the QM electrons are not polarized by the solvent.",
+   "TIP3P needs every environment molecule to be water."
+  ],
+  "code": [
+   "mepd/engines/qmmm.py:make_low",
+   "mepd/engines/qmmm.py:_XTBLow",
+   "mepd/engines/qmmm.py:tip3p_system",
+   "mepd/qmmm.py:embedding_problem",
+   "mepd/engines/frozen.py:FrozenAtomsEngine._micro"
+  ],
+  "cli": "mepd qmmm build mol.xyz --mm tip3p",
+  "refs": "QM/MM"
+ },
+ "param.qmmm-build.active_radius": {
+  "title": "Moving shell (Å)",
+  "does": "Environment atoms within this distance of the QM region move in optimizations, path searches, TS searches and IRCs; the rest is frozen.",
+  "how": [
+   "Whole small molecules are taken in or out at a time (qmmm.py:active_shell).",
+   "Frozen atoms are held by FrozenAtomsEngine and left out of Hessians."
+  ],
+  "default": "5 Å.",
+  "swap": [
+   {
+    "option": "Freeze the whole environment along a path (cage) or mean-force path",
+    "where": "profile qmmm_environment = \"cage\" | \"mean_force\""
+   }
+  ],
+  "code": [
+   "mepd/qmmm.py:active_shell",
+   "mepd/engines/frozen.py:FrozenAtomsEngine",
+   "mepd/inputs.py:RunInputs._embed_and_freeze"
+  ],
+  "cli": "mepd qmmm build mol.xyz --active-radius 5",
+  "refs": "QM/MM"
+ },
+ "param.qmmm-build.relax": {
+  "title": "Relax the solvent",
+  "does": "Minimizes the randomly placed solvent around the fixed molecule before the system is used.",
+  "how": [
+   "GFN-FF (xtb) geometry optimization of all solvent atoms, molecule frozen (FrozenAtomsEngine), maxiter 300, fmax 0.05."
+  ],
+  "default": "On: random placement leaves strained contacts that each QM/MM step would otherwise pay for.",
+  "code": [
+   "mepd/qmmm_build.py:relax_environment"
+  ],
+  "cli": "mepd qmmm build mol.xyz --no-relax",
+  "refs": "QM/MM"
+ },
+ "op.qmmm-inspect": {
+  "title": "QM/MM energy split",
+  "does": "Splits each frame's QM/MM energy into the QM region and its environment, relative to the first frame.",
+  "how": [
+   "Frames of the chosen result entry written out; job's profile with its [qmmm] table loaded.",
+   "QMMMEngine.decompose: qm = E_QM of the capped QM region; environment = E_low(real) − E_low(model) (xtb low levels) or E_MM (OpenMM).",
+   "Also runs diagnose: frozen drift, stretched boundary bonds, bonds made/broken in the environment, closest QM–MM contact.",
+   "Shown in kcal/mol from frame 0 (web/qmmm.py:energy_split)."
+  ],
+  "code": [
+   "mepd/cli_qmmm.py:inspect",
+   "mepd/engines/qmmm.py:QMMMEngine.decompose",
+   "mepd/qmmm.py:diagnose",
+   "mepd/web/qmmm.py:energy_split"
+  ],
+  "cli": "mepd qmmm inspect region.json frames.xyz -i qmmm_profile.toml -o report.json",
+  "refs": "QM/MM"
+ },
+ "op.qmmm-reaction": {
+  "title": "Model in solvent (QM/MM)",
+  "does": "Turns a gas-phase reaction into a QM/MM edge: start, end (and TS) in one shared solvent shell, minimized embedded and ready for a TS search.",
+  "how": [
+   "End atom-mapped onto the start if needed (SLAPMapper, as mepd run maps endpoints).",
+   "Start solvated as in 'Put in explicit solvent' (droplet + GFN-FF relax).",
+   "End and TS Kabsch-aligned onto the solute and nudged out of contact (≥1.8 Å, internal distances as stiff springs; qmmm_build.py:embed). Solvent unchanged.",
+   "Web: ends queued for minimization; TS re-optimized with IRC at the workspace level."
+  ],
+  "default": "Water, 6 Å shell, GFN-FF environment, bring the TS when a verified one exists.",
+  "swap": [
+   {
+    "option": "Other solvent, shell, environment level",
+    "where": "this form (same fields as 'Put in explicit solvent')"
+   }
+  ],
+  "caveats": [
+   "Solvent was arranged around the start: path searches renumber and march solvent between ends (qmmm_path.py)."
+  ],
+  "code": [
+   "mepd/cli_qmmm.py:reaction",
+   "mepd/cli_qmmm.py:_end_onto_start",
+   "mepd/qmmm_build.py:embed",
+   "mepd/web/qmmm.py:adopt_reaction"
+  ],
+  "cli": "mepd qmmm reaction --start r.xyz --end p.xyz --ts ts.xyz --solvent water",
+  "refs": "QM/MM"
+ },
+ "param.qmmm-reaction.use_ts": {
+  "title": "Bring the TS along",
+  "does": "Puts the known gas-phase TS into the same solvent and re-optimizes it there, with its IRC.",
+  "how": [
+   "Finds the IRC-verified TS for this edge (edge_route_ts) and passes it as --ts.",
+   "TS embedded like the end (aligned, nudged out of contact).",
+   "Then a tsopt job with IRC runs on it at the workspace level."
+  ],
+  "default": "On: re-optimizing the gas TS is the most reliable way to the solvated TS.",
+  "code": [
+   "mepd/web/operations.py:_build_qmmm_reaction",
+   "mepd/web/qmmm.py:adopt_reaction"
+  ],
+  "refs": "QM/MM"
+ },
+ "op.qmmm-embed": {
+  "title": "Put into this QM/MM system",
+  "does": "Places another geometry of the solute (product, TS) into an existing QM/MM structure in place of its solute, then minimizes it (or re-optimizes a TS).",
+  "how": [
+   "Gas structure must list the solute's atoms in the same order.",
+   "Kabsch-aligned onto the solute, then moved out of contact with environment atoms within 6 Å (scipy L-BFGS-B, min 1.8 Å, stiff internal springs).",
+   "Environment left exactly as in the selected structure.",
+   "Minimum: queued for minimization and joined to the host by an edge. TS: queued for TS optimization with IRC."
+  ],
+  "code": [
+   "mepd/cli_qmmm.py:embed_cmd",
+   "mepd/qmmm_build.py:embed",
+   "mepd/qmmm_build.py:_clear_contacts",
+   "mepd/web/qmmm.py:adopt_embed"
+  ],
+  "cli": "mepd qmmm embed product.xyz --region region.json --into system.xyz",
+  "refs": "QM/MM"
+ },
+ "op.qmmm-protein-sites": {
+  "title": "Place in a protein (QM/MM)",
+  "does": "Docks the species, rigid in its own geometry, over the whole protein and lists binding sites, best first.",
+  "how": [
+   "Protein prepared with PDBFixer: chains kept, ligands/ions/crystal water removed, missing atoms and hydrogens at the pH; missing loops not rebuilt.",
+   "Receptor and rigid ligand to PDBQT with Open Babel (TORSDOF 0).",
+   "AutoDock Vina in 20 Å boxes on a grid over the protein (box kept if ≥40 heavy atoms within 10 Å), 3 poses per box, in parallel processes.",
+   "Poses grouped into sites by centroid within 4 Å; each site: best Vina score, hits, residues within 4.5 Å."
+  ],
+  "default": "pH 7, exhaustiveness 8, box spacing 12 Å, 20 sites, 4 processes.",
+  "swap": [
+   {
+    "option": "Flexible docking / other docking codes",
+    "where": "not exposed: would plug in at mepd/qmmm_protein.py:_dock_box"
+   },
+   {
+    "option": "Box size",
+    "where": "CLI --box"
+   }
+  ],
+  "caveats": [
+   "Vina scores rank poses; they are not binding free energies.",
+   "Needs vina and pdbfixer (pip install 'mepd[qmmm]')."
+  ],
+  "code": [
+   "mepd/cli_qmmm.py:protein_sites",
+   "mepd/qmmm_protein.py:prepare_protein",
+   "mepd/qmmm_protein.py:find_sites",
+   "mepd/qmmm_protein.py:_dock_box",
+   "mepd/qmmm_protein.py:box_centers"
+  ],
+  "cli": "mepd qmmm protein-sites species.xyz --protein 2CHT --ph 7 --exhaustiveness 8",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "param.qmmm-protein-sites.ph": {
+  "title": "pH",
+  "does": "Sets the protonation states of the protein's residues, and so the protein's charge.",
+  "how": [
+   "PDBFixer addMissingHydrogens(pH); the charge is summed from AMBER ff14SB charges and reported."
+  ],
+  "default": "7.0.",
+  "code": [
+   "mepd/qmmm_protein.py:prepare_protein"
+  ],
+  "cli": "mepd qmmm protein-sites s.xyz --protein 2CHT --ph 7",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "param.qmmm-protein-sites.exhaustiveness": {
+  "title": "Search effort",
+  "does": "Vina's exhaustiveness in each docking box: more finds better poses, slower.",
+  "how": [
+   "Passed to Vina.dock(exhaustiveness=...) per box, one CPU per box."
+  ],
+  "default": "8.",
+  "code": [
+   "mepd/qmmm_protein.py:_dock_box"
+  ],
+  "cli": "mepd qmmm protein-sites s.xyz --protein 2CHT --exhaustiveness 16",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "op.qmmm-protein-build": {
+  "title": "QM/MM system at this site",
+  "does": "Builds a QM/MM system of the docked species at one site: protein and a water shell as environment, species (and chosen side chains) as QM.",
+  "how": [
+   "OpenMM Modeller adds TIP3P water; keeps waters within the shell, drops any closer than 2.4 Å to the species.",
+   "Protein H and water minimized in OpenMM, heavy atoms and species held (species with GFN2-xTB charges, UFF LJ).",
+   "Region: mm amber (ff14SB + TIP3P), electrostatic embedding, additive QM/MM; QM sees every environment charge.",
+   "Web: start (and brought-along end/TS) queued for minimization / TS optimization."
+  ],
+  "default": "Site 0, 8 Å water, 6 Å moving shell, protein not frozen, 12 Å force-field cutoff.",
+  "swap": [
+   {
+    "option": "Side chains in the QM region",
+    "where": "Residues in the QM region in this form (--qm-residues)"
+   },
+   {
+    "option": "Other protein force field",
+    "where": "not exposed: would plug in at mepd/qmmm_protein.py:FORCEFIELD"
+   }
+  ],
+  "caveats": [
+   "Needs a QM level that takes point charges: engine xtb (GFN2-xTB), psi4 or terachem."
+  ],
+  "code": [
+   "mepd/cli_qmmm.py:protein_build",
+   "mepd/qmmm_protein.py:build_site_system",
+   "mepd/qmmm_protein.py:_relax_environment",
+   "mepd/engines/qmmm.py:_OpenMMLow",
+   "mepd/web/qmmm.py:adopt_protein_build"
+  ],
+  "cli": "mepd qmmm protein-build <sites-folder> --site 0 --water-shell 8 --qm-residues 'A:ARG90'",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "param.qmmm-protein-build.qm_residues": {
+  "title": "Residues in the QM region",
+  "does": "Adds side chains that take part in the chemistry to the QM region.",
+  "how": [
+   "Each residue cut at CA–CB: side chain from CB on is QM, capped with a link hydrogen.",
+   "QM charge adds +1 for ARG, LYS, HIP and −1 for ASP, GLU."
+  ],
+  "default": "None: only the species is QM.",
+  "code": [
+   "mepd/qmmm_protein.py:build_site_system",
+   "mepd/qmmm_protein.py:SIDE_CHAIN_CHARGE"
+  ],
+  "cli": "mepd qmmm protein-build <dir> --qm-residues 'A:ARG90 A:GLU78'",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "param.qmmm-protein-build.freeze_protein": {
+  "title": "Freeze the protein",
+  "does": "Holds every protein atom outside the QM region fixed; only nearby water moves. The protein still acts through its charges.",
+  "how": [
+   "Protein atom indices added to the region's frozen atoms (QMMMRegion.build frozen_atoms)."
+  ],
+  "default": "Off: protein atoms within the moving shell relax.",
+  "code": [
+   "mepd/qmmm_protein.py:build_site_system"
+  ],
+  "cli": "mepd qmmm protein-build <dir> --freeze-protein",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "param.qmmm-protein-build.cutoff": {
+  "title": "Force-field cutoff (Å)",
+  "does": "Non-bonded cutoff for the force field's own interactions. The QM region feels every charge regardless.",
+  "how": [
+   "Stored as the region's mm_cutoff; OpenMM CutoffNonPeriodic at this distance (0: no cutoff)."
+  ],
+  "default": "12 Å: keeps the force field cheap for a whole protein.",
+  "code": [
+   "mepd/qmmm_protein.py:_relax_environment",
+   "mepd/engines/qmmm.py:_OpenMMLow"
+  ],
+  "cli": "mepd qmmm protein-build <dir> --cutoff 0",
+  "refs": "Reactions in a protein (QM/MM)"
+ },
+ "other.conditions": {
+  "title": "Conditions",
+  "does": "An experimental setup (medium, temperature, reaction time, start structures) for the Explore graph. Edges show barrier and half-life under it; 'Analyze network' gives whole-network kinetics.",
+  "how": [
+   "Edge barrier: from the latest finished Solvent effects job in that solvent (re-optimized preferred), else the lowest verified gas-phase barrier, marked 'gas'.",
+   "Optional level filter (one profile) and substituent variant (adds that site/group's Substituent effects shift).",
+   "Half-life from Eyring with the electronic barrier; edge 'runs' if ≤ reaction time.",
+   "Analyze network: species energies linked through reaction energies; first-order network model gives amounts, selectivity, timescales, bottlenecks and degree of rate control.",
+   "Compute (fast) / Re-optimize queue Solvent effects on edges lacking this solvent."
+  ],
+  "default": "Gas phase, 25 °C, 1 h, any level, no variant.",
+  "swap": [
+   {
+    "option": "Free energies instead of electronic barriers",
+    "where": "not exposed here: would plug in at mepd/web/setups.py:build_model"
+   },
+   {
+    "option": "Concentration-dependent (bimolecular) rates",
+    "where": "not exposed: every step is first order; mepd/network_model.py"
+   }
+  ],
+  "caveats": [
+   "Barriers are electronic (+ solvation), not free energies: amounts are qualitative.",
+   "Gas and solvent barriers can mix; warnings say how many steps fell back to gas."
+  ],
+  "code": [
+   "mepd/web/setups.py:edge_under",
+   "mepd/web/setups.py:build_model",
+   "mepd/web/setups.py:analyze",
+   "mepd/web/setups.py:compare_setups",
+   "mepd/web/setups.py:fill_requests",
+   "mepd/network_model.py:NetworkModel",
+   "mepd/web/static/js/components/Setups.js"
+  ],
+  "refs": "Solvent effects and reaction conditions"
+ },
+ "profile.path_method": {
+  "title": "Path method",
+  "does": "Picks the algorithm that relaxes the path between two minima. Every method runs inside the same recursive driver (MSMEP), which splits a path at intermediates and searches each piece again.",
+  "how": [
+   "MSMEP builds the initial path (Initial path choice), then hands it to the path minimizer chosen here (mepd/msmep.py:_construct_path_minimizer).",
+   "NEB: mepd's own nudged elastic band, images moved by the Chain optimizer. FSM (FNEB): freezing string grown from both ends. FSM + TS check: FSM, Sella/geomeTRIC TS optimization from the highest image, then a pseudo-IRC.",
+   "GSM: the compiled molecularGSM binary, which calls back into this profile's engine per node through a generated grad.py.",
+   "MLP-GI: minimizes the path's energy-weighted geodesic length with two FIRE stages (mepd/mlp_geodesic.py). geomeTRIC NEB: geometric.neb. DL-FIND NEB: TeraChem's DL-FIND via QCCompute/ChemCloud.",
+   "Unless switched off, the converged path is checked for being one elementary step; if not, it is split and each piece searched again."
+  ],
+  "default": "NEB (RunInputs.path_min_method). It needs no external binary and works with every engine.",
+  "swap": [
+   {
+    "option": "FSM, FSM + TS check, GSM, MLP-GI, geomeTRIC NEB, DL-FIND NEB",
+    "where": "this choice; TOML path_min_method"
+   },
+   {
+    "option": "A new path minimizer",
+    "where": "not exposed: subclass mepd/pathminimizers/pathminimizer.py:PathMinimizer and add a branch in mepd/msmep.py:_construct_path_minimizer, plus RunInputs.__post_init__ defaults and PATH_METHODS in mepd/web/profile_form.py"
+   }
+  ],
+  "caveats": [
+   "GSM needs the molecularGSM binary ($GSM_EXECUTABLE or gsm on PATH); FSM + TS check falls back to NEB without it.",
+   "DL-FIND NEB is only selectable with TeraChem through QCCompute or ChemCloud."
+  ],
+  "code": [
+   "mepd/msmep.py:_construct_path_minimizer",
+   "mepd/inputs.py:RunInputs.__post_init__",
+   "mepd/neb.py:NEB",
+   "mepd/pathminimizers/fneb.py:FreezingNEB",
+   "mepd/pathminimizers/fsm_ts.py:FSMTS",
+   "mepd/pathminimizers/gsm.py:GSM",
+   "mepd/pathminimizers/mlpgi.py:MLPGI",
+   "mepd/pathminimizers/geometric_neb.py:GeometricNEB",
+   "mepd/pathminimizers/nebdlf.py:DLFindNEB"
+  ],
+  "cli": "mepd run --inputs profile.toml (path_min_method = \"NEB\" | \"FNEB\" | \"FSM-TS\" | \"GSM\" | \"MLPGI\" | \"GEOMETRIC-NEB\" | \"NEB-DLF\")",
+  "refs": "Path search"
+ },
+ "profile.engine": {
+  "title": "Engine",
+  "does": "Sets where every energy, gradient, Hessian, minimization and TS optimization of a calculation comes from: the level of theory.",
+  "how": [
+   "RunInputs.__post_init__ builds one engine object from engine_name and its [*_engine_kwds] table.",
+   "g-xTB: GXTBCalculator runs the gxtb executable (xtb with --gxtb) once per structure (--grad, --opt, --hess). Found via $GXTB_EXECUTABLE, gxtb on PATH, else fetched on first use.",
+   "xTB: XTBEngine runs xtb with GFN2 or GFN1. Psi4: a worker in Psi4's own Python. TeraChem: one terachem run per gradient, previous orbitals as guess.",
+   "QCCompute/ChemCloud: QCComputeEngine sends qcdata ProgramInputs to the chosen Program locally (qccompute) or remotely (chemcloud); minimizations and TS searches go through geomeTRIC.",
+   "MLIP, FAIR-Chem, ASE: an ASE calculator wrapped by ASEEngine or FAIRChemEngine; minimizations use the ASE optimizer set in Advanced, TS searches and IRCs use Sella.",
+   "Optional wrappers applied after: implicit solvent (SolvatedEngine), QM/MM embedding, frozen atoms."
+  ],
+  "default": "g-xTB (RunInputs.engine_name = \"gxtb\"): runs locally with no account and is fetched automatically.",
+  "swap": [
+   {
+    "option": "xTB, Psi4, TeraChem, QCCompute, ChemCloud, MLIP, FAIR-Chem, ASE",
+    "where": "this choice; TOML engine_name"
+   },
+   {
+    "option": "Any ASE calculator (yours included)",
+    "where": "Engine: ASE calculator, Calculator: Other (import path package.module:ClassName)"
+   },
+   {
+    "option": "A new engine class",
+    "where": "not exposed: subclass mepd/engines/engine.py:Engine and add a branch in mepd/inputs.py:RunInputs.__post_init__ and ENGINES in mepd/web/profile_form.py"
+   }
+  ],
+  "caveats": [
+   "g-xTB's own --hess Hessian is not consistent with its gradients; Hessian-based checks that matter (FSM + TS check, VRI) use gradient finite differences instead.",
+   "TS optimization and IRC for g-xTB, MLIP, FAIR-Chem and ASE engines run through Sella in ASE; QCCompute/ChemCloud use geomeTRIC."
+  ],
+  "code": [
+   "mepd/inputs.py:RunInputs.__post_init__",
+   "mepd/engines/gxtb.py:GXTBCalculator",
+   "mepd/engines/gfnff.py:XTBEngine",
+   "mepd/engines/qccompute.py:QCComputeEngine",
+   "mepd/engines/mlip.py:build_mlip_engine",
+   "mepd/engines/fairchem.py:FAIRChemEngine",
+   "mepd/engines/ase.py:ASEEngine",
+   "mepd/engines/psi4.py:Psi4Engine",
+   "mepd/engines/terachem.py:TeraChemEngine"
+  ],
+  "cli": "mepd run --inputs profile.toml (engine_name = \"gxtb\" | \"xtb\" | \"psi4\" | \"terachem\" | \"qccompute\" | \"chemcloud\" | \"mlip\" | \"fairchem\" | \"ase\")"
+ },
+ "profile.program": {
+  "title": "Program",
+  "does": "For QCCompute or ChemCloud engines: which quantum chemistry program computes energies and gradients.",
+  "how": [
+   "The choice becomes RunInputs.program and is passed to QCComputeEngine as the gradient subprogram.",
+   "Energies and gradients: qccompute.compute (local) or chemcloud.compute (remote) with a qcdata ProgramInput.",
+   "Minimizations and TS optimizations: geomeTRIC as the outer program with this one as its gradient subprogram (settings: Advanced › geomeTRIC).",
+   "program = xtb with no level set: if crest is on PATH mepd runs program crest at gfn2, else xtb at GFN2xTB."
+  ],
+  "default": "xtb (RunInputs.program): runs without a license or basis set.",
+  "swap": [
+   {
+    "option": "xtb, terachem, psi4, pyscf, orca, crest",
+    "where": "this choice (PROGRAMS in mepd/web/profile_form.py)"
+   },
+   {
+    "option": "Other programs qccompute supports",
+    "where": "TOML program = \"...\" (the form shows it as not recognized)"
+   }
+  ],
+  "caveats": [
+   "psi4, pyscf and orca need Method and Basis set; there is no mepd default for them."
+  ],
+  "code": [
+   "mepd/inputs.py:RunInputs.__post_init__",
+   "mepd/engines/qccompute.py:QCComputeEngine",
+   "mepd/engines/qccompute.py:QCComputeEngine._compute_ts_result"
+  ]
+ },
+ "profile.program_kwds.model.method": {
+  "title": "Method",
+  "does": "The electronic-structure method the QCCompute/ChemCloud program runs (e.g. ub3lyp, wb97x-d3, GFN2xTB).",
+  "how": [
+   "Written to [program_kwds.model].method and passed unchanged as qcdata ProgramArgs.model to the program.",
+   "Empty: TeraChem gets ub3lyp/3-21g; xtb gets GFN2xTB (or crest gfn2 when crest is installed); other programs have no default and the form reports an issue."
+  ],
+  "default": "None for psi4/pyscf/orca; ub3lyp for TeraChem; GFN2-xTB for xtb.",
+  "swap": [
+   {
+    "option": "Any method name the program accepts",
+    "where": "this field; extra program keywords in [program_kwds.keywords] on the TOML tab"
+   }
+  ],
+  "code": [
+   "mepd/web/profile_form.py:form",
+   "mepd/inputs.py:RunInputs.__post_init__"
+  ]
+ },
+ "profile.program_kwds.model.basis": {
+  "title": "Basis",
+  "does": "The basis set the QCCompute/ChemCloud program uses with Method.",
+  "how": [
+   "Written to [program_kwds.model].basis and passed unchanged in ProgramArgs.model.",
+   "Empty: TeraChem gets 3-21g; xtb ignores it."
+  ],
+  "default": "None for psi4/pyscf/orca; 3-21g for TeraChem.",
+  "code": [
+   "mepd/web/profile_form.py:form",
+   "mepd/inputs.py:RunInputs.__post_init__"
+  ]
+ },
+ "profile.calculator": {
+  "title": "Calculator",
+  "does": "For the ASE engine: which ASE calculator gives energies and forces.",
+  "how": [
+   "The short name (mace-off, mace-mp, tblite, psi4, orca, gaussian, nwchem, dftb, emt, lj) is looked up in mepd/engines/ase_calculators.py:CALCULATORS; Other takes package.module:ClassName.",
+   "load_calculator imports the class or factory and calls it with Calculator arguments (calculator_kwds).",
+   "ASEEngine wraps it: minimizations with the ASE optimizer chosen under Geometry optimizer, TS optimizations and IRCs with Sella."
+  ],
+  "default": "None: the ASE engine needs a calculator chosen.",
+  "swap": [
+   {
+    "option": "Listed calculators",
+    "where": "this choice"
+   },
+   {
+    "option": "Your own ASE calculator",
+    "where": "Calculator: Other ASE calculator (import path)"
+   },
+   {
+    "option": "A new short name",
+    "where": "not exposed: add a CalculatorSpec to mepd/engines/ase_calculators.py:CALCULATORS"
+   }
+  ],
+  "caveats": [
+   "emt and lj are toy potentials for testing only."
+  ],
+  "code": [
+   "mepd/engines/ase_calculators.py:load_calculator",
+   "mepd/engines/ase.py:ASEEngine",
+   "mepd/inputs.py:_import_ase_calculator"
+  ]
+ },
+ "profile.mlip_model": {
+  "title": "Model",
+  "does": "For the Machine-learned potential engine: which pretrained model gives energies and forces.",
+  "how": [
+   "The name is looked up in mepd/engines/mlip.py:MODELS (aimnet2-rxn, aimnet2, aimnet2-nse, aimnet2-2025, orb-v3-conservative-omol, orb-v3-direct-omol, ani-2x, mace-off, uma-s-1p2p1 and other FAIR-Chem names).",
+   "build_mlip_engine loads the model once (lazily, shared by engine copies, never pickled) and passes each structure's charge and spin via atoms.info.",
+   "Minimizations use the ASE optimizer under Geometry optimizer; TS searches use Sella."
+  ],
+  "default": "aimnet2-rxn when switching to this engine (profile_form.apply): open weights, trained for reactions. Covers H C N O, closed shell only.",
+  "swap": [
+   {
+    "option": "Other listed models",
+    "where": "this choice; `mepd models` lists them"
+   },
+   {
+    "option": "A local checkpoint of a known family",
+    "where": "Advanced › Checkpoint + Family"
+   },
+   {
+    "option": "Any ASE calculator",
+    "where": "TOML mlip_engine_kwds.calculator, or the ASE engine"
+   }
+  ],
+  "caveats": [
+   "Each model has its own element and charge/spin coverage (shown in the option's tooltip). UMA weights need Hugging Face access."
+  ],
+  "code": [
+   "mepd/engines/mlip.py:MODELS",
+   "mepd/engines/mlip.py:build_mlip_engine"
+  ],
+  "cli": "mepd models"
+ },
+ "profile.solvent": {
+  "title": "Solvent",
+  "does": "Puts every calculation at this level in an implicit solvent. Energies, gradients, minimizations, TS searches and IRCs all run on the solvated surface.",
+  "how": [
+   "solvate_engine reads [solvation] {solvent, model = alpb, method = auto}.",
+   "Native: when the engine is the g-xTB engine running GFN2 (add_gxtb_flag = false, executable not the gxtb-only binary), --alpb <solvent> is passed to xtb.",
+   "Every other engine (g-xTB, MLIPs, ASE, DFT): SolvatedEngine adds E_GFN2+ALPB(x) − E_GFN2(x) and its gradient, from two GFN2-xTB runs per geometry.",
+   "The correction needs an xtb that runs GFN2 ($XTB_EXECUTABLE, xtb on PATH, else the g-xTB build without --gxtb). It checks that the model changes the energy and stops if not."
+  ],
+  "default": "Gas phase. A solvent makes a different level of theory, so results at the two levels are not mixed.",
+  "swap": [
+   {
+    "option": "17 solvents ALPB is parametrized for",
+    "where": "this choice (mepd/solvation.py:SOLVENTS)"
+   },
+   {
+    "option": "GBSA or CPCM-X instead of ALPB",
+    "where": "TOML [solvation] model = \"gbsa\" | \"cpcmx\""
+   },
+   {
+    "option": "Force correction even when native is possible",
+    "where": "TOML [solvation] method = \"correction\""
+   },
+   {
+    "option": "Explicit solvent",
+    "where": "QM/MM systems (cannot be combined with [solvation])"
+   }
+  ],
+  "caveats": [
+   "For non-GFN2 engines this is a composite: gas-phase energy from the engine, solvation free energy from GFN2-xTB.",
+   "Energies are E + ΔG_solv (1 M gas → 1 M solution); no thermal or entropy terms are added."
+  ],
+  "code": [
+   "mepd/solvation.py:solvate_engine",
+   "mepd/solvation.py:SolvatedEngine",
+   "mepd/solvation.py:SolvationCorrection"
+  ],
+  "refs": "Solvent effects and reaction conditions"
+ },
+ "profile.interpolation": {
+  "title": "Initial path",
+  "does": "How the first guess path between two structures is built, and every sub-path a recursive split creates.",
+  "how": [
+   "Geodesic: run_geodesic in mepd/geodesic_interpolation2 (Zhu, Thompson, Martínez 2019): a path in redundant internal coordinates, tuned by friction, nudge and random seed.",
+   "LST: each image independently fits linearly interpolated interatomic distances (weights 1/d⁴), starting from the linear image.",
+   "IDPP: the same target distances, all images relaxed together as an NEB on that pair surface, so they stay evenly spaced.",
+   "Linear: straight Cartesian lines after Kabsch alignment of the end onto the start.",
+   "Frozen atoms follow the linear path in every method. GSM, when seeded, starts from this path; FSM grows its own and only uses alignment."
+  ],
+  "default": "Geodesic (ChainInputs.interpolation): keeps bonds sensible, which avoids atoms passing through each other.",
+  "swap": [
+   {
+    "option": "IDPP, LST, Linear",
+    "where": "this choice; TOML chain_inputs.interpolation"
+   },
+   {
+    "option": "Another interpolation",
+    "where": "not exposed: add a branch in mepd/interpolation.py:initial_chain and METHODS"
+   }
+  ],
+  "caveats": [
+   "Linear paths can bring atoms very close mid-path, giving huge first-step energies."
+  ],
+  "code": [
+   "mepd/interpolation.py:initial_chain",
+   "mepd/chainhelpers.py:run_geodesic",
+   "mepd/interpolation.py:lst_path",
+   "mepd/interpolation.py:idpp_path",
+   "mepd/msmep.py:_create_interpolation"
+  ],
+  "refs": "Initial path"
+ },
+ "profile.optimizer": {
+  "title": "Chain optimizer",
+  "does": "How NEB and FSM move the path's images each step from their projected forces.",
+  "how": [
+   "RunInputs builds the optimizer from [optimizer_kwds] name; NEB/FSM call its optimize_step with the chain's NEB gradient each step.",
+   "Conjugate gradient: Polak–Ribière+ directions, step capped by max_step_norm, time step adapted from gradient correlation between steps.",
+   "L-BFGS: inverse-Hessian estimate from the last 10 steps. FIRE: Bitzek et al. 2006 velocity mixing. Velocity-projected, adaptive momentum (Adam-like with step caps), Adam, SGD, gradient descent also available.",
+   "Each optimizer's own settings appear under Advanced once picked."
+  ],
+  "default": "Conjugate gradient (RunInputs sets name = \"cg\" when none is given).",
+  "swap": [
+   {
+    "option": "L-BFGS, FIRE, velocity-projected, adaptive momentum, Adam, SGD, gradient descent",
+    "where": "this choice; TOML optimizer_kwds.name"
+   },
+   {
+    "option": "A new optimizer",
+    "where": "not exposed: subclass mepd/optimizers/optimizer.py:Optimizer, add it to optimizer_map in mepd/inputs.py:RunInputs.__post_init__ and OPTIMIZERS in mepd/web/profile_form.py"
+   }
+  ],
+  "caveats": [
+   "Shown only for NEB, FSM and FSM + TS check (also used by NEB fallbacks). GSM, MLP-GI, geomeTRIC NEB and DL-FIND use their own optimizers."
+  ],
+  "code": [
+   "mepd/inputs.py:RunInputs.__post_init__",
+   "mepd/optimizers/cg.py:ConjugateGradient",
+   "mepd/optimizers/lbfgs.py:LBFGS",
+   "mepd/optimizers/fire.py:FIREOptimizer",
+   "mepd/msmep.py:_build_neb_optimizer"
+  ],
+  "refs": "Path search"
+ },
+ "profile.gi_inputs.nimages": {
+  "title": "Images",
+  "does": "How many structures the initial path has, ends included.",
+  "how": [
+   "Every initial path and split sub-path is built with this many images (mepd/interpolation.py:initial_chain).",
+   "NEB optimizes them; with Adaptive resolution it may add more up to Adaptive max images.",
+   "GSM seeded from the initial path uses this as its node count (Nodes is then ignored). MLP-GI starts with these and adds images near barriers."
+  ],
+  "default": "10 (GIInputs.nimages).",
+  "caveats": [
+   "Too few images can miss a barrier between two images; the TS check later refines it."
+  ],
+  "code": [
+   "mepd/inputs.py:GIInputs",
+   "mepd/interpolation.py:initial_chain",
+   "mepd/pathminimizers/gsm.py:GSM._build_geodesic_seed"
+  ]
+ },
+ "profile.path_min_inputs.climb": {
+  "title": "Climb",
+  "does": "Turns on a climbing image so the path's top image converges onto the saddle point. The meaning differs per method.",
+  "how": [
+   "NEB: after the band converges and the elementary-step check passes, a new image is inserted between the highest image and its higher neighbour. Only that image climbs, up to 100 steps, until its max |g_perp| ≤ TS gradient threshold (NEB._run_post_convergence_climbing_refinement).",
+   "MLP-GI: in stage 2 the highest node's gradient along the tangent is inverted, scaled by Climbing strength (alpha_climb, default 0.5).",
+   "geomeTRIC NEB: a number passed to geometric.neb as its climb parameter; true means 0.5, false 0."
+  ],
+  "default": "On for NEB and MLP-GI; 0.5 for geomeTRIC NEB.",
+  "caveats": [
+   "NEB only climbs paths judged elementary; a multi-step path is split first."
+  ],
+  "code": [
+   "mepd/neb.py:NEB._run_post_convergence_climbing_refinement",
+   "mepd/mlp_geodesic.py:loss_gradient",
+   "mepd/pathminimizers/geometric_neb.py:GeometricNEB._build_geometric_kwargs"
+  ]
+ },
+ "profile.path_min_inputs.adaptive_resolution": {
+  "title": "Adaptive resolution",
+  "does": "NEB adds images where the band is hardest to converge instead of starting with more.",
+  "how": [
+   "Each step NEB checks whether convergence has plateaued and the only unmet criterion is the largest image RMS perpendicular gradient.",
+   "If so, it inserts one image in the segment around the image with the largest RMS g_perp (NEB._maybe_adapt_chain_resolution).",
+   "Limited by Adaptive max images (default 20) and a cooldown between insertions."
+  ],
+  "default": "Off (NEBInputs.adaptive_resolution = false).",
+  "code": [
+   "mepd/neb.py:NEB._maybe_adapt_chain_resolution"
+  ]
+ },
+ "profile.path_min_inputs.do_elem_step_checks": {
+  "title": "Do elem step checks",
+  "does": "Decides whether a converged path is a single elementary step; if not, MSMEP splits it at the minima found and searches each piece.",
+  "how": [
+   "Intermediate minima along the path are minimized; any that are new species split the path there (minima split).",
+   "Otherwise a pseudo-IRC: the images flanking the highest one (upsampled if the peak is next to an end) are minimized and compared with the ends by bond graph, RMSD and energy.",
+   "Neither end found: split at the new structures (maxima split)."
+  ],
+  "default": "On for every method.",
+  "swap": [
+   {
+    "option": "TS-based check (TS opt + pseudo-IRC from the TS mode)",
+    "where": "Path method: FSM + TS check"
+   }
+  ],
+  "caveats": [
+   "Off: every path is taken as one step, so multi-step reactions show one apparent barrier."
+  ],
+  "code": [
+   "mepd/elementarystep.py:check_if_elem_step",
+   "mepd/elementarystep.py:pseudo_irc",
+   "mepd/msmep.py:MSMEP._do_minima_based_split"
+  ]
+ },
+ "profile.path_min_inputs.use_geodesic_tangent": {
+  "title": "Use geodesic tangent",
+  "does": "NEB uses the geodesic path's tangent at each image instead of the tangent from neighbouring image differences.",
+  "how": [
+   "Passed as geodesic_tangent to mepd/chainhelpers.py:compute_NEB_gradient, which projects forces with that tangent."
+  ],
+  "default": "Off.",
+  "code": [
+   "mepd/neb.py:NEB",
+   "mepd/chainhelpers.py:compute_NEB_gradient"
+  ]
+ },
+ "profile.path_min_inputs.pseudo_irc_hessian": {
+  "title": "Pseudo IRC hessian",
+  "does": "FSM + TS check: where the Hessian at the optimized TS comes from. It gives the imaginary mode the TS is pushed along and counts imaginary frequencies.",
+  "how": [
+   "auto: central differences of the engine's gradients (GradientHessianEngine, 6N gradient calls) when the engine is g-xTB, the engine's own Hessian otherwise.",
+   "engine: the engine's compute_hessian (g-xTB: xtb --hess; QCCompute: the program's Hessian).",
+   "gradients: always central differences of gradients.",
+   "Modes are projected (rigid-body motion removed) in vri.stationary_point_modes; frequencies below −cutoff (20 cm⁻¹) count as imaginary."
+  ],
+  "default": "auto. g-xTB's own Hessian disagrees with its gradients by up to ~0.02 Eh/bohr², which can flip soft modes.",
+  "swap": [
+   {
+    "option": "engine / gradients",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/pathminimizers/fsm_ts.py:FSMTS._modes",
+   "mepd/discovery/vri.py:GradientHessianEngine"
+  ]
+ },
+ "profile.path_min_inputs.fallback": {
+  "title": "Fallback",
+  "does": "FSM + TS check: what searches the pair when the TS does not join it.",
+  "how": [
+   "Triggered when the TS optimization fails, ends at a minimum or a higher-order saddle, both pseudo-IRC sides minimize to the same end, or a side leads back to a species from a pair split above.",
+   "GSM: molecularGSM with its own elementary-step check (Fallback settings: gsm_inputs). If no GSM binary, or GSM fails, NEB runs instead.",
+   "NEB: mepd's NEB with neb_inputs overrides. none: keep the FSM path and run the usual elementary-step check on [start, highest image, end]."
+  ],
+  "default": "GSM: on 20 KAIST reactions it found the lowest channel more often than NEB (17 vs 14 within 1 kcal/mol of the best method).",
+  "swap": [
+   {
+    "option": "NEB, none",
+    "where": "this field; settings in gsm_inputs / neb_inputs"
+   }
+  ],
+  "code": [
+   "mepd/pathminimizers/fsm_ts.py:FSMTS._fallback",
+   "mepd/pathminimizers/fsm_ts.py:FSMTS._fallback_method"
+  ]
+ },
+ "profile.path_min_inputs.tangent": {
+  "title": "Tangent",
+  "does": "FSM: the direction new images are grown along from each frontier.",
+  "how": [
+   "geodesic: the tangent of a geodesic interpolation between the two frontier images.",
+   "linear: the straight Cartesian difference between them."
+  ],
+  "default": "geodesic (fneb_defaults).",
+  "code": [
+   "mepd/pathminimizers/fneb.py:FreezingNEB.grow_nodes",
+   "mepd/inputs.py:fneb_defaults"
+  ]
+ },
+ "profile.path_min_inputs.distance_metric": {
+  "title": "Distance metric",
+  "does": "FSM: how the gap between the two growing frontiers is measured, which sets growth step size and when the string has joined.",
+  "how": [
+   "GEODESIC: length along a geodesic interpolation. RMSD: aligned RMSD between images. LINEAR: Cartesian distance (FreezingNEB._distance_function)."
+  ],
+  "default": "GEODESIC (fneb_defaults).",
+  "code": [
+   "mepd/pathminimizers/fneb.py:FreezingNEB._distance_function"
+  ]
+ },
+ "profile.path_min_inputs.seed_with_geodesic_interpolation": {
+  "title": "Seed with geodesic interpolation",
+  "does": "GSM starts from mepd's initial path (built with the Initial path choice) instead of growing its own string from the two ends.",
+  "how": [
+   "The initial path is written as restart.xyz0000 and molecularGSM's RESTART mechanism reads it, skipping its internal-coordinate growth (GSM._build_geodesic_seed).",
+   "The string then has Images nodes; Nodes is ignored.",
+   "Off: GSM grows the string from the ends in its own internal coordinates up to Nodes."
+  ],
+  "default": "On.",
+  "code": [
+   "mepd/pathminimizers/gsm.py:GSM._build_geodesic_seed"
+  ]
+ },
+ "profile.path_min_inputs.early_stop_on_minima": {
+  "title": "Early stop on minima",
+  "does": "Stops GSM when the string develops a stable intermediate minimum, so MSMEP can split there instead of GSM running to its iteration limit.",
+  "how": [
+   "After growth, the live string is read each GSM iteration (from mepd's patched binary output).",
+   "A local minimum that holds for 10 iterations (early_stop_persistence_window), never before iteration 20, stops the run.",
+   "The stop is verified by the elementary-step check; if the path turns out elementary, GSM resumes to full convergence.",
+   "Only active when Do elem step checks is on."
+  ],
+  "default": "On.",
+  "code": [
+   "mepd/pathminimizers/gsm.py:GSM",
+   "mepd/inputs.py:RunInputs.__post_init__"
+  ]
+ },
+ "profile.path_min_inputs.ts_final_type": {
+  "title": "TS final type",
+  "does": "Tells molecularGSM what kind of TS to expect: 1 if a bond breaks, 0 otherwise. GSM uses it to judge when the string has found the TS.",
+  "how": [
+   "Written to molecularGSM's input deck (TS_FINAL_TYPE) by mepd/pathminimizers/gsm.py:_inpfileq_text."
+  ],
+  "default": "1 (bond breaking).",
+  "code": [
+   "mepd/pathminimizers/gsm.py:_inpfileq_text"
+  ]
+ },
+ "profile.path_min_inputs.mlp_model": {
+  "title": "Optimize on",
+  "does": "MLP-GI: the surface the geodesic path is optimized on. The final path is always re-scored on this profile's engine.",
+  "how": [
+   "Empty: the profile's engine evaluates every node and midpoint.",
+   "A model name: build_mlip_engine loads that machine-learned potential as a surrogate (Model device, Model checkpoint); the optimized path's energies are then recomputed with the profile's engine."
+  ],
+  "default": "Empty (the profile's engine).",
+  "swap": [
+   {
+    "option": "Any `mepd models` name",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "A surrogate's path may not be the minimum-energy path on the profile's own surface; the TS check afterwards decides."
+  ],
+  "code": [
+   "mepd/pathminimizers/mlpgi.py:MLPGI.optimize_chain",
+   "mepd/pathminimizers/mlpgi.py:surrogate_kwds"
+  ],
+  "refs": "Path search"
+ },
+ "profile.chain_inputs.k": {
+  "title": "Spring constant k",
+  "does": "Maximum spring constant between NEB images; with Spring spread Δk, springs are energy-weighted so images bunch near the barrier.",
+  "how": [
+   "Per segment: k = (1−α)·k + α·(k−Δk), α = (E_max − E_i)/(E_max − E_ref), E_ref = higher of the two ends, E_i = higher of the segment's two images.",
+   "Segments below E_ref get k−Δk (chainhelpers._k_between_nodes)."
+  ],
+  "default": "k = 0.1, Δk = 0.09.",
+  "code": [
+   "mepd/chainhelpers.py:_k_between_nodes",
+   "mepd/chainhelpers.py:get_force_spring_nudged"
+  ],
+  "refs": "Path search"
+ },
+ "profile.chain_inputs.delta_k": {
+  "title": "Spring spread Δk",
+  "does": "Maximum spring constant between NEB images; with Spring spread Δk, springs are energy-weighted so images bunch near the barrier.",
+  "how": [
+   "Per segment: k = (1−α)·k + α·(k−Δk), α = (E_max − E_i)/(E_max − E_ref), E_ref = higher of the two ends, E_i = higher of the segment's two images.",
+   "Segments below E_ref get k−Δk (chainhelpers._k_between_nodes)."
+  ],
+  "default": "k = 0.1, Δk = 0.09.",
+  "code": [
+   "mepd/chainhelpers.py:_k_between_nodes",
+   "mepd/chainhelpers.py:get_force_spring_nudged"
+  ],
+  "refs": "Path search"
+ },
+ "profile.chain_inputs.node_freezing": {
+  "title": "Node freezing",
+  "does": "NEB stops computing images that have converged, saving engine calls.",
+  "how": [
+   "An image is frozen once its own gradient is below the convergence thresholds times Fraction freeze (default 0.1)."
+  ],
+  "default": "On.",
+  "code": [
+   "mepd/inputs.py:ChainInputs",
+   "mepd/neb.py:NEB"
+  ]
+ },
+ "profile.gxtb_engine_kwds.hessian_acc": {
+  "title": "Hessian accuracy",
+  "does": "SCC accuracy (xtb --acc) for g-xTB's numerical Hessians. Smaller is tighter.",
+  "how": [
+   "Passed to gxtb --hess runs. At xtb's default 1.0 Hessian elements are off by ~0.01–0.03 Eh/bohr²; 0.001 matches central differences of g-xTB gradients to ~1e-4 for ~20% more time."
+  ],
+  "default": "0.001.",
+  "caveats": [
+   "Even tight, g-xTB's --hess is not fully consistent with its gradients; FSM + TS check uses gradient differences by default."
+  ],
+  "code": [
+   "mepd/engines/gxtb.py:GXTBCalculator._run_gxtb_hessian"
+  ]
+ },
+ "profile.xtb_engine_kwds.method": {
+  "title": "Method",
+  "does": "For the xTB engine: GFN2-xTB or GFN1-xTB.",
+  "how": [
+   "XTBEngine runs the xtb program with that Hamiltonian, with point-charge support for electrostatic QM/MM."
+  ],
+  "default": "gfn2.",
+  "swap": [
+   {
+    "option": "gfn1",
+    "where": "this field"
+   },
+   {
+    "option": "g-xTB",
+    "where": "Engine: g-xTB"
+   }
+  ],
+  "code": [
+   "mepd/engines/gfnff.py:XTBEngine"
+  ]
+ },
+ "profile.fairchem_engine_kwds.task": {
+  "title": "Task",
+  "does": "Which UMA output head the FAIR-Chem model uses.",
+  "how": [
+   "Passed to FAIRChemEngine; omol is the molecular head and reads charge and multiplicity."
+  ],
+  "default": "omol.",
+  "swap": [
+   {
+    "option": "omat, oc20, odac, omc",
+    "where": "this field (materials, catalysis, MOF, crystal heads)"
+   }
+  ],
+  "code": [
+   "mepd/engines/fairchem.py:FAIRChemEngine"
+  ]
+ },
+ "profile.fairchem_engine_kwds.inference_settings": {
+  "title": "Inference settings",
+  "does": "Speed vs startup trade-off of the FAIR-Chem model.",
+  "how": [
+   "default: uncompiled, no activation checkpointing; ready in seconds, any molecules.",
+   "compile: torch.compile, ~2.5× faster per call, but 20–40 s compile per process and one molecule only.",
+   "turbo: compile plus TF32 (some accuracy for speed)."
+  ],
+  "default": "default (no compile).",
+  "code": [
+   "mepd/engines/fairchem.py:_inference_settings"
+  ]
+ },
+ "profile.ase_engine_kwds.geometry_optimizer": {
+  "title": "Geometry optimizer",
+  "does": "The ASE optimizer used for minimizations with this engine. TS optimizations and IRCs use Sella regardless.",
+  "how": [
+   "ASEEngine runs the ASE optimizer of that name (ase.optimize) for each minimization with the engine's calculator."
+  ],
+  "default": "LBFGSLineSearch.",
+  "swap": [
+   {
+    "option": "LBFGS, BFGS, FIRE, MDMin",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/engines/ase.py:ASEEngine"
+  ]
+ },
+ "profile.mlip_engine_kwds.geometry_optimizer": {
+  "title": "Geometry optimizer",
+  "does": "The ASE optimizer used for minimizations with this engine. TS optimizations and IRCs use Sella regardless.",
+  "how": [
+   "ASEEngine runs the ASE optimizer of that name (ase.optimize) for each minimization with the engine's calculator."
+  ],
+  "default": "LBFGSLineSearch.",
+  "swap": [
+   {
+    "option": "LBFGS, BFGS, FIRE, MDMin",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/engines/ase.py:ASEEngine"
+  ]
+ },
+ "profile.fairchem_engine_kwds.geometry_optimizer": {
+  "title": "Geometry optimizer",
+  "does": "The ASE optimizer used for minimizations with this engine. TS optimizations and IRCs use Sella regardless.",
+  "how": [
+   "ASEEngine runs the ASE optimizer of that name (ase.optimize) for each minimization with the engine's calculator."
+  ],
+  "default": "LBFGSLineSearch.",
+  "swap": [
+   {
+    "option": "LBFGS, BFGS, FIRE, MDMin",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/engines/ase.py:ASEEngine"
+  ]
+ },
+ "profile.geometry_optimizer_kwds.coordsys": {
+  "title": "Coordsys",
+  "does": "Coordinate system geomeTRIC uses for QCCompute/ChemCloud minimizations and TS optimizations.",
+  "how": [
+   "Passed as a geomeTRIC keyword in the ProgramInput whose program is geometric and subprogram the chosen Program."
+  ],
+  "default": "cart (DEFAULT_GEOMETRY_OPTIMIZER_KWDS), with maxit 500 and GAU_TIGHT.",
+  "swap": [
+   {
+    "option": "tric, dlc, hdlc, prim",
+    "where": "this field"
+   }
+  ],
+  "code": [
+   "mepd/engines/qccompute.py:QCComputeEngine.compute_geometry_optimization",
+   "mepd/engines/qccompute.py:QCComputeEngine._compute_ts_result"
+  ]
+ },
+ "profile.atom_mapping_inputs.metric": {
+  "title": "Metric",
+  "does": "How candidate atom mappings (and, in channels, conformer pairs) are compared when atom mapping is on.",
+  "how": [
+   "Candidates come from SLAPMapper (sequential linear-assignment mapping), plus symmetric relabelings and 'don't reindex'.",
+   "Snap + GI + xtb: snap's lowest-RMSD relabelings, each interpolated (geodesic), scored by GFN2-xTB energy along the path; lowest peak wins. Without xtb: shortest interpolation; without interpolation: lowest RMSD.",
+   "Endpoint RMSD: aligned RMSD of the two ends (fast, weakest). GI path: geodesic path length (slower). Filtered GI path: GI only for pairs within rmsd_window standard deviations of the lowest RMSD."
+  ],
+  "default": "snap-gi-xtb.",
+  "swap": [
+   {
+    "option": "endpoint-rmsd, geodesic-distance, rmsd-geodesic",
+    "where": "this field; CLI --atom-mapping-metric"
+   }
+  ],
+  "caveats": [
+   "Scoring uses GFN2-xTB from an installed xtb (no download), whatever the profile's engine."
+  ],
+  "code": [
+   "mepd/atom_mapping_selection.py:select_best_candidate",
+   "mepd/atom_mapping_selection.py:snap_choice",
+   "mepd/atom_mapping_selection.py:_xtb_engine",
+   "mepd/atom_mapping.py"
+  ],
+  "refs": "Atom mapping"
+ },
+ "profile.atom_mapping_inputs.relax_top": {
+  "title": "Relax top",
+  "does": "Snap + GI + xtb: re-ranks the best mappings by a relaxed path energy instead of the raw interpolation peak.",
+  "how": [
+   "The N best by raw xtb peak, plus SLAPMapper's minimal mapping, have their paths relaxed with the changing bonds held (_relaxed_barrier).",
+   "Lowest relaxed barrier wins; a mapping with more bond changes than SLAPMapper's must beat it by Relax margin (5 kcal/mol)."
+  ],
+  "default": "4. Raw interpolation peaks are mostly atoms colliding mid-path. 0 = raw peaks only.",
+  "code": [
+   "mepd/atom_mapping_selection.py:_relaxed_choice",
+   "mepd/atom_mapping_selection.py:_relaxed_barrier"
+  ]
+ },
+ "profile.atom_mapping_inputs.explore_mechanisms": {
+  "title": "Explore mechanisms",
+  "does": "Also considers up to this many mechanisms beyond SLAPMapper's minimal-edit ones: relays and exchanges through other molecules.",
+  "how": [
+   "explore_mechanisms swaps images of same-element atoms or groups, keeping swaps that raise the bond-edit count by at most 2 per round (5 rounds).",
+   "Each new route is scored like SLAPMapper's (snap + GI + xtb) and, in channels, searched as its own mechanism; catalytic ones are labelled."
+  ],
+  "default": "0 (off).",
+  "code": [
+   "mepd/atom_mapping.py:explore_mechanisms"
+  ]
+ },
+ "profile.qmmm_environment": {
+  "title": "Environment along a path",
+  "does": "For QM/MM systems: what the MM environment does while a path is searched. Ignored without [qmmm].",
+  "how": [
+   "Relaxed: the moving shell (within active_radius of the QM region) is optimized with each structure; the outer shell is frozen.",
+   "Cage: everything but the QM atoms frozen; the path is found in the fixed field.",
+   "Free energy (mean_force): MeanForceEngine replaces each gradient with its mean over MD of the environment (xtb dynamics at the low level, or OpenMM for AMBER/TIP3P) with the solute held; the barrier comes from thermodynamic integration along the path."
+  ],
+  "default": "Relaxed (RunInputs._embed_and_freeze).",
+  "swap": [
+   {
+    "option": "cage, mean_force (Temperature, Equilibration, Sampling, Frames, Restraint, Time step)",
+    "where": "this field"
+   }
+  ],
+  "caveats": [
+   "Free energy is much slower: each geometry needs an MD run (defaults 300 K, 0.5 ps equilibration, 1 ps sampling, 10 frames)."
+  ],
+  "code": [
+   "mepd/inputs.py:RunInputs._embed_and_freeze",
+   "mepd/engines/qmmm.py:QMMMEngine",
+   "mepd/engines/mean_force.py:MeanForceEngine"
+  ],
+  "refs": "QM/MM"
+ },
+ "kinetics.model": {
+  "title": "Kinetics",
+  "does": "Turns the workspace network into a mass-action microkinetic model and integrates amounts over time from the starting mixture.",
+  "how": [
+   "build(): species = structures with an energy at the workspace level; each reaction or edge becomes a reversible Step with the lowest TS energy (not a barrier) from finished TS searches at that level. Duplicate channels keep only their lowest TS.",
+   "A complex counts as its separated molecules: reactions run from separated reactants to separated products; edges touching a complex are skipped.",
+   "Rates (microkinetics.Network.rate_constants): k = (k_BT/h)·exp(−(G_top − ΣG_side)/RT), G_top = max(G_TS, ΣG_reactants, ΣG_products), units M^(1−n) s⁻¹, 1 M standard state. Forward and reverse share the TS, so detailed balance holds.",
+   "simulate(): scipy solve_ivp, Radau, analytic Jacobian, rtol 1e-8, atol 1e-14 M; output on log- and linear-spaced times. Steady = nothing changes by >0.1% over the run."
+  ],
+  "caveats": [
+   "A TS below one of its sides counts as barrierless that way (warned).",
+   "Bimolecular steps use the same k_BT/h prefactor; with electronic energies they lack the entropy cost of meeting, so absolute rates are orders of magnitude off. Read ratios and trends.",
+   "One structure per species; no conformer averaging, no diffusion limit."
+  ],
+  "swap": [
+   {
+    "option": "Free energies instead of electronic energies",
+    "where": "free energies checkbox"
+   },
+   {
+    "option": "Other rate laws (tunnelling, diffusion caps)",
+    "where": "not exposed: mepd/microkinetics.py:Network.rate_constants"
+   }
+  ],
+  "code": [
+   "mepd/web/kinetics.py:build",
+   "mepd/web/kinetics.py:edge_ts",
+   "mepd/microkinetics.py:Network.rate_constants",
+   "mepd/microkinetics.py:simulate",
+   "mepd/web/kinetics.py:analyze"
+  ],
+  "refs": "Kinetics"
+ },
+ "kinetics.free_energy": {
+  "title": "free energies",
+  "does": "Replaces each species' and TS's electronic energy with G(T) = E + quasi-RRHO correction, so entropy (association costs, soft modes) enters the rates.",
+  "how": [
+   "GFN2-xTB single-point Hessian at each stored geometry (xtb --bhess, in the level profile's implicit solvent if any), computed once per structure and cached in the workspace's thermo/ folder.",
+   "TS geometries: ts*.xyz in the TS search's output (and its 'Sample more paths' runs) whose energy matches within 2 mEh. None found: the reactant side's correction is used.",
+   "thermo.qrrho: ZPE, harmonic vibrations, rigid rotor, Sackur-Tetrode translation at 1 mol/L, R ln(multiplicity). Modes below ~50 cm⁻¹ blend toward free-rotor entropy (Grimme 2012). The TS's imaginary mode is dropped.",
+   "Recomputed at every temperature of a sweep from the same frequencies; two xtb runs at a time, OMP_NUM_THREADS=1."
+  ],
+  "default": "On in the UI. Without it, complexes look too stable.",
+  "swap": [
+   {
+    "option": "Electronic energies only",
+    "where": "untick this box"
+   },
+   {
+    "option": "1 atm standard state",
+    "where": "not exposed: mepd/thermo.py:qrrho standard_state"
+   },
+   {
+    "option": "Frequencies from the level's own engine or another program",
+    "where": "not exposed: mepd/thermo.py:frequencies / mepd/web/kinetics.py:free_energies"
+   }
+  ],
+  "caveats": [
+   "Energies E stay at the workspace level (e.g. g-xTB); only the thermal correction is GFN2-xTB.",
+   "Association entropy uses gas-phase formulas, which overstate it in solution. One conformer per species.",
+   "Structures with extra imaginary modes below −20 cm⁻¹ are listed in the warnings."
+  ],
+  "code": [
+   "mepd/web/kinetics.py:free_energies",
+   "mepd/thermo.py:frequencies",
+   "mepd/thermo.py:qrrho",
+   "mepd/thermo.py:cached_frequencies",
+   "mepd/web/kinetics.py:ts_geometry"
+  ],
+  "refs": "Kinetics"
+ },
+ "kinetics.include_unverified": {
+  "title": "include unverified barriers",
+  "does": "Lets steps whose barrier is only a path maximum (no TS/IRC confirmation) into the model. Without it those steps are left out.",
+  "how": [
+   "edge_ts() collects TS energies at the workspace level from finished TS-search jobs on the edge; a job counts as verified unless its summary says barrier_verified = false. Barriers recorded on the edge's origin count as verified.",
+   "The lowest verified TS is used if any; else, with this on, the lowest unverified one.",
+   "Unverified steps are marked ≈ in 'Where the material went'."
+  ],
+  "default": "On in the UI (the API default is off).",
+  "caveats": [
+   "A path maximum is an upper bound on the TS energy, so those steps can look slower than they are."
+  ],
+  "code": [
+   "mepd/web/kinetics.py:edge_ts",
+   "mepd/web/kinetics.py:build"
+  ]
+ },
+ "kinetics.temperature": {
+  "title": "Temperature",
+  "does": "Sets T in every rate constant (k_BT/h and RT in the exponent) and, with free energies, the T of the thermal corrections.",
+  "how": [
+   "Passed to microkinetics.simulate and, with free energies on, to energies_at(T) before the run."
+  ],
+  "default": "298.15 K.",
+  "code": [
+   "mepd/microkinetics.py:Network.rate_constants",
+   "mepd/web/kinetics.py:analyze"
+  ]
+ },
+ "kinetics.time": {
+  "title": "Time",
+  "does": "How long the flask runs. Sets the end amounts and the point where 'amount at the end' and degree of control are measured.",
+  "how": [
+   "Integration from 0 to this time; output on 79 log-spaced points from min(1e-12 s, 1e-6·time) plus 41 evenly spaced ones."
+  ],
+  "default": "1 h.",
+  "caveats": [
+   "If the run is already at equilibrium by then, no barrier controls the result; use a shorter time or lower T to see kinetic control."
+  ],
+  "code": [
+   "mepd/microkinetics.py:simulate"
+  ]
+ },
+ "kinetics.held": {
+  "title": "fixed",
+  "does": "Holds a starting species at its amount throughout (a constant feed, chemostat). With any fixed species the run heads to a steady state instead of equilibrium.",
+  "how": [
+   "Held species get dc/dt = 0 in the ODE (the 'free' mask in microkinetics.simulate); they still react."
+  ],
+  "default": "Off: a closed flask (batch).",
+  "code": [
+   "mepd/microkinetics.py:simulate"
+  ]
+ },
+ "kinetics.target": {
+  "title": "Target",
+  "does": "Picks one species to report: its end amount, its formation rate, and which TSs and species control it.",
+  "how": [
+   "Formation rate = net stoichiometry · net step rates at the end (formation_rate).",
+   "Degree of rate control (Campbell): each TS energy shifted ±0.2 kcal/mol, the model re-run, X = d ln Q / d(−G/RT) by central differences. Same for each species (thermodynamic degree of control).",
+   "Bars show the factor exp(X/RT) per 1 kcal/mol lower."
+  ],
+  "default": "None: no control analysis.",
+  "caveats": [
+   "Costs two extra simulations per step and per species."
+  ],
+  "code": [
+   "mepd/microkinetics.py:degree_of_control",
+   "mepd/microkinetics.py:formation_rate"
+  ],
+  "refs": "Kinetics"
+ },
+ "kinetics.control_what": {
+  "title": "amount at the end / formation rate",
+  "does": "Which quantity Q the degree of control is computed for: the target's amount at the end, or its net formation rate at the end.",
+  "how": [
+   "Passed as what= to microkinetics.degree_of_control; _quantity returns c[end, target] or formation_rate."
+  ],
+  "default": "amount at the end.",
+  "caveats": [
+   "In a closed flask the end rate goes to zero at equilibrium; with a feed it is the steady-state rate."
+  ],
+  "code": [
+   "mepd/microkinetics.py:degree_of_control",
+   "mepd/microkinetics.py:_quantity"
+  ],
+  "refs": "Kinetics"
+ },
+ "kinetics.sweep": {
+  "title": "temperature sweep",
+  "does": "Re-runs the model at 9 temperatures between the two bounds and shows end amounts against T, plus the target's speed-up and apparent activation energy.",
+  "how": [
+   "The UI sends 9 evenly spaced temperatures (the server takes at most 12).",
+   "microkinetics.sweep runs simulate at each; with free energies, energies_at(T) recomputes every G(T) from the cached frequencies.",
+   "Apparent Ea from the Arrhenius slope of the target's formation rate between neighbouring temperatures."
+  ],
+  "default": "On, 250–650 K.",
+  "caveats": [
+   "Without free energies only k_BT/h and RT change with T; species energies stay fixed."
+  ],
+  "code": [
+   "mepd/microkinetics.py:sweep",
+   "mepd/web/kinetics.py:analyze"
+  ]
+ },
+ "kinetics.compare": {
+  "title": "compare with parent",
+  "does": "Runs a network variant and its parent (or the variant it is built on) from the same mixture, side by side.",
+  "how": [
+   "compare_inputs maps the mixture onto the variant: amounts of a replaced species go to its variant.",
+   "analyze() runs on each network; variant steps without a re-optimized TS yet use a fast estimate (the parent's barrier shifted by the edit), marked est."
+  ],
+  "code": [
+   "mepd/web/variants.py:compare_inputs",
+   "mepd/web/variants.py:network_view",
+   "mepd/web/kinetics.py:analyze"
+  ]
+ }
+}

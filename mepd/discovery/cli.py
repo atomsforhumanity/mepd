@@ -1362,7 +1362,8 @@ def vri_surface(
     """Reconstruct a 2D potential energy surface around each bifurcation found
     by `mepd discovery vri`, for `mepd visualize`.
 
-    Axes: mean length of the bonds only P1 has vs. those only P2 has.
+    Axes: x = displacement along TS1's reaction mode (Angstrom); y = mean
+    length of the bonds only P2 has minus those only P1 has (Angstrom).
     Energies: a relaxed scan -- at each grid node the structure is optimized
     with the two coordinates restrained, starting from the nearest computed
     structure (IRCs through TS1 and TS2, TS1->TS2 and TS1->P2 paths). The

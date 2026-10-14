@@ -6,10 +6,12 @@ import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depict
 
 export { conformerLabel, conformerRows };
 import { ActionPanel } from './Actions.js';
+import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
 import { LevelChip } from './Library.js';
 import { ReactionCard, TsCell } from './Reactions.js';
 import { openAnalyze } from './Analyze.js';
+import { ProductPicker } from './NewReaction.js';
 import { ComplexMethodForm } from './ComplexBuild.js';
 import { DefineQmmm, QmmmStructure } from './QMMM.js';
 
@@ -132,8 +134,6 @@ function StructureDetail({ rec }) {
   const shown = viewing && (rec.conformers || []).some((c) => c.id === viewing) ? viewing : null;
   const xyz = useXyz(rec.id, shown, rec.conformer);
   const [labels, setLabels] = useState(false);
-  const jobs = useStore((s) => Object.values(s.jobs).filter((j) => j.targets.structures.includes(rec.id))
-    .sort((a, b) => b.created - a.created));
   const originJob = useStore((s) => (rec.origin?.job ? s.jobs[rec.origin.job] : null));
   const patch = (body) => attempt(() => api.patch(`/api/structures/${rec.id}`, body));
   const del = async () => {
@@ -143,10 +143,19 @@ function StructureDetail({ rec }) {
   return html`
     <section>
       <${Editable} className="title-input" value=${rec.name} onSave=${(name) => patch({ name })} />
-      ${rec.smiles && rec.smiles !== rec.name && html`<div class="smiles" title="Connectivity perceived from the geometry">${rec.smiles}</div>`}
+      <div class="id-line">
+        <span class="id-chip mono" title=${`${rec.natoms} atoms`}>${rec.formula}</span>
+        ${rec.charge ? html`<span class="id-chip">charge ${rec.charge > 0 ? '+' : ''}${rec.charge}</span>` : ''}
+        ${rec.multiplicity > 1 ? html`<span class="id-chip">multiplicity ${rec.multiplicity}</span>` : ''}
+        <${LevelChip} rec=${rec} />
+        ${(rec.conformers || []).length > 1 ? html`<span class="id-chip">${rec.conformers.length} conformers</span>` : ''}
+      </div>
       ${rec.qmmm
         ? html`<${QmmmStructure} rec=${rec} xyz=${xyz} labels=${labels} shownConformer=${shown} />`
-        : html`<${Viewer3D} xyz=${xyz} labels=${labels} height=${240} />`}
+        : html`<${Viewer3D} xyz=${xyz} labels=${labels} height=${210} />`}
+      <details class="id-details">
+        <summary>Details</summary>
+      ${rec.smiles && rec.smiles !== rec.name && html`<div class="smiles" title="Connectivity perceived from the geometry">${rec.smiles}</div>`}
       <div class="viewer-tools">
         <label class="small"><input type="checkbox" checked=${labels} onChange=${(e) => setLabels(e.target.checked)} /> atom indices</label>
         <a class="small" href=${`/api/structures/${rec.id}/xyz${shown ? `?conformer=${shown}` : ''}`} download=${`${rec.name}.xyz`}>Download xyz</a>
@@ -174,8 +183,8 @@ function StructureDetail({ rec }) {
           onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, conformer: shown, network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
         <button class="btn-link danger small" onClick=${del}>Delete structure</button>
       </div>
-    </section>
-    <${JobList} jobs=${jobs} />`;
+      </details>
+    </section>`;
 }
 
 function PairDetail({ a, b }) {
@@ -314,9 +323,10 @@ function ComplexSandbox({ rec }) {
 }
 
 // Species selected: a live MD of them to steer by hand (Sandbox.js).
-function SandboxLauncher({ sids }) {
+function SandboxLauncher({ sids, embedded = false, onClose = null }) {
   const structures = useStore((s) => s.workspace.structures);
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(embedded);
+  const setOpen = (v) => { if (!v && onClose) onClose(); setOpenState(v); };
   const [counts, setCounts] = useState({});
   const [temperature, setTemperature] = useState(800);
   const [busy, setBusy] = useState(false);
@@ -330,8 +340,8 @@ function SandboxLauncher({ sids }) {
     if (out) set({ view: { tab: 'sandbox', jobId: null, sandbox: out } });
   };
   return html`<div class="combine-cx">
-    <div class="small"><b>Interactive reactor</b>
-      <button class="btn-link small" style="float: right" onClick=${() => setOpen(false)}>Cancel</button></div>
+    ${!embedded && html`<div class="small"><b>Interactive reactor</b>
+      <button class="btn-link small" style="float: right" onClick=${() => setOpen(false)}>Cancel</button></div>`}
     ${sids.map((id) => html`<label class="combine-row small">
       <input type="number" class="tiny" min="0" max="20" value=${n(id)}
         onInput=${(e) => setCounts({ ...counts, [id]: Math.max(0, Math.min(20, +e.target.value || 0)) })} />
@@ -343,17 +353,18 @@ function SandboxLauncher({ sids }) {
   </div>`;
 }
 
-function CombineComplex({ sids }) {
+function CombineComplex({ sids, embedded = false, onClose = null }) {
   const structures = useStore((s) => s.workspace.structures);
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(embedded);
+  const setOpen = (v) => { if (!v && onClose) onClose(); setOpenState(v); };
   const [counts, setCounts] = useState({});
   const n = (id) => counts[id] ?? (sids.length === 1 ? 2 : 1);
   if (!open) {
     return html`<a href="#" onClick=${(e) => { e.preventDefault(); setOpen(true); }}>Combine into a complex →</a>`;
   }
   return html`<div class="combine-cx">
-    <div class="small"><b>Combine into a complex</b>
-      <button class="btn-link small" style="float: right" onClick=${() => setOpen(false)}>Cancel</button></div>
+    ${!embedded && html`<div class="small"><b>Combine into a complex</b>
+      <button class="btn-link small" style="float: right" onClick=${() => setOpen(false)}>Cancel</button></div>`}
     ${sids.map((id) => html`<label class="combine-row small">
       <input type="number" class="tiny" min="0" max="12" value=${n(id)}
         onInput=${(e) => setCounts({ ...counts, [id]: Math.max(0, Math.min(12, +e.target.value || 0)) })} />
@@ -362,8 +373,15 @@ function CombineComplex({ sids }) {
   </div>`;
 }
 
+// The selected molecules as reactants; a partner added here stays here.
+function InspectorProducts({ sids }) {
+  const [reactants, setReactants] = useState([...sids]);
+  return html`<${ProductPicker} reactants=${reactants} onReactants=${setReactants} />`;
+}
+
 export function Inspector() {
   const phone = usePhone();
+  const map = useMap();
   // On phones the sheet opens on what you came for -- the calculations -- with
   // the viewer/properties one tap away; desktop shows both stacked.
   const [pane, setPane] = useState('run');
@@ -378,23 +396,26 @@ export function Inspector() {
   const workspace = useStore((s) => s.workspace);
   const nS = sel.structures.length, nE = sel.edges.length;
 
-  let head, body = null, moreCalcs = false;
+  let head, body = null, moreCalcs = false, extras = [], tail = null;
   if (!nS && !nE) {
+    // Reactions with a barrier in the graph: explain what is drawn, not how to start.
+    const network = Object.values(workspace.reactions || {}).some((r) => r.edge && workspace.edges[r.edge]);
     return html`<aside class="inspector empty">
-      <div class="pane-head"><h2>How it works</h2>
+      <div class="pane-head"><h2>${network ? 'Explore' : 'How it works'}</h2>
         <button class="btn-icon" title="Hide this panel (bring it back with ? on the graph)" aria-label="Hide"
           onClick=${() => { prefs.set('hideHowTo', true); set({ howToHidden: true }); }}>✕</button></div>
       <div class="empty-hint">
-        <ol class="steps">
-          <li><b>Add structures</b><span>SMILES or XYZ, in the panel on the left. Each becomes a node.</span></li>
-          <li><b>Select</b><span>One structure to explore around it; two, or an edge, to connect them.</span></li>
-          <li><b>Run a calculation</b><span>The options for your selection appear here. Results can be added back to the graph.</span></li>
-        </ol>
-        ${Object.keys(workspace.reactions || {}).length > 0 && html`<p class="small rx-hint"><b>○ Circles are complexes</b>${' '}
-          (several molecules together), joined to their molecules. A reaction is the edge between two complexes (or two molecules):
-          click it for its species, energies, complexes and MD event, and to find its TS.
-          Reactions whose complexes did not survive optimization (no verified minimum) are listed in Analyze only.</p>`}
-                <p class="small muted">Shift-click to select several. Shift-drag on the graph to box-select.</p>
+        ${network ? html`<ol class="steps">
+          <li><b>Arrows are reactions</b><span>The number is the barrier, kcal/mol. The arrow back is the reverse reaction.</span></li>
+          <li><b>Circles are molecules together</b><span>A complex, joined to its molecules by thin lines.</span></li>
+          <li><b>Click an arrow</b><span>Its energies, the moment it happened, what to try next.</span></li>
+          <li><b>Click a molecule</b><span>Put it back in the reactor, or see what else it can do.</span></li>
+        </ol>` : html`<ol class="steps">
+          <li><b>Add molecules</b><span>On the left, or <a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>get started</a> with one.</span></li>
+          <li><b>Select</b><span>One molecule to explore around it; two, or an arrow, to connect them.</span></li>
+          <li><b>Run a calculation</b><span>What you can do with your selection appears here.</span></li>
+        </ol>`}
+        <p class="small muted">Shift-click to select several.</p>
       </div>
     </aside>`;
   }
@@ -404,6 +425,9 @@ export function Inspector() {
   } else if (nS === 1 && !nE) {
     head = 'Structure';
     body = html`<${StructureDetail} rec=${structures[sel.structures[0]]} />`;
+    // Its calculations, under what can be done next.
+    const id = sel.structures[0];
+    tail = html`<${JobList} jobs=${Object.values(state.jobs).filter((j) => j.targets.structures.includes(id)).sort((a, b) => b.created - a.created)} />`;
   } else if (nS === 2 && !nE) {
     head = 'Two structures';
     body = html`<${PairDetail} a=${structures[sel.structures[0]]} b=${structures[sel.structures[1]]} />`;
@@ -434,12 +458,19 @@ export function Inspector() {
   // Species selected: their reactions, or a new one with them, in Analyze.
   if (nS > 0 && !nE && sel.structures.every((id) => isSpecies(structures[id]) && !structures[id].qmmm)) {
     const n = Object.values(workspace.reactions || {}).filter((r) => sel.structures.every((id) => [...r.reactants, ...r.products].includes(id))).length;
-    body = html`<div class="an-links small">
-      ${n > 0 && html`<a href="#" onClick=${(e) => { e.preventDefault(); openAnalyze({ species: [...sel.structures], reaction: null }); }}>${n} reaction${n > 1 ? 's' : ''} of ${nS > 1 ? 'these' : 'this'} →</a>`}
-      <a href="#" onClick=${(e) => { e.preventDefault(); openAnalyze({ compose: true, composeReactants: [...sel.structures], reaction: null }); }}>New reaction with ${nS > 1 ? 'these' : 'this'} →</a>
-      <${CombineComplex} key=${sel.structures.join(',')} sids=${sel.structures} />
-      <${SandboxLauncher} key=${'sb' + sel.structures.join(',')} sids=${sel.structures} />
-    </div>${body}`;
+    const sids = sel.structures;
+    extras = [
+      { key: 'x-reactor', icon: 'reactor', name: 'Reactor', why: 'other.reactor', tip: 'Live dynamics you steer: heat it, squeeze it, pull atoms',
+        render: (close) => html`<${SandboxLauncher} key=${'sb' + sids.join(',')} sids=${sids} embedded onClose=${close} />` },
+      nS === 1 && { key: 'x-design', icon: 'product', name: 'Edit in Design', tip: 'Open it in Design to change atoms, bonds or groups',
+        act: () => attempt(() => api.post('/api/design/load', { structure: sids[0], network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design')) },
+      map.feature('complex') && { key: 'x-complex', icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
+        render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
+      map.feature('compose') && { key: 'x-compose', icon: 'reaction', name: 'Products', why: 'other.products', tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
+        render: () => html`<${InspectorProducts} key=${sids.join(',')} sids=${sids} />` },
+      n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
+        act: () => openAnalyze({ species: [...sids], reaction: null }) },
+    ].filter(Boolean);
   }
   return html`
     <aside class=${`inspector has-selection ${collapsed ? 'collapsed' : ''}`}>
@@ -454,8 +485,9 @@ export function Inspector() {
       <div class="inspector-scroll">
         ${(!phone || pane === 'details') && body}
         ${(!phone || pane === 'run') && (moreCalcs
-          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} /></details>`
-          : html`<${ActionPanel} sel=${sel} />`)}
+          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
+          : html`<${ActionPanel} sel=${sel} extras=${extras} />`)}
+        ${(!phone || pane === 'details') && tail}
       </div>
     </aside>`;
 }

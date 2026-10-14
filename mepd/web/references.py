@@ -223,6 +223,10 @@ def references() -> list[dict]:
             {"what": "Thermodynamic degree of rate control (which species trap material)",
              "cite": ["C. Stegelmann, A. Andreasen, C. T. Campbell, J. Am. Chem. Soc. 131, 8077–8082 (2009), "
                       "doi:10.1021/ja9000097"]},
+            {"what": "Free energies: quasi-RRHO thermal corrections",
+             "cite": ["S. Grimme, Chem. Eur. J. 18, 9955 (2012), doi:10.1002/chem.201200497"]},
+            {"what": "Free energies: single-point Hessians at non-stationary geometries (xtb --bhess)",
+             "cite": ["S. Spicher, S. Grimme, J. Chem. Theory Comput. 17, 1701 (2021), doi:10.1021/acs.jctc.0c01306"]},
         ],
     }
     complexes = {

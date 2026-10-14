@@ -2,6 +2,7 @@
 // the rest of the UI can explain features without inline references.
 import { html, useEffect, useState } from '../lib.js';
 import { api } from '../api.js';
+import { set, state } from '../store.js';
 
 export function ReferencesView() {
   const [refs, setRefs] = useState(null);
@@ -9,6 +10,14 @@ export function ReferencesView() {
   useEffect(() => {
     api.get('/api/references').then(setRefs).catch((e) => setError(String(e?.message || e)));
   }, []);
+  // Sent here by a "?" (Why.js): its feature's section, marked for a moment.
+  useEffect(() => {
+    const f = state.refsFocus;
+    if (!refs || !f) return;
+    set({ refsFocus: null });
+    const el = [...document.querySelectorAll('.refs-group')].find((s) => s.dataset.feature === f);
+    if (el) { el.scrollIntoView({ block: 'start', behavior: 'smooth' }); el.classList.add('focus-flash'); setTimeout(() => el.classList.remove('focus-flash'), 1800); }
+  }, [refs]);
   return html`
     <div class="refs-view">
       <div class="view-head">
@@ -19,7 +28,7 @@ export function ReferencesView() {
       ${!refs && !error && html`<p class="refs-body small muted">Loading…</p>`}
       ${refs && html`<div class="refs-body">
         ${refs.map((group) => html`
-          <section class="refs-group">
+          <section class="refs-group" data-feature=${group.feature}>
             <h3>${group.feature}</h3>
             <p class="small muted">Used by: ${group.where}</p>
             <dl>

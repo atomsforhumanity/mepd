@@ -13,12 +13,14 @@ import { OptTree } from './OptTree.js';
 import { ReactorLive } from './ReactorLive.js';
 import { ComplexLive } from './ComplexLive.js';
 import { ReactionTable, SpawnedSearches } from './Reactions.js';
+import { ReactorStory } from './ReactorStory.js';
 import { RetroRoutes } from './Retro.js';
 import { ProteinSites } from './ProteinSites.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
 import { AtomMappingPanel } from './AtomMapping.js';
 import { BuiltPairsPanel } from './BuiltPairs.js';
+import { Why } from './Why.js';
 
 // ------------------------------------------------------------ live
 // Every live path of a job: one per stream (e.g. each `channels` pair) and,
@@ -566,6 +568,15 @@ const VRI_NEXT = {
 
 function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
   const [open, setOpen] = useState(false);
+  // Sent here by a tile in Your tools (quests.js): open, in view, briefly marked.
+  const focusOp = useStore((s) => s.focusOp);
+  const me = useRef(null);
+  useEffect(() => {
+    if (focusOp?.key !== op.key || Date.now() - focusOp.at > 10000) return;
+    setOpen(true);
+    setTimeout(() => { me.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }); me.current?.classList.add('focus-flash'); }, 250);
+    setTimeout(() => me.current?.classList.remove('focus-flash'), 2600);
+  }, [focusOp?.at]);
   const [values, setValues] = useState(() => rememberedValues(op, initial));
   const [busy, setBusy] = useState(false);
   const last = runs[0];
@@ -579,7 +590,7 @@ function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
     if (out) setOpen(false);
   };
   return html`
-    <div class=${`op-card ${open ? 'open' : ''}`}>
+    <div class=${`op-card ${open ? 'open' : ''}`} ref=${me}>
       <button type="button" class="op-head" onClick=${() => setOpen(!open)} aria-expanded=${open}>
         <span class="op-text">
           <span class="op-title">${op.title}
@@ -591,7 +602,7 @@ function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
       </button>
       ${open && html`<div class="op-body">
         ${note && html`<p class="small muted">${note}</p>`}
-        <${ParamForm} schema=${op.schema} values=${values} onChange=${setValues} />
+        <${ParamForm} op=${op.key} schema=${op.schema} values=${values} onChange=${setValues} />
         <div class="op-run">
           <button class="btn primary" disabled=${busy || active} onClick=${run}>
             ${active ? 'Running…' : busy ? 'Queuing…' : (last || done) ? 'Run again' : 'Run'}</button>
@@ -723,7 +734,7 @@ function TsFollowUps({ job }) {
           <span class="op-chevron" aria-hidden="true">${open ? '−' : '+'}</span>
         </button>
         ${open && html`<div class="op-body">
-          <${ParamForm} schema=${op.schema} values=${values} onChange=${setValues} />
+          <${ParamForm} op=${op.key} schema=${op.schema} values=${values} onChange=${setValues} />
           <div class="op-run">
             <button class="btn primary" disabled=${busy || active} onClick=${run}>
               ${active ? 'Running…' : busy ? 'Queuing…' : last ? 'Sample again' : 'Sample more paths'}</button>
@@ -1017,7 +1028,9 @@ export function JobView({ jobId: openedId }) {
   const hasOutput = job.status !== 'queued';
   // A network expansion whose products come from nanoreactor MD: it has a reactor to watch too.
   const reactorGen = job.op === 'graph-enumeration' && job.params?.generator === 'nanoreactor';
-  const current = tab || (['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
+  // An interactive reactor's analysis opens on its plain-words summary (ReactorStory).
+  const story = job.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(job.params?.trajectory || '');
+  const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
     : (job.op === 'nanoreactor' && !job.params?.trajectory) || reactorGen ? 'reactor' : 'live');
   const targets = job.targets.structures.map((id) => ({ id, label: structureName(id) }));
   const runLabel = (j, i) => (i === 0 ? (job.op === 'ts' ? 'First search' : 'First run')
@@ -1027,7 +1040,7 @@ export function JobView({ jobId: openedId }) {
       <div class="view-head">
         <button class="btn-icon" title="All calculations" onClick=${() => set({ view: { tab: 'jobs', jobId: null } })}>←</button>
         <div class="job-head-main">
-          <h2>${job.title}</h2>
+          <h2>${job.title}<${Why} id=${`op.${job.op}`} label=${job.title} /></h2>
           <div class="small muted">
             <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
             ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
@@ -1062,13 +1075,14 @@ export function JobView({ jobId: openedId }) {
         was found until then.</p>`)}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
       <div class="tabs">
-        ${[['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
+        ${[story && ['story', 'What happened'], ['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
           ['ts', 'channels', 'channels-more', 'network-splits'].includes(job.op) && ['tree', 'Optimization tree'],
           !job.external && ['log', 'Log'], ['files', 'Files']].filter(Boolean)
-          .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && k !== 'live' && k !== 'reactor'} onClick=${() => setTab(k)}>${l}</button>`)}
+          .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && !['live', 'reactor', 'story'].includes(k)} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>
-      ${job.op === 'nanoreactor' && current !== 'live' && html`<${RefiningNote} job=${run} onWatch=${() => setTab('live')} />`}
+      ${job.op === 'nanoreactor' && current !== 'live' && current !== 'story' && html`<${RefiningNote} job=${run} onWatch=${() => setTab('live')} />`}
       <div class="tab-body">
+        ${current === 'story' && html`<${ReactorStory} job=${page} />`}
         ${current === 'result' && html`<${ResultPanel} job=${page} />`}
         ${current === 'live' && (job.op === 'complex' ? html`<${ComplexLive} key=${run.id} job=${run} />` : html`<${LivePanel} key=${run.id} job=${run} />`)}
         ${current === 'reactor' && html`<${ReactorLive} key=${page.id} job=${page} />`}

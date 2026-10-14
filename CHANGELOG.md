@@ -12,6 +12,23 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **A guided first run in the web UI** (`Welcome.js`, `quests.js`). An empty session opens on a first screen:
+  choose a ready-made molecule (glycine, ethanol, formaldehyde, HCN) or build one in Design, put it in the
+  interactive reactor, catch a reaction. A step bar (Molecule › Reactor › Reaction › Barrier › Explore) follows
+  you. Stop & analyze opens a plain-words **What happened** page (`ReactorStory.js`): one card per reaction,
+  its barrier search, and forward and reverse barriers as separate arrows. The tabs and tools then unlock as
+  they are used, shown as icon tiles under **Your tools** (the mepd logo opens it). **I know mepd: show
+  everything** (or Settings › Show everything) unlocks every tab and tool at once.
+- **Products: a new reaction by clicking** (`NewReaction.js`). On a selected molecule (or in Analyze ›
+  New reaction), what it can become appears at once as product tiles (bond rules, simplest first); click the
+  ones to try and add them as reactions, each with its Find TS. Add a partner molecule, pick products from the
+  graph, or draw one in Design. Products already in the graph, or already a reaction, are marked.
+- **"?" on every implementation choice**: click it next to an operation, a form field, a Settings field or a
+  Kinetics option for what it changes, how mepd does it and with which program, the default, what could stand
+  in (and where to switch it, or where it would plug in), caveats, the code and command behind it, and a link
+  to what to cite (`static/explain.json`, `Why.js`). Nothing shows until it is clicked.
+- References: the quasi-RRHO and single-point-Hessian citations behind Kinetics › free energies.
+
 - **Run provenance**: every `mepd` command given `--output` (so every web job) writes `provenance.json` there,
   or `<file>.provenance.json` for a file output. It records the command line, the profile text and level key,
   mepd's version and git commit/dirty state, external binaries with sha256 (xtb, gxtb-xtb, crest, gsm and any
@@ -131,6 +148,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the visitor's calculations and interactive reactors and deletes everything under `visitors/<id>/`. Before,
   logging out only dropped the cookie and left the workspace on disk, unreachable. A visitor who closes the tab
   instead keeps their workspace. A GET of `/logout` only shows the warning; deletion needs the page's POST.
+- Web UI, less text and fewer controls: the selected molecule's actions are icon tiles grouped under short
+  headings, one form open at a time under its group; field help moved into tooltips; square 4 px corners
+  instead of pills; the reverse barrier is its own arrow in Explore; the interactive reactor has a wall-size
+  slider and works by touch. Removed the top bar's New calculation and the sidebar's Add (molecules come from
+  Design, or drop .xyz files on the sidebar); Level of theory and Confirm minima moved to Settings.
+
 - **FAIR-Chem (UMA) no longer compiles the model by default** (`fairchem_engine_kwds.inference_settings`).
   mepd's `default` is now the uncompiled model; `compile` is fairchem's own default (merged experts plus
   torch.compile), and `turbo` stays. Compiling cost 20-40 s in every process that loads the model, and again
@@ -218,6 +241,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   geodesic's highest g-xTB energy is lower in 23 (median -22 kcal/mol; two old paths reached 2400 and 4000
   kcal/mol). This changes every geodesic path (NEB/FNEB/MSMEP starting paths, GSM seeding): results from
   earlier versions that used geodesic interpolation should be regenerated.
+- Retrosynthesis with building blocks "Automatic" plus your own file failed (`--stock auto` was not a stock);
+  `mepd retro plan --stock auto` now means the default stocks.
+- Help text: explicit solvent's point-charge embedding works with xTB, Psi4 or TeraChem (not only Psi4);
+  `mepd discovery vri-surface` described its axes wrongly; a comment in the CG optimizer named the wrong
+  formula (it is Polak–Ribière+).
+- Analyze › New reaction could add the same reaction twice.
+
 - **Kinetics started from a whole complex as if it were one species** (the default starting mixture, taken from
   the latest nanoreactor run). A complex there now starts as its molecules, 1 M each (a molecule twice in it: 2 M).
 

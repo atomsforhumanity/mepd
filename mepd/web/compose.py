@@ -66,6 +66,13 @@ def propose(ws: Workspace, reactants: list[str], *, n_break: int = 2, n_form: in
         n_break=n_break, n_form=n_form, form_distance=4.5, max_products=max_products, allow_radicals=False,
         allow_zwitterions=False, source=0)
     names = Counter(chem.canonical_key(ws.structure(s)["smiles"] or "") for s in reactants)
+    snap = ws.snapshot()
+    have = {}   # canonical key -> a species already in the graph (marks a product as known)
+    for sid, rec in snap["structures"].items():
+        if is_species(rec) and not rec.get("qmmm") and rec.get("smiles"):
+            have.setdefault(chem.canonical_key(rec["smiles"]), sid)
+    made = {tuple(sorted(r["products"])): rid for rid, r in (snap.get("reactions") or {}).items()
+            if sorted(r["reactants"]) == sorted(reactants)}   # these reactants' reactions so far
     out = []
     for p in props:
         frags = sorted(p.smiles.split("."))
@@ -73,7 +80,10 @@ def propose(ws: Workspace, reactants: list[str], *, n_break: int = 2, n_form: in
             continue   # the same molecules again (a degenerate exchange)
         guess = embed_product(symbols, coords, (edges - set(p.broken)) | set(p.formed))
         s = rc.model_copy(update={"geometry": np.asarray(guess) * ANGSTROM_TO_BOHR})
-        out.append({"smiles": p.smiles, "fragments": frags, "broken": [list(b) for b in p.broken],
+        known = [have.get(chem.canonical_key(f)) for f in frags]
+        out.append({"smiles": p.smiles, "fragments": frags, "known": known,
+                    "reaction": made.get(tuple(sorted(known))) if all(known) else None,
+                    "broken": [list(b) for b in p.broken],
                     "formed": [list(f) for f in p.formed], "xyz": s.to_xyz()})
     return {"complex_xyz": rc.to_xyz(), "charge": int(rc.charge), "multiplicity": int(rc.multiplicity),
             "proposals": out}
