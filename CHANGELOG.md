@@ -148,6 +148,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the visitor's calculations and interactive reactors and deletes everything under `visitors/<id>/`. Before,
   logging out only dropped the cookie and left the workspace on disk, unreachable. A visitor who closes the tab
   instead keeps their workspace. A GET of `/logout` only shows the warning; deletion needs the page's POST.
+- Web UI on phones: the first screen shows the molecule's 3D preview right under the choices; the reactor's 3D
+  view leaves room for its controls, counts reactions on the view and offers Find its barrier under it; job
+  pages stack their header, scroll their tabs sideways and wrap the step bar; Explore shows the graph above
+  the structure list; a new page opens at its top. Reloading while an interactive reactor runs returns to it.
+- The interactive reactor says how to make a reaction when none has happened after 4 ps (left alone, few
+  do), and a run with none offers Run it again with the same mix and tips. Unlock toasts skip the first steps.
 - Web UI, less text and fewer controls: the selected molecule's actions are icon tiles grouped under short
   headings, one form open at a time under its group; field help moved into tooltips; square 4 px corners
   instead of pills; the reverse barrier is its own arrow in Explore; the interactive reactor has a wall-size

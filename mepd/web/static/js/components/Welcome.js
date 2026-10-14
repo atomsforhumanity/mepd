@@ -7,6 +7,7 @@ import { openTab, prefs, set, state, update, useStore } from '../store.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
+import { PHONE_QUERY } from '../util.js';
 
 // Ready-made molecules, with enough copies and water to give the reactor
 // something to do (MMFF geometries; the reactor needs no minimum).
@@ -82,7 +83,9 @@ export function reactorFor(rec) {
       set({ view: { tab: 'sandbox', jobId: null, sandbox: box } });
       return box;
     }
-    const { n, water: w } = mixFor(rec.natoms);
+    // A first-screen molecule keeps its own mix; anything else gets one sized to it.
+    const preset = PRESETS.find((x) => x.smiles === rec.smiles);
+    const { n, water: w } = preset ? { n: preset.n, water: preset.water } : mixFor(rec.natoms);
     const counts = { [rec.id]: n };
     if (w) { const wid = await water(); counts[wid] = (counts[wid] || 0) + w; }
     return launch(counts);
@@ -142,7 +145,20 @@ function Recent() {
   </div>`;
 }
 
+// Phones: one column, so the preview sits right under the choices.
+function usePhone() {
+  const [phone, setPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(PHONE_QUERY);
+    const f = () => setPhone(mq.matches);
+    mq.addEventListener('change', f);
+    return () => mq.removeEventListener('change', f);
+  }, []);
+  return phone;
+}
+
 export function WelcomeView() {
+  const phone = usePhone();
   const [pick, setPick] = useState('glycine');
   const [busy, setBusy] = useState(false);
   const tour = useStore((s) => s.tour || {});
@@ -167,7 +183,8 @@ export function WelcomeView() {
             <div class="chips">
               ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
               <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
-            </div></div>
+            </div>
+            ${phone && html`<div class="welcome-preview inline"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${140} /></div>`}</div>
         </li>
         <li class=${`welcome-step ${tour.reactor ? 'done' : ''}`}>
           <span class="step-num">${tour.reactor ? '✓' : 2}</span>
@@ -190,8 +207,8 @@ export function WelcomeView() {
         : html`<a href="#" title="Every tab and tool at once" onClick=${(e) => { e.preventDefault(); setEverything(true); }}>I know mepd: show everything</a>`}</p>
     </div>
     <aside class="welcome-side">
-      <div class="welcome-preview"><${Viewer3D} xyz=${p.xyz} height=${300} /></div>
-      <div class="welcome-caption"><b>${p.name}</b><span class="mono small muted">${p.formula}</span></div>
+      ${!phone && html`<div class="welcome-preview"><${Viewer3D} xyz=${p.xyz} height=${300} /></div>
+      <div class="welcome-caption"><b>${p.name}</b><span class="mono small muted">${p.formula}</span></div>`}
       <${Recent} />
     </aside>
   </div>`;

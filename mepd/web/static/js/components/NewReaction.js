@@ -9,6 +9,7 @@ import { depictUrl, isSpecies } from '../util.js';
 import { useMap } from '../quests.js';
 import { TsCell, findTs } from './Reactions.js';
 
+const TAP = window.matchMedia?.('(pointer: coarse)').matches ? 'tap' : 'click';   // a touch screen says tap
 const count = (ids) => ids.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {});
 const usable = (s) => isSpecies(s) && !s.qmmm && s.smiles;
 
@@ -117,7 +118,7 @@ export function ProductPicker({ reactants, onReactants, onAdded }) {
 
     ${own == null ? html`
       <div class="nr-head"><b>It can become</b>
-        <span class="small muted">${error ? '' : !data ? 'working it out…' : props.length ? `${props.length} · click the ones to try` : ''}</span></div>
+        <span class="small muted">${error ? '' : !data ? 'working it out…' : props.length ? `${props.length} · ${TAP} the ones to try` : ''}</span></div>
       ${error && html`<p class="error-box">${error}</p>`}
       ${!data && !error && html`<div class="nr-grid loading">${[0, 1, 2, 3].map(() => html`<span class="nr-prod ghost"></span>`)}</div>`}
       ${data && !props.length && html`<p class="small muted">Nothing within two bonds broken and two formed. Add a partner, or pick the products yourself.</p>`}
@@ -133,7 +134,7 @@ export function ProductPicker({ reactants, onReactants, onAdded }) {
       <p class="small muted nr-alt"><a href="#" onClick=${(e) => { e.preventDefault(); setOwn([]); }}>Pick products from your graph</a>
         ${map.feature('design-tsopt') && html` · <a href="#" title="Draw the product atom by atom" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>Draw it in Design</a>`}</p>`
     : html`
-      <div class="nr-head"><b>Products</b><span class="small muted">click molecules from your graph; the atoms must balance</span></div>
+      <div class="nr-head"><b>Products</b><span class="small muted">${TAP} molecules from your graph; the atoms must balance</span></div>
       <${SpeciesTiles} chosen=${own} onPick=${(id) => setOwn([...own, id])} />
       ${own.length > 0 && html`<div class="nr-reactants"><span class="small muted">→</span>
         <${ReactantChips} ids=${own} onChange=${setOwn} structures=${structures} />
@@ -160,7 +161,7 @@ export function ReactionMaker({ initial, onDone }) {
     ${reactants.length
       ? html`<${ProductPicker} reactants=${reactants} onReactants=${setReactants} onAdded=${(ids) => onDone(ids[ids.length - 1], true)} />
         <p class="small muted nr-alt"><a href="#" onClick=${(e) => { e.preventDefault(); setReactants([]); }}>Start from other molecules</a></p>`
-      : html`<div class="nr-head"><b>What reacts?</b><span class="small muted">click a molecule</span></div>
+      : html`<div class="nr-head"><b>What reacts?</b><span class="small muted">${TAP} a molecule</span></div>
         <${SpeciesTiles} chosen=${reactants} onPick=${(id) => setReactants([...reactants, id])} limit=${24} />`}
   </div>`;
 }
