@@ -122,6 +122,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **The demo needs no password** (mepd.atomsforhumanity.org). Opening the page makes a private workspace
+  at once; `MEPD_DEMO_PASSWORD` / `--demo-password` is now optional and gates the demo only when set (the
+  k8s manifest no longer sets it; `deploy/demo/run.sh` still uses one). The workspace is made on the page's
+  first API call, so crawlers leave nothing on disk. In the open demo, Log out is **Delete workspace** (with
+  the same warning page). mepd no longer generates or reads `.demo_password` itself.
 - **Demo: logging out deletes the visitor's workspace.** Log out now opens a warning page; its button stops
   the visitor's calculations and interactive reactors and deletes everything under `visitors/<id>/`. Before,
   logging out only dropped the cookie and left the workspace on disk, unreachable. A visitor who closes the tab

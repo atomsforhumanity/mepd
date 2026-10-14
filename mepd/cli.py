@@ -1670,13 +1670,14 @@ def web(
     ),
     demo: bool = typer.Option(
         False, "--demo",
-        help="Public demo mode: WORKSPACE is the demo root; anyone with the shared password gets private "
-        "workspaces there, with read-only admin profiles (WORKSPACE/profiles), no filesystem access and "
-        "size/time limits. Run it in the container from deploy/demo/.",
+        help="Public demo mode: WORKSPACE is the demo root; every visitor gets private workspaces there, "
+        "with read-only admin profiles (WORKSPACE/profiles), no filesystem access and size/time limits. "
+        "Open to anyone who opens the page, unless --demo-password is set. Run it in the container from "
+        "deploy/demo/.",
     ),
     demo_password: Optional[str] = typer.Option(
         None, "--demo-password", envvar="MEPD_DEMO_PASSWORD",
-        help="Shared demo password (default: generated once, stored in WORKSPACE/.demo_password).",
+        help="Require this shared password to use the demo (default: none, the demo is open).",
     ),
 ) -> None:
     """Serve the mepd web interface over a workspace directory."""
@@ -1727,8 +1728,6 @@ def web(
 
 
 def _serve_demo(root: Path, host: str, port: int, max_jobs: int, password: Optional[str]) -> None:
-    import os
-    import secrets
     import subprocess
     import sys
 
@@ -1744,21 +1743,13 @@ def _serve_demo(root: Path, host: str, port: int, max_jobs: int, password: Optio
         for name, method in (("default", "NEB"), ("gsm", "GSM")):
             subprocess.run([sys.executable, "-m", "mepd.cli", "init", "--method", method,
                             "--output", str(root / "profiles" / f"{name}.toml")], check=False, capture_output=True)
-    pw_file = root / ".demo_password"
-    if not password:
-        if pw_file.exists():
-            password = pw_file.read_text().strip()
-        else:
-            password = secrets.token_urlsafe(9)
-            pw_file.write_text(password + "\n")
-            os.chmod(pw_file, 0o600)
     try:
         policy = DemoPolicy.from_env()
     except ValueError as exc:
         typer.echo(f"mepd web --demo: {exc}")
         raise typer.Exit(code=2)
     typer.echo(f"mepd web DEMO: root {root} -> http://{host}:{port}")
-    typer.echo(f"  password: {password}")
+    typer.echo(f"  password: {password}" if password else "  open: no password, anyone who opens the page can use it")
     typer.echo(f"  profiles (read-only for visitors): {', '.join(p.stem for p in sorted((root / 'profiles').glob('*.toml')))}")
     typer.echo(f"  limits: {policy.max_atoms} atoms/structure, {policy.max_active_jobs} active jobs/visitor, "
                f"{policy.global_concurrency} running overall, {policy.job_timeout_s / 60:.0f} min/job")

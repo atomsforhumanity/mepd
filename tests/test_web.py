@@ -819,6 +819,34 @@ def test_demo_logout_warns_then_deletes_the_visitors_workspace(demo_app):
     assert not [d for d in (root / "visitors").iterdir() if d.name.startswith(".deleted-")]
 
 
+def test_open_demo_needs_no_password_and_makes_a_workspace_only_for_the_page(tmp_path):
+    from mepd.web.demo import DemoPolicy
+
+    root = tmp_path / "demo"
+    (root / "profiles").mkdir(parents=True)
+    (root / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
+    app = create_app(root, demo=DemoPolicy(max_atoms=10))
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/api/state").status_code == 401          # an API call alone makes nobody
+        r = c.get("/")
+        assert r.status_code == 200 and "mepd_visitor=" in r.headers["set-cookie"]
+        assert not list((root / "visitors").iterdir())         # a crawler leaves nothing on disk
+        st = c.get("/api/state").json()                        # the page's first call: the workspace
+        assert st["demo"]["open"] is True and st["workspace"]["root"] == "main"
+        assert len(list((root / "visitors").iterdir())) == 1
+        assert "set-cookie" not in c.get("/").headers                 # a returning visitor keeps theirs
+        assert c.get("/login").headers["location"] == "/"      # nothing to log in to
+        assert "Delete your workspace?" in c.get("/logout").text
+        r = c.post("/logout")
+        assert r.headers["location"] == "/login?deleted=1"
+        assert not [d for d in (root / "visitors").iterdir() if not d.name.startswith(".deleted-")]
+        c.cookies.clear()
+        assert "workspace was deleted" in c.get("/login?deleted=1").text
+        # Cookies blocked: /login explains instead of sending the browser round in a loop.
+        r = c.get("/login")
+        assert r.status_code == 200 and "cookie" in r.text
+
+
 def test_long_poll_fallback_delivers_events(client):
     """/api/poll: same events as SSE, for proxies that buffer streams."""
     first = client.get("/api/poll").json()

@@ -6,8 +6,8 @@
 #   ...     anything else runs as a command, e.g. `docker run IMAGE mepd models`
 #
 # MEPD_MODE picks how `serve` runs:
-#   demo  (default) many users behind one shared password (MEPD_DEMO_PASSWORD;
-#         generated and printed if unset). Each browser gets its own private
+#   demo  (default) open to anyone who opens the page, or behind one shared
+#         password if MEPD_DEMO_PASSWORD is set. Each browser gets its own private
 #         workspace under /data/demo/visitors, with the limits of
 #         mepd/web/demo.py and read-only compute profiles in /data/demo/profiles.
 #   full  the unrestricted app over one shared workspace, /data/workspace.

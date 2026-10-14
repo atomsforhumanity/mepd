@@ -6,8 +6,7 @@ server (and, next, building in CI and deploying to Kubernetes).
 ```bash
 read -rs HF_TOKEN && export HF_TOKEN                    # a Hugging Face token with UMA access (see below)
 docker build --secret id=hf_token,env=HF_TOKEN -t mepd . # from the repository root
-docker run -d --name mepd -p 8765:8765 -v mepd-data:/data \
-  -e MEPD_DEMO_PASSWORD='choose-one' mepd                 # open http://localhost:8765
+docker run -d --name mepd -p 8765:8765 -v mepd-data:/data mepd   # open http://localhost:8765
 ```
 
 Add `--gpus all` on a machine with NVIDIA GPUs and the NVIDIA container
@@ -90,8 +89,8 @@ docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMN
 
 | Variable | Default | |
 |---|---|---|
-| `MEPD_MODE` | `demo` | `demo`: many users with one shared password. Each browser gets its own workspace (`/data/demo/visitors/<id>`), and the limits in `mepd/web/demo.py` apply (40 atoms, 30 min per job, ...). Compute profiles are read-only (`/data/demo/profiles/*.toml`, editable on the volume). `full`: the unrestricted app over one workspace (`/data/workspace`). Anyone logged in can read files and run programs in the container. |
-| `MEPD_DEMO_PASSWORD` | generated, printed in the log, kept in `/data/demo/.demo_password` | demo mode's shared password |
+| `MEPD_MODE` | `demo` | `demo`: open to anyone who opens the page (or behind one shared password, `MEPD_DEMO_PASSWORD`). Each browser gets its own workspace (`/data/demo/visitors/<id>`), and the limits in `mepd/web/demo.py` apply (40 atoms, 30 min per job, ...). Compute profiles are read-only (`/data/demo/profiles/*.toml`, editable on the volume). `full`: the unrestricted app over one workspace (`/data/workspace`). Anyone logged in can read files and run programs in the container. |
+| `MEPD_DEMO_PASSWORD` | none: the demo is open | a shared password to require in demo mode |
 | `MEPD_WEB_PASSWORD` | a generated token, printed in the log | full mode's password |
 | `MEPD_MAX_JOBS` | 4 | calculations at once |
 | `MEPD_PORT` | 8765 | |

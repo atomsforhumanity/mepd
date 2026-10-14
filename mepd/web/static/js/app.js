@@ -60,7 +60,8 @@ function TopBar() {
       ${demo && html`<span class="badge demo-badge" title="Public demo: private workspace, limited sizes and run times">Demo</span>`}
       ${layoutToggle()}
       ${auth && html`<a class="topbar-link small" href="/logout"
-        title=${demo ? 'Log out and delete your demo workspace (asks first)' : 'Log this device out'}>Log out</a>`}
+        title=${demo ? `${demo.open ? 'Delete' : 'Log out and delete'} your demo workspace (asks first)` : 'Log this device out'}>
+        ${demo?.open ? 'Delete workspace' : 'Log out'}</a>`}
       <button class="btn primary" onClick=${() => set({ modal: { kind: 'quick' } })}>New calculation</button>
     </header>`;
 }

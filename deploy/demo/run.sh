@@ -98,9 +98,7 @@ case "${1:-start}" in
     [ -n "${2:-}" ] || { echo "usage: $0 password NEW_PASSWORD"; exit 2; }
     save_password "$2"
     if docker ps --filter "name=^$NAME\$" --format '{{.Names}}' | grep -q .; then
-      docker restart "$NAME" >/dev/null   # the server reads the password at startup
-      for _ in $(seq 1 60); do curl -fs -o /dev/null "http://127.0.0.1:$DEMO_PORT/login" && break; sleep 1; done
-      echo "password changed and demo restarted (logged-in visitors stay logged in)"
+      exec "$0" start                     # the container gets the password as it starts
     else
       echo "password saved; it applies when you run: $0 start"
     fi
@@ -131,6 +129,8 @@ echo "demo code: $(git -C "$DEMO_SRC" log -1 --format='%h %s')"
 
 mkdir -p "$DEMO_DATA/root" "$DEMO_DATA/home" "$DEMO_DATA/state"
 [ -n "${MEPD_DEMO_PASSWORD:-}" ] && save_password "$MEPD_DEMO_PASSWORD"
+# This tunnel demo stays behind a password (mepd's demo is open without one).
+[ -s "$PW_FILE" ] || save_password "$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
 docker build -q -t "$IMAGE" "$REPO/deploy/demo" >/dev/null
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 
@@ -164,6 +164,7 @@ docker run -d --name "$NAME" --restart unless-stopped \
   -e GXTB_EXECUTABLE="$GXTB" -e GSM_EXECUTABLE="$GSM" \
   -e OMP_NUM_THREADS=1 -e MKL_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
   -e TORCHDYNAMO_DISABLE=1 \
+  -e MEPD_DEMO_PASSWORD="$(cat "$PW_FILE")" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -w /data \
   "$IMAGE" \

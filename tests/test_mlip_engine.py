@@ -65,6 +65,8 @@ def test_gated_model_explains_how_to_get_access_or_switch(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "fairchem.core", SimpleNamespace(pretrained_mlip=SimpleNamespace(get_predict_unit=refuse)))
     monkeypatch.setitem(__import__("sys").modules, "fairchem", SimpleNamespace())
+    monkeypatch.setitem(__import__("sys").modules, "fairchem.core.units.mlip_unit.api.inference",
+                        SimpleNamespace(InferenceSettings=lambda **k: k))      # mepd's default settings
     with pytest.raises(PermissionError) as err:
         FAIRChemEngine(model="uma-s-1p2p1").predictor
     text = str(err.value)

@@ -121,15 +121,17 @@ def _unauthenticated(path: str, demo: bool = False) -> Response:
 
 
 class VisitorAuth:
-    """Demo mode: one shared password; every browser that logs in becomes a
-    separate visitor (random id in a signed cookie) with its own workspace.
-    The signing secret persists in the state dir, so visitors keep their
-    workspace across server restarts (until they clear cookies)."""
+    """Demo mode: every browser becomes a separate visitor (random id in a
+    signed cookie) with its own workspace. Open (no password): the first
+    visit to the page makes the visitor. With a shared password, logging in
+    does. The signing secret persists in the state dir, so visitors keep
+    their workspace across server restarts (until they clear cookies)."""
 
     COOKIE = "mepd_visitor"
 
-    def __init__(self, password: str, secret: bytes, on_logout=None):
+    def __init__(self, password: Optional[str], secret: bytes, on_logout=None):
         self._password = password
+        self.open = not password
         self._secret = secret
         self._on_logout = on_logout        # async (visitor) -> None: deletes their workspace
 
@@ -143,9 +145,22 @@ class VisitorAuth:
             return vid
         return None
 
+    def _set_visitor(self, response: Response, vid: str) -> Response:
+        response.set_cookie(self.COOKIE, f"{vid}.{self._sign(vid)}", max_age=COOKIE_MAX_AGE, httponly=True,
+                            samesite="lax", path="/")
+        return response
+
     async def login(self, request: Request) -> Response:
+        deleted = bool(request.query_params.get("deleted"))
+        if self.open:
+            # Nothing to log in to. Reached after deleting a workspace, or when
+            # the page's calls came without the cookie (blocked cookies): a page,
+            # not a redirect to /, which would loop.
+            if self.visitor(request) and not deleted:
+                return RedirectResponse("/", status_code=303)
+            return open_page(deleted)
         if request.method != "POST":
-            note = "You were logged out and your workspace was deleted." if request.query_params.get("deleted") else ""
+            note = "You were logged out and your workspace was deleted." if deleted else ""
             return login_page(demo=True, note=note)
         form = await request.form()
         candidate = str(form.get("password") or "")
@@ -153,17 +168,14 @@ class VisitorAuth:
             await asyncio.sleep(0.5)
             return login_page("That password is not right.", status=401, demo=True)
         vid = self.visitor(request) or secrets.token_urlsafe(16)
-        response = RedirectResponse("/", status_code=303)
-        response.set_cookie(self.COOKIE, f"{vid}.{self._sign(vid)}", max_age=COOKIE_MAX_AGE, httponly=True,
-                            samesite="lax", path="/")
-        return response
+        return self._set_visitor(RedirectResponse("/", status_code=303), vid)
 
     async def logout(self, request: Request) -> Response:
         # Logging out deletes the visitor's workspace, so a GET (the topbar
         # link, a prefetch) only asks; the page's button POSTs.
         vid = self.visitor(request)
         if request.method != "POST":
-            return logout_page() if vid else RedirectResponse("/login", status_code=303)
+            return logout_page(self.open) if vid else RedirectResponse("/login", status_code=303)
         if vid and self._on_logout is not None:
             await self._on_logout(vid)
         response = RedirectResponse("/login?deleted=1" if vid else "/login", status_code=303)
@@ -178,6 +190,10 @@ class VisitorAuth:
             return await call_next(request)
         if _open_path(path):
             return await call_next(request)
+        if self.open and path == "/":
+            # A new visitor. Their workspace is made on the page's first API
+            # call, so a crawler that runs no JavaScript leaves nothing on disk.
+            return self._set_visitor(await call_next(request), secrets.token_urlsafe(16))
         return _unauthenticated(path, demo=True)
 
 
@@ -236,14 +252,33 @@ def login_page(error: str = "", status: int = 200, demo: bool = False, note: str
 </form>""", status)
 
 
-def logout_page() -> HTMLResponse:
+def logout_page(open_demo: bool = False) -> HTMLResponse:
     """Demo: the warning before logging out deletes the visitor's workspace."""
-    return _page("log out", """<form method="post" action="/logout">
-  <h1>Log out?</h1>
-  <p class="warn"><strong>Logging out deletes your demo workspace</strong>: every session, structure,
+    if open_demo:
+        title, lead, button = ("Delete your workspace?", "This deletes your demo workspace",
+                               "Delete my workspace")
+    else:
+        title, lead, button = ("Log out?", "Logging out deletes your demo workspace",
+                               "Delete my workspace and log out")
+    return _page("log out", f"""<form method="post" action="/logout">
+  <h1>{title}</h1>
+  <p class="warn"><strong>{lead}</strong>: every session, structure,
   calculation and result in it. Running calculations are stopped. This cannot be undone.</p>
   <p>To keep results, download them first (Analyze › Export all, in each session). Or just close
-  the tab: your workspace stays for as long as this browser keeps its login.</p>
-  <button type="submit" class="danger">Delete my workspace and log out</button>
+  the tab: your workspace stays for as long as this browser keeps its cookie.</p>
+  <button type="submit" class="danger">{button}</button>
   <a class="cancel" href="/">Cancel</a>
+</form>""")
+
+
+def open_page(deleted: bool) -> HTMLResponse:
+    """The open demo's /login: after a workspace was deleted, or when the
+    browser does not keep mepd's cookie."""
+    text = ("Your workspace was deleted." if deleted else
+            "Your browser did not keep mepd's cookie, which holds your private workspace. "
+            "Allow cookies for this site, then open mepd again.")
+    return _page("demo", f"""<form method="get" action="/">
+  <h1>mepd</h1>
+  <p class="warn">{text}</p>
+  <button type="submit">{"Start a new workspace" if deleted else "Open mepd"}</button>
 </form>""")

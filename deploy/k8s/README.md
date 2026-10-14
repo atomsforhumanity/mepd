@@ -1,8 +1,8 @@
 # mepd on the afh cluster
 
 `mepd-demo.yaml` runs the image (`ghcr.io/atomsforhumanity/mepd`) in demo
-mode on **afh-c04**. Every tester shares one password and gets private
-workspaces, with the limits in `mepd/web/demo.py`. It runs as one pod with
+mode on **afh-c04**. It is open: anyone who opens the page gets private
+workspaces at once, no password, with the limits in `mepd/web/demo.py`. It runs as one pod with
 the node's GPU, and keeps its state on the node's data disk (`/nvme1`).
 
 ## One-time setup
@@ -18,8 +18,6 @@ kubectl create namespace mepd
 # ideally from a machine account rather than a person's.
 kubectl -n mepd create secret docker-registry ghcr-pull --docker-server=ghcr.io \
   --docker-username=<github user> --docker-password=<token>
-# The testers' shared password
-kubectl -n mepd create secret generic mepd-demo --from-literal=password='<password>'
 ```
 
 ## Deploy, update, inspect
@@ -79,11 +77,13 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
   set programs, file paths or credentials in a profile, use a local-LLM
   retrosynthesis server, or ask Psi4 for more than 16 GB per job
   (`MEPD_DEMO_PSI4_MAX_MEMORY_GB`). Everything else in the app is available.
-- **The password is the protection.** mepd does not lock anyone out after
-  failed logins, because behind the tunnel every visitor can arrive from the
-  same address. Use a long random password (e.g. 20+ characters from a
-  password manager) in the `mepd-demo` Secret. If you want rate limiting,
-  add a Cloudflare rate-limiting rule for `mepd.atomsforhumanity.org/login`;
-  Cloudflare sees each visitor's real address.
+- **No password: the limits are the protection.** Anyone on the internet can
+  use the demo's compute, within the limits above and the demo's blocks on
+  programs, paths and credentials. A new visitor is made by opening the page,
+  and their workspace by the page's first API call, so crawlers that run no
+  JavaScript leave nothing on disk. To slow abuse, add a Cloudflare
+  rate-limiting rule for `mepd.atomsforhumanity.org/` and `/api/jobs`;
+  Cloudflare sees each visitor's real address. To require a shared password
+  again, set `MEPD_DEMO_PASSWORD` (e.g. from a Secret) in `mepd-demo.yaml`.
 - **Plain HTTP.** mepd serves plain HTTP. The Cloudflare tunnel terminates
   TLS, and HTTPS redirects and HSTS belong in Cloudflare's settings.

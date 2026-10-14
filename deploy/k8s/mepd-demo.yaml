@@ -6,7 +6,6 @@
 #   kubectl create namespace mepd
 #   kubectl -n mepd create secret docker-registry ghcr-pull --docker-server=ghcr.io \
 #     --docker-username=<github user> --docker-password=<classic PAT, read:packages only>
-#   kubectl -n mepd create secret generic mepd-demo --from-literal=password='<shared tester password>'
 #
 #   kubectl apply -k deploy/k8s        (normally CI does this: .github/workflows/build-deploy.yml)
 apiVersion: apps/v1
@@ -85,9 +84,6 @@ spec:
               value: '{"total": 8}'
             - name: MEPD_DEMO_QMMM                 # whole QM/MM systems: a protein site with its water
               value: '{"max_atoms": 50000, "max_active_radius": 8.0}'
-            - name: MEPD_DEMO_PASSWORD
-              valueFrom:
-                secretKeyRef: {name: mepd-demo, key: password}
           ports:
             - name: http
               containerPort: 8765

@@ -318,11 +318,10 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     """`auth_token`: require a login (see mepd.web.auth) -- mandatory for
     anything reachable beyond localhost.
 
-    `demo` (a mepd.web.demo.DemoPolicy) + `demo_password`: public demo mode.
-    `workspace_root` is then the demo root; every visitor gets private
-    workspaces under it and the policy's restrictions apply."""
-    if demo is not None and not demo_password:
-        raise ValueError("demo mode needs a password")
+    `demo` (a mepd.web.demo.DemoPolicy): public demo mode. `workspace_root`
+    is then the demo root; every visitor gets private workspaces under it and
+    the policy's restrictions apply. Open to anyone unless `demo_password`
+    is given, then shared by everyone who has it."""
     bus = Broadcaster()
     parse_result = ResultParser()
 
@@ -618,7 +617,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         # Runs inside the auth middleware (added after this one), so a demo
         # visitor is already identified here.
         visitor = visitor_of(request)
-        if visitor is not None:
+        if visitor is not None and request.url.path != "/":   # the page itself needs no workspace
             request_key.set(await sessions.ensure_visitor(visitor))
         elif demo is not None and request.url.path.startswith("/api/"):
             return JSONResponse({"detail": "not logged in"}, status_code=401)
@@ -686,7 +685,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             "path_summaries": W().path_summaries(),
             "max_concurrent": J().max_concurrent,
             "auth": bool(auth_token) or demo is not None,
-            "demo": {**demo.public(), "builtin_profiles": builtin_profiles()} if demo is not None else None,
+            "demo": {**demo.public(), "builtin_profiles": builtin_profiles(), "open": not demo_password}
+                    if demo is not None else None,
             "cpus": os.cpu_count(),
             "solvents": _solvent_list(),
         }
