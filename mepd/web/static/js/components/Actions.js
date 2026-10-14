@@ -5,6 +5,40 @@
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, prefs, useStore, state } from '../store.js';
+import { useMap } from '../quests.js';
+import { QuestIcon } from '../icons.js';
+
+// The Inspector's actions as tiles (same drawings as Your tools): a group
+// heading in plain words, tiles with a short real name, and one open form.
+const CAT_NAME = {
+  'Explore around a structure': 'This molecule', 'Connect two structures': 'Between these two',
+  'Across a set of structures': 'Across these', 'Past the transition state': 'After the transition state',
+  'Reaction conditions': 'Conditions', 'QM/MM': 'Surroundings (QM/MM)', 'Reaction discovery': 'Discovery',
+};
+const TILE = {
+  optimize: ['optimize', 'Optimize'], tsopt: ['barrier', 'TS from a guess'], conformers: ['shapes', 'Conformers'],
+  retrosynthesis: ['retro', 'Retrosynthesis'], nanoreactor: ['reactor', 'Nanoreactor'], 'network-splits': ['network', 'Paths between isomers'],
+  ts: ['connect', 'Transition state'], channels: ['channels', 'Reaction channels'], vri: ['bifurcation', 'Valley-ridge inflection'],
+  'qmmm-build': ['explicit', 'Explicit solvent'], 'qmmm-reaction': ['solvent', 'Reaction in solvent'],
+  'qmmm-protein-sites': ['protein', 'In a protein'], 'qmmm-embed': ['explicit', 'Into this system'], 'qmmm-inspect': ['explicit', 'Energy split'],
+  'hessian-sample': ['discover', 'Hessian sampling'], 'hessian-global': ['discover', 'Basin hopping'], 'graph-enumeration': ['discover', 'Network expansion'],
+};
+// The first sentence, without the trailing CLI hint: what the tile's tooltip and form head say.
+export const oneLine = (s) => (s || '').replace(/\s*\(`[^`]*`\)\s*$/, '').split(/(?<=[.;])\s/)[0];
+
+export function ActTile({ icon, name, tip, on = false, primary = false, onClick }) {
+  return html`<button type="button" class=${`act-tile ${on ? 'on' : ''} ${primary ? 'primary' : ''}`} title=${tip} aria-expanded=${on} onClick=${onClick}>
+    <${QuestIcon} id=${icon} size=${28} /><span>${name}</span></button>`;
+}
+
+export function ActForm({ title, summary, why, onClose, children }) {
+  return html`<div class="op-card open act-form">
+    <div class="act-form-head"><div><b>${title}${why && html`<${Why} id=${why} label=${title} />`}</b>${summary && html`<span class="small muted">${summary}</span>`}</div>
+      <button class="btn-icon" title="Close" aria-label="Close" onClick=${onClose}>✕</button></div>
+    ${children}
+  </div>`;
+}
+import { Why } from './Why.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { conformerLabel, conformerRows, isComplex, isTs } from '../util.js';
 import { ComplexMethodForm, memberCounts } from './ComplexBuild.js';
@@ -115,8 +149,8 @@ function pairEnds(sel, ws) {
 }
 
 function EndpointConformers({ ends, value, onChange }) {
-  return html`<div class="field conf-picks">
-    <span class="field-label">Endpoint conformers</span>
+  return html`<div class="field conf-picks" title="The geometry each end starts from. Saved on the edge, so later calculations on it use the same ones.">
+    <span class="field-label">Endpoint conformers <span class="field-info" aria-hidden="true">ⓘ</span></span>
     ${ends.map((r, i) => r && html`<label class="small">
       <span class="muted">${i === 0 ? 'start' : 'end'} · ${r.name}</span>
       <select value=${value[r.id] || ''} disabled=${(r.conformers || []).length <= 1}
@@ -124,7 +158,6 @@ function EndpointConformers({ ends, value, onChange }) {
         <option value="">Lowest energy (default)</option>
         ${conformerRows(r).map((c) => html`<option value=${c.id}>${conformerLabel(c)}</option>`)}
       </select></label>`)}
-    <span class="field-help">The geometry each end starts from. Saved on the edge, so later calculations on it use the same ones.</span>
   </div>`;
 }
 
@@ -134,15 +167,14 @@ export function ProfilePicker({ value, onChange }) {
   const levelProfile = useStore((s) => s.levelProfile);
   const summary = useStore((s) => s.pathSummaries[value ?? '']);
   return html`
-    <div class="field">
-      <label class="field-label">Compute profile</label>
+    <div class="field" title="The level of theory and path-search settings this runs with (a RunInputs TOML; edit under Settings)">
+      <label class="field-label">Compute profile<${Why} id="level.profile" label="Compute profile" fallback=${html` <span class="field-info" aria-hidden="true">ⓘ</span>`} /></label>
       <select value=${value || ''} onChange=${(e) => onChange(e.target.value || null)}>
         <option value="">mepd built-in defaults · ${levels['']?.label ?? ''}</option>
         ${profiles.map((p) => html`<option value=${p}>${p} · ${levels[p]?.label ?? ''}${p === levelProfile ? ' (workspace level)' : ''}</option>`)}
       </select>
       ${summary && html`<span class="field-help">Path search: <b>${summary.text}</b></span>`}
       ${summary?.warnings.map((w) => html`<p class="level-note small">${w}</p>`)}
-      <span class="field-help">RunInputs TOML: engine, level of theory, path-minimizer settings. Edit under Settings.</span>
     </div>`;
 }
 
@@ -253,7 +285,7 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
   const formValues = { ...values, ...(fixed || {}) };
   const opBody = html`
         <div class="op-body">
-          <${ParamForm} schema=${formSchema} values=${formValues} onChange=${(v) => setValues(Object.fromEntries(Object.entries(v).filter(([k]) => !(k in (fixed || {})))))} />
+          <${ParamForm} op=${op.key} schema=${formSchema} values=${formValues} onChange=${(v) => setValues(Object.fromEntries(Object.entries(v).filter(([k]) => !(k in (fixed || {})))))} />
           <${ProfilePicker} value=${profile} onChange=${setProfile} />
           ${showConfs && html`<${EndpointConformers} ends=${ends} value=${confs} onChange=${setConfs} />`}
           ${fit.note && html`<p class="small muted">${fit.note}</p>`}
@@ -296,13 +328,33 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
 
 // Several operations as one card: a method switch, then the chosen
 // method's form (e.g. the ways of exploring a reaction network).
-function FamilyCard({ family, methods, sel, open, onToggle }) {
+function FamilyCard({ family, methods, sel, open, onToggle, embedded = false }) {
   const [pick, setPick] = useState(() => {
     const saved = prefs.get(`family:${family.key}`, null);
     return methods.some((m) => m.id === saved) ? saved : (methods.find((m) => m.available) || methods[0]).id;
   });
   const m = methods.find((x) => x.id === pick) || methods[0];
   const choose = (id) => { setPick(id); prefs.set(`family:${family.key}`, id); };
+  // Sent here for one of its methods (a tile in Your tools): show that method.
+  const focusOp = useStore((s) => s.focusOp);
+  useEffect(() => {
+    if (!focusOp || Date.now() - focusOp.at > 10000) return;
+    const hit = methods.find((x) => x.op.key === focusOp.key);
+    if (hit) choose(hit.id);
+  }, [focusOp?.at]);
+  const body = html`<div class="family-body">
+        ${[...new Set(methods.map((x) => x.group || ''))].map((g) => html`
+        ${g && html`<div class="method-group small">${g}</div>`}
+        <div class="method-switch" role="tablist">
+          ${methods.filter((x) => (x.group || '') === g).map((x) => html`<button role="tab" aria-selected=${x.id === m.id} class=${`method ${x.id === m.id ? 'on' : ''} ${x.available ? '' : 'off'}`}
+            title=${x.available ? x.summary : x.reason} onClick=${() => choose(x.id)}>${x.label}</button>`)}
+        </div>`)}
+        <p class="small method-summary" title=${m.summary}>${oneLine(m.summary)}<${Why} ids=${[`method.${m.id}`, `op.${m.op.key}`]} label=${m.label} /></p>
+        ${!m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
+          : m.fit.disabled ? html`<p class="small why-disabled">${m.fit.disabled}</p>`
+            : html`<${OperationCard} key=${m.id} op=${m.op} sel=${sel} fit=${m.fit} open=${true} embedded fixed=${m.fixed} />`}
+      </div>`;
+  if (embedded) return body;
   return html`
     <div class=${`op-card family ${open ? 'open' : ''}`}>
       <button type="button" class="op-head" onClick=${onToggle} aria-expanded=${open}>
@@ -312,18 +364,7 @@ function FamilyCard({ family, methods, sel, open, onToggle }) {
         </span>
         <span class="op-chevron" aria-hidden="true">${open ? '−' : '+'}</span>
       </button>
-      ${open && html`<div class="family-body">
-        ${[...new Set(methods.map((x) => x.group || ''))].map((g) => html`
-        ${g && html`<div class="method-group small">${g}</div>`}
-        <div class="method-switch" role="tablist">
-          ${methods.filter((x) => (x.group || '') === g).map((x) => html`<button role="tab" aria-selected=${x.id === m.id} class=${`method ${x.id === m.id ? 'on' : ''} ${x.available ? '' : 'off'}`}
-            title=${x.available ? x.summary : x.reason} onClick=${() => choose(x.id)}>${x.label}</button>`)}
-        </div>`)}
-        <p class="small method-summary">${m.summary}</p>
-        ${!m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
-          : m.fit.disabled ? html`<p class="small why-disabled">${m.fit.disabled}</p>`
-            : html`<${OperationCard} key=${m.id} op=${m.op} sel=${sel} fit=${m.fit} open=${true} embedded fixed=${m.fixed} />`}
-      </div>`}
+      ${open && body}
     </div>`;
 }
 
@@ -332,11 +373,29 @@ export function defaultProfile() {
   return prefs.get('profile', state.profiles.includes('default') ? 'default' : null);
 }
 
-export function ActionPanel({ sel }) {
+// `extras`: actions that are not calculations ({key, icon, name, tip, act() | render(close)}),
+// shown first under "Start here" (the reactor, a complex, Design).
+export function ActionPanel({ sel, extras = [] }) {
   const operations = useStore((s) => s.operations);
+  const map = useMap();
+  const focusOp = useStore((s) => s.focusOp);
   const [openKey, setOpenKey] = useState(null);
-  const all = operations.map((op) => ({ op, fit: applicability(op, sel) })).filter((x) => x.fit);
-  if (!all.length) return null;
+  // Operations the map has not opened yet stay out of sight (quests.js).
+  const all = operations.filter((op) => map.op(op.key)).map((op) => ({ op, fit: applicability(op, sel) })).filter((x) => x.fit);
+  // A quest's "Try it": open that operation's card and bring it into view.
+  useEffect(() => {
+    if (!focusOp || Date.now() - focusOp.at > 10000) return;
+    const op = operations.find((o) => o.key === focusOp.key);
+    if (!op || !all.some((x) => x.op.key === op.key)) return;
+    setOpenKey(op.family ? op.family.key : op.key);
+    setTimeout(() => {
+      const card = document.querySelector('.actions .op-card.open');
+      card?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      card?.classList.add('focus-flash');
+      setTimeout(() => card?.classList.remove('focus-flash'), 2600);
+    }, 150);
+  }, [focusOp?.at]);
+  if (!all.length && !extras.length) return null;
   const fits = all.filter((x) => x.op.available);
   const later = all.filter((x) => !x.op.available);
   const byCat = {};
@@ -358,18 +417,41 @@ export function ActionPanel({ sel }) {
     }
   }
   Object.values(families).forEach((f) => f.methods.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)));
+  const toggle = (k) => setOpenKey(openKey === k ? null : k);
+  const tileOf = (item) => {
+    if (item.familyKey) {
+      const f = families[item.familyKey].family;
+      const first = families[item.familyKey].methods[0]?.op.key;
+      const several = new Set(families[item.familyKey].methods.map((x) => x.op.key)).size > 1;
+      const [icon, name] = TILE[f.key] || (several ? ['discover', f.title] : TILE[first]) || ['discover', f.title];
+      return { key: item.familyKey, icon, name: f.key === first ? name : f.title.replace(/^Reaction network /, 'Network '), tip: families[item.familyKey].methods.map((x) => x.label).join(' · '),
+        form: () => html`<${ActForm} title=${f.title} onClose=${() => setOpenKey(null)}>
+          <${FamilyCard} family=${f} methods=${families[item.familyKey].methods} sel=${sel} open=${true} embedded /><//>` };
+    }
+    const { op, fit } = item;
+    const [icon, name] = TILE[op.key] || ['molecule', op.title];
+    return { key: op.key, icon, name, tip: oneLine(op.summary),
+      form: () => html`<${ActForm} title=${op.title} summary=${oneLine(op.summary)} why=${`op.${op.key}`} onClose=${() => setOpenKey(null)}>
+        <${OperationCard} op=${op} sel=${sel} fit=${fit} open=${true} embedded /><//>` };
+  };
+  const groups = [];
+  if (extras.length) {
+    groups.push({ name: 'Start here', tiles: extras.map((x, i) => ({ ...x, primary: i === 0,
+      form: x.render && (() => html`<${ActForm} title=${x.name} why=${x.why} onClose=${() => setOpenKey(null)}>${x.render(() => setOpenKey(null))}<//>`) })) });
+  }
+  for (const [cat, items] of Object.entries(byCat)) groups.push({ name: CAT_NAME[cat] || cat, tiles: items.map(tileOf) });
   return html`
     <section class="actions">
-      ${Object.entries(byCat).map(([cat, items]) => html`
-        <div class="action-group">
-          <h3 class="section-title">${cat}</h3>
-          ${items.map(({ op, fit, familyKey }) => (familyKey
-            ? html`<${FamilyCard} key=${familyKey} family=${families[familyKey].family} methods=${families[familyKey].methods} sel=${sel}
-                open=${openKey === familyKey} onToggle=${() => setOpenKey(openKey === familyKey ? null : familyKey)} />`
-            : html`<${OperationCard} key=${op.key} op=${op} sel=${sel} fit=${fit}
-                open=${openKey === op.key} onToggle=${() => setOpenKey(openKey === op.key ? null : op.key)} />`))}
-        </div>`)}
-      ${later.length > 0 && html`<p class="small muted later">Not available yet: ${later.map(({ op }, i) =>
+      ${groups.map((g) => {
+        const open = g.tiles.find((t) => t.key === openKey);
+        return html`<div class="action-group">
+          <h3 class="act-cat">${g.name}</h3>
+          <div class="act-tiles">${g.tiles.map((t) => html`<${ActTile} key=${t.key} icon=${t.icon} name=${t.name} tip=${t.tip}
+            primary=${t.primary} on=${t.key === openKey} onClick=${() => (t.act ? t.act() : toggle(t.key))} />`)}</div>
+          ${open && open.form && open.form()}
+        </div>`;
+      })}
+      ${later.length > 0 && html`<p class="small muted later">Not available here: ${later.map(({ op }, i) =>
         html`${i ? ', ' : ''}<span title=${op.unavailable_reason}>${op.title}</span>`)}.</p>`}
     </section>`;
 }

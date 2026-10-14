@@ -16,6 +16,10 @@ export const state = {
   pgPanel: null,                         // playground: which sheet is open ('add' | 'settings' | null)
   // The 'How it works' panel, once dismissed, stays away (per browser).
   howToHidden: (() => { try { return localStorage.getItem('mepd:hideHowTo') === 'true'; } catch { return false; } })(),
+  // Getting-started steps done (molecule, reactor, reaction) and whether they are hidden (Welcome.js).
+  tour: _pref('tour', {}),
+  everything: _pref('everything', false),   // "Show everything": skip the map (quests.js)
+  focusOp: null,         // {key, at}: an operation card to open in the Inspector (a quest's "Try it")
   loaded: false,
   workspace: { structures: {}, edges: {}, positions: {}, root: '' },
   jobs: {},

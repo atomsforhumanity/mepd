@@ -13,6 +13,8 @@ import { DesignView } from './components/Design.js';
 import { AnalyzeView } from './components/Analyze.js';
 import { SandboxView } from './components/Sandbox.js';
 import { PlaygroundApp, layoutToggle } from './components/Playground.js';
+import { WelcomeView } from './components/Welcome.js';
+import { announceUnlocks, markQuest, mapOf, useMap } from './quests.js';
 
 function TopBar() {
   const view = useStore((s) => s.view);
@@ -23,7 +25,10 @@ function TopBar() {
     return { running: js.filter((j) => j.status === 'running').length, queued: js.filter((j) => j.status === 'queued').length };
   });
   const lastJob = useStore((s) => s.view.jobId);
-  const tabs = [['design', 'Design'], ['graph', 'Explore'], ['analyze', 'Analyze'], ['jobs', 'Calculations'], ['profiles', 'Settings'], ['refs', 'References']];
+  const map = useMap();
+  // Tabs appear as the map opens them (quests.js).
+  const tabs = [['design', 'Design'], ['graph', 'Explore'], ['analyze', 'Analyze'], ['jobs', 'Calculations'], ['profiles', 'Settings'], ['refs', 'References']]
+    .filter(([k]) => map.tab(k));
   const demo = useStore((s) => s.demo);
   const auth = useStore((s) => s.auth);
   const active = counts.running + counts.queued;
@@ -38,7 +43,8 @@ function TopBar() {
   }, [root, view.tab]);
   return html`
     <header class="topbar">
-      <div class="brand">
+      <div class="brand" role="button" tabindex="0" title="Your tools and the first steps" onClick=${() => openTab('welcome')}
+        onKeyDown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openTab('welcome'); } }}>
         <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="16" cy="16" r="3.2" fill="currentColor"/></svg>
         mepd
       </div>
@@ -58,11 +64,10 @@ function TopBar() {
         <span class="session-label">${root.split('/').pop()}</span><span class="caret">▾</span>
       </button>
       ${demo && html`<span class="badge demo-badge" title="Public demo: private workspace, limited sizes and run times">Demo</span>`}
-      ${layoutToggle()}
+      ${(map.all || state.layout === 'playground') && layoutToggle()}
       ${auth && html`<a class="topbar-link small" href="/logout"
         title=${demo ? `${demo.open ? 'Delete' : 'Log out and delete'} your demo workspace (asks first)` : 'Log this device out'}>
         ${demo?.open ? 'Delete workspace' : 'Log out'}</a>`}
-      <button class="btn primary" onClick=${() => set({ modal: { kind: 'quick' } })}>New calculation</button>
     </header>`;
 }
 
@@ -81,6 +86,17 @@ function App() {
   const layout = useStore((s) => s.layout);
   const pgBg = useStore((s) => s.pgBg);
   useStore((s) => s.selection);
+  // The map: announce what just opened; visiting a quest's tab completes it;
+  // a tab the map has not opened (e.g. the landing one) gives way to the first screen.
+  const map = useMap();
+  const mapKey = `${[...map.done].join()}|${[...map.open].join()}`;
+  useEffect(() => { if (loaded) announceUnlocks(); }, [loaded, mapKey]);
+  useEffect(() => {
+    if (!loaded) return;
+    const visit = { profiles: 'method', analyze: 'kinetics', graph: 'network' }[view.tab];
+    if (visit && mapOf().open.has(visit) && map.tab(view.tab)) markQuest(visit);
+    if (['graph', 'analyze', 'jobs', 'profiles'].includes(view.tab) && !map.tab(view.tab)) set({ view: { tab: 'welcome', jobId: null } });
+  }, [loaded, view.tab, mapKey]);
   // The layout's palette lives on <html>, so the graph (drawn from CSS
   // variables) and everything else pick it up.
   useEffect(() => {
@@ -109,7 +125,7 @@ function App() {
   }, []);
 
   if (!loaded) return html`<div class="boot">Connecting to mepd…</div>`;
-  if (layout === 'playground') {
+  if (layout === 'playground' && view.tab !== 'welcome') {
     return html`<${PlaygroundApp} /><${Modals} /><${Toasts} />`;
   }
   const demo = state.demo;
@@ -117,7 +133,7 @@ function App() {
   const showInspector = (view.tab === 'graph' || view.tab === 'jobs') && !(nothingSelected && howToHidden);
   return html`
     <${TopBar} />
-    ${demo && html`<div class="demo-banner small">${`Demo: this is your private workspace. Limits: ${demo.max_atoms} atoms per structure, ${demo.max_active_jobs} calculations at a time, ${Math.round(demo.job_timeout_s / 60)} min per calculation${demo.op_timeout_s?.vri ? ` (VRI searches ${Math.round(demo.op_timeout_s.vri / 60)} min)` : ''}. Settings: the built-in profiles are fixed; Save as… makes your own (g-xTB, xTB or an open machine-learned potential).`}</div>`}
+    ${demo && html`<div class="demo-banner small" title=${`Limits: ${demo.max_atoms} atoms per structure, ${demo.max_active_jobs} calculations at a time, ${Math.round(demo.job_timeout_s / 60)} min per calculation${demo.op_timeout_s?.vri ? ` (VRI searches ${Math.round(demo.op_timeout_s.vri / 60)} min)` : ''}. The built-in profiles are fixed; Settings › Save as… makes your own.`}>${`Demo · your private workspace · up to ${demo.max_atoms} atoms, ${demo.max_active_jobs} calculations at a time`}</div>`}
     <main class=${`layout tab-${view.tab} ${showInspector ? '' : 'no-inspector'}`}>
       <${Library} />
       <section class="center">
@@ -129,6 +145,7 @@ function App() {
         ${view.tab === 'design' && html`<${DesignView} />`}
         ${view.tab === 'analyze' && html`<${AnalyzeView} />`}
         ${view.tab === 'sandbox' && html`<${SandboxView} />`}
+        ${view.tab === 'welcome' && html`<${WelcomeView} />`}
       </section>
       ${showInspector && html`<${Inspector} />`}
     </main>

@@ -5,14 +5,15 @@
 //    their barriers;
 //  * the selected reaction's card: species, energy ladder, complexes, MD
 //    event, TS;
-//  * New reaction: pick species from the graph as reactants (and products,
-//    or let the bond rules propose them) and turn them into reactions.
-import { html, useMemo, useState } from '../lib.js';
+//  * New reaction: click molecules of the graph, then the products they can
+//    become (NewReaction.js).
+import { html, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, select, set, state, toast, useStore } from '../store.js';
-import { depictUrl, edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
+import { edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
 import { NO_TS_SHORT, ReactionCard, findTs, noTsWhy } from './Reactions.js';
 import { KineticsView } from './Kinetics.js';
+import { ReactionMaker } from './NewReaction.js';
 
 const count = (ids) => ids.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {});
 
@@ -62,103 +63,6 @@ function sourceLabel(r) {
   if (r.origin?.kind === 'composed') return 'composed';
   if (r.origin?.retro) return 'retrosynthesis';
   return r.count ? `seen ${r.count}×` : '';
-}
-
-// ------------------------------------------------------------ new reaction
-function SpeciesPicker({ label, ids, onChange, species }) {
-  const [q, setQ] = useState('');
-  const [openList, setOpenList] = useState(false);
-  const ql = q.trim().toLowerCase();
-  // Exact name/SMILES first, then prefixes, then the rest (shortest first).
-  const rank = (s) => {
-    const names = [s.name, s.smiles].map((x) => (x || '').toLowerCase());
-    return names.includes(ql) ? 0 : names.some((x) => x.startsWith(ql)) ? 1 : 2;
-  };
-  const hits = ql && openList ? species.filter((s) => `${s.name} ${s.smiles} ${s.formula}`.toLowerCase().includes(ql))
-    .sort((a, b) => rank(a) - rank(b) || (a.name || '').length - (b.name || '').length).slice(0, 8) : [];
-  const c = count(ids);
-  return html`<div class="cp-side">
-    <div class="section-title">${label}</div>
-    <div class="cp-chips">
-      ${Object.entries(c).map(([id, n]) => html`<span class="cp-chip">
-        ${state.workspace.structures[id]?.smiles && html`<img src=${depictUrl(state.workspace.structures[id].smiles, 60, 45)} alt="" />`}
-        <span>${n > 1 ? `${n} × ` : ''}${state.workspace.structures[id]?.name || '?'}</span>
-        <button class="btn-icon" title="One more" onClick=${() => onChange([...ids, id])}>+</button>
-        <button class="btn-icon" title="One fewer" onClick=${() => { const k = ids.indexOf(id); onChange(ids.filter((_, i) => i !== k)); }}>−</button>
-      </span>`)}
-      <div class="cp-search">
-        <input type="search" placeholder="add a species…" value=${q}
-          onInput=${(e) => { setQ(e.target.value); setOpenList(true); }} onFocus=${() => setOpenList(true)}
-          onBlur=${() => setTimeout(() => setOpenList(false), 150)}
-          onKeyDown=${(e) => { if (e.key === 'Escape') setOpenList(false); if (e.key === 'Enter' && hits[0]) { onChange([...ids, hits[0].id]); setQ(''); } }} />
-        ${hits.length > 0 && html`<ul class="cp-hits">${hits.map((s) => html`<li><button onMouseDown=${(e) => e.preventDefault()} onClick=${() => { onChange([...ids, s.id]); setQ(''); setOpenList(false); }}>
-          ${s.smiles && html`<img src=${depictUrl(s.smiles, 60, 45)} alt="" />`}<span>${s.name}</span></button></li>`)}</ul>`}
-      </div>
-    </div>
-  </div>`;
-}
-
-function Composer({ initial, onDone }) {
-  const structures = useStore((s) => s.workspace.structures);
-  const species = useMemo(() => Object.values(structures).filter(isSpecies)
-    .sort((a, b) => a.name.localeCompare(b.name)), [structures]);
-  const [reactants, setReactants] = useState(initial || []);
-  const [products, setProducts] = useState([]);
-  const [proposals, setProposals] = useState(null);
-  const [picked, setPicked] = useState(new Set());
-  const [busy, setBusy] = useState(false);
-  const propose = async () => {
-    setBusy(true);
-    const out = await attempt(() => api.post('/api/reactions/propose', { reactants }));
-    setBusy(false);
-    if (out) { setProposals(out); setPicked(new Set()); }
-  };
-  const create = async () => {
-    setBusy(true);
-    const made = [];
-    if (products.length) {
-      const r = await attempt(() => api.post('/api/reactions/compose', { reactants, products }), 'Reaction added');
-      if (r) made.push(r);
-    } else {
-      for (const k of picked) {
-        const p = proposals.proposals[k];
-        const r = await attempt(() => api.post('/api/reactions/compose', { reactants,
-          proposal: { ...p, complex_xyz: proposals.complex_xyz, charge: proposals.charge, multiplicity: proposals.multiplicity } }));
-        if (r) made.push(r);
-      }
-    }
-    setBusy(false);
-    if (made.length) onDone(made[made.length - 1].id);
-  };
-  const shuttleNote = reactants.some((id) => products.includes(id));
-  return html`<div class="composer">
-    <p class="small muted">Put species from your graph together. Add a partner on both sides to use it as a shuttle
-      (e.g. water relaying a proton). Leave the products empty to have them proposed.</p>
-    <div class="cp-row">
-      <${SpeciesPicker} label="Reactants" ids=${reactants} onChange=${(v) => { setReactants(v); setProposals(null); }} species=${species} />
-      <span class="cp-arrow">→</span>
-      <${SpeciesPicker} label="Products (optional)" ids=${products} onChange=${(v) => { setProducts(v); setProposals(null); }} species=${species} />
-    </div>
-    ${shuttleNote && html`<p class="small muted">Species on both sides act as shuttles.</p>`}
-    <div class="cp-actions">
-      ${products.length
-        ? html`<button class="btn primary" disabled=${busy || !reactants.length} onClick=${create}>Create reaction</button>`
-        : html`<button class="btn primary" disabled=${busy || !reactants.length} onClick=${propose}>${busy ? 'Proposing…' : 'Propose products'}</button>`}
-      <button class="btn-link small" onClick=${() => onDone(null)}>Cancel</button>
-    </div>
-    ${proposals && !products.length && html`<div class="cp-proposals">
-      <div class="section-title">${proposals.proposals.length} possible products (bond rules: up to 2 bonds broken and 2 formed)</div>
-      ${!proposals.proposals.length && html`<p class="small muted">None.</p>`}
-      <ul>${proposals.proposals.map((p, k) => html`<li>
-        <label class=${picked.has(k) ? 'on' : ''}>
-          <input type="checkbox" checked=${picked.has(k)} onChange=${(e) => { const n = new Set(picked); e.target.checked ? n.add(k) : n.delete(k); setPicked(n); }} />
-          ${p.fragments.map((f, i) => html`${i ? html`<span class="rc-op">+</span>` : ''}<img src=${depictUrl(f, 90, 68)} alt=${f} title=${f} />`)}
-          <span class="mono small">${p.smiles}</span>
-        </label></li>`)}</ul>
-      <button class="btn primary" disabled=${busy || !picked.size} onClick=${create}>
-        ${busy ? 'Creating…' : `Create ${picked.size || ''} reaction${picked.size === 1 ? '' : 's'}`}</button>
-    </div>`}
-  </div>`;
 }
 
 // The whole workspace as files: fetched first (building it takes a while on a
@@ -293,7 +197,8 @@ function ReactionsAnalyze() {
       </div>
     </div>
     <div class="an-detail">
-      ${nav.compose ? html`<${Composer} initial=${nav.composeReactants} onDone=${(rid) => set({ analyze: { ...nav, compose: false, composeReactants: null, reaction: rid || nav.reaction } })} />`
+      ${nav.compose ? html`<${ReactionMaker} initial=${nav.composeReactants}
+          onDone=${(rid, stay) => set({ analyze: { ...nav, compose: !!stay, composeReactants: stay ? nav.composeReactants : null, reaction: rid || nav.reaction } })} />`
         : selected ? html`<${ReactionCard} key=${selected.id} r=${selected} />`
           : html`<div class="empty-hint"><p>Pick a reaction on the left: routes that do the same thing are grouped, the lowest barrier first.</p></div>`}
     </div>

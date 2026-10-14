@@ -7,6 +7,7 @@ import { html, useMemo, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { set, state, useStore } from '../store.js';
 import { depictUrl, isSpecies, variantScope } from '../util.js';
+import { Why } from './Why.js';
 
 const fmtC = (x) => (x == null ? '—' : x === 0 ? '0' : Math.abs(x) >= 0.01 && Math.abs(x) < 1000 ? x.toPrecision(3) : x.toExponential(1));
 const UNITS = { s: 1, min: 60, h: 3600, d: 86400 };
@@ -177,27 +178,27 @@ export function KineticsView() {
         <option value="">parent</option>
         ${Object.values(variants).map((v) => html`<option value=${v.id}>${v.name}</option>`)}</select></label>
         ${net && !variants[net]?.on && html`<label class="small" title="Run the parent and this variant from the same mixture: amounts of a replaced species go to its variant">
-          <input type="checkbox" checked=${!!cmp} onChange=${(e) => setCmp(e.target.checked)} /> compare with parent</label>`}
+          <input type="checkbox" checked=${!!cmp} onChange=${(e) => setCmp(e.target.checked)} /> compare with parent<${Why} id="kinetics.compare" /></label>`}
         ${net && variants[net]?.on && html`<label class="small" title="Run this variant and another network from the same mixture: amounts of a replaced species go to its variant">compare with
           <select value=${cmp || ''} onChange=${(e) => setCmp(e.target.value)}>
             <option value="">—</option><option value="on">${variants[variants[net].on]?.name || 'its base'}</option><option value="parent">parent</option></select></label>`}</div>`}
-      <div class="section-title">Start</div>
+      <div class="section-title">Start<${Why} ids=${['kinetics.model']} label="The kinetic model" /></div>
       <${Mixture} items=${mix} onChange=${setMix} species=${species} />
-      <p class="small muted">"fixed" = a constant feed (held at that amount): the run then heads to a steady state. Without any, it is a closed flask.</p>
-      <div class="kn-row"><label>Temperature <input type="number" value=${T} min="1" step="10" onInput=${(e) => setT(+e.target.value)} /> K</label></div>
-      <div class="kn-row"><label>Time <input type="number" value=${tVal} min="0" step="1" onInput=${(e) => setTVal(+e.target.value)} /></label>
+      <p class="small muted">fixed: a constant feed<${Why} id="kinetics.held" label="Fixed amounts" /></p>
+      <div class="kn-row"><label>Temperature <input type="number" value=${T} min="1" step="10" onInput=${(e) => setT(+e.target.value)} /> K</label><${Why} ids=${['kinetics.temperature']} /></div>
+      <div class="kn-row"><label>Time <input type="number" value=${tVal} min="0" step="1" onInput=${(e) => setTVal(+e.target.value)} /></label><${Why} id="kinetics.time" />
         <select value=${tUnit} onChange=${(e) => setTUnit(e.target.value)}>${Object.keys(UNITS).map((u) => html`<option value=${u}>${u}</option>`)}</select></div>
       <div class="kn-row"><label>Target <select value=${target} onChange=${(e) => setTarget(e.target.value)}>
         <option value="">— none —</option>
-        ${species.map((s) => html`<option value=${s.id}>${s.name}</option>`)}</select></label></div>
+        ${species.map((s) => html`<option value=${s.id}>${s.name}</option>`)}</select></label><${Why} ids=${['kinetics.target']} /></div>
       ${target && html`<div class="kn-row segmented">
-        <button class=${what === 'amount' ? 'on' : ''} onClick=${() => setWhat('amount')} title="How much of the target there is at the end">amount at the end</button>
+        <${Why} id="kinetics.control_what" /><button class=${what === 'amount' ? 'on' : ''} onClick=${() => setWhat('amount')} title="How much of the target there is at the end">amount at the end</button>
         <button class=${what === 'rate' ? 'on' : ''} onClick=${() => setWhat('rate')} title="How fast it forms at the end (with a feed: the steady-state rate)">formation rate</button>
       </div>`}
       <label class="kn-row small"><input type="checkbox" checked=${sweepOn} onChange=${(e) => setSweepOn(e.target.checked)} />
-        temperature sweep <input type="number" class="tiny" value=${tLo} onInput=${(e) => setTLo(+e.target.value)} />–<input type="number" class="tiny" value=${tHi} onInput=${(e) => setTHi(+e.target.value)} /> K</label>
-      <label class="kn-row small" title="Barriers that are only a path maximum (no TS/IRC confirmed them)"><input type="checkbox" checked=${unverified} onChange=${(e) => setUnverified(e.target.checked)} /> include unverified barriers</label>
-      <label class="kn-row small" title="Quasi-RRHO free energies (zero-point energy, enthalpy and entropy from GFN2-xTB single-point Hessians, computed once per structure and kept). Without it, electronic energies stand in, and complexes look too stable."><input type="checkbox" checked=${free} onChange=${(e) => setFree(e.target.checked)} /> free energies</label>
+        temperature sweep <input type="number" class="tiny" value=${tLo} onInput=${(e) => setTLo(+e.target.value)} />–<input type="number" class="tiny" value=${tHi} onInput=${(e) => setTHi(+e.target.value)} /> K<${Why} ids=${['kinetics.sweep', 'kinetics.temperature_sweep']} /></label>
+      <label class="kn-row small" title="Barriers that are only a path maximum (no TS/IRC confirmed them)"><input type="checkbox" checked=${unverified} onChange=${(e) => setUnverified(e.target.checked)} /> include unverified barriers<${Why} ids=${['kinetics.unverified', 'kinetics.include_unverified', 'kinetics.include_unverified_barriers']} /></label>
+      <label class="kn-row small" title="Quasi-RRHO free energies (zero-point energy, enthalpy and entropy from GFN2-xTB single-point Hessians, computed once per structure and kept). Without it, electronic energies stand in, and complexes look too stable."><input type="checkbox" checked=${free} onChange=${(e) => setFree(e.target.checked)} /> free energies<${Why} ids=${['kinetics.free_energy', 'kinetics.free_energies']} /></label>
       <button class="btn primary" disabled=${busy || !mix.length} onClick=${run}>${busy ? 'Running…' : 'Run kinetics'}</button>
     </div>
     <div class="kn-results">${res?.compare ? html`<${Compare} res=${res} T=${T} onReaction=${openReaction} />`

@@ -2,6 +2,7 @@
 // Field extras from mepd.web.operations: group, advanced, cli, cli_kind.
 import { html, useEffect, useState } from '../lib.js';
 import { prefs } from '../store.js';
+import { Why } from './Why.js';
 
 // A number field that lets you type: it keeps its own text while you edit
 // ("0.", "-", "1e-" are fine half-way) and reports a number only when the text
@@ -40,7 +41,9 @@ function fieldType(prop) {
   return { kind: base.type || 'string', nullable, min: base.minimum ?? base.exclusiveMinimum, max: base.maximum };
 }
 
-function Field({ name, prop, value, onChange }) {
+function Field({ name, prop, value, onChange, op }) {
+  const info = html`<${Why} ids=${[`param.${op}.${name}`, `param.${name}`]} label=${prop.title || name}
+    fallback=${prop.description ? html` <span class="field-info" aria-hidden="true">ⓘ</span>` : null} />`;
   const t = fieldType(prop);
   const hint = [prop.description, prop.cli ? `CLI: ${prop.cli}` : ''].filter(Boolean).join('\n');
   const id = `f-${name}`;
@@ -49,8 +52,7 @@ function Field({ name, prop, value, onChange }) {
     return html`
       <label class="field field-bool" title=${hint}>
         <input type="checkbox" class="switch" checked=${!!value} onChange=${(e) => onChange(e.target.checked)} />
-        <span class="field-label">${prop.title || name}</span>
-        ${prop.description && html`<span class="field-help">${prop.description}</span>`}
+        <span class="field-label">${prop.title || name}${info}</span>
       </label>`;
   }
   // Field extras may name what each value is shown as (`labels`).
@@ -82,9 +84,8 @@ function Field({ name, prop, value, onChange }) {
   }
   return html`
     <div class="field" title=${hint}>
-      <label class="field-label" for=${id}>${prop.title || name}</label>
+      <label class="field-label" for=${id}>${prop.title || name}${info}</label>
       ${control}
-      ${prop.description && html`<span class="field-help">${prop.description}</span>`}
     </div>`;
 }
 
@@ -131,7 +132,7 @@ function requirementMet(values, requires) {
   return allowed === undefined ? !!values[name] : allowed.split('|').includes(String(values[name]));
 }
 
-export function ParamForm({ schema, values, onChange }) {
+export function ParamForm({ schema, values, onChange, op = '' }) {
   if (!schema?.properties || !Object.keys(schema.properties).length) {
     return html`<p class="muted small">No parameters.</p>`;
   }
@@ -146,14 +147,14 @@ export function ParamForm({ schema, values, onChange }) {
   const set = (k) => (v) => onChange({ ...values, [k]: v });
   return html`
     <div class="param-form">
-      ${basic.map(([k, p]) => html`<${Field} key=${k} name=${k} prop=${p} value=${values[k]} onChange=${set(k)} />`)}
+      ${basic.map(([k, p]) => html`<${Field} key=${k} op=${op} name=${k} prop=${p} value=${values[k]} onChange=${set(k)} />`)}
       ${advanced.length > 0 && html`
         <details class="advanced">
           <summary>Advanced${nChanged ? html` <span class="badge">${nChanged} changed</span>` : ''}</summary>
           ${Object.entries(groups).map(([g, fields]) => html`
             <fieldset>
               <legend>${g}</legend>
-              ${fields.map(([k, p]) => html`<${Field} key=${k} name=${k} prop=${p} value=${values[k]} onChange=${set(k)} />`)}
+              ${fields.map(([k, p]) => html`<${Field} key=${k} op=${op} name=${k} prop=${p} value=${values[k]} onChange=${set(k)} />`)}
             </fieldset>`)}
           <button type="button" class="btn-link small" onClick=${() => onChange(defaultsFor(schema))}>Reset all to defaults</button>
         </details>`}

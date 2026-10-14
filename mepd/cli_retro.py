@@ -81,8 +81,8 @@ def plan(
     option: List[str] = typer.Option([], "--option", "-o", help="Method option key=value (repeatable), e.g. "
                                      "model=qwen3:8b, roundtrip=false, filter_cutoff=0.1."),
     stock: List[str] = typer.Option([], "--stock", "-s", help="Building blocks: paroutes-n1, paroutes-n5, zinc, or a "
-                                    "file of SMILES/InChIKeys (repeatable). Default: zinc if set up, else both "
-                                    "PaRoutes sets."),
+                                    "file of SMILES/InChIKeys (repeatable), or auto. Default (and auto): zinc if set up, "
+                                    "else both PaRoutes sets."),
     max_heavy: int = typer.Option(2, "--max-heavy", help="Also count any molecule with at most this many heavy atoms "
                                   "as available (H2, CO, ethylene...: the stocks list common reagents themselves); "
                                   "0 turns it off."),
@@ -128,7 +128,8 @@ def plan(
     if verify != "none" and not inputs:
         say("--verify without -i: the path searches run at mepd's default level of theory.")
 
-    stock_names = list(stock) or _default_stock()
+    # "auto" stands for the default, so a file can be added to it (--stock auto --stock mine.smi).
+    stock_names = [n for s in stock for n in (_default_stock() if s.strip() == "auto" else [s])] or _default_stock()
     st = load(stock_names, max_heavy=max_heavy, say=say)
     say(f"Target {smi}; stock: {st.describe()}; method: {PROPOSERS[method].label}")
     t0 = time.time()

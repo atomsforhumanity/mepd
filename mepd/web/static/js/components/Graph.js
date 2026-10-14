@@ -34,11 +34,6 @@ function stylesheet() {
       'text-background-color': css('--bg'), 'text-background-opacity': 0.9, 'text-background-padding': 3,
       'text-background-shape': 'roundrectangle',
     } },
-    // Forward barrier at the source end, reverse at the target end (edgeEndLabels).
-    { selector: 'edge[srcLabel][tgtLabel]', style: {
-      'source-label': 'data(srcLabel)', 'target-label': 'data(tgtLabel)',
-      'source-text-offset': 30, 'target-text-offset': 38,
-    } },
     { selector: 'edge[status = "done"]', style: { 'line-style': 'solid', 'line-color': css('--ok'), 'target-arrow-color': css('--ok') } },
     // Only a multi-step route joins the two ends (no single step does): not drawn as a step.
     { selector: 'edge[status = "done"][route = "yes"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [2, 5] } },
@@ -482,12 +477,24 @@ function ViewPanel({ view, setView, collapsed, setCollapsed, kids, shown, total,
   </div>`;
 }
 
-// The barrier to leave each end, drawn at that end: forward at the source,
-// reverse at the target (past the arrowhead). One number per end, so the
-// direction reads off the drawing, however the edge happens to point.
-function edgeEndLabels(st) {
-  if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return { srcLabel: '', tgtLabel: '' };
-  return { srcLabel: st.barrierFwd.toFixed(1), tgtLabel: st.barrierRev.toFixed(1) };
+// Both directions known: the reverse step is an arrow of its own, from the
+// target back to the source, carrying the reverse barrier. It is drawn only:
+// tapping it is tapping its reaction's edge (`of`).
+const REV = '~rev';
+function reverseEdge(e, st, source, target) {
+  if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return null;
+  return { id: e.id + REV, of: e.id, source: target, target: source, status: st.status, label: st.barrierRev.toFixed(1),
+    runs: '', route: st.routeSteps ? 'yes' : '' };
+}
+const edgeOf = (el) => el.data('of') || el.id();
+
+// Frame these edges: their reverse arrows, their ends, and a complex end's molecules.
+function fitToEdges(c, ids) {
+  let els = c.collection();
+  for (const id of ids) els = els.union(c.getElementById(id)).union(c.getElementById(id + REV));
+  els = els.union(els.connectedNodes());
+  els = els.union(els.nodes('.cx').connectedEdges('.member').connectedNodes());
+  if (els.nonempty()) c.animate({ fit: { eles: els, padding: 80 }, duration: 450, easing: 'ease-in-out-cubic' });
 }
 
 function edgeLabel(e, st, reaction = null) {
@@ -499,8 +506,8 @@ function edgeLabel(e, st, reaction = null) {
     return parts.join(' · ');
   }
   if (st.routeSteps > 1) parts.push(`${st.routeSteps} steps`);
-  // Both directions known: the numbers sit at the edge's ends (edgeEndLabels).
-  if (st.barrierRev != null) { if (st.warning) parts.push('⚠'); }
+  // Both directions known: the forward barrier here, the reverse on its own arrow (reverseEdge).
+  if (st.barrierRev != null && st.barrierFwd != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrierFwd.toFixed(1)}`);
   else if (st.barrier != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrier.toFixed(1)}`);
   else if (st.barrierUnverified != null) parts.push(`≈${st.barrierUnverified.toFixed(1)}?`);
   else if (e.origin?.estimate?.barrier_shift != null && e.origin.estimate.status === 'ok')
@@ -526,6 +533,7 @@ export function Graph() {
   const glowing = useRef(new Set());    // nodes currently wearing the 'calculation running' glow
   const arranging = useRef(false);      // a layout is animating
   const pendingArrange = useRef(false); // new nodes arrived while the graph was hidden
+  const pendingFit = useRef(null);      // edge ids to frame once the graph is shown ('fit-to')
   const fittedFor = useRef(null);       // the workspace whose saved layout the view was fitted to
   const arrangeRef = useRef(() => {});
   const treeRef = useRef(() => {});
@@ -601,11 +609,11 @@ export function Graph() {
         return;
       }
       if (evt.target.isNode()) select({ structures: [id] }, additive);
-      else select({ edges: [id] }, additive);
+      else select({ edges: [edgeOf(evt.target)] }, additive);
     });
     c.on('dbltap', 'edge', (evt) => {
       // A reaction (or any) edge: open the calculation behind its barrier.
-      const edge = state.workspace.edges[evt.target.id()];
+      const edge = state.workspace.edges[edgeOf(evt.target)];
       const job = edge && edgeStatus(edge, state.jobs).barrierJob;
       if (job) openJob(job);
     });
@@ -621,7 +629,7 @@ export function Graph() {
       // Box selection: take whatever cytoscape selected, in any order.
       setTimeout(() => {
         const nodes = c.nodes(':selected').filter((n) => !n.data('cx')).map((n) => n.id());
-        const edges = nodes.length ? [] : c.edges(':selected').map((e) => e.id());
+        const edges = nodes.length ? [] : [...new Set(c.edges(':selected').map(edgeOf))];
         select({ structures: nodes, edges });
       }, 0);
     });
@@ -648,6 +656,11 @@ export function Graph() {
       if (pendingArrange.current && host.current && host.current.offsetWidth > 0) {
         if (pendingArrange.current === 'fit') { pendingArrange.current = false; fitView(c); }
         else (pendingArrange.current === 'tree' ? treeRef : arrangeRef).current();
+      }
+      if (pendingFit.current && host.current && host.current.offsetWidth > 0) {
+        const ids = pendingFit.current;
+        pendingFit.current = null;
+        fitToEdges(c, ids);
       }
     });
     ro.observe(host.current);
@@ -731,21 +744,30 @@ export function Graph() {
         ids.add(e.id);
         const st = edgeStatus(e, state.jobs);
         const data = { id: e.id, source, target, status: st.status, label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
-          route: st.routeSteps ? 'yes' : '', ...edgeEndLabels(st) };
+          route: st.routeSteps ? 'yes' : '' };
+        let rev = reverseEdge(e, st, source, target);
         if (cond && !['running', 'queued'].includes(st.status)) {
           const info = edgeUnderSetup(e, state.jobs, cond);
           data.label = [e.label && !/^Channel|IRC$/.test(e.label) ? e.label : '', setupEdgeLabel(e, info, cond)].filter(Boolean).join(' · ');
           data.runs = info.runs === 'none' ? '' : info.runs;
-          data.srcLabel = data.tgtLabel = '';
+          rev = null;
         }
         const el = c.getElementById(e.id);
         if (el.nonempty() && (el.data('source') !== source || el.data('target') !== target)) el.remove();
         const cur = c.getElementById(e.id);
         if (cur.nonempty()) {
           if (cur.data('status') !== data.status || cur.data('label') !== data.label || cur.data('runs') !== data.runs
-            || cur.data('route') !== data.route || cur.data('srcLabel') !== data.srcLabel
-            || cur.data('tgtLabel') !== data.tgtLabel) cur.data(data);
+            || cur.data('route') !== data.route) cur.data(data);
         } else c.add({ group: 'edges', data });
+        if (rev) {
+          ids.add(rev.id);
+          const r = c.getElementById(rev.id);
+          if (r.nonempty() && (r.data('source') !== rev.source || r.data('target') !== rev.target)) r.remove();
+          const now = c.getElementById(rev.id);
+          if (now.nonempty()) {
+            if (now.data('status') !== rev.status || now.data('label') !== rev.label || now.data('route') !== rev.route) now.data(rev);
+          } else c.add({ group: 'edges', classes: 'rev', data: rev });
+        }
       }
       c.elements().forEach((el) => { if (!ids.has(el.id())) el.remove(); });
     });
@@ -836,6 +858,7 @@ export function Graph() {
     c.batch(() => {
       c.elements().unselect();
       for (const id of [...selection.structures, ...selection.edges]) c.getElementById(id).select();
+      for (const id of selection.edges) c.getElementById(id + REV).select();   // its reverse arrow too
       for (const sid of selection.structures) {     // a complex's geometry: its circle
         if (!isComplex(state.workspace.structures[sid])) continue;
         const cx = complexOfStructure(state.workspace, sid);
@@ -942,6 +965,11 @@ export function Graph() {
       else if (d.cmd === 'select-all') select({ structures: c.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) });
       else if (d.cmd === 'view') setPanelRef.current((x) => !x);
       else if (d.cmd === 'restyle') c.style(stylesheet());          // colours come from CSS variables
+      else if (d.cmd === 'fit-to' && d.ids?.length) {
+        // Hidden (another tab is showing): frame them when the graph is shown.
+        if (host.current && host.current.offsetWidth > 0) fitToEdges(c, d.ids);
+        else pendingFit.current = d.ids;
+      }
       else if (d.cmd === 'center' && d.id) {
         // {ifHidden}: only when it is off screen; {zoom}: close enough to read; {flash}: pulse it.
         const el = c.getElementById(d.id);
@@ -1003,7 +1031,7 @@ export function Graph() {
         <span><i class="lg queued"></i>within 100×</span>
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
-      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified first; when both directions are known, each end carries the barrier to leave that end (forward next to where the arrow starts, reverse next to its head); ≈x? means the path maximum, not yet confirmed by TS + IRC. Dotted: no single step joins the two, only a route through intermediates (its highest step).">
+      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified first; when both directions are known, each direction is its own arrow with its own barrier; ≈x? means the path maximum, not yet confirmed by TS + IRC. Dotted: no single step joins the two, only a route through intermediates (its highest step).">
         <span><i class="lg idle"></i>not computed</span>
         <span><i class="lg running"></i>running</span>
         <span><i class="lg done"></i>ΔE‡, kcal/mol</span>
@@ -1016,9 +1044,8 @@ export function Graph() {
       ${connectMode && html`<div class="graph-hint">Click the <b>start</b> structure, then the <b>end</b> structure.</div>`}
       ${empty && html`<div class="graph-empty">
         <h3>Your reaction graph</h3>
-        <p>Every molecule you make or add becomes a node here. Build one in Design (atom by atom, or from a SMILES,
-          a reaction or an XYZ), then explore its reactions, or connect two molecules to find the step between them.</p>
-        <button class="btn primary" onClick=${() => openTab('design')}>Design a molecule</button>
+        <p>Molecules you make or find show up here.</p>
+        <button class="btn primary" onClick=${() => openTab('welcome')}>Get started</button>
         <p class="small muted">or <a href="#" onClick=${(e) => { e.preventDefault(); set({ modal: { kind: 'quick' } }); }}>connect two structures you already have</a></p>
       </div>`}
     </div>`;

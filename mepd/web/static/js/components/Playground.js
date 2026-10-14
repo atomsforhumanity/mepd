@@ -9,6 +9,7 @@ import { html, useEffect, useState } from '../lib.js';
 import { deleteSelection } from '../api.js';
 import { clearSelection, confirmProfileEdits, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { cls, isComplex, levelStatus, playgroundFitMargins } from '../util.js';
+import { useMap } from '../quests.js';
 import { Graph } from './Graph.js';
 import { Inspector } from './Inspector.js';
 import { JobView } from './JobView.js';
@@ -68,7 +69,9 @@ function TopLeft() {
 function Tabs() {
   const view = useStore((s) => s.view);
   const active = useStore((s) => Object.values(s.jobs).filter((j) => j.status === 'running' || j.status === 'queued').length);
-  const tabs = [['design', 'Design'], ['graph', 'Explore'], ['analyze', 'Analyze'], ['jobs', 'Calculations'], ['profiles', 'Settings'], ['refs', 'References']];
+  const map = useMap();
+  const tabs = [['design', 'Design'], ['graph', 'Explore'], ['analyze', 'Analyze'], ['jobs', 'Calculations'], ['profiles', 'Settings'], ['refs', 'References']]
+    .filter(([k]) => map.tab(k));
   return html`
     <nav class="pg-tabs" aria-label="Pages">
       ${tabs.map(([k, l]) => html`<button class=${view.tab === k || (k === 'jobs' && view.tab === 'job') ? 'on' : ''}

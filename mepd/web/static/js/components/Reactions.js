@@ -137,7 +137,7 @@ function Tile({ t }) {
   </button>`;
 }
 
-function Equation({ r, structures }) {
+export function Equation({ r, structures }) {
   const shuttles = new Set(r.shuttles || []);
   const side = (ids) => speciesTiles(ids, structures, shuttles);
   const join = (tiles) => tiles.map((t, i) => html`${i ? html`<span class="rc-op">+</span>` : ''}<${Tile} t=${t} />`);
@@ -223,7 +223,7 @@ function SearchSettings({ r, onDone }) {
   return html`<div class="rc-settings">
     ${prev && html`<p class="small muted">Last search: ${prev.summary?.headline || prev.status} · profile <b>${prev.profile || 'built-in defaults'}</b>.
       Change what to try: another profile (its path method, e.g. GSM, or more NEB images), or a single path instead of recursive splitting.</p>`}
-    <${ParamForm} schema=${schema} values=${values} onChange=${setValues} />
+    <${ParamForm} op="ts" schema=${schema} values=${values} onChange=${setValues} />
     <${ProfilePicker} value=${profile} onChange=${setProfile} />
     <div class="op-run">
       <button class="btn primary" disabled=${busy} onClick=${run}>${busy ? 'Queuing…' : 'Run TS search'}</button>

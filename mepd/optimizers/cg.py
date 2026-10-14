@@ -103,7 +103,7 @@ class ConjugateGradient(Optimizer):
 
         if self.g_old is not None:
             g = self.g_old.flatten().copy()
-            # Fletcher-Reeves formula
+            # Polak-Ribiere+ (beta clipped at 0, which restarts steepest descent)
             if g_new.shape != g.shape:
                 print("Warning: Gradient shapes do not match. Resetting the optimizer.")
                 self.reset()

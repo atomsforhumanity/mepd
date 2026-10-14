@@ -6,11 +6,18 @@ import { html, useEffect, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, set, state, useStore } from '../store.js';
 import { FULL, cssVar, useStage, xyzText } from './ReactorLive.js';
+import { StepBar, markStep } from './Welcome.js';
+import { Why } from './Why.js';
 
 const PICK_PX = 18;      // how close (screen pixels) a press must be to an atom to grab it
 const RECENT_FS = 400;   // an event stays marked in the list this long after it starts (and while it is unfolding)
 
 const logSlider = (v, lo, hi) => Math.round(Math.exp(Math.log(lo) + (Math.log(hi) - Math.log(lo)) * v));
+// The wall's radius (Angstrom) on a log slider 0..1, the same range the scroll wheel covers.
+const WALL_MIN = 3, WALL_MAX = 60;
+const COARSE = window.matchMedia?.('(pointer: coarse)').matches;   // a touch screen: no scroll wheel
+const wallOf = (v) => WALL_MIN * Math.exp(Math.log(WALL_MAX / WALL_MIN) * v);
+const sliderOf = (r) => Math.log(r / WALL_MIN) / Math.log(WALL_MAX / WALL_MIN);
 
 export function SandboxView() {
   const sb = useStore((s) => s.view.sandbox);
@@ -24,6 +31,7 @@ export function SandboxView() {
   const [strength, setStrength] = useState(0.5);      // slider 0..1 -> 2..300 kcal/mol/A^2
   const [temperature, setTemperature] = useState(() => sb?.temperature ?? 800);
   const [paused, setPaused] = useState(false);
+  const [wall, setWall] = useState(null);             // the wall radius shown by its slider (radius.current is the truth)
   const [dead, setDead] = useState(null);
   const [events, setEvents] = useState([]);
   const eventsRef = useRef([]);
@@ -77,7 +85,7 @@ export function SandboxView() {
           if (f.seq > seq) {
             seq = f.seq;
             frame.current = f;
-            if (radius.current == null) radius.current = f.radius;
+            if (radius.current == null) { radius.current = f.radius; setWall(f.radius); }
             draw();
             if (Date.now() - lastHud > 250) { lastHud = Date.now(); setHud(f); }
           }
@@ -108,12 +116,14 @@ export function SandboxView() {
       const off = v.screenOffsetToModel(mx - ax, my - ay, p[2]);
       return [p[0] + off.x, p[1] + off.y, p[2] + off.z];
     };
+    // Pointer events: a mouse, a pen or a finger. A finger also makes touch
+    // events, which 3Dmol turns into rotation: swallow them while an atom is held.
     const down = (e) => {
       const v = stage.viewer();
       const f = frame.current;
-      if (!v || !f?.pos || e.button !== 0) return;
+      if (!v || !f?.pos || e.button !== 0 || !e.isPrimary) return;
       const [mx, my] = local(e);
-      let best = -1, bestD = PICK_PX;
+      let best = -1, bestD = e.pointerType === 'touch' ? PICK_PX * 1.6 : PICK_PX;   // fingers are wider
       f.pos.forEach((p, i) => {
         const [sx, sy] = screenOf(v, p);
         const d = Math.hypot(sx - mx, sy - my);
@@ -146,24 +156,36 @@ export function SandboxView() {
     const wheel = (e) => {
       if (e.ctrlKey || radius.current == null) return;    // Ctrl+scroll: 3Dmol zooms
       e.stopPropagation(); e.preventDefault();
-      radius.current = Math.min(60, Math.max(3, radius.current * Math.exp(-Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 120) * 0.0004)));
+      radius.current = Math.min(WALL_MAX, Math.max(WALL_MIN, radius.current * Math.exp(-Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 120) * 0.0004)));
+      setWall(radius.current);
       if (Date.now() - sentAt.current > 40) { sentAt.current = Date.now(); send({ op: 'radius', value: radius.current }); }
       draw();
     };
     const wheelEnd = () => { if (radius.current != null) send({ op: 'radius', value: radius.current }); };
     let wheelTimer = null;
     const wheelAll = (e) => { wheel(e); clearTimeout(wheelTimer); wheelTimer = setTimeout(wheelEnd, 120); };
-    el.addEventListener('mousedown', down, true);
-    window.addEventListener('mousemove', move, true);
-    window.addEventListener('mouseup', up, true);
+    const holdTouch = (e) => { if (drag.current) { e.stopPropagation(); e.preventDefault(); } };
+    el.addEventListener('pointerdown', down, true);
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+    el.addEventListener('touchstart', holdTouch, { capture: true, passive: false });
+    el.addEventListener('touchmove', holdTouch, { capture: true, passive: false });
     el.addEventListener('wheel', wheelAll, { capture: true, passive: false });
     return () => {
-      el.removeEventListener('mousedown', down, true);
-      window.removeEventListener('mousemove', move, true);
-      window.removeEventListener('mouseup', up, true);
+      el.removeEventListener('pointerdown', down, true);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+      el.removeEventListener('touchstart', holdTouch, true);
+      el.removeEventListener('touchmove', holdTouch, true);
       el.removeEventListener('wheel', wheelAll, true);
     };
   }, [sb?.id, host.current]);
+
+  // A reaction (bonds that changed and stayed changed): the third step is done.
+  const reactions = events.filter((e) => !e.tentative && e.reaction != null);
+  useEffect(() => { if (reactions.length) markStep('reaction'); }, [reactions.length]);
 
   if (!sb) return html`<div class="empty-hint"><p>No interactive reactor is open.</p></div>`;
   const k = logSlider(strength, 2, 300);
@@ -175,17 +197,19 @@ export function SandboxView() {
   const analyze = async () => {
     const out = await attempt(() => api.post(`/api/sandbox/${sb.id}/analyze`),
       'Analyzing the run: watch each species and reaction being optimized; each reaction then gets its own TS search');
-    if (out) { set(gone()); openJob(out.job, 'live'); }
+    if (out) { set(gone()); openJob(out.job, 'story'); }
   };
   return html`<div class="job-view sandbox">
     <div class="view-head">
-      <button class="btn-icon" title="Back to Explore (it keeps running: the ◉ Interactive reactor button in the top bar brings you back; it stops 15 minutes after nobody watches it)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
-      <div class="job-head-main"><h2>Interactive reactor: ${sb.names}</h2>
-        <div class="small muted">GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div></div>
+      <button class="btn-icon" title="Back to Explore (it keeps running for 15 minutes; the ◉ button in the top bar brings you back)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
+      <div class="job-head-main"><h2>Interactive reactor: ${sb.names}<${Why} id="other.reactor" label="The interactive reactor" /></h2>
+        <div class="small muted">GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
+        <${StepBar} at=${reactions.length ? 'reaction' : 'reactor'} /></div>
       <div class="row-actions">
-        <button class="btn" onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'Frame added to Explore')}>Add frame to Explore</button>
+        <button class="btn" title="Keep this geometry (not minimized; several molecules become a complex)"
+          onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'Frame added to Explore')}>Add frame to Explore</button>
         <button class="btn primary" onClick=${analyze}
-          title="Stop, keep the trajectory, and analyze it like a nanoreactor run: reaction events, species and reaction complexes refined at the workspace level (watch them on its Live tab), a TS search per reaction as its own calculation, a reactor replay, and Explore">Stop & analyze</button>
+          title="Stop and keep the run: its reactions are refined, each gets a barrier (TS search), and all go to Explore">Stop & analyze</button>
         <button class="btn danger-outline" onClick=${discard} title="Stop without keeping anything">Discard</button>
       </div>
     </div>
@@ -195,7 +219,7 @@ export function SandboxView() {
         <div class="rx-stage-wrap">
           <div class="rx-stage sandbox-stage" ref=${host}></div>
           <div class="rx-hud">${hud ? `${(hud.t_fs / 1000).toFixed(2)} ps · ${hud.rate ?? 0} fs/s · ${hud.T_inst ?? '–'} K · ΔE ${hud.e_rel ?? 0} kcal/mol · wall ${(radius.current ?? hud.radius).toFixed(1)} Å${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
-          <div class="rx-legend small">drag an atom: pull it · Shift: ×5 · scroll: wall · Ctrl+scroll: zoom · drag elsewhere: rotate</div>
+          <div class="rx-legend small">drag an atom: pull it · drag elsewhere: rotate · ${COARSE ? 'pinch: zoom · Wall: squeeze' : 'scroll or Wall: squeeze'}</div>
         </div>
         <div class="sandbox-controls">
           <label class="small">Pull strength <input type="range" min="0" max="1" step="0.01" value=${strength}
@@ -203,13 +227,23 @@ export function SandboxView() {
           <label class="small">Temperature <input type="range" min="0" max="3000" step="50" value=${temperature}
             onInput=${(e) => setTemperature(+e.target.value)} onChange=${(e) => send({ op: 'temperature', value: +e.target.value })} />
             <span class="mono">${temperature} K</span></label>
+          <label class="small" title="The wall's radius: smaller squeezes the molecules together (the scroll wheel does the same)">Wall
+            <input type="range" min="0" max="1" step="0.005" value=${wall != null ? sliderOf(wall) : 0.3} disabled=${wall == null}
+              onInput=${(e) => {
+                radius.current = wallOf(+e.target.value);
+                setWall(radius.current);
+                if (Date.now() - sentAt.current > 40) { sentAt.current = Date.now(); send({ op: 'radius', value: radius.current }); }
+                draw();
+              }}
+              onChange=${(e) => send({ op: 'radius', value: wallOf(+e.target.value) })} />
+            <span class="mono">${wall != null ? wall.toFixed(1) : '–'} Å</span></label>
           <button class="btn small" onClick=${() => { send({ op: 'pause', value: !paused }); setPaused(!paused); }}>${paused ? '▶ Resume' : '❚❚ Pause'}</button>
           <button class="btn small" onClick=${() => send({ op: 'release_all' })}>Release all</button>
         </div>
       </div>
       <aside class="rx-events">
         <div class="section-title">Reaction events · ${events.length}</div>
-        ${!events.length && html`<p class="small muted">None yet. Events are found as in a nanoreactor run: bonds that change and stay changed.</p>`}
+        ${!events.length && html`<p class="small muted">None yet. Bonds that change and stay changed show up here.</p>`}
         <ol>
           ${[...events].sort((a, b) => b.start_fs - a.start_fs).map((e) => html`<li class=${hud && (e.tentative || hud.t_fs - e.start_fs < RECENT_FS) ? 'on' : ''}>
             <div class="rx-ev" title=${e.label}>
@@ -219,14 +253,16 @@ export function SandboxView() {
               ${e.tentative && html`<span class="small rx-analyzing" title="Still unfolding: its bonds may change again">analyzing…</span>`}
             </div></li>`)}
         </ol>
+        ${reactions.length > 0 && html`<button class="rx-bulb" onClick=${analyze}
+          title="Stops the reactor. Each reaction is refined and gets its own TS search; the results land in Explore.">
+          <span class="bulb-dot"></span><span><b>Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}</b>
+          <span class="small muted"> · stops the reactor</span></span></button>`}
         <details class="small"><summary>How to play</summary>
-        <p class="small muted">Live GFN2-xTB dynamics inside a soft spherical wall, like the nanoreactor. Press on an atom and
-          drag: it is pulled toward the pointer by a spring of the strength above (Shift pulls five times harder), and
-          released when you let go. Scroll to grow or shrink the wall and squeeze the molecules together. Bonds are
-          drawn from distances in every frame, so you see them break and form.</p>
-        <p class="small muted">"Add frame to Explore" keeps the current geometry (several molecules become a complex),
-          not minimized. Leave and it keeps running: the ◉ Interactive reactor button in the top bar brings you back.
-          It stops by itself 15 minutes after nobody watches it.</p>
+        <ul class="small muted how-to-play">
+          <li>Drag an atom to pull it (Shift: harder).</li>
+          <li>Shrink the Wall (or scroll) to squeeze them.</li>
+          <li>Heat it up with Temperature.</li>
+        </ul>
         </details>
       </aside>
     </div>

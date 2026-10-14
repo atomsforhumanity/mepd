@@ -10,6 +10,8 @@ import { api, attempt } from '../api.js';
 import { openJob, openTab, prefs, select, toast, useStore } from '../store.js';
 import { conformerRows, conformerLabel } from './Inspector.js';
 import { ApplyToNetwork } from './Variants.js';
+import { StepBar, reactorFor } from './Welcome.js';
+import { useMap } from '../quests.js';
 
 const COMMON = ['H', 'C', 'N', 'O', 'F', 'P', 'S', 'Cl', 'Br', 'I', 'B', 'Si'];
 // The periodic table as [symbol, row, column] (lanthanides/actinides on rows 8-9).
@@ -98,19 +100,26 @@ function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable,
     host.current.viewer = viewer.current;   // lets UI tests find atoms on screen
     const ro = new ResizeObserver(() => { viewer.current?.resize(); viewer.current?.render(); });
     ro.observe(host.current);
-    // A click on empty space (not a drag to rotate, not on an atom) -> onBackground(point).
+    // A click or tap on empty space (not a drag to rotate, not on an atom) -> onBackground(point).
+    // Pointer events, not 'click': 3Dmol cancels the click a tap would make on touch screens.
     let down = null;
-    const onDown = (e) => { down = { x: e.clientX, y: e.clientY }; };
+    const onDown = (e) => { down = e.isPrimary ? { x: e.clientX, y: e.clientY, t: Date.now() } : null; };
     const onClick = (e) => {
       const moved = down ? Math.hypot(e.clientX - down.x, e.clientY - down.y) : 99;
-      if (moved > 5 || Date.now() - atomHit.current < 250 || !bgRef.current || !viewer.current) return;
-      bgRef.current(pointUnder(viewer.current, e));
+      const at = { pageX: e.pageX, pageY: e.pageY };
+      down = null;
+      if (moved > (e.pointerType === 'touch' ? 12 : 5)) return;
+      // 3Dmol reports an atom hit after this event: wait for it before calling this empty space.
+      setTimeout(() => {
+        if (Date.now() - atomHit.current < 300 || !bgRef.current || !viewer.current) return;
+        bgRef.current(pointUnder(viewer.current, at));
+      }, 60);
     };
     host.current.addEventListener('pointerdown', onDown);
-    host.current.addEventListener('click', onClick);
+    host.current.addEventListener('pointerup', onClick);
     const el = host.current;
     return () => {
-      ro.disconnect(); el.removeEventListener('pointerdown', onDown); el.removeEventListener('click', onClick);
+      ro.disconnect(); el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointerup', onClick);
       viewer.current?.clear(); viewer.current = null;
     };
   }, []);
@@ -224,29 +233,23 @@ function Start({ structures }) {
   const list = Object.values(structures).sort((a, b) => b.created - a.created);
   return html`<div class="design-start">
     <div class="scratch-start">
-      <div>
+      <div title="Click anywhere to drop an atom (its hydrogens come with it), click a hydrogen to grow a new atom in its place; change elements, bonds, charges; add groups or whole molecules.">
         <b>Start from scratch</b>
-        <p class="small muted">Build it atom by atom in 3D: click anywhere to drop an atom (its hydrogens come with it), click a
-          hydrogen to grow a new atom in its place, change elements, set bonds and charges, add whole groups or molecules.</p>
+        <p class="small muted">Build it atom by atom in 3D.</p>
       </div>
       <button class="btn primary" onClick=${() => attempt(() => api.post('/api/design/new', { scratch: true }))}>Start drawing</button>
     </div>
-    <p class="small muted start-or">Or start from something you have:</p>
-    <label class="field"><span class="field-label">From SMILES or a reaction SMILES</span>
+    <label class="field"><span class="field-label" title="A reaction SMILES (reactants>>products, atom map numbers optional) opens both sides: an edit on one is made on the matching atom of the other, so you can vary a reaction and compare barriers.">From SMILES</span>
       <div class="row"><input value=${smiles} placeholder="e.g. CC(=O)Oc1ccccc1C(=O)O, or a reaction: CC(=O)C>>CC(O)=C" onInput=${(e) => setSmiles(e.target.value)}
         onKeyDown=${(e) => e.key === 'Enter' && smiles.trim() && attempt(() => api.post('/api/design/new', { smiles }))} />
       <button class="btn primary" disabled=${!smiles.trim()} onClick=${() => attempt(() => api.post('/api/design/new', { smiles }))}>Build</button></div></label>
-    <p class="small muted start-note">A reaction SMILES (reactants>>products, atom map numbers optional) opens the reactant and the
-      product side by side: an edit on one is made on the matching atom of the other, so you can vary a reaction and compare barriers.</p>
-    <div class="field"><span class="field-label">From XYZ: one structure, or two for a reaction</span>
+    <div class="field"><span class="field-label" title="Two structures (two files, or two frames in one) open as a reaction: the first is the reactant, the second the product, with the same atoms, matched in the order they are listed (or by SLAPMapper).">From XYZ</span>
       <${XyzInput} multiple=${true} onXyz=${(xyz, name) => {
         const n = countXyzFrames(xyz);
         if (n > 2) { setMany({ xyz, n }); return; }
         setMany(null);
         attempt(() => api.post('/api/design/new', { xyz, name, charge: xyzCharge, multiplicity: xyzMult }));
       }} />
-      <p class="small muted start-note">Two structures (two files, or two frames in one) open as a reaction: the first is the
-        reactant, the second the product, with the same atoms, matched in the order they are listed (or by SLAPMapper).</p>
       ${many && html`<div class="warn-box small">
         <p>${many.n} structures: Design opens one, or two as a reaction. To build a network from many, add them in Explore.</p>
         <button class="btn small primary" onClick=${async () => {
@@ -257,7 +260,7 @@ function Start({ structures }) {
       <div class="row small xyz-cm">
         <label>charge <input type="number" value=${xyzCharge} onChange=${(e) => setXyzCharge(parseInt(e.target.value, 10) || 0)} /></label>
         <label>multiplicity <input type="number" min="1" value=${xyzMult} onChange=${(e) => setXyzMult(Math.max(1, parseInt(e.target.value, 10) || 1))} /></label>
-        <span class="muted">Set these before loading: bond orders are read from the geometry for this charge.</span>
+        <span class="muted" title="Bond orders are read from the geometry for this charge, so set these before loading.">for the XYZ</span>
       </div></div>
     <label class="field"><span class="field-label">From the graph</span>
       <div class="row"><select value=${sid} onChange=${(e) => { setSid(e.target.value); setCid(''); }}>
@@ -502,6 +505,15 @@ export function DesignView() {
         : `Added ${rec.name} to the graph`, 'ok', 6000,
     { label: 'Show', run: () => { select({ structures: [rec.id] }); openTab('graph'); } });
   };
+  // Into Explore, then straight into the interactive reactor (Welcome.js).
+  const [reacting, setReacting] = useState(false);
+  const map = useMap();
+  const toReactor = async () => {
+    setReacting(true);
+    const rec = await attempt(() => api.post('/api/design/to-graph'));
+    if (rec) await reactorFor(rec);
+    setReacting(false);
+  };
   const tsopt = async () => {
     const created = await attempt(() => api.post('/api/design/tsopt', { profile: levelProfile ?? null }));
     if (created) toast(`Optimizing the design as a TS at ${level?.label ?? 'the workspace level'}, then an IRC…`, 'info', 6000);
@@ -531,9 +543,9 @@ export function DesignView() {
 
   return html`
     <div class="design-view">
-      <div class="page-head">
+      <div class="page-head design-head">
         <h2>Design</h2>
-        <p class="small muted">Build or edit a structure in 3D, minimize it, and add it to the graph for further calculations.</p>
+        ${design && !rx && design.natoms > 0 && html`<${StepBar} at="molecule" />`}
       </div>
       ${!design ? html`<div class="design-empty"><${Start} structures=${structures} /></div>` : html`
       <div class="design-body">
@@ -611,14 +623,15 @@ export function DesignView() {
             : busy ? `Applying the edit…${queued ? ` (${queued} more queued)` : ''}`
               : tool === 'bond' && picked.length === 1 ? `Atom ${picked[0] + 1} picked: click the second atom.` : toolHelp}</div>
           <div class="design-bar">
+            ${!rx && html`<button class="btn small primary phone-only" onClick=${toReactor} disabled=${busy || running || reacting || !design.natoms}>${reacting ? 'Starting…' : 'Put in reactor'}</button>`}
             <button class="btn small" disabled=${!history.current.undo.length || busy} onClick=${undo} title="Undo (Ctrl+Z)">Undo</button>
             <button class="btn small" disabled=${!history.current.redo.length || busy} onClick=${redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
             <button class="btn small" disabled=${busy || running} onClick=${() => apply(() => api.post('/api/design/edit', { op: { op: 'hydrogens' } }))} title="Re-add hydrogens everywhere from valences">Fix H</button>
             <button class="btn small" disabled=${busy || running} onClick=${() => apply(() => api.post('/api/design/clean'))}
               title="Quick force-field cleanup (MMFF94, else UFF). Moves every atom: not for a transition state.">Clean (MMFF)</button>
-            ${!rx && html`<button class="btn small" disabled=${busy || running} onClick=${tsopt}
+            ${!rx && map.op('design-tsopt') && html`<button class="btn small" disabled=${busy || running} onClick=${tsopt}
               title=${`Treat this structure as a TS guess: saddle optimization at ${level?.label ?? 'the workspace level'}, then an IRC. If it doesn't converge, the design goes back to what you submitted.`}>Optimize as TS</button>
-            <button class="btn small primary" disabled=${busy || running} onClick=${minimize}
+            <button class="btn small" disabled=${busy || running} onClick=${minimize}
               title=${`Minimize at ${level?.label ?? 'the workspace level'} (mepd optimize); the result replaces the design`}>Minimize</button>
             <label class="small" title="After minimizing, check for imaginary frequencies (and try to push off a saddle). Slow for large or floppy structures, e.g. with explicit solvent or ions, which rarely pass a strict check.">
               <input type="checkbox" checked=${hessian} onChange=${(e) => { setHessian(e.target.checked); prefs.set('designHessian', e.target.checked); }} /> Hessian check</label>`}
@@ -666,7 +679,9 @@ export function DesignView() {
               title=${`Add both ends and their edge to Explore, then find the TS between them at ${level?.label ?? 'the workspace level'}`}>Search TS</button>
               <button class="btn" onClick=${() => search('channels')} disabled=${busy || !rx.balanced}
                 title="Sample conformers and atom mappings of both ends and find every distinct channel">Reaction channels</button>`}
-            <button class=${`btn ${rx ? '' : 'primary'}`} onClick=${toGraph} disabled=${busy || running || (rx && !rx.balanced)}>Add to Explore</button>
+            ${!rx && html`<button class="btn primary" onClick=${toReactor} disabled=${busy || running || reacting || !design.natoms}
+              title="Live dynamics you steer, with a little water">${reacting ? 'Starting…' : 'Put in reactor'}</button>`}
+            <button class="btn" onClick=${toGraph} disabled=${busy || running || (rx && !rx.balanced)}>Add to Explore</button>
             <a class="btn" href="/api/design/xyz" download=${`${design.name || 'design'}${rx ? '_reactant' : ''}.xyz`}>Download xyz${rx ? ' (reactant)' : ''}</a>
             ${rx && html`<a class="btn" href="/api/design/xyz?side=product" download=${`${design.name || 'design'}_product.xyz`}>Download xyz (product)</a>`}
             <button class="btn-link small" onClick=${() => { if (confirm('Start a new design? The current one is not kept (add it to the graph first if you want it).')) attempt(() => api.del('/api/design')); }}>New design…</button>
