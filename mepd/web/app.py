@@ -79,6 +79,10 @@ class DesignNew(BaseModel):
     multiplicity: Optional[int] = None
 
 
+class DesignLoadEdge(BaseModel):
+    edge: str                          # its two ends become Design's reactant and product
+
+
 class DesignLoad(BaseModel):
     structure: str
     conformer: Optional[str] = None
@@ -1218,6 +1222,37 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                                     "name": rec["name"], "ts": is_ts(rec), "qmmm": rec.get("qmmm"),
                                     "parent_molblock": parent_molblock,
                                     "network": body.network if body.network in ws.variants else None})
+        publish_ws()
+        return out
+
+    @app.post("/api/design/load-edge")
+    def design_load_edge(body: DesignLoadEdge):
+        """An edge's two ends into the Design tab as a reaction: the start as the
+        reactant, the end as the product, in the conformers saved on the edge
+        (else each one's lowest), atoms matched as an xyz reaction is."""
+        from mepd.web import design_reaction
+
+        ws = W()
+        edge = ws.edge(body.edge)
+        chosen = edge.get("conformers") or {}
+        recs, frames = [], []
+        for sid in (edge["source"], edge["target"]):
+            rec = ws.structure(sid)
+            if rec.get("qmmm"):
+                raise WorkspaceError("a QM/MM edge opens in Design one end at a time (its QM region): select an end")
+            cid = chosen.get(sid)
+            path = ws.conformer_path(sid, cid) if cid else ws.structure_path(sid)
+            recs.append(rec)
+            frames.append(path.read_text())
+        a, b = recs
+        if a["charge"] != b["charge"] or a["multiplicity"] != b["multiplicity"]:
+            raise WorkspaceError(f"the two ends differ in charge or spin ({a['charge']}/{a['multiplicity']} vs "
+                                 f"{b['charge']}/{b['multiplicity']}): Design keeps one for both")
+        pair = design_reaction.pair_from_xyz(frames, a["charge"])
+        out = _store_design(pair["reactant"], name=f"{a['name']} \u2192 {b['name']}", keep={},
+                            charge=a["charge"], multiplicity=a["multiplicity"],
+                            source={"kind": "edge", "edge": edge["id"], "structures": [a["id"], b["id"]]},
+                            reaction=_reaction_part(pair["product"], pair["amap"], pair["mapping"]))
         publish_ws()
         return out
 

@@ -5,7 +5,7 @@ import { clearSelection, openJob, openTab, prefs, select, set, state, useStore }
 import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
-import { ActionPanel } from './Actions.js';
+import { ActTile, ActionPanel } from './Actions.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
 import { LevelChip } from './Library.js';
@@ -373,6 +373,11 @@ function CombineComplex({ sids, embedded = false, onClose = null }) {
   </div>`;
 }
 
+// An edge's two ends as a reaction in Design (start: reactant, end: product).
+const edgeToDesign = (eid) => ({ key: 'x-design-edge', icon: 'product', name: 'Edit in Design',
+  tip: 'Open both ends in Design as a reaction: the start as the reactant, the end as the product',
+  act: () => attempt(() => api.post('/api/design/load-edge', { edge: eid }), 'Both ends loaded into Design').then((d) => d && openTab('design')) });
+
 // The selected molecules as reactants; a partner added here stays here.
 function InspectorProducts({ sids }) {
   const [reactants, setReactants] = useState([...sids]);
@@ -396,7 +401,7 @@ export function Inspector() {
   const workspace = useStore((s) => s.workspace);
   const nS = sel.structures.length, nE = sel.edges.length;
 
-  let head, body = null, moreCalcs = false, extras = [], tail = null;
+  let head, body = null, moreCalcs = false, extras = [], tail = null, lead = null;   // lead: above both phone panes
   if (!nS && !nE) {
     // Reactions with a barrier in the graph: explain what is drawn, not how to start.
     const network = Object.values(workspace.reactions || {}).some((r) => r.edge && workspace.edges[r.edge]);
@@ -434,12 +439,15 @@ export function Inspector() {
   } else if (nE === 1 && !nS && reactionOfEdge(workspace, sel.edges[0])) {
     head = 'Reaction';
     const r = reactionOfEdge(workspace, sel.edges[0]);
+    const toDesign = edgeToDesign(sel.edges[0]);
+    lead = html`<div class="act-tiles edge-extras"><${ActTile} icon=${toDesign.icon} name=${toDesign.name} tip=${toDesign.tip} onClick=${toDesign.act} /></div>`;
     body = html`<${ReactionCard} key=${r.id} r=${r} compact />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
     head = 'Edge';
     body = html`<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
+    extras = [edgeToDesign(sel.edges[0])];
   } else if (nS && nE) {
     head = 'Mixed selection';
     body = html`<p class="warn-box">Select either structures or edges to see what can be run.</p>`;
@@ -483,9 +491,10 @@ export function Inspector() {
         <button class=${pane === 'details' ? 'on' : ''} onClick=${() => setPane('details')}>Details</button>
       </div>`}
       <div class="inspector-scroll">
+        ${lead}
         ${(!phone || pane === 'details') && body}
         ${(!phone || pane === 'run') && (moreCalcs
-          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
+          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} /></details>`
           : html`<${ActionPanel} sel=${sel} extras=${extras} />`)}
         ${(!phone || pane === 'details') && tail}
       </div>

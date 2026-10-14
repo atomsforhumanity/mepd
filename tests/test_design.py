@@ -264,3 +264,16 @@ def test_a_molecule_built_from_scratch(client):
                                                         "hydrogens": False}}).json()
     assert ion["smiles"] == "CC.[Na]"
     assert client.post("/api/design/to-graph").status_code == 200
+
+
+def test_an_edge_opens_in_design_as_a_reaction_of_its_two_ends(client):
+    keto, enol = client.post("/api/structures", json={"text": "CC(=O)C acetone\nCC(O)=C enol",
+                                                             "optimize": False}).json()
+    edge = client.post("/api/edges", json={"source": keto["id"], "target": enol["id"]}).json()
+    out = client.post("/api/design/load-edge", json={"edge": edge["id"]}).json()
+    rx = out["reaction"]
+    assert out["smiles"] == "CC(C)=O" and rx["product"]["smiles"] == "C=C(C)O"     # start: reactant, end: product
+    assert rx["balanced"] and sorted(rx["amap"]) == list(range(out["natoms"]))
+    assert out["source"] == {"kind": "edge", "edge": edge["id"], "structures": [keto["id"], enol["id"]]}
+    assert out["name"] == "acetone → enol"
+    assert client.post("/api/design/load-edge", json={"edge": "e_missing"}).status_code in (400, 404)

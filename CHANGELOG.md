@@ -19,6 +19,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   its barrier search, and forward and reverse barriers as separate arrows. The tabs and tools then unlock as
   they are used, shown as icon tiles under **Your tools** (the mepd logo opens it). **I know mepd: show
   everything** (or Settings › Show everything) unlocks every tab and tool at once.
+- **Edit in Design from an edge**: a selected edge (or reaction arrow) opens in Design as a reaction, its start
+  as the reactant and its end as the product, in the conformers saved on the edge, atoms matched as for an xyz
+  reaction (`POST /api/design/load-edge`).
 - **Products: a new reaction by clicking** (`NewReaction.js`). On a selected molecule (or in Analyze ›
   New reaction), what it can become appears at once as product tiles (bond rules, simplest first); click the
   ones to try and add them as reactions, each with its Find TS. Add a partner molecule, pick products from the

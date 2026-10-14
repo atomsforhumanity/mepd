@@ -1608,3 +1608,4 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
   .story .rc-badge { font-size: 8.5px; padding: 0 3px; }
   .story .rc-eq { gap: 4px; }
 }
+.edge-extras { margin: 4px 0 12px; grid-template-columns: repeat(auto-fill, minmax(96px, 120px)); }
