@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from qcdata import Structure
 
 from mepd.nodes.node import StructureNode

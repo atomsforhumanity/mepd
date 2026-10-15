@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 FAKE = textwrap.dedent('''\
     import re, sys

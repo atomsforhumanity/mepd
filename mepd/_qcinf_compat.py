@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import numpy as np
 import qcinf
-from qcconst import constants
+from qcref import constants
 from qcdata import Structure
 
 

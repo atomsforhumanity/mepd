@@ -9,7 +9,7 @@ import numpy as np
 from qcdata import FileInput, Structure
 
 from mepd.chain import Chain
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from mepd.elementarystep import IS_ELEM_STEP, elem_step_check_kwargs, ElemStepResults, check_if_elem_step
 from mepd.engines.qccompute import QCComputeEngine
 from mepd.errors import ElectronicStructureError

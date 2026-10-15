@@ -59,7 +59,7 @@ def test_a_renumbered_structure_is_identical_to_itself():
 
 
 def _embedded(smiles: str):
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
     from qcdata import Structure
     from rdkit import Chem
     from rdkit.Chem import AllChem

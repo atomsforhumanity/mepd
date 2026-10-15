@@ -46,7 +46,7 @@ def _ts_for_reaction(rxn, species_by_id, run_inputs, output: Path, workers: int)
     subsystem endpoints. Keeps the lowest TS whose IRC connects the same
     reactant and product bonds; barriers are measured from the reactant
     complex (and, for reference, from the separated reactants)."""
-    from qcconst.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
+    from qcref.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
 
     from mepd.discovery.cli_expand import _ts_connector
     from mepd.discovery.nanoreactor import _structure, perceive_bonds, read_xyz_frames
@@ -170,7 +170,7 @@ def nanoreactor(
     Writes md/ (trajectory.xyz), species/, reactions/ (per reaction: the
     cut frames and the optimized subsystem ends of each instance) and
     network.json (species, reactions, events)."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     from mepd.cli_common import _echo_run_inputs_summary, _load_structure_from_smiles_or_xyz, _open_run_inputs
     from mepd.discovery import nanoreactor as nr

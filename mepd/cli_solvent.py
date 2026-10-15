@@ -30,7 +30,7 @@ from typing import List, Optional
 import numpy as np
 import typer
 
-from qcconst.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
+from qcref.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
 
 DEFAULT_SOLVENTS = ("water", "methanol", "dmso", "acetonitrile", "thf", "toluene")
 
@@ -80,7 +80,7 @@ def _energies(chain) -> list[Optional[float]]:
 
 def _write(chain_nodes, energies, fp: Path) -> None:
     from mepd.geodesic_interpolation2.fileio import write_xyz
-    from qcconst.constants import BOHR_TO_ANGSTROM
+    from qcref.constants import BOHR_TO_ANGSTROM
 
     fp.parent.mkdir(parents=True, exist_ok=True)
     coords = np.array([n.coords for n in chain_nodes]) * BOHR_TO_ANGSTROM

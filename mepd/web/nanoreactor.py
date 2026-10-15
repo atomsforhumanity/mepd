@@ -483,7 +483,7 @@ def reactor_view(out: Path, start: int = 0) -> dict:
     import math
 
     import numpy as np
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     out = Path(out)
     symbols, frames = _trajectory(out)

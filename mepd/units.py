@@ -7,7 +7,7 @@ e.g. `barrier_kcal` or `rmsd_angstrom`.
 
 Use these constants instead of literals, so every script converts the same way.
 """
-from qcconst.constants import (
+from qcref.constants import (
     ANGSTROM_TO_BOHR,
     BOHR_TO_ANGSTROM,
     HARTREE_TO_EV,

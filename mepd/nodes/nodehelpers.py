@@ -542,7 +542,7 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
     without them (assignment failed, or `bond_orders=False`) only
     tetrahedral stereo is seen. Cached per structure: a large comparison
     checks one reference against many candidates."""
-    from qcconst.constants import BOHR_TO_ANGSTROM
+    from qcref.constants import BOHR_TO_ANGSTROM
     from rdkit import Chem
     from rdkit.Chem import rdDetermineBonds
     from rdkit.Geometry import Point3D

@@ -6,7 +6,7 @@ link H stops being a cap) is dropped."""
 from __future__ import annotations
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 from mepd.nodes.node import StructureNode
 from mepd.qmmm import QMMMRegion

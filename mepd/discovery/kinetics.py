@@ -29,7 +29,7 @@ from typing import Optional, Sequence
 import numpy as np
 from scipy.constants import Boltzmann, Planck, gas_constant
 
-from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
 _KCAL_TO_J = 4184.0
 

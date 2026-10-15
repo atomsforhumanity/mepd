@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 FORCEFIELD = ["amber14-all.xml", "amber14/tip3p.xml"]
 # Formal charge of a side chain cut at CA-CB (protonation states as PDBFixer

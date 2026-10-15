@@ -122,7 +122,7 @@ def _pack(mol, seed: int) -> None:
     each other; pack them (mepd.complexes.packed: random orientations in a
     small sphere, 2 Angstrom apart at their closest), so the geometry has the
     molecules' own bonds only and is a usable starting point."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
     from qcdata import Structure
 
     from mepd.complexes import packed
@@ -379,7 +379,7 @@ def mol_to_structure(mol, charge=None, multiplicity=None):
     """A qcdata Structure (bohr) of an embedded RDKit Mol."""
     from qcdata import Structure
 
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     pos = mol.GetConformer().GetPositions() * ANGSTROM_TO_BOHR
     chem = _chem()

@@ -12,6 +12,10 @@ from mepd.units import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL
 
 HCN = np.array([[0.0, 0.0, -1.065], [0.0, 0.0, 0.0], [0.0, 0.0, 1.156]])
 HNC = np.array([[0.0, 0.0, 2.165], [0.0, 0.0, 0.0], [0.0, 0.0, 1.170]])
+ETHANAL = np.array([[-1.27, -0.10, 0.00], [0.20, 0.10, 0.00], [0.80, 1.16, 0.00], [-1.80, 0.85, 0.00],
+                    [-1.53, -0.67, 0.89], [-1.53, -0.67, -0.89], [0.78, -0.85, 0.00]])
+VINYL_ALCOHOL = np.array([[-1.23, -0.15, 0.00], [0.10, 0.05, 0.00], [0.75, 1.24, 0.00], [1.70, 1.10, 0.00],
+                          [-1.65, -1.15, 0.00], [-1.90, 0.70, 0.00], [0.75, -0.82, 0.00]])
 BENT = np.array([[1.10, 0.0, 0.55], [0.0, 0.0, 0.0], [0.0, 0.0, 1.17]])   # H halfway round: a TS guess
 
 
@@ -151,10 +155,13 @@ def test_ts_irc_and_connects_end_to_end(gxtb):
 
 
 def test_the_docs_quickstart_runs(gxtb, tmp_path):
-    """docs/python-api.md's first example, on HCN -> HNC."""
+    """docs/python-api.md's first example, on ethanal -> vinyl alcohol (a linear
+    molecule like HCN is a poor test: its bending direction is a coin toss, so
+    the last digit of a unit constant can send the geodesic guess elsewhere)."""
     eng = gxtb
-    mepd.write_xyz(tmp_path / "reactant.xyz", _node(HCN))
-    mepd.write_xyz(tmp_path / "product.xyz", _node(HNC))
+    sym = ("C", "C", "O", "H", "H", "H", "H")
+    mepd.write_xyz(tmp_path / "reactant.xyz", _node(ETHANAL, sym))
+    mepd.write_xyz(tmp_path / "product.xyz", _node(VINYL_ALCOHOL, sym))
     reactant = mepd.load(tmp_path / "reactant.xyz")
     product = mepd.load(tmp_path / "product.xyz")
     reactant, product = mepd.optimize([reactant, product], eng)
@@ -164,7 +171,7 @@ def test_the_docs_quickstart_runs(gxtb, tmp_path):
     ts = mepd.find_ts(path.get_ts_node(), eng)
     irc = mepd.irc(ts, eng)
     assert mepd.connects(irc, reactant, product)
-    assert 20 < mepd.barrier_kcal(ts, reactant, eng) < 80
+    assert 50 < mepd.barrier_kcal(ts, reactant, eng) < 100
     assert len(mepd.read_frames(mepd.write_xyz(tmp_path / "irc.xyz", irc.nodes))) == len(irc.nodes)
 
 

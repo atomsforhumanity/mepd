@@ -260,7 +260,7 @@ def hessian_sample(
     ),
 ) -> None:
     """Explore minima near a seed structure by displacing along Hessian normal modes."""
-    from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+    from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
     from mepd.cli import _echo_run_inputs_summary, _load_structure_from_smiles_or_xyz
     from mepd.discovery.hessian_sample import run_hessian_sample
@@ -648,7 +648,7 @@ def hessian_global(
         })
         chain_out.write_to_disk(accepted_fp, write_qcio=write_qcio)
 
-    from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+    from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
     hartree_to_kcal = float(HARTREE_TO_KCAL_PER_MOL)
     summary_payload = {
@@ -894,7 +894,7 @@ def _vri_single(ts_node, ts_modes, ts_n_imag, irc_path, output: Path, S: _VRISet
     branch the second product from the VRT (ridge push, or the IRC ending on
     TS2) and TS2, then the basin test (+ exact VRI, optional trajectories)
     that decides the verdict. Writes into `output`; returns the summary."""
-    from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+    from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
     from mepd.cli import _geometry_optimizer_keywords
     from mepd.discovery import vri, vri_candidates

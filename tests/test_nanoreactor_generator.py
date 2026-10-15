@@ -7,7 +7,7 @@ import shutil
 
 import numpy as np
 import pytest
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from qcdata import Structure
 
 # Two waters: H1 hops from O0 to O3 (OH- + H3O+), then everything flies apart.

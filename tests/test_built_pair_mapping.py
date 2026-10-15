@@ -13,7 +13,7 @@ pytest.importorskip("rdkit")
 
 
 def _embedded(smiles: str, seed: int):
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
     from qcdata import Structure
     from rdkit import Chem
     from rdkit.Chem import AllChem

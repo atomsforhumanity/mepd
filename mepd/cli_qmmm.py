@@ -38,7 +38,7 @@ def _load_system(path: str, charge: Optional[int], multiplicity: Optional[int]):
     if fp.suffix.lower() == ".pdb":
         import numpy as np
         import openmm.app as app
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
         from qcdata import Structure
 
         pdb = app.PDBFile(str(fp))

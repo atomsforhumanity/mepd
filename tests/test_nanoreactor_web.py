@@ -200,7 +200,7 @@ def test_qmmm_reactor_view_is_centred_on_its_wall_and_names_its_regions(tmp_path
     """A QM/MM reactor's wall sits around where the QM region started, not the
     origin: the view shifts the frames there, and says which atoms react
     (QM) and which never move (frozen), so the page can fade the rest."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     from mepd.web.nanoreactor import reactor_view
 

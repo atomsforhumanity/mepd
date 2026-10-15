@@ -2207,9 +2207,9 @@ dependencies = [
     { name = "pysmiles" },
     { name = "qccodec" },
     { name = "qccompute", extra = ["qcengine"] },
-    { name = "qcconst" },
     { name = "qcdata" },
     { name = "qcinf" },
+    { name = "qcref" },
     { name = "rdkit" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
@@ -2325,10 +2325,10 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'server'", specifier = ">=0.0.9" },
     { name = "qccodec", specifier = ">=0.12.0" },
     { name = "qccompute", extras = ["qcengine"], specifier = ">=0.14.0" },
-    { name = "qcconst", specifier = ">=0.2.1" },
     { name = "qcdata", specifier = ">=0.19.0" },
     { name = "qcdata", extras = ["view"], marker = "extra == 'viz'", specifier = ">=0.19.0" },
     { name = "qcinf", specifier = ">=0.4.1" },
+    { name = "qcref", specifier = ">=0.3.0" },
     { name = "rdchiral", marker = "extra == 'retro'", specifier = ">=1.1" },
     { name = "rdkit", specifier = ">=2025.3.6" },
     { name = "rich", marker = "extra == 'discovery'", specifier = ">=13.0.0" },
@@ -4376,6 +4376,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e3/1d/025129689d480c017e2a0e4cc37d2a427879f88f7f4690d6be6db16530ec/qcinf-0.4.1.tar.gz", hash = "sha256:bef0cf185134d96c9c5109a79bee4bfc7ca55b9a39b76b8a5a9cfeff5066a5a4", size = 114647, upload-time = "2026-08-26T23:24:16.032Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/c1/3bc5b9ce89178d96250d44dd1405b16dc8780056e8d882ba0e5670cc6adc/qcinf-0.4.1-py3-none-any.whl", hash = "sha256:c27b7bad7bc13543b4a388fa299b34b94f666b0facd3d4cb3f9574cf01882672", size = 39308, upload-time = "2026-08-26T23:24:14.521Z" },
+]
+
+[[package]]
+name = "qcref"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/70/20977f2004f8f13747b610c2c581a112281097b8a5e6f7898479a64a864a/qcref-0.3.0.tar.gz", hash = "sha256:64abf9bc25a8685100d6f8bf08a8c633fa24bc874574273abe5fbb12b83d7813", size = 110284, upload-time = "2026-10-15T01:15:51.001Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/e2/979b4cf3fff4ad2bac23dc7d5b5f86131f4d14fded540d3965721aeee040/qcref-0.3.0-py3-none-any.whl", hash = "sha256:541805c57ce5b991fbf9694dc7c5d10c1b6f7f6e6cfa51d3f2dcdee6d11b4464", size = 85347, upload-time = "2026-10-15T01:15:49.426Z" },
 ]
 
 [[package]]

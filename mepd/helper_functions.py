@@ -11,7 +11,7 @@ import scipy.sparse.linalg
 from openbabel import openbabel
 from pysmiles import write_smiles
 from rdkit import Chem, RDLogger
-from qcconst import periodic_table
+from qcref import periodic_table
 
 # RDKit's sanitization/valence errors (e.g. "Explicit valence for atom # N H,
 # 2, is greater than permitted") go through its own C++ logger, not Python's

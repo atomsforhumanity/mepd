@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+from qcref.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 
 from mepd.chain import Chain
 from mepd.elementarystep import IS_ELEM_STEP, ElemStepResults, check_if_elem_step, elem_step_check_kwargs

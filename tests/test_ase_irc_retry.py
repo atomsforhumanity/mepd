@@ -38,7 +38,7 @@ def _fake_irc(calls: list, fail_always: bool = False):
 
 
 def _ts():
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
     from qcdata import Structure
 
     from mepd.nodes.node import StructureNode

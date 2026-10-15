@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 # Low levels ("MM") a region can be embedded with; see mepd/engines/qmmm.py.
 MM_METHODS = {

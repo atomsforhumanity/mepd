@@ -250,7 +250,7 @@ def _propene_bohr() -> Structure:
     already-Angstrom-scale numbers down to unphysically short "Angstrom"
     bond lengths RDKit can't perceive bonds from. Rescale properly for
     these tests specifically rather than touch the shared fixture."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     base = _propene()
     return Structure(
@@ -448,7 +448,7 @@ H 1.186489 0.151192 -2.239868
 
 
 def _from_rows(text):
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     rows = [ln.split() for ln in text.strip().splitlines()]
     return Structure(symbols=[r[0] for r in rows],
