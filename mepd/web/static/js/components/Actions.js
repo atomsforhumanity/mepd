@@ -4,17 +4,26 @@
 // => one job per edge.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, prefs, useStore, state } from '../store.js';
+import { openJob, openTab, prefs, select, useStore, state } from '../store.js';
 import { useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
 
-// The Inspector's actions as tiles (same drawings as Your tools): a group
-// heading in plain words, tiles with a short real name, and one open form.
-const CAT_NAME = {
-  'Explore around a structure': 'This molecule', 'Connect two structures': 'Between these two',
-  'Across a set of structures': 'Across these', 'Past the transition state': 'After the transition state',
-  'Reaction conditions': 'Conditions', 'QM/MM': 'Surroundings (QM/MM)', 'Reaction discovery': 'Discovery',
+// The Inspector's actions as tiles (same drawings as Your tools), grouped by
+// scale -- the same three groups, in the same order, whatever is selected --
+// with the surroundings (gas, solvent, explicit, protein) as a switch above
+// them, since any scale can be modelled in any of them.
+const SCALES = [
+  ['molecule', 'Molecule', 'The structure itself'],
+  ['reaction', 'Reaction', 'One step: its barrier and path'],
+  ['network', 'Network', 'What it can become, or come from'],
+];
+// Operations (or families) by scale; anything not listed is at the molecule's.
+const SCALE_OF = {
+  ts: 'reaction', channels: 'reaction', 'channels-more': 'reaction', tsopt: 'reaction', vri: 'reaction', substituents: 'reaction',
+  network: 'network', retrosynthesis: 'network', 'network-splits': 'network', 'nanoreactor-more': 'network',
 };
+// The operations that build surroundings: on the switch, not tiles.
+const SWITCH_OPS = new Set(['qmmm-build', 'qmmm-protein-sites', 'qmmm-reaction']);
 const TILE = {
   optimize: ['optimize', 'Optimize'], tsopt: ['barrier', 'TS from a guess'], conformers: ['shapes', 'Conformers'],
   retrosynthesis: ['retro', 'Retrosynthesis'], nanoreactor: ['reactor', 'Nanoreactor'], 'network-splits': ['network', 'Paths between isomers'],
@@ -23,9 +32,6 @@ const TILE = {
   'qmmm-protein-sites': ['protein', 'In a protein'], 'qmmm-embed': ['explicit', 'Into this system'], 'qmmm-inspect': ['explicit', 'Energy split'],
   'hessian-sample': ['discover', 'Hessian sampling'], 'hessian-global': ['discover', 'Basin hopping'], 'graph-enumeration': ['discover', 'Network expansion'],
 };
-// A family card that an extra (not a calculation) can join when none of its operations fit here.
-const EXPLORE_CAT = 'Explore around a structure';
-const FAMILY_FALLBACK = { network: { key: 'network', title: 'Reaction network expansion' } };
 // The first sentence, without the trailing CLI hint: what the tile's tooltip and form head say.
 export const oneLine = (s) => (s || '').replace(/\s*\(`[^`]*`\)\s*$/, '').split(/(?<=[.;])\s/)[0];
 
@@ -352,9 +358,8 @@ function FamilyCard({ family, methods, sel, open, onToggle, embedded = false }) 
           ${methods.filter((x) => (x.group || '') === g).map((x) => html`<button role="tab" aria-selected=${x.id === m.id} class=${`method ${x.id === m.id ? 'on' : ''} ${x.available ? '' : 'off'}`}
             title=${x.available ? x.summary : x.reason} onClick=${() => choose(x.id)}>${x.label}</button>`)}
         </div>`)}
-        <p class="small method-summary" title=${m.summary}>${oneLine(m.summary)}<${Why} ids=${m.op ? [`method.${m.id}`, `op.${m.op.key}`] : [m.why]} label=${m.label} /></p>
-        ${m.render ? m.render()
-          : !m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
+        <p class="small method-summary" title=${m.summary}>${oneLine(m.summary)}<${Why} ids=${[`method.${m.id}`, `op.${m.op.key}`]} label=${m.label} /></p>
+        ${!m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
           : m.fit.disabled ? html`<p class="small why-disabled">${m.fit.disabled}</p>`
             : html`<${OperationCard} key=${m.id} op=${m.op} sel=${sel} fit=${m.fit} open=${true} embedded fixed=${m.fixed} />`}
       </div>`;
@@ -377,15 +382,15 @@ export function defaultProfile() {
   return prefs.get('profile', state.profiles.includes('default') ? 'default' : null);
 }
 
-// `extras`: actions that are not calculations ({key, icon, name, tip, act() | render(close)}),
-// shown first under "Start here" (the reactor, a complex, Design).
+// `extras`: actions that are not calculations ({key, scale, last, icon, name, tip, act() | render(close)}),
+// first in their scale's group, or last with `last` (picking products and the reactor: network; a complex: molecule).
 export function ActionPanel({ sel, extras = [] }) {
   const operations = useStore((s) => s.operations);
   const map = useMap();
   const focusOp = useStore((s) => s.focusOp);
   const [openKey, setOpenKey] = useState(null);
   // Operations the map has not opened yet stay out of sight (quests.js).
-  const all = operations.filter((op) => map.op(op.key)).map((op) => ({ op, fit: applicability(op, sel) })).filter((x) => x.fit);
+  const all = operations.filter((op) => map.op(op.key) && !SWITCH_OPS.has(op.key)).map((op) => ({ op, fit: applicability(op, sel) })).filter((x) => x.fit);
   // A quest's "Try it": open that operation's card and bring it into view.
   useEffect(() => {
     if (!focusOp || Date.now() - focusOp.at > 10000) return;
@@ -399,21 +404,20 @@ export function ActionPanel({ sel, extras = [] }) {
       setTimeout(() => card?.classList.remove('focus-flash'), 2600);
     }, 150);
   }, [focusOp?.at]);
-  if (!all.length && !extras.length) return null;
-  // Extras that belong on a family's card (e.g. picking products, on the network one) join it as a method.
-  const asMethods = extras.filter((x) => x.family);
-  extras = extras.filter((x) => !x.family);
+  const surroundings = html`<${Surroundings} sel=${sel} />`;
+  if (!all.length && !extras.length) return html`<section class="actions">${surroundings}</section>`;
   const fits = all.filter((x) => x.op.available);
   const later = all.filter((x) => !x.op.available);
-  const byCat = {};
+  const byScale = {};
+  const scaleOf = (key) => SCALE_OF[key] || 'molecule';
   // Operations of one family (e.g. network exploration) become one card, in its first member's place.
   const families = {};
   for (const x of fits) {
     const fam = x.op.family;
-    if (!fam) { (byCat[x.op.category] ||= []).push(x); continue; }
+    if (!fam) { (byScale[scaleOf(x.op.key)] ||= []).push(x); continue; }
     if (!families[fam.key]) {
       families[fam.key] = { family: fam, methods: [] };
-      (byCat[x.op.category] ||= []).push({ familyKey: fam.key });
+      (byScale[scaleOf(fam.key)] ||= []).push({ familyKey: fam.key });
     }
     const ws = state.workspace;
     const qmmmSel = [...sel.structures, ...sel.edges.flatMap((id) => (ws.edges[id] ? [ws.edges[id].source, ws.edges[id].target] : []))]
@@ -423,20 +427,13 @@ export function ActionPanel({ sel, extras = [] }) {
       families[fam.key].methods.push({ ...meth, id: `${x.op.key}:${i}`, op: x.op, fit: x.fit });
     }
   }
-  for (const x of asMethods) {
-    if (!families[x.family]) {
-      families[x.family] = { family: FAMILY_FALLBACK[x.family] || { key: x.family, title: x.name }, methods: [] };
-      (byCat[EXPLORE_CAT] ||= []).push({ familyKey: x.family });
-    }
-    families[x.family].methods.push({ id: x.key, label: x.name, summary: x.tip, why: x.why, rank: x.rank, available: true, render: x.render });
-  }
   Object.values(families).forEach((f) => f.methods.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)));
   const toggle = (k) => setOpenKey(openKey === k ? null : k);
   const tileOf = (item) => {
     if (item.familyKey) {
       const f = families[item.familyKey].family;
-      const first = families[item.familyKey].methods[0]?.op?.key;
-      const several = new Set(families[item.familyKey].methods.map((x) => x.op?.key ?? x.id)).size > 1;
+      const first = families[item.familyKey].methods[0]?.op.key;
+      const several = new Set(families[item.familyKey].methods.map((x) => x.op.key)).size > 1;
       const [icon, name] = TILE[f.key] || (several ? ['discover', f.title] : TILE[first]) || ['discover', f.title];
       return { key: item.familyKey, icon, name: f.key === first ? name : f.title.replace(/^Reaction network /, 'Network '), tip: families[item.familyKey].methods.map((x) => x.label).join(' · '),
         form: () => html`<${ActForm} title=${f.title} onClose=${() => setOpenKey(null)}>
@@ -448,24 +445,100 @@ export function ActionPanel({ sel, extras = [] }) {
       form: () => html`<${ActForm} title=${op.title} summary=${oneLine(op.summary)} why=${`op.${op.key}`} onClose=${() => setOpenKey(null)}>
         <${OperationCard} op=${op} sel=${sel} fit=${fit} open=${true} embedded /><//>` };
   };
-  const groups = [];
-  if (extras.length) {
-    groups.push({ name: 'Start here', tiles: extras.map((x, i) => ({ ...x, primary: i === 0,
-      form: x.render && (() => html`<${ActForm} title=${x.name} why=${x.why} onClose=${() => setOpenKey(null)}>${x.render(() => setOpenKey(null))}<//>`) })) });
-  }
-  for (const [cat, items] of Object.entries(byCat)) groups.push({ name: CAT_NAME[cat] || cat, tiles: items.map(tileOf) });
+  const extraTile = (x) => ({ ...x,
+    form: x.render && (() => html`<${ActForm} title=${x.name} why=${x.why} onClose=${() => setOpenKey(null)}>${x.render(() => setOpenKey(null))}<//>`) });
+  const groups = SCALES.map(([key, name, tip]) => ({ name, tip,
+    tiles: [...extras.filter((x) => (x.scale || 'molecule') === key && !x.last).map(extraTile), ...(byScale[key] || []).map(tileOf),
+      ...extras.filter((x) => (x.scale || 'molecule') === key && x.last).map(extraTile)] }))
+    .filter((g) => g.tiles.length);
   return html`
     <section class="actions">
+      ${surroundings}
       ${groups.map((g) => {
         const open = g.tiles.find((t) => t.key === openKey);
         return html`<div class="action-group">
-          <h3 class="act-cat">${g.name}</h3>
+          <h3 class="act-cat" title=${g.tip}>${g.name}</h3>
           <div class="act-tiles">${g.tiles.map((t) => html`<${ActTile} key=${t.key} icon=${t.icon} name=${t.name} tip=${t.tip}
-            primary=${t.primary} on=${t.key === openKey} onClick=${() => (t.act ? t.act() : toggle(t.key))} />`)}</div>
+            on=${t.key === openKey} onClick=${() => (t.act ? t.act() : toggle(t.key))} />`)}</div>
           ${open && open.form && open.form()}
         </div>`;
       })}
       ${later.length > 0 && html`<p class="small muted later">Not available here: ${later.map(({ op }, i) =>
         html`${i ? ', ' : ''}<span title=${op.unavailable_reason}>${op.title}</span>`)}.</p>`}
     </section>`;
+}
+
+// Where the selection is modelled: gas phase, implicit solvent (Explore's
+// Conditions, over the whole network), explicit solvent or a protein (QM/MM
+// systems, their own nodes in the graph). The groups below then run there.
+const SURROUNDINGS = [
+  ['gas', 'Gas phase', 'Isolated molecules'],
+  ['solvent', 'Solvent', 'Implicit solvent over the whole network: Explore › Conditions'],
+  ['explicit', 'Explicit', 'Solvent molecules around it, as a QM/MM system'],
+  ['protein', 'Protein', 'In a protein pocket, as a QM/MM system'],
+];
+function Surroundings({ sel }) {
+  const operations = useStore((s) => s.operations);
+  const ws = useStore((s) => s.workspace);
+  const map = useMap();
+  const [pick, setPick] = useState(null);
+  useEffect(() => setPick(null), [sel.structures.join(','), sel.edges.join(',')]);
+  const ids = [...sel.structures, ...sel.edges.flatMap((id) => (ws.edges[id] ? [ws.edges[id].source, ws.edges[id].target] : []))];
+  const recs = ids.map((id) => ws.structures[id]).filter(Boolean);
+  if (!recs.length) return null;
+  const sysOf = (r) => (r.qmmm ? ws.qmmm_systems?.[r.qmmm] : null);
+  const kindOf = (sys) => (!sys ? 'gas' : ['amber', 'terachem'].includes(sys.mm) ? 'protein' : 'explicit');
+  const kinds = new Set(recs.map((r) => kindOf(sysOf(r))));
+  if (kinds.size > 1) return null;   // gas with QM/MM: putting one into the other (a tile)
+  const now = [...kinds][0];
+  const one = sel.structures.length === 1 && !sel.edges.length ? recs[0] : null;
+  // The same species elsewhere: its gas-phase node, or its QM/MM copy of a kind.
+  const twin = (kind) => one && Object.values(ws.structures).find((r) => r.id !== one.id && r.smiles === one.smiles
+    && r.charge === one.charge && kindOf(sysOf(r)) === kind);
+  const opFor = (kind) => {
+    const key = kind === 'protein' ? (one ? 'qmmm-protein-sites' : null)
+      : kind === 'explicit' ? (one ? 'qmmm-build' : 'qmmm-reaction') : null;
+    const op = key && operations.find((o) => o.key === key);
+    if (!op || !map.op(op.key)) return null;
+    const fit = applicability(op, sel);
+    return fit ? { op, fit } : null;
+  };
+  // Shown once something besides the gas phase is open here (a quest, or "show everything").
+  const solventOpen = map.op('solvent');
+  // Surroundings the map has not opened yet stay out of sight, like the tools.
+  const opened = { gas: true, solvent: solventOpen, explicit: map.op('qmmm-build') || map.op('qmmm-reaction'), protein: map.op('qmmm-protein-sites') };
+  const choices = SURROUNDINGS.filter(([key]) => opened[key] || key === now).map(([key, label, tip]) => {
+    const go = twin(key);
+    const build = now === 'gas' && opFor(key);
+    const can = key === now || (key === 'solvent' ? solventOpen && now === 'gas' : Boolean(go || build));
+    return { key, label, tip, go, build, can };
+  });
+  if (now === 'gas' && !choices.some((c) => c.key !== 'gas' && c.can)) return null;
+  const choose = (c) => {
+    if (c.key === now) { setPick(null); return; }
+    if (c.key === 'solvent') {
+      openTab('graph');
+      setTimeout(() => window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'conditions' } })), 50);
+      return;
+    }
+    if (c.go && !c.build) { select({ structures: [c.go.id] }); return; }
+    setPick(pick === c.key ? null : c.key);
+  };
+  const open = choices.find((c) => c.key === pick);
+  const label = (k) => SURROUNDINGS.find((x) => x[0] === k)[1].toLowerCase();
+  return html`<div class="surroundings">
+    <div class="surr-row"><span class="surr-label">In<${Why} id="other.surroundings" label="Surroundings" /></span>
+      <div class="surr-switch" role="radiogroup" aria-label="Surroundings">
+        ${choices.map((c) => html`<button type="button" role="radio" aria-checked=${c.key === now}
+          class=${`${c.key === now ? 'on' : ''} ${c.key === pick ? 'picked' : ''}`} disabled=${!c.can}
+          title=${c.can ? c.tip : `${c.tip} (not available for this selection${c.key === 'solvent' && now !== 'gas' ? ': already in explicit surroundings' : ''})`}
+          onClick=${() => choose(c)}>${c.label}</button>`)}
+      </div></div>
+    ${open && html`<${ActForm} title=${open.build ? open.build.op.title : open.label} summary=${open.build && oneLine(open.build.op.summary)}
+        why=${open.build && `op.${open.build.op.key}`} onClose=${() => setPick(null)}>
+      ${open.go && html`<p class="small">It is already modelled ${open.key === 'gas' ? 'in the gas phase' : `in ${label(open.key) === 'explicit' ? 'explicit solvent' : 'a protein'}`}:${' '}
+        <button class="btn-link" onClick=${() => select({ structures: [open.go.id] })}>go to it</button>${open.build ? ', or build another below.' : '.'}</p>`}
+      ${open.build && html`<${OperationCard} op=${open.build.op} sel=${sel} fit=${open.build.fit} open=${true} embedded />`}
+    <//>`}
+  </div>`;
 }

@@ -967,6 +967,7 @@ export function Graph() {
       else if (d.cmd === 'fit') (d.margins ? fitInto(c, d.margins) : fitCapped(c));
       else if (d.cmd === 'select-all') select({ structures: c.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) });
       else if (d.cmd === 'view') setPanelRef.current((x) => !x);
+      else if (d.cmd === 'conditions') { setPanelRef.current(false); setSetupPanel(true); }
       else if (d.cmd === 'restyle') c.style(stylesheet());          // colours come from CSS variables
       else if (d.cmd === 'fit-to' && d.ids?.length) {
         // Hidden (another tab is showing): frame them when the graph is shown.

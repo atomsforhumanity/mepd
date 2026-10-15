@@ -3818,5 +3818,42 @@
    "mepd/web/variants.py:network_view",
    "mepd/web/kinetics.py:analyze"
   ]
+ },
+ "other.surroundings": {
+  "title": "Surroundings",
+  "does": "Where the selection is modelled. Molecule, reaction and network tools all run in whichever surroundings the selection is in.",
+  "how": [
+   "Gas phase: the molecules alone, at the workspace level of theory.",
+   "Solvent (implicit): Explore › Conditions picks a solvent for the whole network. Each barrier shows its value in that solvent once a 'Solvent effects' run has recomputed it (GFN2-xTB + ALPB/CPCM-X correction on the gas-phase path, solvation.py:SolvationCorrection); until then the gas value, marked 'gas'.",
+   "Explicit: a QM/MM system, the molecule (QM) in a droplet of solvent molecules (GFN-FF environment by default, qmmm_build.py:solvate). It is its own node in the graph; jobs on it run embedded (QMMMEngine).",
+   "Protein: a QM/MM system in a protein pocket: dock with AutoDock Vina, pick a site, build the system (AMBER/OpenMM environment, qmmm_protein.py).",
+   "A species already modelled somewhere else (same SMILES and charge) is offered as 'go to it' instead of building again."
+  ],
+  "default": "Gas phase.",
+  "swap": [
+   {
+    "option": "A different implicit model or solvent",
+    "where": "Explore › Conditions (setup solvent), or a barrier job's 'Solvent effects' follow-up"
+   },
+   {
+    "option": "Environment level for explicit solvent (TIP3P, GFN2-xTB, GFN1-xTB)",
+    "where": "the Explicit form's environment field (--mm)"
+   },
+   {
+    "option": "Your own QM/MM system (PDB/prmtop, TeraChem input)",
+    "where": "the add box's 'QM/MM system…' (Playground layout › Add), then select it"
+   }
+  ],
+  "caveats": [
+   "Implicit solvent corrects energies along gas-phase geometries; it does not re-optimize them in solvent.",
+   "Explicit and protein systems are separate nodes: a reaction found in one stays in it."
+  ],
+  "code": [
+   "mepd/web/static/js/components/Actions.js:Surroundings",
+   "mepd/solvation.py",
+   "mepd/qmmm_build.py",
+   "mepd/qmmm_protein.py"
+  ],
+  "refs": "Solvation"
  }
 }

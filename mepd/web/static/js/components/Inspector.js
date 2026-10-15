@@ -5,7 +5,8 @@ import { clearSelection, openJob, openTab, prefs, select, set, state, useStore }
 import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
-import { ActTile, ActionPanel } from './Actions.js';
+import { ActionPanel } from './Actions.js';
+import { QuestIcon } from '../icons.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
 import { LevelChip } from './Library.js';
@@ -378,6 +379,18 @@ const edgeToDesign = (eid) => ({ key: 'x-design-edge', icon: 'product', name: 'E
   tip: 'Open both ends in Design as a reaction: the start as the reactant, the end as the product',
   act: () => attempt(() => api.post('/api/design/load-edge', { edge: eid }), 'Both ends loaded into Design').then((d) => d && openTab('design')) });
 
+// Places to go from the selection (Design, its reactions): small buttons
+// above the tools, apart from the calculations.
+function NavLinks({ links }) {
+  if (!links.length) return null;
+  return html`<div class="nav-links">${links.map((l) => html`<button type="button" key=${l.key} class="nav-link" title=${l.tip} onClick=${l.act}>
+    <${QuestIcon} id=${l.icon} size=${16} /><span>${l.name}</span></button>`)}</div>`;
+}
+
+// Design holds gas-phase molecules: an edge between QM/MM structures can't open there.
+const designable = (eid) => { const ws = state.workspace, e = ws.edges[eid];
+  return Boolean(e && !ws.structures[e.source]?.qmmm && !ws.structures[e.target]?.qmmm); };
+
 // The selected molecules as reactants; a partner added here stays here.
 function InspectorProducts({ sids }) {
   const [reactants, setReactants] = useState([...sids]);
@@ -401,7 +414,7 @@ export function Inspector() {
   const workspace = useStore((s) => s.workspace);
   const nS = sel.structures.length, nE = sel.edges.length;
 
-  let head, body = null, moreCalcs = false, extras = [], tail = null, lead = null;   // lead: above both phone panes
+  let head, body = null, moreCalcs = false, extras = [], tail = null, links = [];   // links: above both phone panes
   if (!nS && !nE) {
     // Reactions with a barrier in the graph: explain what is drawn, not how to start.
     const network = Object.values(workspace.reactions || {}).some((r) => r.edge && workspace.edges[r.edge]);
@@ -439,15 +452,14 @@ export function Inspector() {
   } else if (nE === 1 && !nS && reactionOfEdge(workspace, sel.edges[0])) {
     head = 'Reaction';
     const r = reactionOfEdge(workspace, sel.edges[0]);
-    const toDesign = edgeToDesign(sel.edges[0]);
-    lead = html`<div class="act-tiles edge-extras"><${ActTile} icon=${toDesign.icon} name=${toDesign.name} tip=${toDesign.tip} onClick=${toDesign.act} /></div>`;
+    links = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
     body = html`<${ReactionCard} key=${r.id} r=${r} compact />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
     head = 'Edge';
     body = html`<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
-    extras = [edgeToDesign(sel.edges[0])];
+    links = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
   } else if (nS && nE) {
     head = 'Mixed selection';
     body = html`<p class="warn-box">Select either structures or edges to see what can be run.</p>`;
@@ -467,19 +479,20 @@ export function Inspector() {
   if (nS > 0 && !nE && sel.structures.every((id) => isSpecies(structures[id]) && !structures[id].qmmm)) {
     const n = Object.values(workspace.reactions || {}).filter((r) => sel.structures.every((id) => [...r.reactants, ...r.products].includes(id))).length;
     const sids = sel.structures;
-    extras = [
-      { key: 'x-reactor', icon: 'reactor', name: 'Reactor', why: 'other.reactor', tip: 'Live dynamics you steer: heat it, squeeze it, pull atoms',
-        render: (close) => html`<${SandboxLauncher} key=${'sb' + sids.join(',')} sids=${sids} embedded onClose=${close} />` },
+    links = [
       nS === 1 && { key: 'x-design', icon: 'product', name: 'Edit in Design', tip: 'Open it in Design to change atoms, bonds or groups',
         act: () => attempt(() => api.post('/api/design/load', { structure: sids[0], network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design')) },
-      map.feature('complex') && { key: 'x-complex', icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
-        render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
-      // Picking products by hand is one way of expanding the network: a method on that card.
-      map.feature('compose') && { key: 'x-compose', family: 'network', name: 'Pick products', why: 'other.products', rank: -2,
-        tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
-        render: () => html`<${InspectorProducts} key=${sids.join(',')} sids=${sids} />` },
       n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
         act: () => openAnalyze({ species: [...sids], reaction: null }) },
+    ].filter(Boolean);
+    extras = [
+      map.feature('complex') && { key: 'x-complex', scale: 'molecule', last: true, icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
+        render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
+      map.feature('compose') && { key: 'x-compose', scale: 'network', icon: 'reaction', name: 'Pick products', why: 'other.products',
+        tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
+        render: () => html`<${InspectorProducts} key=${sids.join(',')} sids=${sids} />` },
+      { key: 'x-reactor', scale: 'network', icon: 'reactor', name: 'Reactor', why: 'other.reactor', tip: 'Live dynamics you steer: heat it, squeeze it, pull atoms',
+        render: (close) => html`<${SandboxLauncher} key=${'sb' + sids.join(',')} sids=${sids} embedded onClose=${close} />` },
     ].filter(Boolean);
   }
   return html`
@@ -493,7 +506,7 @@ export function Inspector() {
         <button class=${pane === 'details' ? 'on' : ''} onClick=${() => setPane('details')}>Details</button>
       </div>`}
       <div class="inspector-scroll">
-        ${lead}
+        <${NavLinks} links=${links} />
         ${(!phone || pane === 'details') && body}
         ${(!phone || pane === 'run') && (moreCalcs
           ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} /></details>`

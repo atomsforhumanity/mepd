@@ -142,8 +142,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
-- **Web UI tools**: Products is now **Pick products**, the first method on the Network expansion card, and
-  Retrosynthesis has its own card (its four methods) instead of sharing the network one with the nanoreactor.
+- **Web UI tools grouped by scale**: a selection's tools sit under **Molecule** (Optimize, Conformers, Complex),
+  **Reaction** (Transition state, Channels, TS from a guess, Valley-ridge inflection) and **Network** (Pick
+  products, Reactor, Network expansion, Retrosynthesis), the same groups in the same order for any selection.
+  Above them, a **surroundings switch** (Gas phase · Solvent · Explicit · Protein) applies to every scale:
+  Solvent opens Explore › Conditions, Explicit and Protein build the QM/MM system (or go to the one already
+  built), and a QM/MM system's tools are the same groups, run embedded. Retrosynthesis has its own card; Edit in
+  Design and Its reactions are buttons above the tools.
 
 - **The demo needs no password** (mepd.atomsforhumanity.org). Opening the page makes a private workspace
   at once; `MEPD_DEMO_PASSWORD` / `--demo-password` is now optional and gates the demo only when set (the
