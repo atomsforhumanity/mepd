@@ -10,6 +10,7 @@ so those command modules don't have to import from each other.
 from __future__ import annotations
 
 import copy
+import logging
 import sys
 import time
 from dataclasses import dataclass
@@ -23,6 +24,44 @@ from mepd.chain import Chain
 from mepd.inputs import RunInputs
 from mepd.nodes.nodehelpers import _connectivity_matches, _n_trans_small_ring_alkenes  # noqa: F401
 
+
+
+# Progress of the reusable steps here (endpoint minimization, atom mapping,
+# pair searches, TS + IRC) is logged, not printed, so library callers (e.g.
+# mepd.channels) stay quiet unless they configure logging; the command line
+# prints the "mepd" log on stdout (print_log_on_stdout, called by mepd.cli).
+logger = logging.getLogger("mepd.cli_common")
+
+
+def _say(message: str = "") -> None:
+    logger.info(message)
+
+
+def _warn(message: str) -> None:
+    """Something went wrong but the run goes on: shown even without logging set up."""
+    logger.warning(message)
+
+
+class _EchoHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        typer.echo(record.getMessage())
+
+
+# The loggers whose progress messages the commands print (other mepd loggers,
+# e.g. the geodesic smoother's, keep their own levels and stay quiet).
+PROGRESS_LOGGERS = ("mepd.cli_common", "mepd.channel_search")
+
+
+def print_log_on_stdout() -> None:
+    """Print the progress loggers' messages on stdout, one plain line each,
+    as the commands always have. Idempotent."""
+    for name in PROGRESS_LOGGERS:
+        log = logging.getLogger(name)
+        if any(isinstance(h, _EchoHandler) for h in log.handlers):
+            continue
+        log.addHandler(_EchoHandler())
+        log.setLevel(logging.INFO)
+        log.propagate = False
 
 def _format_run_inputs_value(value) -> str:
     if isinstance(value, dict):
@@ -155,13 +194,13 @@ def _reaction_endpoints(
     except (ReactionSmilesError, ValueError) as exc:
         raise typer.BadParameter(f"--reaction {reaction!r}: {exc}")
     if pair.source == "given":
-        typer.echo("--reaction: atom mapping from the map numbers in the reaction SMILES "
+        _say("--reaction: atom mapping from the map numbers in the reaction SMILES "
                    "(hydrogens by smallest endpoint RMSD).")
     else:
-        typer.echo(f"--reaction: atom mapping by SLAPMapper ({pair.n_candidates} candidate(s), chosen by smallest "
+        _say(f"--reaction: atom mapping by SLAPMapper ({pair.n_candidates} candidate(s), chosen by smallest "
                    f"endpoint RMSD, {pair.rmsd:.2f} A): {pair.mapped_smiles}")
     for note in pair.notes:
-        typer.echo(f"  {note}")
+        _say(f"  {note}")
     return start_structure, end_structure
 
 
@@ -208,7 +247,7 @@ def _refuse_unconverged_endpoint(label: str, exc: Exception, run_inputs: RunInpu
     make the whole run meaningless. Refuse instead of guessing.
     """
     current_maxiter = _geometry_optimizer_keywords(run_inputs).get("maxit")
-    typer.echo(
+    _warn(
         f"{label.capitalize()} endpoint minimization did not converge: {exc}\n"
         "Refusing to proceed with an un-minimized endpoint.\n"
         "Options:\n"
@@ -231,7 +270,7 @@ def _minimize_endpoints(start_node, end_node, run_inputs: RunInputs):
     """
     from mepd.errors import GeometryOptimizationNotConvergedError
 
-    typer.echo("Minimizing input endpoints...")
+    _say("Minimizing input endpoints...")
     keywords = _geometry_optimizer_keywords(run_inputs)
     endpoints = [start_node, end_node]
     labels = ("start", "end")
@@ -246,36 +285,36 @@ def _minimize_endpoints(start_node, end_node, run_inputs: RunInputs):
         except GeometryOptimizationNotConvergedError as exc:
             _refuse_unconverged_endpoint("an", exc, run_inputs)
         except Exception as exc:
-            typer.echo(f"Endpoint batch minimization failed ({type(exc).__name__}: {exc}); keeping input geometries.")
+            _warn(f"Endpoint batch minimization failed ({type(exc).__name__}: {exc}); keeping input geometries.")
         else:
             if not isinstance(trajectories, (list, tuple)) or len(trajectories) < 2:
-                typer.echo("Endpoint batch minimization returned an unexpected result; keeping input geometries.")
+                _say("Endpoint batch minimization returned an unexpected result; keeping input geometries.")
             else:
                 for i, label in enumerate(labels):
                     trajectory = trajectories[i]
                     if trajectory:
                         endpoints[i] = trajectory[-1]
                     else:
-                        typer.echo(f"{label.capitalize()} endpoint optimization returned an empty trajectory; keeping input geometry.")
+                        _say(f"{label.capitalize()} endpoint optimization returned an empty trajectory; keeping input geometry.")
         return endpoints[0], endpoints[1]
 
     single_optimizer = getattr(run_inputs.engine, "compute_geometry_optimization", None)
     if not callable(single_optimizer):
-        typer.echo(f"Engine {type(run_inputs.engine).__name__} does not support geometry optimization; keeping input geometries.")
+        _say(f"Engine {type(run_inputs.engine).__name__} does not support geometry optimization; keeping input geometries.")
         return start_node, end_node
 
     for i, label in enumerate(labels):
-        typer.echo(f"Minimizing {label} endpoint...")
+        _say(f"Minimizing {label} endpoint...")
         try:
             trajectory = single_optimizer(endpoints[i], keywords=keywords)
             if trajectory:
                 endpoints[i] = trajectory[-1]
             else:
-                typer.echo(f"{label.capitalize()} endpoint optimization returned an empty trajectory; keeping input geometry.")
+                _say(f"{label.capitalize()} endpoint optimization returned an empty trajectory; keeping input geometry.")
         except GeometryOptimizationNotConvergedError as exc:
             _refuse_unconverged_endpoint(label, exc, run_inputs)
         except Exception as exc:
-            typer.echo(f"{label.capitalize()} endpoint minimization failed ({type(exc).__name__}: {exc}); keeping input geometry.")
+            _warn(f"{label.capitalize()} endpoint minimization failed ({type(exc).__name__}: {exc}); keeping input geometry.")
 
     return endpoints[0], endpoints[1]
 
@@ -321,7 +360,7 @@ def _dump_atom_mapping_candidates(
         lines.append("\t".join(row) + marker)
     scores_path = debug_dump_dir / "scores.txt"
     scores_path.write_text("\n".join(lines) + "\n")
-    typer.echo(f"  --debug-dump: wrote all-candidate, all-metric comparison to {scores_path}")
+    _say(f"  --debug-dump: wrote all-candidate, all-metric comparison to {scores_path}")
 
     return SelectionResult(
         winner=best,
@@ -369,7 +408,7 @@ def _candidate_atom_maps(start_structure: Structure, end_structure: Structure, a
         for m in explored:
             aligned = realign_end_to_start(m, end_structure)
             cats = catalytic_participants(start_structure, aligned)
-            typer.echo(f"Atom mapping: explored mechanism ({int(m.cost)} bond changes) "
+            _say(f"Atom mapping: explored mechanism ({int(m.cost)} bond changes) "
                        f"{mechanism_key(start_structure, aligned)}"
                        + (f"  [catalytic: {', '.join(cats)}]" if cats else ""))
         atom_maps = list(atom_maps) + explored
@@ -395,7 +434,7 @@ def _map_and_build_pair(start_structure: Structure, end_structure: Structure, pa
             return None
         atom_maps = _candidate_atom_maps(start_structure, end_structure, atom_map, run_inputs)
     except Exception as exc:
-        typer.echo(f"Could not enumerate candidate atom mappings ({type(exc).__name__}: {exc}); "
+        _warn(f"Could not enumerate candidate atom mappings ({type(exc).__name__}: {exc}); "
                    "building from the current numbering.")
         return None
     from mepd.built_pair_mapping import build_and_rank
@@ -405,17 +444,17 @@ def _map_and_build_pair(start_structure: Structure, end_structure: Structure, pa
         return None
     scores = result.scores
     if len(scores) > 1:
-        typer.echo(f"  compared by {result.quantity}:")
+        _say(f"  compared by {result.quantity}:")
         ranked = sorted(scores, key=scores.get)
         for label in ranked[:5]:
             mark = "  <- chosen" if label == result.label else ""
             name = "current numbering" if label == "identity" else label
-            typer.echo(f"    {name:<22}{scores[label]:.4f}{mark}")
+            _say(f"    {name:<22}{scores[label]:.4f}{mark}")
         if len(ranked) > 5:
-            typer.echo(f"    ({len(ranked) - 5} more, up to {scores[ranked[-1]]:.4f})")
+            _say(f"    ({len(ranked) - 5} more, up to {scores[ranked[-1]]:.4f})")
     for line in result.notes:
-        typer.echo(line)
-    typer.echo("Keeping the current numbering." if result.label == "identity" else
+        _say(line)
+    _say("Keeping the current numbering." if result.label == "identity" else
                f"Renumbering the end's atoms ({result.label}) so they match the start's.")
     return result.start, result.end
 
@@ -446,19 +485,19 @@ def _check_endpoint_atom_mapping(
     `<output>/realign_debug/` -- see `_dump_atom_mapping_candidates`.
     """
     if len(start_structure.symbols) != len(end_structure.symbols):
-        typer.echo(
+        _say(
             "Note: skipping the --start/--end atom-mapping sanity check "
             "(--start and --end have different atom counts)."
         )
         return end_structure
     if getattr(run_inputs, "qmmm", None):
-        typer.echo("Note: QM/MM system: --start and --end keep the system's atom order (no atom mapping).")
+        _say("Note: QM/MM system: --start and --end keep the system's atom order (no atom mapping).")
         return end_structure
 
     from mepd.atom_mapping import HAS_SLAPMAPPER
 
     if not HAS_SLAPMAPPER:
-        typer.echo(
+        _say(
             "Note: skipping the --start/--end atom-mapping sanity check "
             "('slapmapper' not installed; `pip install mepd[aam]` to enable it)."
         )
@@ -469,21 +508,21 @@ def _check_endpoint_atom_mapping(
     try:
         atom_map = check_atom_mapping(start_structure, end_structure)
     except Exception as exc:
-        typer.echo(
+        _warn(
             f"Atom-mapping check between --start and --end failed "
             f"({type(exc).__name__}: {exc}); skipping."
         )
         return end_structure
 
     if atom_map is None:
-        typer.echo(
+        _warn(
             "Note: SLAPMapper could not find any --start/--end atom mapping "
             "(e.g. mismatched element composition); skipping the reordering check."
         )
         return end_structure
 
     if atom_map.is_identity and not atom_mapping:
-        typer.echo(
+        _say(
             "Atom mapping: the start's and end's atoms are already numbered the same way "
             "(checked with SLAPMapper), so nothing is renumbered."
         )
@@ -500,7 +539,7 @@ def _check_endpoint_atom_mapping(
     try:
         atom_maps = _candidate_atom_maps(start_structure, end_structure, atom_map, run_inputs)
     except Exception as exc:
-        typer.echo(
+        _warn(
             f"Could not enumerate --atom-mapping candidate mappings "
             f"({type(exc).__name__}: {exc}); keeping --end's original atom ordering."
         )
@@ -513,7 +552,7 @@ def _check_endpoint_atom_mapping(
             snap and candidates and _snap_relabels(candidates[0], start_structure)):
         # Nothing but the current numbering (no symmetric atoms to relabel).
         if atom_map.is_identity:
-            typer.echo("Atom mapping: the start's and end's atoms are already numbered the same way "
+            _say("Atom mapping: the start's and end's atoms are already numbered the same way "
                        "(checked with SLAPMapper), so nothing is renumbered.")
         _report_mapping(output, start_structure, end_structure, candidates, metric=metric, chosen="identity",
                         slapmapper_identity=atom_map.is_identity,
@@ -524,12 +563,12 @@ def _check_endpoint_atom_mapping(
     n_other = sum(c.label != "identity" for c in candidates)
     n_exp = sum(c.label != "identity" and getattr(c.atom_map, "explored", False) for c in candidates)
     if atom_map.is_identity and snap:
-        typer.echo(
+        _say(
             "Atom mapping: the start's and end's bonds already correspond (checked with SLAPMapper); comparing "
             "snap's placements of the symmetric atoms for the current numbering"
             + (f" and {n_exp} explored mechanism(s)" if n_exp else "") + f", by {metric}...")
     elif atom_map.is_identity:
-        typer.echo(
+        _say(
             f"Atom mapping: the start's and end's bonds already correspond (checked with SLAPMapper); comparing "
             f"the current numbering with {n_other - n_exp} relabeling(s) of its symmetric atoms"
             + (f" and {n_exp} explored mechanism(s)" if n_exp else "") + f", by {metric}...")
@@ -545,7 +584,7 @@ def _check_endpoint_atom_mapping(
             pool += f", plus {n_exp} explored mechanism(s)"
         if len(atom_maps) >= n_candidates and not snap:
             pool += f" (capped at {n_candidates})"
-        typer.echo(
+        _say(
             f"Atom mapping: the end's atoms may be numbered differently from the start's. Comparing its "
             f"current numbering with {pool}, by {metric} (lower is better)..."
             if n_other < len(candidates) else
@@ -565,7 +604,7 @@ def _check_endpoint_atom_mapping(
                 veto_margin=run_inputs.atom_mapping_inputs.veto_margin,
             )
     except Exception as exc:
-        typer.echo(
+        _warn(
             f"Atom-mapping candidate selection failed ({type(exc).__name__}: {exc}); "
             "keeping --end's original atom ordering."
         )
@@ -575,24 +614,24 @@ def _check_endpoint_atom_mapping(
     scores = result.scores
     what = result.quantity or metric
     if result.quantity:
-        typer.echo(f"  compared by {result.quantity}:")
+        _say(f"  compared by {result.quantity}:")
     for line in getattr(result, "notes", None) or []:
-        typer.echo(f"  {line}")
+        _say(f"  {line}")
     ranked = sorted(scores, key=scores.get)
     shown = [result.winner.label] + (["identity"] if result.winner.label != "identity" and "identity" in scores else [])
     for label in shown:
         role = "chosen" if label == result.winner.label else "current"
         name = "current numbering" if label == "identity" else label
-        typer.echo(f"  {role + ':':<10}{name:<20}{scores[label]:.4f}" + ("" if result.quantity else f"  ({metric})"))
+        _say(f"  {role + ':':<10}{name:<20}{scores[label]:.4f}" + ("" if result.quantity else f"  ({metric})"))
     rest = [k for k in ranked if k not in shown]
     if rest:
-        typer.echo(f"  ({len(rest)} other(s), {scores[rest[0]]:.4f} to {scores[rest[-1]]:.4f}"
+        _say(f"  ({len(rest)} other(s), {scores[rest[0]]:.4f} to {scores[rest[-1]]:.4f}"
                    + ("" if result.quantity else f" {what}") + ")")
 
     if result.winner.label == "identity":
-        typer.echo("Keeping the end's current atom numbering: no other fits clearly better.")
+        _say("Keeping the end's current atom numbering: no other fits clearly better.")
     else:
-        typer.echo(f"Renumbering the end's atoms ({result.winner.label}) so they match the start's.")
+        _say(f"Renumbering the end's atoms ({result.winner.label}) so they match the start's.")
     shown = list(candidates) if any(c.label == result.winner.label for c in candidates) \
         else [result.winner, *candidates]          # (snap's picks are candidates of their own)
     n = len(shown)
@@ -621,7 +660,7 @@ def _report_mapping(output, start_structure, end_structure, candidates, *, metri
         write_report(output, build_report(start_structure, end_structure, candidates, metric=metric,
                                           chosen=chosen, **kw))
     except Exception as exc:
-        typer.echo(f"(Could not record the atom mapping for the Results page: {type(exc).__name__}: {exc})")
+        _warn(f"(Could not record the atom mapping for the Results page: {type(exc).__name__}: {exc})")
 
 
 def _tree_leaves(tree_dir: Path) -> tuple[set[int], set[int]]:
@@ -673,14 +712,14 @@ def _completed_tree_dirs(completion_dir: Path) -> list[Path]:
     ]
     rejected = [t for t in trees if _uncharacterized_by_direct_only(t)]
     if rejected:
-        typer.echo(
+        _say(
             f"{len(rejected)} pair(s) had every leg between other species and were not characterized "
             "(--direct-only): " + ", ".join(t.parent.name for t in sorted(rejected))
         )
     trees = [t for t in trees if t not in rejected]
     failed = [t for t in trees if not (t / "node_0.xyz").exists()]
     if failed:
-        typer.echo(
+        _warn(
             f"Skipping {len(failed)} pair tree(s) whose root NEB failed: "
             + ", ".join(t.parent.name for t in sorted(failed))
         )
@@ -771,7 +810,7 @@ def _fork_map(fn, items: list, workers: int) -> list:
 
     unsafe = _unsafe_to_fork()
     if unsafe:
-        typer.echo(
+        _say(
             f"Running {len(items)} item(s) serially instead of across "
             f"{min(workers, len(items))} worker process(es): {unsafe}."
         )
@@ -789,7 +828,7 @@ def _fork_map(fn, items: list, workers: int) -> list:
         ) as pool:
             return list(pool.map(_fork_call, items))
     except BrokenProcessPool:
-        typer.echo(
+        _warn(
             "A worker process died without reporting an error (killed by the "
             "OS, or a crash inside the engine); retrying the remaining work "
             "serially. Re-run with --workers 1 to skip the failed attempt."
@@ -835,7 +874,7 @@ def _run_msmep_pairs(
     todo = []
     for i, j in candidates:
         if (pairs_dir / f"pair_{i}_{j}" / "tree" / "adj_matrix.txt").exists():
-            typer.echo(f"Skipping pair ({i}, {j}): already completed.")
+            _say(f"Skipping pair ({i}, {j}): already completed.")
         else:
             todo.append((i, j))
 
@@ -847,17 +886,17 @@ def _run_msmep_pairs(
         # `_fork_map` may re-run this list serially after a worker died; pairs
         # that did finish in the meantime are on disk and stay there.
         if (tree_dir / "adj_matrix.txt").exists():
-            typer.echo(f"Skipping pair ({i}, {j}): already completed.")
+            _say(f"Skipping pair ({i}, {j}): already completed.")
             return
         from mepd import search_control
 
         over = search_control.search_over(run_inputs.path_min_inputs)
         if over is not None:
-            typer.echo(f"Skipping pair ({i}, {j}): " + ("stop requested before it started." if over == "stopped"
+            _say(f"Skipping pair ({i}, {j}): " + ("stop requested before it started." if over == "stopped"
                                                          else "--search-budget reached before it started."))
             return
         pair_dir.mkdir(parents=True, exist_ok=True)
-        typer.echo(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")
+        _say(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")
         # MSMEP's "endpoints already attempted elsewhere" dedup (meant to stop
         # redundant re-splitting of the same species discovered mid-recursion
         # within ONE pair's own tree) stores its cache directly on this shared
@@ -892,12 +931,12 @@ def _run_msmep_pairs(
             pair_history.write_to_disk(tree_dir)
             stream_status = "done"
         except Exception as exc:
-            typer.echo(f"Pair ({i}, {j}) failed ({type(exc).__name__}: {exc}); skipping.")
+            _warn(f"Pair ({i}, {j}) failed ({type(exc).__name__}: {exc}); skipping.")
         finally:
             _progress.end_live_stream(stream_status)
 
     if workers > 1 and len(todo) > 1:
-        typer.echo(f"Running {len(todo)} path search(es), {min(workers, len(todo))} at a time "
+        _say(f"Running {len(todo)} path search(es), {min(workers, len(todo))} at a time "
                    f"({min(workers, len(todo))} worker process(es)).")
     if follow_up is None or workers <= 1 or not todo or _unsafe_to_fork():
         _fork_map(_one, todo, workers)
@@ -934,7 +973,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
     pairs, extra = collections.deque(todo), collections.deque()
     running: dict = {}
     _FORK_JOB["fn"] = lambda item: one(item[1]) if item[0] == "pair" else follow_up.run(item[1])
-    typer.echo(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
+    _say(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
                f"{follow_up.during} worker process(es) beside the searches, {follow_up.after} once they are done.")
     try:
         with ProcessPoolExecutor(max_workers=size, mp_context=multiprocessing.get_context("fork")) as pool:
@@ -958,7 +997,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                     except BrokenProcessPool:
                         raise
                     except Exception as exc:   # left to the caller's own pass
-                        typer.echo(f"{'Pair' if kind == 'pair' else 'Follow-up'} {item!r:.80}: "
+                        _say(f"{'Pair' if kind == 'pair' else 'Follow-up'} {item!r:.80}: "
                                    f"{type(exc).__name__}: {exc}")
                         continue
                     if kind == "pair":
@@ -966,9 +1005,9 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                         try:
                             extra.extend(follow_up.tasks(pairs_dir / f"pair_{i}_{j}"))
                         except Exception as exc:
-                            typer.echo(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
+                            _say(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
     except BrokenProcessPool:
-        typer.echo(
+        _warn(
             "A worker process died without reporting an error (killed by the "
             "OS, or a crash inside the engine); retrying the remaining work "
             "serially. Re-run with --workers 1 to skip the failed attempt."
@@ -1012,26 +1051,26 @@ def _optimize_ts_and_irc(
     engine = run_inputs.engine
     frozen = isinstance(engine, FrozenAtomsEngine)
     if not callable(getattr(engine, "compute_transition_state", None)):
-        typer.echo(f"Engine {type(engine).__name__} does not support transition-state optimization.")
+        _say(f"Engine {type(engine).__name__} does not support transition-state optimization.")
         return None
-    typer.echo(f"Optimizing transition state ({label})...")
+    _say(f"Optimizing transition state ({label})...")
     try:
         # A QM/MM search climbs along the given direction (a path's tangent).
         ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo) if frozen \
             else find_ts(ts_guess_node, engine)
     except Exception as exc:
         cause = exc.__cause__ or exc
-        typer.echo(f"Transition-state optimization failed ({label}): {type(cause).__name__}: {cause}")
+        _warn(f"Transition-state optimization failed ({label}): {type(cause).__name__}: {cause}")
         return None
 
     output.mkdir(parents=True, exist_ok=True)
     ts_path = output / f"{label}.xyz"
     Chain.model_validate({"nodes": [ts_node], "parameters": ChainInputs()}).write_to_disk(ts_path)
-    typer.echo(f"Wrote optimized TS structure to {ts_path}")
+    _say(f"Wrote optimized TS structure to {ts_path}")
     if not run_irc:
         return TsIrcResult(ts_node=ts_node)
 
-    typer.echo(f"Computing IRC ({label})...")
+    _say(f"Computing IRC ({label})...")
     # Beside the TS: why its IRC failed, so a result can say so (rather
     # than "no IRC was run").
     failed_fp = output / ("irc_failed.txt" if label == "ts" else f"{label}_irc_failed.txt")
@@ -1039,14 +1078,14 @@ def _optimize_ts_and_irc(
         irc_chain = (irc(ts_node, engine, echo=typer.echo) if frozen else irc(ts_node, engine)).path
     except Exception as exc:
         cause = exc.__cause__ or exc
-        typer.echo(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")
+        _warn(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")
         failed_fp.write_text(f"{type(cause).__name__}: {cause}\n")
         return TsIrcResult(ts_node=ts_node)
 
     failed_fp.unlink(missing_ok=True)
     irc_path = output / ("irc.xyz" if label == "ts" else f"{label}_irc.xyz")
     irc_chain.write_to_disk(irc_path)
-    typer.echo(f"Wrote IRC path to {irc_path}")
+    _say(f"Wrote IRC path to {irc_path}")
     return TsIrcResult(ts_node=ts_node, irc_chain=irc_chain)
 
 
@@ -1067,7 +1106,7 @@ def _ts_guess_tasks_from_tree(tree, label_prefix: str) -> list[tuple[str, object
         except EnergiesNotComputedError:
             # Its search ended without energies (e.g. the engine's SCF failed
             # on it): no TS guess, but the other leaves still get theirs.
-            typer.echo(f"Skipping {label}: its path has no energies (the search on it failed).")
+            _warn(f"Skipping {label}: its path has no energies (the search on it failed).")
             continue
         tasks.append((label, guess_node))
     return tasks
@@ -1090,7 +1129,7 @@ def _pair_ts_guess_tasks(pair_dir: Path, charge: int, multiplicity: int) -> list
             tree_dir, chain_parameters=ChainInputs(), charge=charge, multiplicity=multiplicity,
         )
     except Exception as exc:
-        typer.echo(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
+        _warn(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
         return []
     return _ts_guess_tasks_from_tree(pair_tree, f"ts_{pair_dir.name}_")
 

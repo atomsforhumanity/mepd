@@ -124,7 +124,7 @@ def test_fork_map_retries_serially_when_a_worker_dies():
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
-    assert "died without reporting an error" in proc.stdout
+    assert "died without reporting an error" in proc.stdout + proc.stderr   # a warning: stderr without the CLI
 
 
 @darwin_only

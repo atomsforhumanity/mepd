@@ -48,6 +48,10 @@ def _log(message: str = "") -> None:
     logger.info(message)
 
 
+def _warn(message: str) -> None:
+    logger.warning(message)
+
+
 class ChannelSearchError(RuntimeError):
     """A channel search that could not run to the end (no usable conformers,
     no pair search completed)."""
@@ -136,7 +140,7 @@ def _expand_pairs_by_mechanism(
     for (i, j), choices, error in _fork_map(_one, list(candidates), workers):
         if not choices:
             if error:
-                _log(f"  pair ({i}, {j}): mechanism enumeration failed ({error}); keeping it as is.")
+                _warn(f"  pair ({i}, {j}): mechanism enumeration failed ({error}); keeping it as is.")
                 n_failed += 1
             rows.append({"i": i, "j": j, "key": "unmapped", "score": None,
                          "n_variants": 0, "structure": None})
@@ -179,7 +183,7 @@ def _expand_pairs_by_mechanism(
                 pj = int(str(row["pair"]).rsplit("_", 1)[1])
                 prior[(int(row["start_conformer"]), int(row["end_structure"]), row["mechanism"])] = pj
         except Exception as exc:
-            _log(f"--atom-mapping: could not read the earlier pair table ({exc}); numbering afresh.")
+            _warn(f"--atom-mapping: could not read the earlier pair table ({exc}); numbering afresh.")
             prior = {}
     new_structures = list(structures)
     slots = sorted(pj for pj in prior.values() if pj >= len(structures))
@@ -207,7 +211,7 @@ def _expand_pairs_by_mechanism(
     _log(f"{len(keys)} mechanism(s) (atoms are named by element and symmetry class, not by number):")
     for k, key in enumerate(keys, start=1):
         _log(f"  {k}. {_describe_mechanism(key)}: {counts[key]} path search(es)")
-    _log(
+    _warn(
         f"Path searches: {len(new_candidates)} of the {len(candidates)} pair(s)"
         + (f" -- the {pairs_per_mechanism} best-matching per mechanism (--pairs-per-mechanism)"
            if pairs_per_mechanism > 0 else "")
@@ -270,7 +274,7 @@ def _gi_near_lowest_rmsd(rows: list[dict], keys: list, score_pair, workers: int,
                 # The GI path could not be computed: keep the pair, ranked last.
                 out.append({**row, "rmsd": row["score"], "score": None})
                 if error:
-                    _log(f"  pair {pair}: GI path failed ({error}); ranked last.")
+                    _warn(f"  pair {pair}: GI path failed ({error}); ranked last.")
     return out
 
 
@@ -449,7 +453,7 @@ def _minimize_conformer_pool(nodes: list, label: str, run_inputs: RunInputs) -> 
             except TypeError:
                 trajectories = batch_optimizer(nodes)
         except Exception as exc:
-            _log(
+            _warn(
                 f"{label} conformer batch minimization failed "
                 f"({type(exc).__name__}: {exc}); keeping input geometries."
             )
@@ -477,9 +481,9 @@ def _minimize_conformer_pool(nodes: list, label: str, run_inputs: RunInputs) -> 
             else:
                 _log(f"{label} conformer {i} optimization returned an empty trajectory; dropping it.")
         except GeometryOptimizationNotConvergedError as exc:
-            _log(f"{label} conformer {i} did not converge ({exc}); dropping it.")
+            _warn(f"{label} conformer {i} did not converge ({exc}); dropping it.")
         except Exception as exc:
-            _log(f"{label} conformer {i} minimization failed ({type(exc).__name__}: {exc}); dropping it.")
+            _warn(f"{label} conformer {i} minimization failed ({type(exc).__name__}: {exc}); dropping it.")
     return optimized
 
 
@@ -777,7 +781,7 @@ def _discover_channels(
     end_cls = _register_route_class(species, end_node)
     degenerate_pair = start_cls == end_cls
     if degenerate_pair:
-        _log(
+        _warn(
             "WARNING: --start and --end have identical connectivity; no "
             "channel can be defined for this pair, so every discovered step "
             "is reported as an off-target exit channel."
@@ -847,7 +851,7 @@ def _discover_channels(
                                       f"({_species_label(q)}), not {name} itself")
     mismatch_warnings = list(dict.fromkeys(mismatches))
     for msg in mismatch_warnings:
-        _log(f"WARNING: result does not match the queried endpoints: {msg}.")
+        _warn(f"WARNING: result does not match the queried endpoints: {msg}.")
 
     graph = nx.Graph()
     graph.add_nodes_from(range(len(species)))
@@ -911,7 +915,7 @@ def _discover_channels(
             mismatch_warnings.append(
                 f"an IRC-verified step connects {species_labels[i]} <-> {species_labels[j]}, "
                 f"not the queried {species_labels[start_cls]} <-> {species_labels[end_cls]}")
-            _log(f"WARNING: result does not match the queried endpoints: {mismatch_warnings[-1]}.")
+            _warn(f"WARNING: result does not match the queried endpoints: {mismatch_warnings[-1]}.")
 
     n_contributing = sum(len(c) for c in channel_clusters)
     _log(
@@ -1219,7 +1223,7 @@ def run_channels(
         for label, name in (("start", "reactant"), ("end", "product")):
             skipped = stats["conformers"].get(label, {}).get("rdkit_skipped")
             if skipped and label not in reused:
-                _log(f"  WARNING: {name} conformers not sampled, only the input geometry kept ({skipped}).")
+                _warn(f"  WARNING: {name} conformers not sampled, only the input geometry kept ({skipped}).")
 
     pools = {"start": start_confs, "end": end_confs}
     for label in ("start", "end"):
@@ -1527,7 +1531,7 @@ def run_channels(
     try:
         pot = builder.create_rxn_network_from_paths(tree_dirs)
     except Exception as exc:
-        _log(f"WARNING: network construction failed ({type(exc).__name__}: {exc}); "
+        _warn(f"WARNING: network construction failed ({type(exc).__name__}: {exc}); "
                    "continuing with TS optimization and classification.")
         stats["network_error"] = f"{type(exc).__name__}: {exc}"
     else:
