@@ -23,11 +23,17 @@ import qcconst.constants as _qcconst_constants
 # throughout quantum chemistry). Needed to turn mass-weighted Hessian
 # eigenvalues into physically meaningful wavenumbers -- see
 # build_hessian_result_from_matrix.
+def _codata(name: str) -> float:
+    """A CODATA constant from qcconst: "Hartree energy" up to 0.2, HARTREE_ENERGY from 0.3."""
+    try:
+        return float(_qcconst_constants.phys[name])
+    except KeyError:
+        return float(_qcconst_constants.phys[name.upper().replace(" ", "_")])
+
+
 _HESSIAN_EIGENVALUE_TO_CM2 = (
-    float(_qcconst_constants.phys["Hartree energy"])
-    / float(_qcconst_constants.phys["Bohr radius"]) ** 2
-    / float(_qcconst_constants.phys["atomic mass constant"])
-) / (2 * np.pi * float(_qcconst_constants.phys["speed of light in vacuum"]) * 100) ** 2
+    _codata("Hartree energy") / _codata("Bohr radius") ** 2 / _codata("atomic mass constant")
+) / (2 * np.pi * _codata("speed of light in vacuum") * 100) ** 2
 
 
 @dataclass
