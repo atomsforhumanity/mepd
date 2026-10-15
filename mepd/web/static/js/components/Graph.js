@@ -3,7 +3,7 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, playgroundFitMargins, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
@@ -56,9 +56,14 @@ function stylesheet() {
     { selector: 'node.cx:selected', style: { 'border-width': 3, 'border-color': css('--accent') } },
     { selector: 'edge.member', style: { width: 1.2, 'line-style': 'solid', 'line-color': css('--border-strong'),
       'target-arrow-shape': 'none', 'curve-style': 'straight', label: 'data(label)', opacity: 0.8 } },
-    // A node being pointed at from the list (Library double-click): pulses a few times.
+    // New since the last look (store.js isNew): a steady soft glow.
+    { selector: 'node.fresh', style: { 'underlay-color': css('--accent'), 'underlay-opacity': 0.16, 'underlay-padding': 7,
+      'underlay-shape': 'round-rectangle' } },
+    { selector: 'edge.fresh', style: { 'underlay-color': css('--accent'), 'underlay-opacity': 0.18, 'underlay-padding': 5 } },
+    // A node or arrow being pointed at from a list (Library): pulses a few times.
     { selector: 'node.flash', style: { 'underlay-color': css('--accent'), 'underlay-opacity': 0.35, 'underlay-padding': 16,
       'underlay-shape': 'round-rectangle', 'border-width': 3, 'border-color': css('--accent') } },
+    { selector: 'edge.flash', style: { width: 5, 'underlay-color': css('--accent'), 'underlay-opacity': 0.4, 'underlay-padding': 10 } },
     // View filters (see applyView).
     { selector: '.vhidden', style: { display: 'none' } },
     { selector: '.dim', style: { opacity: 0.16 } },
@@ -549,6 +554,7 @@ export function Graph() {
   const [panel, setPanel] = useState(false);
   const [setupPanel, setSetupPanel] = useState(false);
   const condKey = useStore(setupKey);
+  const seenTick = useStore((s) => s.seenTick);
   const setup = activeSetup(workspace);
   const setPanelRef = useRef(setPanel);
   const [counts, setCounts] = useState({ shown: 0, total: 0, kids: {} });
@@ -773,6 +779,11 @@ export function Graph() {
         }
       }
       c.elements().forEach((el) => { if (!ids.has(el.id())) el.remove(); });
+      // What a calculation added since the last look glows until it is selected.
+      c.elements().forEach((el) => {
+        const id = el.data('of') || el.id();
+        el.toggleClass('fresh', isNew(structures[id] || edges[id]));
+      });
     });
     if (spawned.length) {
       const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -808,7 +819,7 @@ export function Graph() {
       else pendingArrange.current = pendingArrange.current || 'fit';
     }
     if (placed) fittedFor.current = workspace.root;
-  }, [workspace, statusKey, condKey]);
+  }, [workspace, statusKey, condKey, seenTick]);
 
   // --- "breathing" nodes: a structure with a calculation running on it
   // glows softly, the halo slowly swelling and fading (no shaking).
@@ -986,7 +997,7 @@ export function Graph() {
         const el = c.getElementById(d.id);
         if (el.empty()) return;
         if (el.hasClass('vhidden')) el.removeClass('vhidden');   // filtered out of the view: show it anyway
-        const ext = c.extent(), p = el.position();
+        const ext = c.extent(), p = el.isEdge() ? el.midpoint() : el.position();
         const inView = p.x > ext.x1 + 40 && p.x < ext.x2 - 40 && p.y > ext.y1 + 40 && p.y < ext.y2 - 40;
         if (!d.ifHidden || !inView) {
           const anim = { center: { eles: el }, duration: 350, easing: 'ease-in-out-cubic' };

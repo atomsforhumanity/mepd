@@ -19,6 +19,8 @@ export const state = {
   // Getting-started steps done (molecule, reactor, reaction) and whether they are hidden (Welcome.js).
   tour: _pref('tour', {}),
   everything: _pref('everything', false),   // "Show everything": skip the map (quests.js)
+  seen: null,            // what has been looked at (isNew); seenTick re-renders on change
+  seenTick: 0,
   focusOp: null,         // {key, at}: an operation card to open in the Inspector (a quest's "Try it")
   loaded: false,
   workspace: { structures: {}, edges: {}, positions: {}, root: '' },
@@ -85,6 +87,7 @@ export function useStore(selector) {
 
 // ---- selection helpers -------------------------------------------------
 export function select({ structures = [], edges = [] }, additive = false) {
+  markSeen([...structures, ...edges]);
   update((s) => {
     if (!additive) {
       s.selection = { structures: [...structures], edges: [...edges] };
@@ -103,6 +106,55 @@ export function select({ structures = [], edges = [] }, additive = false) {
       edges: toggle(s.selection.edges, edges),
     };
   });
+}
+
+// ---- what is new --------------------------------------------------------
+// Structures and reactions a calculation added since the person last looked
+// are "new": a dot in the lists and a glow in Explore, until selected (or all
+// marked seen). Kept per workspace in this browser. The first look at a
+// workspace counts everything already in it as seen; no clocks compared, only
+// the server's own `created` times.
+const seenKey = () => `mepd:seen:${state.workspace.root}`;
+const createdTimes = () => [...Object.values(state.workspace.structures || {}), ...Object.values(state.workspace.edges || {})]
+  .map((r) => r.created || 0);
+function seenNow() {
+  if (state.seen?.root === state.workspace.root) return state.seen;
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem(seenKey())); } catch { /* private mode */ }
+  if (!rec) {
+    rec = { since: Math.max(0, ...createdTimes()), ids: [] };
+    try { localStorage.setItem(seenKey(), JSON.stringify(rec)); } catch { /* not kept */ }
+  }
+  state.seen = { root: state.workspace.root, since: rec.since, ids: new Set(rec.ids) };
+  return state.seen;
+}
+function saveSeen(seen) {
+  try { localStorage.setItem(seenKey(), JSON.stringify({ since: seen.since, ids: [...seen.ids] })); } catch { /* not kept */ }
+  update((s) => { s.seenTick = (s.seenTick || 0) + 1; });
+}
+// A structure or edge counts as new when a calculation made it (not one the
+// person drew or typed in) after the last look.
+export function isNew(rec) {
+  if (!rec || !state.workspace.root) return false;
+  if (rec.source == null && rec.origin?.kind !== 'job') return false;      // a structure: made by a calculation
+  if (rec.source != null && (rec.origin?.kind ?? 'manual') === 'manual') return false;   // an edge: not drawn by hand
+  const seen = seenNow();
+  return (rec.created || 0) > seen.since && !seen.ids.has(rec.id);
+}
+export function markSeen(ids) {
+  if (!state.workspace.root) return;
+  const seen = seenNow();
+  const fresh = ids.filter((id) => !seen.ids.has(id)
+    && isNew(state.workspace.structures?.[id] || state.workspace.edges?.[id]));
+  if (!fresh.length) return;
+  fresh.forEach((id) => seen.ids.add(id));
+  saveSeen(seen);
+}
+export function markAllSeen() {
+  const seen = seenNow();
+  seen.since = Math.max(seen.since, ...createdTimes());
+  seen.ids = new Set();
+  saveSeen(seen);
 }
 
 export function clearSelection() {

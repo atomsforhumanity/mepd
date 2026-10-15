@@ -12,6 +12,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Web UI: finding what was just added.** The sidebar has a Structures | Reactions switch; Reactions lists
+  every Explore arrow, newest first, with both ends drawn and its barrier. Structures and reactions a
+  calculation added since you last looked carry a blue dot in the lists and a soft glow in the graph until
+  selected; "N new" shows only those, and "Mark seen" clears them (per workspace, per browser). Clicking a
+  structure or a reaction in the list centres and zooms the graph on it and pulses it (it used to need a
+  double-click). A finished calculation's toast has "Show in Explore".
+
 - **A public Python API** ([docs/python-api.md](docs/python-api.md)), so workflows are scripts on `mepd`
   instead of on private helpers: `mepd.load`, `read_frames`, `from_smiles`, `write_xyz`; `mepd.engine(name,
   **options)`, `engine_from_profile`, `set_threads`; `mepd.energies`, `optimize`, `find_ts`, `irc`,
@@ -308,6 +315,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **Reactor story: a barrier search that found no transition state offered "Find its barrier" again**, as if
+  it had never run. It now says "No transition state found" with a link to the search. "See them in
+  Explore" moved from below every reaction card to the top, and it selects those reactions.
 
 - **mepd failed to import with qcconst 0.3** (`KeyError: 'Hartree energy'` in `mepd.engines.engine`), which
   any install without uv.lock got: qcconst 0.3 renamed its CODATA keys and is deprecated (renamed qcref).

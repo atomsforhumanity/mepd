@@ -4,7 +4,7 @@
 // barrier is known, a small energy diagram with the forward and the reverse
 // barrier as arrows of their own. The full results stay on the other tabs.
 import { html, useEffect, useState } from '../lib.js';
-import { openJob, set, toast, useStore } from '../store.js';
+import { openJob, select, set, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal } from '../util.js';
 import { Equation, NO_TS_SHORT, ReactionCard, TsCell, findTs, noTsWhy } from './Reactions.js';
 import { StepBar, markStep, reactorFor } from './Welcome.js';
@@ -49,7 +49,10 @@ function StoryCard({ r }) {
   } else if (st.barrierFwd != null && st.barrierRev != null) status = html`<b>Barrier ${fmtKcal(st.barrierFwd)} kcal/mol</b>
     <span class="muted">· ${fmtKcal(st.barrierRev)} back</span>`;
   else if (st.barrier != null) status = html`<b>Barrier ${fmtKcal(st.barrier)} kcal/mol</b>`;
-  else if (st.status === 'failed') status = html`<span class="muted">No barrier found.</span> <${TsCell} r=${r} />`;
+  else if (st.barrierUnverified != null) {
+    status = html`<span class="muted" title=${`The highest point on the path (≈${fmtKcal(st.barrierUnverified)} kcal/mol) did not lead to a transition state joining the two ends`}>No transition state found.</span>
+      ${st.barrierJob && html` <a href="#" class="small" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}>see why</a>`}`;
+  } else if (st.status === 'failed') status = html`<span class="muted">No barrier found.</span> <${TsCell} r=${r} />`;
   else status = html`<button class="btn small primary" onClick=${() => findTs(r)}>Find its barrier</button>`;
   return html`<li class="story-card">
     <${Equation} r=${r} structures=${structures} />
@@ -73,6 +76,7 @@ export function ReactorStory({ job }) {
     markStep('network');
     window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'fit-to', ids: found.map((r) => r.edge) } }));
     set({ view: { tab: 'graph', jobId: null } });
+    select({ edges: found.map((r) => r.edge) });
     const tap = window.matchMedia?.('(pointer: coarse)').matches ? 'Tap' : 'Click';
     toast(`Your reactions: each arrow carries its barrier. ${tap} one to explore it.`, 'info', 7000);
   };
@@ -87,10 +91,10 @@ export function ReactorStory({ job }) {
     <h3 class="story-head">${headline}</h3>
     ${n > 0 && html`<p class="small muted">${busy ? 'Each one is checked, then its barrier is searched.'
       : `${found.length} of ${n} with a barrier.`}</p>`}
-    <ul class="story-list">${mine.map((r) => html`<${StoryCard} key=${r.id} r=${r} />`)}</ul>
     ${found.length > 0 && html`<button class="rx-bulb story-bulb" onClick=${toExplore}>
       <span class="bulb-dot"></span><span><b>See ${found.length > 1 ? 'them' : 'it'} in Explore</b>
       <span class="small muted"> · with your other molecules</span></span></button>`}
+    <ul class="story-list">${mine.map((r) => html`<${StoryCard} key=${r.id} r=${r} />`)}</ul>
     ${!busy && !n && html`<div class="story-empty">
       <p class="small muted">Left alone, molecules rarely react within a few picoseconds. Next time:</p>
       <ul><li>drag an atom of one molecule into another and hold it there a moment;</li>

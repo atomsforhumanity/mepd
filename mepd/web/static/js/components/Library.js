@@ -2,11 +2,19 @@
 // browse the library. Library entries and graph nodes are the same thing.
 import { html, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { openTab, prefs, select, state, useStore } from '../store.js';
-import { cls, depictUrl, isComplex, isSpecies, levelStatus } from '../util.js';
+import { isNew, markAllSeen, openTab, prefs, select, state, useStore } from '../store.js';
+import { cls, depictUrl, edgeStatus, fmtKcal, isComplex, isSpecies, levelStatus } from '../util.js';
 import { QmmmAdd } from './QMMM.js';
 import { useMap } from '../quests.js';
 import { Why } from './Why.js';
+
+// Point the graph at a node or an arrow: centre it, close enough to read, and
+// pulse it. From another tab, Explore opens first (and is laid out) for a reaction.
+function findInGraph(id, open = false) {
+  const go = () => window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'center', id, zoom: true, flash: true } }));
+  if (state.view.tab === 'graph') go();
+  else if (open) { openTab('graph'); setTimeout(go, 300); }
+}
 
 // "Added 2 structures · 1 new conformer of CCO · 1 already there"
 function addedSummary(list) {
@@ -129,27 +137,25 @@ export function LevelBar({ status = false, always = false }) {
     </div>`;
 }
 
-function Card({ rec, selected, order }) {
+function Card({ rec, selected, order, fresh }) {
   const url = depictUrl(rec.smiles, 180, 110);
   const origin = rec.origin?.kind;
   return html`
     <li class=${cls('card', selected && 'selected')} draggable="false"
       onClick=${(e) => {
-        select({ structures: [rec.id] }, e.shiftKey || e.metaKey || e.ctrlKey);
-        window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'center', id: rec.id, ifHidden: true } }));
+        const several = e.shiftKey || e.metaKey || e.ctrlKey;
+        select({ structures: [rec.id] }, several);
+        if (several) window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'center', id: rec.id, ifHidden: true } }));
+        else findInGraph(rec.id);
       }}
-      onDblClick=${() => {
-        if (state.view.tab !== 'graph') openTab('graph');
-        // after the tab switch has laid the graph out
-        setTimeout(() => window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'center', id: rec.id, zoom: true, flash: true } })), 60);
-      }}
-      title=${`${rec.smiles || rec.formula} — double-click to find it in the graph`}>
+      onDblClick=${() => findInGraph(rec.id, true)}
+      title=${rec.smiles || rec.formula}>
       <div class="card-img">
         ${url ? html`<img src=${url} alt="" loading="lazy" />` : html`<span class="muted small">${rec.formula}</span>`}
         ${order > 0 && html`<span class="order-badge" title="Selection order (1 = start)">${order}</span>`}
       </div>
       <div class="card-body">
-        <div class="card-name">${rec.name}</div>
+        <div class="card-name">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}${rec.name}</div>
         <div class="card-meta">
           <span>${rec.formula}</span>
           ${(rec.conformers || []).length > 1 && html`<span class="badge" title="Conformers of this molecule; the lowest-energy one represents it">${rec.conformers.length} conformers</span>`}
@@ -162,16 +168,48 @@ function Card({ rec, selected, order }) {
     </li>`;
 }
 
+// One reaction (an Explore arrow): both ends drawn, its barrier, newest first.
+function ReactionRow({ e, selected, fresh }) {
+  const structures = useStore((s) => s.workspace.structures);
+  useStore((s) => s.jobs);   // its barrier as searches finish
+  const a = structures[e.source], b = structures[e.target];
+  if (!a || !b) return null;
+  const st = edgeStatus(e);
+  const tag = st.status === 'running' || st.status === 'queued' ? html`<span class="muted">searching…</span>`
+    : st.barrier != null ? html`<b>${fmtKcal(st.barrier)}</b> <span class="muted">kcal/mol</span>`
+    : st.barrierUnverified != null ? html`<span class="muted" title="Highest point on the path; no transition state confirmed it">no TS found</span>`
+    : st.status === 'failed' ? html`<span class="warn-text">failed</span>`
+    : html`<span class="muted">no barrier yet</span>`;
+  const pic = (r) => { const u = depictUrl(r.smiles, 150, 90); return u ? html`<img src=${u} alt="" loading="lazy" />` : html`<span class="small muted">${r.formula}</span>`; };
+  return html`<li class=${cls('card rxn-row', selected && 'selected')} title=${`${a.name} → ${b.name}`}
+    onClick=${() => { select({ edges: [e.id] }); findInGraph(e.id, true); }}>
+    <div class="rxn-pics">${pic(a)}<span class="rxn-arrow">→</span>${pic(b)}</div>
+    <div class="rxn-meta small">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}
+      <span class="rxn-names">${a.name} → ${b.name}</span><span class="rxn-tag">${tag}</span></div>
+  </li>`;
+}
+
 export function Library() {
   const structures = useStore((s) => s.workspace.structures);
   const selected = useStore((s) => s.selection.structures);
   const [q, setQ] = useState('');
+  const edges = useStore((s) => s.workspace.edges);
+  const selEdges = useStore((s) => s.selection.edges);
+  useStore((s) => s.seenTick);
+  const [what, setWhat] = useState('structures');   // or 'reactions'
+  const [onlyNew, setOnlyNew] = useState(false);
   const [drag, setDrag] = useState(false);
   // A reaction's hidden subsystem ends (role "complex") are not library entries.
   const list = Object.values(structures)
     .filter((r) => !isComplex(r))
     .filter((r) => !q || `${r.name} ${r.smiles} ${r.formula}`.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.created - a.created);
+  const rxns = Object.values(edges || {}).filter((e) => structures[e.source] && structures[e.target])
+    .filter((e) => !q || `${structures[e.source].name} ${structures[e.target].name}`.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => (b.created || 0) - (a.created || 0));
+  const newS = list.filter(isNew).length, newE = rxns.filter(isNew).length;
+  const nNew = what === 'reactions' ? newE : newS;
+  const showNew = onlyNew && nNew > 0;
 
   const onDrop = (e) => {
     e.preventDefault();
@@ -194,17 +232,33 @@ export function Library() {
       onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDrag(false); }}
       onDrop=${onDrop}>
       <div class="pane-head">
-        <h2>Structures${!empty && html` <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>`}</h2>
+        ${rxns.length || what === 'reactions'
+    ? html`<div class="lib-switch" role="tablist">
+            <button role="tab" class=${cls(what === 'structures' && 'active')} onClick=${() => setWhat('structures')}>
+              Structures <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>${newS > 0 && html`<span class="new-dot"></span>`}</button>
+            <button role="tab" class=${cls(what === 'reactions' && 'active')} onClick=${() => setWhat('reactions')}>
+              Reactions <span class="count">${rxns.length}</span>${newE > 0 && html`<span class="new-dot"></span>`}</button>
+          </div>`
+    : html`<h2>Structures${!empty && html` <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>`}</h2>`}
+        ${nNew > 0 && html`<div class="new-bar small">
+          <button class=${cls('new-filter', showNew && 'active')} onClick=${() => setOnlyNew(!showNew)}
+            title="Show only what calculations added since you last looked"><span class="new-dot"></span>${nNew} new</button>
+          <button class="btn-link small" onClick=${() => { markAllSeen(); setOnlyNew(false); }} title="Clear the new marks">Mark seen</button>
+        </div>`}
       </div>
       <${LevelBar} status />
       ${dupes > 0 && html`<p class="level-note small">${dupes} structure${dupes > 1 ? 's are' : ' is'} the same molecule as another node.
         <button class="btn-link small" onClick=${() => attempt(() => api.post('/api/structures/merge-duplicates'), 'Merged into one node per molecule')}>Merge into conformers</button></p>`}
-      ${Object.values(structures).filter((r) => !isComplex(r)).length > 12 && html`
+      ${(what === 'reactions' ? Object.keys(edges || {}).length : Object.values(structures).filter((r) => !isComplex(r)).length) > 12 && html`
         <input class="search" type="search" placeholder="Filter" title="By name, SMILES or formula" value=${q} onInput=${(e) => setQ(e.target.value)} />`}
-      ${empty
+      ${what === 'reactions'
+        ? html`<ul class="cards rxn-list">
+            ${(showNew ? rxns.filter(isNew) : rxns).map((e) => html`<${ReactionRow} key=${e.id} e=${e} selected=${selEdges.includes(e.id)} fresh=${isNew(e)} />`)}
+          </ul>`
+        : empty
         ? html`<p class="empty-hint small muted">Molecules you <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>build or open in Design</a> show up here. You can also drop .xyz files here.</p>`
         : html`<ul class="cards">
-            ${list.map((r) => html`<${Card} key=${r.id} rec=${r} selected=${selected.includes(r.id)}
+            ${(showNew ? list.filter(isNew) : list).map((r) => html`<${Card} key=${r.id} rec=${r} fresh=${isNew(r)} selected=${selected.includes(r.id)}
               order=${selected.length > 1 ? selected.indexOf(r.id) + 1 : 0} />`)}
           </ul>`}
       <div class="drop-overlay">Drop .xyz / .smi files to add them</div>

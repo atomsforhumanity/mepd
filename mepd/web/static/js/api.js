@@ -1,5 +1,6 @@
 // REST wrappers + the SSE connection that keeps the store in sync.
-import { state, update, set, toast, asRedirect } from './store.js';
+import { state, update, set, toast, asRedirect, openTab, select } from './store.js';
+import { isComplex } from './util.js';
 
 async function request(method, url, body, { raw = false } = {}) {
   const opts = { method, headers: {} };
@@ -155,7 +156,24 @@ const handlers = {
     if (prev && newer(prev, job) === prev) return;   // stale copy, arrived late
     update((s) => { s.jobs = { ...s.jobs, [job.id]: job }; });
     if (prev && prev.status !== job.status && ['done', 'failed'].includes(job.status)) {
-      toast(`${job.status === 'done' ? 'Finished' : 'Failed'}: ${job.title}`, job.status === 'done' ? 'ok' : 'error');
+      // What it made or worked on, found in Explore in one click.
+      const show = job.status === 'done' && {
+        label: 'Show in Explore',
+        run: () => {
+          const w = state.workspace;
+          const made = (xs) => Object.values(xs || {}).filter((r) => r.origin?.job === job.id).map((r) => r.id);
+          const edges = [...new Set([...(job.targets?.edges || []), ...made(w.edges)])].filter((id) => w.edges[id]);
+          const own = (ids) => ids.filter((id) => w.structures[id] && !isComplex(w.structures[id]));
+          const structures = edges.length ? [] : (own(made(w.structures)).length ? own(made(w.structures)) : own(job.targets?.structures || []));
+          if (!edges.length && !structures.length) { openTab('graph'); return; }
+          openTab('graph');
+          select({ edges, structures });
+          setTimeout(() => window.dispatchEvent(new CustomEvent('mepd:graph', edges.length + structures.length === 1
+            ? { detail: { cmd: 'center', id: edges[0] || structures[0], zoom: true, flash: true } }
+            : { detail: { cmd: 'fit-to', ids: edges.length ? edges : structures } })), 300);
+        },
+      };
+      toast(`${job.status === 'done' ? 'Finished' : 'Failed'}: ${job.title}`, job.status === 'done' ? 'ok' : 'error', show ? 7000 : 4500, show || null);
     }
   },
   job_deleted: ({ id }) => {

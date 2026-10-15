@@ -197,6 +197,27 @@ input.switch:checked::after { transform: translateX(13px); }
 .origin { font-size: 12.5px; }
 .drop-overlay { display: none; position: absolute; inset: 8px; border: 1.5px dashed var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-soft) 85%, transparent); color: var(--accent); font-weight: 600; place-items: center; pointer-events: none; }
 .library.drag .drop-overlay { display: grid; }
+/* Structures | Reactions, and what is new since the last look (store.js isNew) */
+.library .pane-head { flex-wrap: wrap; }
+.lib-switch { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 4px; overflow: hidden; }
+.lib-switch button { border: 0; background: transparent; padding: 6px 12px; cursor: pointer; font: 600 14px/1.2 var(--font-ui); color: var(--muted);
+  display: inline-flex; align-items: center; gap: 6px; }
+.lib-switch button + button { border-left: 1px solid var(--border-strong); }
+.lib-switch button.active { background: var(--accent-soft); color: var(--heading); }
+.lib-switch .count { font-weight: 500; }
+.new-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: middle; flex: none; }
+.lib-switch .new-dot { margin: 0; }
+.new-bar { display: flex; align-items: center; gap: 10px; width: 100%; }
+.new-filter { border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel); padding: 3px 8px; cursor: pointer;
+  font: 600 12.5px/1.3 var(--font-ui); color: var(--accent); display: inline-flex; align-items: center; }
+.new-filter.active { background: var(--accent-soft); border-color: var(--accent); }
+.rxn-row { flex-direction: column; gap: 4px; }
+.rxn-pics { display: flex; align-items: center; gap: 6px; }
+.rxn-pics img { height: 44px; max-width: 108px; object-fit: contain; background: var(--node-bg); border-radius: 3px; }
+.rxn-arrow { color: var(--muted); font-size: 16px; }
+.rxn-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rxn-names { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--heading); font-weight: 600; }
+.rxn-tag { flex: none; }
 
 /* ---------- graph */
 .graph-wrap { flex: 1; position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
