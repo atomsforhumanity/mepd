@@ -137,6 +137,45 @@ export function familyOf(jobs, id) {
   return Object.values(jobs).filter((j) => j.id === base || pageJobId(j.id) === base).sort((a, b) => a.created - b.created);
 }
 // `tab`: open the page on that tab, showing that run (a Sample more paths run's log).
+// Pages as browser history: every change of view (tab, calculation, run) is
+// a step that the browser's back and forward (and a phone's back gesture)
+// walk through; the job page's ← does the same while there is a step to go
+// back to.
+const viewKey = (v) => `${v.tab}|${v.jobId || ''}|${v.run || ''}|${v.sandbox?.id || v.sandbox || ''}`;
+let shownKey = null, restoring = false, replacing = false;
+export function historyDepth() { return (typeof history !== 'undefined' && history.state?.mepdDepth) || 0; }
+// A redirect the app makes on its own (first screen, a locked tab, back to a
+// running reactor): it replaces the step instead of adding one, so Back doesn't bounce.
+export function asRedirect(fn) {
+  replacing = true;
+  try { fn(); } finally { replacing = false; }
+}
+export function replaceView(view, extra = {}) { asRedirect(() => set({ ...extra, view })); }
+export function goBack(fallback) {
+  if (historyDepth() > 0) history.back(); else set({ view: fallback });
+}
+if (typeof window !== 'undefined' && window.history) {
+  // A reload stays on the page it showed (its history step remembers it).
+  const kept = history.state?.mepdView;
+  if (kept && kept.tab && !['welcome', 'sandbox'].includes(kept.tab)) state.view = kept;
+  try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, ''); } catch { /* not cloneable */ }
+  shownKey = viewKey(state.view);
+  listeners.add(() => {
+    const k = viewKey(state.view);
+    if (k === shownKey) return;
+    shownKey = k;
+    if (restoring) return;
+    if (replacing) { try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, ''); } catch { /* not cloneable */ } return; }
+    try { history.pushState({ mepdView: state.view, mepdDepth: historyDepth() + 1 }, ''); } catch { /* not cloneable */ }
+  });
+  window.addEventListener('popstate', (e) => {
+    const v = e.state?.mepdView;
+    if (!v) return;
+    restoring = true;
+    try { set({ view: v }); } finally { restoring = false; }
+  });
+}
+
 export function openJob(jobId, tab = null) {
   const page = pageJobId(jobId);
   set({ view: { tab: 'job', jobId: page, run: page !== jobId ? jobId : null, jobTab: tab } });

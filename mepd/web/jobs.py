@@ -395,7 +395,9 @@ class JobManager:
                 raise WorkspaceError(f"{op.title} follows up on {', '.join(op.source_ops)} results, not {source['op']}")
             if source["status"] != "done":
                 raise WorkspaceError(f"{op.title} needs the {source['title']} job to have finished")
-            profile = source.get("profile")
+            # At its source's level -- except a retry at another one (a solvent added), which is its point.
+            if op.key != "reaction-retry" or not profile:
+                profile = source.get("profile")
             known = self.ws.snapshot()
             structure_ids = [sid for sid in source["targets"]["structures"] if sid in known["structures"]]
             edge_ids = [eid for eid in source["targets"]["edges"] if eid in known["edges"]]

@@ -180,8 +180,8 @@ function StructureDetail({ rec }) {
           : rec.origin?.kind === 'smiles' ? html`SMILES <code>${rec.origin.input}</code>` : 'XYZ'}</dd>
       </dl>
       <div class="row-actions">
-        <button class="btn small" title="Open this structure (the conformer shown) in the Design tab to edit it"
-          onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, conformer: shown, network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>
+        ${!isSpecies(rec) || rec.qmmm ? html`<button class="btn small" title="Open this structure (the conformer shown) in the Design tab to edit it"
+          onClick=${() => attempt(() => api.post('/api/design/load', { structure: rec.id, conformer: shown, network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design'))}>Edit in Design</button>` : null}
         <button class="btn-link danger small" onClick=${del}>Delete structure</button>
       </div>
       </details>
@@ -375,7 +375,7 @@ function CombineComplex({ sids, embedded = false, onClose = null }) {
 }
 
 // An edge's two ends as a reaction in Design (start: reactant, end: product).
-const edgeToDesign = (eid) => ({ key: 'x-design-edge', icon: 'product', name: 'Edit in Design',
+const edgeToDesign = (eid) => ({ key: 'x-design-edge', scale: 'reaction', icon: 'product', name: 'Edit in Design',
   tip: 'Open both ends in Design as a reaction: the start as the reactant, the end as the product',
   act: () => attempt(() => api.post('/api/design/load-edge', { edge: eid }), 'Both ends loaded into Design').then((d) => d && openTab('design')) });
 
@@ -452,14 +452,14 @@ export function Inspector() {
   } else if (nE === 1 && !nS && reactionOfEdge(workspace, sel.edges[0])) {
     head = 'Reaction';
     const r = reactionOfEdge(workspace, sel.edges[0]);
-    links = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
+    extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
     body = html`<${ReactionCard} key=${r.id} r=${r} compact />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
     head = 'Edge';
     body = html`<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
-    links = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
+    extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
   } else if (nS && nE) {
     head = 'Mixed selection';
     body = html`<p class="warn-box">Select either structures or edges to see what can be run.</p>`;
@@ -480,12 +480,12 @@ export function Inspector() {
     const n = Object.values(workspace.reactions || {}).filter((r) => sel.structures.every((id) => [...r.reactants, ...r.products].includes(id))).length;
     const sids = sel.structures;
     links = [
-      nS === 1 && { key: 'x-design', icon: 'product', name: 'Edit in Design', tip: 'Open it in Design to change atoms, bonds or groups',
-        act: () => attempt(() => api.post('/api/design/load', { structure: sids[0], network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design')) },
       n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
         act: () => openAnalyze({ species: [...sids], reaction: null }) },
     ].filter(Boolean);
     extras = [
+      nS === 1 && { key: 'x-design', scale: 'molecule', last: true, icon: 'product', name: 'Edit in Design', tip: 'Open it in Design to change atoms, bonds or groups',
+        act: () => attempt(() => api.post('/api/design/load', { structure: sids[0], network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design')) },
       map.feature('complex') && { key: 'x-complex', scale: 'molecule', last: true, icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
         render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
       map.feature('compose') && { key: 'x-compose', scale: 'reaction', icon: 'reaction', name: 'Pick products', why: 'other.products',
@@ -509,7 +509,7 @@ export function Inspector() {
         <${NavLinks} links=${links} />
         ${(!phone || pane === 'details') && body}
         ${(!phone || pane === 'run') && (moreCalcs
-          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} /></details>`
+          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
           : html`<${ActionPanel} sel=${sel} extras=${extras} />`)}
         ${(!phone || pane === 'details') && tail}
       </div>

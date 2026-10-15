@@ -3890,5 +3890,39 @@
    "mepd/web/static/js/components/AtomMapping.js"
   ],
   "refs": "Atom mapping"
+ },
+ "op.reaction-retry": {
+  "title": "Retry in a solvent",
+  "does": "Optimizes this reaction's two ends again, from the MD frames the reactor saved for it, at the run's level of theory plus an implicit solvent. A reaction whose ends collapse in the gas phase (barrierless, products falling back) can have ends that hold in a solvent, and then a TS to search.",
+  "how": [
+   "The solvent version of the level is saved as a profile of its own, \"<level> in <solvent>\", so its structures and barriers are told apart from the gas phase.",
+   "Each saved occurrence of the reaction is cut from the MD as before; both ends are optimized with the solvated engine (GFN2-xTB's ALPB model, or its solvation free energy added to another engine; solvation.py).",
+   "The bonds each end should keep are perceived from its MD frame. If both ends keep theirs, or still differ after optimizing, they become this reaction's ends in that solvent, with a Find TS button.",
+   "Otherwise the reason is shown, as in the gas phase."
+  ],
+  "default": "Water; one try per click, about a minute for a small reaction.",
+  "swap": [
+   {
+    "option": "Another solvent",
+    "where": "the solvent menu next to Try"
+   },
+   {
+    "option": "Explicit solvent molecules",
+    "where": "the surroundings switch (Explicit) on the reaction's molecules"
+   },
+   {
+    "option": "From the command line",
+    "where": "mepd discovery nanoreactor-retry <run>/reactions/reaction_<id> --inputs <profile with [solvation]>"
+   }
+  ],
+  "caveats": [
+   "Implicit solvent changes energies and forces but not the molecules present: a proton relay through solvent molecules needs explicit ones."
+  ],
+  "code": [
+   "mepd/discovery/nanoreactor.py:retry_reaction",
+   "mepd/discovery/cli_nanoreactor.py:nanoreactor_retry",
+   "mepd/web/nanoreactor.py:adopt_retry"
+  ],
+  "refs": "Solvation"
  }
 }

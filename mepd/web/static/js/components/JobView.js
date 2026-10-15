@@ -2,7 +2,7 @@
 // output (partial results work too), the raw log, and its files.
 import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { familyOf, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
+import { familyOf, goBack, historyDepth, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
 import { STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, safeName, structureName, tsFrameIndex } from '../util.js';
 import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
@@ -511,7 +511,7 @@ function ResultPanel({ job }) {
               ${entry.barrier_kcal != null && html`<span class="badge accent">ΔE‡ ${fmtKcal(entry.barrier_kcal)} kcal/mol</span>`}
             </div>
             ${entry.note && html`<div class="small mono muted note">${entry.note}</div>`}
-            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels} height=${300} system=${job.qmmm} />
+            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels} labelBase=${1} height=${300} system=${job.qmmm} />
             ${multi && html`
               <div class="frame-bar">
                 <button class="btn-icon" onClick=${() => setPlaying(!playing)} title=${playing ? 'Pause' : 'Play'}>${playing ? '❚❚' : '▶'}</button>
@@ -593,10 +593,12 @@ function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
   const run = async () => {
     setBusy(true);
     rememberValues(op, values);
-    const out = await attempt(() => api.post('/api/jobs', { op: op.key, params: values, source_job: job.id }),
-      (js) => `Queued: ${js[0].title}`);
+    const out = await attempt(() => api.post('/api/jobs', { op: op.key, params: values, source_job: job.id }));
     setBusy(false);
-    if (out) setOpen(false);
+    if (out) {
+      setOpen(false);
+      toast(`Queued: ${out[0].title}. Its results appear here when done.`, 'ok', 7000, { label: 'Open it', run: () => openJob(out[0].id) });
+    }
   };
   return html`
     <div class=${`op-card ${open ? 'open' : ''}`} ref=${me}>
@@ -617,7 +619,7 @@ function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
         <div class="op-run">
           <button class="btn primary" disabled=${busy || active} onClick=${run}>
             ${active ? 'Running…' : busy ? 'Queuing…' : (last || done) ? 'Run again' : 'Run'}</button>
-          ${last && html`<a href="#" class="small" onClick=${(e) => { e.preventDefault(); openJob(last.id, 'log'); }}>its log</a>`}
+          ${last && html`<a href="#" class="small" onClick=${(e) => { e.preventDefault(); openJob(last.id); }}>${['queued', 'running'].includes(last.status) ? 'watch it' : 'its page'}</a>`}
           <span class="small muted">Runs at this job's level of theory; results appear on this page.</span>
         </div>
       </div>`}
@@ -848,6 +850,9 @@ export function MechanoPanel({ m }) {
 
 // A `mepd substituents` result: barrier shift (kcal/mol) per site x group,
 // for one channel at a time; green lowers the barrier, red raises it.
+// mepd substituents names sites 0-based (C0, "CN on C0"); the web counts atoms from 1, as its viewers do.
+const site1 = (label) => String(label).replace(/^([A-Z][a-z]?)(\d+)$/, (_, el, n) => `${el}${+n + 1}`);
+const sites1 = (text) => String(text).replace(/ on ([A-Z][a-z]?)(\d+)/g, (_, el, n) => ` on ${el}${+n + 1}`);
 export function SubstituentPanel({ x }) {
   const channels = x.channels || [];
   const lead = channels.reduce((a, c) => (!a || c.barrier_kcal < a.barrier_kcal ? c : a), null);
@@ -865,7 +870,7 @@ export function SubstituentPanel({ x }) {
       ${first && html`<div class="warn-box small conditions-warn"><p>⚠ ${first}</p></div>`}
       <ul class="insights">
         ${(x.insights || []).map((i) => html`<li class=${`insight ${i.level === 'selectivity' ? 'accelerates' : i.level}`}>
-          <span class="insight-icon" aria-hidden="true">${{ accelerates: '▼', slows: '▲', trend: '↗', selectivity: '⇄' }[i.level] || 'ℹ'}</span>${i.text}</li>`)}
+          <span class="insight-icon" aria-hidden="true">${{ accelerates: '▼', slows: '▲', trend: '↗', selectivity: '⇄' }[i.level] || 'ℹ'}</span>${sites1(i.text)}</li>`)}
       </ul>
       ${channels.length > 1 && html`<label class="small">Channel <select value=${ch?.id} onChange=${(e) => setChId(e.target.value)}>
         ${channels.map((c) => html`<option value=${c.id}>${c.label} (ΔE‡ ${fmtKcal(c.barrier_kcal)})</option>`)}</select></label>`}
@@ -875,7 +880,7 @@ export function SubstituentPanel({ x }) {
           <th class="num" title="Slope of the shift against Hammett σp, and r²">vs σp</th></tr></thead>
         <tbody>${(x.sites || []).map((s) => {
           const t = (x.trends || []).find((r) => r.site === s.anchor);
-          return html`<tr><td class="mono">${s.label}</td>
+          return html`<tr><td class="mono">${site1(s.label)}</td>
             ${(x.groups || []).map((g) => {
               const v = cell[`${s.anchor}:${g}`];
               if (!v) return html`<td></td>`;
@@ -907,7 +912,7 @@ function LatestCondition({ run, opKey }) {
   }, [run.id, run.finished]);
   const payload = res?.[CONDITION_OPS[opKey]];
   if (!payload) return null;
-  return html`<p class="small muted">Latest ${CONDITION_NAMES[opKey]}
+  return html`<p class="small muted">Latest ${CONDITION_NAMES[opKey]}${' '}
       (<a href="#" onClick=${(e) => { e.preventDefault(); openJob(run.id); }}>full result</a>):</p>
     ${opKey === 'solvent' ? html`<${ConditionsPanel} cond=${payload} />` : html`<${SubstituentPanel} x=${payload} />`}`;
 }
@@ -1044,18 +1049,21 @@ export function JobView({ jobId: openedId }) {
   const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
     : (job.op === 'nanoreactor' && !job.params?.trajectory) || reactorGen ? 'reactor' : 'live');
   const targets = job.targets.structures.map((id) => ({ id, label: structureName(id) }));
+  // A follow-up (solvent, substituents, a VRI check...): the results it started from.
+  const source = job.source_job && !family.some((j) => j.id === job.source_job) ? state.jobs[job.source_job] : null;
   const runLabel = (j, i) => (i === 0 ? (job.op === 'ts' ? 'First search' : 'First run')
     : j.op === 'nanoreactor-more' ? `+${j.params?.more_ps ?? '?'} ps` : `More paths ${i}`);
   return html`
     <div class="job-view">
       <div class="view-head">
-        <button class="btn-icon" title="All calculations" onClick=${() => set({ view: { tab: 'jobs', jobId: null } })}>←</button>
+        <button class="btn-icon" title=${historyDepth() > 0 ? 'Back' : 'All calculations'} onClick=${() => goBack({ tab: 'jobs', jobId: null })}>←</button>
         <div class="job-head-main">
           <h2>${job.title}<${Why} id=${`op.${job.op}`} label=${job.title} /></h2>
           <div class="small muted">
             <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
             ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
               : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
+            ${source && html` · from <a href="#" onClick=${(e) => { e.preventDefault(); openJob(source.id); }}>${source.title}</a>`}
             ${job.profile && html` · profile <b>${job.profile}</b>`}
             ${targets.length > 0 && html` · ${targets.map((t, i) => html`${i ? (job.op === 'ts' || job.op === 'channels' ? ' → ' : ', ') : ''}<a href="#"
               onClick=${(e) => { e.preventDefault(); select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId } }); }}>${t.label}</a>`)}`}

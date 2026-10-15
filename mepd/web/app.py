@@ -229,6 +229,10 @@ class ComposeIn(BaseModel):
     proposal: Optional[dict] = None   # one of /api/reactions/propose's proposals, with its complex_xyz
 
 
+class RetryIn(BaseModel):
+    solvent: str
+
+
 class SandboxIn(BaseModel):
     counts: dict[str, int] = {}       # species id -> how many in the interactive reactor (packed)...
     structure: Optional[str] = None   # ...or one structure's geometry as it is (a complex)
@@ -411,6 +415,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                         manager.submit("tsopt", structure_ids=[ts], edge_ids=[], params={"irc": True},
                                        profile=manager.ws.level_profile, label="Re-optimize the TS in solvent")
                 bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+            if job["op"] == "reaction-retry" and job["status"] == "done":
+                from mepd.web.nanoreactor import adopt_retry
+
+                if await run_in_threadpool(adopt_retry, manager.ws, job):
+                    bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
             if job["op"] == "graph-enumeration" and job["status"] == "done":
                 if await run_in_threadpool(adopt_expansion_steps, manager, job):
                     bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
@@ -493,6 +502,17 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 synced |= _sync_events(manager.ws, job, Path(job.get("output_dir") or ""))
             except Exception:
                 logging.getLogger(__name__).exception("could not match the MD events of %s", job["id"])
+        # ...and finished retries of a reaction (in a solvent) whose outcome it does not hold yet.
+        from mepd.web.nanoreactor import adopt_retry
+
+        reactions = manager.ws.snapshot().get("reactions", {})
+        for job in [j for j in manager.jobs.values() if j["op"] == "reaction-retry" and j["status"] == "done"]:
+            rec = reactions.get((job.get("params") or {}).get("rid"))
+            if rec is not None and job["id"] not in (rec.get("retries") or {}):
+                try:
+                    synced |= adopt_retry(manager.ws, job) is not None
+                except Exception:
+                    logging.getLogger(__name__).exception("could not read the retry %s", job["id"])
         if nano or synced:
             bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
         # QM/MM TSs re-optimized before their edges learned their barriers.
@@ -2256,6 +2276,36 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             pass
         publish_ws()
         return out["reaction"]
+
+    @app.post("/api/reactions/{rid}/retry")
+    async def reactions_retry(rid: str, body: RetryIn):
+        """Optimize a reactor reaction's ends again in an implicit solvent (at
+        its run's level plus the solvent, a profile of its own): a reaction
+        barrierless in the gas phase can have ends that hold there."""
+        from mepd.web.nanoreactor import solvent_profile
+
+        rec = W().snapshot().get("reactions", {}).get(rid)
+        if rec is None:
+            raise HTTPException(404, "no such reaction")
+        o = rec.get("origin") or {}
+        src = J().jobs.get(o.get("job") or "")
+        if not o.get("nanoreactor") or src is None or src.get("op") != "nanoreactor":
+            raise HTTPException(400, "only a reaction found by a reactor run can be retried from its MD frames")
+        base = src.get("profile") or W().level_profile
+        try:
+            name = solvent_profile(W(), base, body.solvent, write=False)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, f"unknown solvent {body.solvent!r}") from exc
+        if demo is not None:
+            demo.check_op("reaction-retry", {})
+            demo.check_capacity(J().list())
+            if name not in W().profile_names():
+                check_visitor_profile(name)
+        solvent_profile(W(), base, body.solvent)
+        bus.publish("profiles", W().profile_names(), key=str(W().root))
+        return J().submit("reaction-retry", structure_ids=[], edge_ids=[], profile=name, source_job_id=src["id"],
+                          params={"reaction": int(o.get("index") or 0), "rid": rid, "solvent": body.solvent},
+                          label=f"{rec.get('label') or 'Reaction'} in {body.solvent}")
 
     # ---------------------------------------------------- interactive reactor
     def _sandbox(sid: str):

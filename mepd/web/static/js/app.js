@@ -1,6 +1,6 @@
 import { html, render, useEffect } from './lib.js';
 import { api, connect, deleteSelection } from './api.js';
-import { clearSelection, openTab, set, state, useStore } from './store.js';
+import { clearSelection, openTab, replaceView, set, state, useStore } from './store.js';
 import { Graph } from './components/Graph.js';
 import { Inspector } from './components/Inspector.js';
 import { JobView } from './components/JobView.js';
@@ -42,7 +42,7 @@ function TopBar() {
       if (!alive) return;
       // Loaded while a reactor runs (a reload, a phone woken up): back to it, once.
       if (!backToReactor && list.length && ['welcome', 'graph'].includes(state.view.tab)) {
-        set({ sandboxes: list, view: { tab: 'sandbox', jobId: null, sandbox: list[0] } });
+        replaceView({ tab: 'sandbox', jobId: null, sandbox: list[0] }, { sandboxes: list });
       } else set({ sandboxes: list });
       backToReactor = true;
     }).catch(() => {});
@@ -106,7 +106,7 @@ function App() {
     if (!loaded) return;
     const visit = { profiles: 'method', analyze: 'kinetics', graph: 'network' }[view.tab];
     if (visit && mapOf().open.has(visit) && map.tab(view.tab)) markQuest(visit);
-    if (['graph', 'analyze', 'jobs', 'profiles'].includes(view.tab) && !map.tab(view.tab)) set({ view: { tab: 'welcome', jobId: null } });
+    if (['graph', 'analyze', 'jobs', 'profiles'].includes(view.tab) && !map.tab(view.tab)) replaceView({ tab: 'welcome', jobId: null });
   }, [loaded, view.tab, mapKey]);
   // The layout's palette lives on <html>, so the graph (drawn from CSS
   // variables) and everything else pick it up.

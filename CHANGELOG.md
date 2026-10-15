@@ -181,6 +181,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
   every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for
   options the kernel doesn't cover) it falls back to `scipy.optimize.least_squares`.
+- **Retry a barrierless reaction in a solvent** (`mepd discovery nanoreactor-retry`, web: the reaction card).
+  A reactor reaction with no ends to search between in the gas phase (barrierless, products falling back,
+  falling apart) can be tried again in an implicit solvent: its ends are re-optimized from the run's saved MD
+  frames at the same level plus the solvent, saved as a profile of its own ("default in water"). If they hold,
+  they join Explore as an edge at that level with Find TS; the card lists each solvent tried and its outcome.
+- **Back means back in the web UI**: every page (a tab, a calculation, one of its runs) is a browser history
+  step, so the browser's back and forward, a phone's back gesture and the job page's ← walk through what you
+  opened; a reload stays on the page. A follow-up's page (substituent effects, solvent, a VRI check) says which
+  results it came **from**, with a link; queuing one offers **Open it**, and its card links to its page.
+  Substituent results number atoms from 1, like the picker and every viewer on the page.
+- **Edit in Design is a tile**: under Molecule for a molecule, under Reaction for an edge (both ends).
 - **Atom mapping in plain words**: candidates are named for what they are (Fewest bond changes, Best geometric
   fit, Equivalent atoms swapped, As given, Other mechanism), one line says whether the end was renumbered, and
   the fit reads "ends RMSD 1.44 bohr". The method details moved to hover text and a "?".

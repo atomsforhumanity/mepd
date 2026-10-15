@@ -92,7 +92,9 @@ class DemoPolicy:
                           "solvent", "complex", "retrosynthesis", "nanoreactor-more", "qmmm-build", "qmmm-reaction",
                           "qmmm-embed", "qmmm-inspect", "conformers", "substituents", "mechanochem",
                           "design-optimize", "design-tsopt", "channels-more", "qmmm-protein-sites",
-                          "qmmm-protein-build", "variant-fast", "variant-reopt")
+                          "qmmm-protein-build", "variant-fast", "variant-reopt",
+                          # a few optimizations of one reaction's ends (its own small subsystem)
+                          "reaction-retry")
 
     # Tables of numbers that MEPD_DEMO_<FIELD> may change, as JSON merged into
     # the defaults. (What may run at all -- ops, engines, allowed values,

@@ -154,6 +154,16 @@ a reaction's card offers "open in Analyze".
 is recorded and shown instead of a Find TS button: barrierless, recombines (radicals), unstable
 product (reverts), falls apart, or rearranges (another occurrence may work).
 
+**In a solvent:** such verdicts hold at the run's level, usually the gas phase. A solvent can stabilize
+charged or polar ends, so the card offers **Try in <solvent>**: the reaction's ends are optimized again
+from the MD frames the run saved, at the same level plus that implicit solvent (a profile of its own,
+"<level> in <solvent>"). If the ends now hold, they join Explore as an edge at that level with a Find TS
+button; otherwise the card says why, per solvent. From the command line:
+
+    mepd discovery nanoreactor-retry <run>/reactions/reaction_<id> --inputs water.toml --output retry_water
+
+where `water.toml` is the run's profile with `[solvation] solvent = "water"`; it writes `retry.json`.
+
 ## Energies
 
 Different reactions contain different atoms, so absolute energies are never compared. Every number

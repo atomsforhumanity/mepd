@@ -1293,6 +1293,10 @@ def _fake_finished_nanoreactor(client, tmp_path, a, b):
     out = tmp_path / "nano_out"
     (out / "md").mkdir(parents=True)
     (out / "md" / "schedule.json").write_text(json.dumps({"time_ps": 2.0, "dump_fs": 2.0, "segments": [[0.75, 8.0]]}))
+    # ...and a reaction's saved MD frames (to retry it in a solvent).
+    (out / "reactions" / "reaction_0").mkdir(parents=True)
+    (out / "network.json").write_text(json.dumps({"reactions": [{"id": 0, "label": "A -> B",
+                                                                 "instances": [{"charge": 0}]}]}))
     jobs = client.app.state.sessions.current.jobs
     job = {**cmd, "id": "j_nanofake", "status": "done", "output_dir": str(out)}
     jobs.jobs[job["id"]] = job
