@@ -12,6 +12,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **A public Python API** ([docs/python-api.md](docs/python-api.md)), so workflows are scripts on `mepd`
+  instead of on private helpers: `mepd.load`, `read_frames`, `from_smiles`, `write_xyz`; `mepd.engine(name,
+  **options)`, `engine_from_profile`, `set_threads`; `mepd.energies`, `optimize`, `find_ts`, `irc`,
+  `interpolate`, `barrier_kcal`; `mepd.same_molecule` (mepd's one "same species" test) and `mepd.connects`
+  (which sides of an IRC match, in either direction); `mepd.units`; errors `mepd.UnsupportedOperation` and
+  `mepd.ConvergenceError`. They take structures and an engine, return results, raise instead of returning
+  None, and neither print nor write files. The command line now calls them for loading structures and for
+  TS optimization + IRC.
+
 - **A guided first run in the web UI** (`Welcome.js`, `quests.js`). An empty session opens on a first screen:
   choose a ready-made molecule (glycine, ethanol, formaldehyde, HCN) or build one in Design, put it in the
   interactive reactor, catch a reaction. A step bar (Molecule › Reactor › Reaction › Barrier › Explore) follows
@@ -140,6 +149,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **`mepd.irc` is now the IRC function**; the geomeTRIC IRC module it shadowed is `mepd.irc_geometric`.
+  `GeometryOptimizationNotConvergedError` is also a `mepd.ConvergenceError`.
 
 - **Faster NEB defaults.** The conjugate-gradient chain optimizer grows its step 1.5x (was 1.2x) after 3 correlated
   steps (`positive_steps_thre`, was 15), and the TS-region stop needs the barrier steady over 15 steps

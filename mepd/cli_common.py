@@ -115,18 +115,12 @@ def _echo_run_inputs_summary(run_inputs: RunInputs) -> None:
 
 
 def _load_endpoint(fp: Path, charge: Optional[int], multiplicity: Optional[int]) -> Structure:
+    from mepd.structures import load_structure
+
     try:
-        structure = Structure.open(str(fp))
+        return load_structure(fp, charge, multiplicity)
     except Exception as exc:
         raise typer.BadParameter(f"Could not load '{fp}': {type(exc).__name__}: {exc}")
-    updates = {}
-    if charge is not None:
-        updates["charge"] = charge
-    if multiplicity is not None:
-        updates["multiplicity"] = multiplicity
-    if updates:
-        structure = structure.model_copy(update=updates)
-    return structure
 
 
 def _open_run_inputs(inputs: Optional[Path]) -> RunInputs:
@@ -177,56 +171,17 @@ def _load_structure_from_smiles_or_xyz(
     """Load a Structure from an xyz file path, or -- if `value` isn't an
     existing file -- embed it in 3D from a SMILES string.
 
-    Tries qcinf's default RDKit backend first, then falls back to openbabel.
-    A SMILES of several molecules ("C=C.O.O.O") is embedded one molecule at a
-    time and the molecules packed together (mepd.complexes.packed: random
-    orientations in a small sphere), atoms in the order the SMILES lists them.
+    The SMILES route is `mepd.structures.smiles_to_structure`.
     """
     path = Path(value)
     if path.exists():
         return _load_endpoint(path, charge, multiplicity)
 
-    import qcinf
+    from mepd.structures import smiles_to_structure
 
-    # Only forward `multiplicity` to qcinf -- both of its smiles_to_structure
-    # backends always compute their own `charge` (from the RDKit mol's formal
-    # charge, or from Open Babel's partial charges) and pass it explicitly to
-    # Structure(...), so also forwarding a user-supplied `charge` here collides
-    # ("got multiple values for keyword argument 'charge'"). Apply a charge
-    # override afterward instead, the same way `_load_endpoint` does for xyz
-    # files.
-    kwargs = {}
-    if multiplicity is not None:
-        kwargs["multiplicity"] = multiplicity
-
-    errors = []
-
-    def embed(smiles):
-        for backend in ("rdkit", "openbabel"):
-            try:
-                return qcinf.smiles_to_structure(smiles, backend=backend)
-            except Exception as exc:
-                errors.append(f"{backend}: {type(exc).__name__}: {exc}")
-        return None
-
-    pieces = [p for p in value.split(".") if p]
-    if len(pieces) > 1 and not path.suffix:
-        from mepd.complexes import packed
-
-        parts = [embed(p) for p in pieces]
-        structure = packed(parts) if all(parts) else None
-        if structure is not None and multiplicity is not None:
-            structure = structure.model_copy(update={"multiplicity": multiplicity})
-    else:
-        structure = None
-        for backend in ("rdkit", "openbabel"):
-            try:
-                structure = qcinf.smiles_to_structure(value, backend=backend, **kwargs)
-                break
-            except Exception as exc:
-                errors.append(f"{backend}: {type(exc).__name__}: {exc}")
-
-    if structure is None:
+    try:
+        return smiles_to_structure(value, charge, multiplicity)
+    except ValueError as exc:
         hint = ""
         if path.suffix or "/" in value or "\\" in value:
             hint = (
@@ -234,13 +189,8 @@ def _load_structure_from_smiles_or_xyz(
                 "not exist)"
             )
         raise typer.BadParameter(
-            f"'{value}' is neither an existing xyz file nor a valid SMILES string{hint}.\n"
-            + "\n".join(errors)
+            f"'{value}' is neither an existing xyz file nor a valid SMILES string{hint}.\n{exc}"
         )
-
-    if charge is not None:
-        structure = structure.model_copy(update={"charge": charge})
-    return structure
 
 
 def _geometry_optimizer_keywords(run_inputs: RunInputs, *, default_maxiter: int = 500) -> dict:
@@ -1055,33 +1005,23 @@ def _optimize_ts_and_irc(
     automatically after `run` should just warn and let the NEB result
     stand; `channels` needs the IRC chain itself to classify the result).
     """
-    from mepd.nodes.node import StructureNode
-
+    from mepd.compute import find_ts, irc
+    from mepd.engines.frozen import FrozenAtomsEngine
     from mepd.inputs import ChainInputs
-    from mepd.irc import compute_irc_chain_with_geometric
 
     engine = run_inputs.engine
-    compute_ts = getattr(engine, "compute_transition_state", None)
-    if not callable(compute_ts):
+    frozen = isinstance(engine, FrozenAtomsEngine)
+    if not callable(getattr(engine, "compute_transition_state", None)):
         typer.echo(f"Engine {type(engine).__name__} does not support transition-state optimization.")
         return None
     typer.echo(f"Optimizing transition state ({label})...")
     try:
-        from mepd.engines.frozen import FrozenAtomsEngine
-
-        if isinstance(engine, FrozenAtomsEngine):
-            # A QM/MM search climbs along the given direction (a path's tangent).
-            ts_node = compute_ts(node=ts_guess_node, keywords={"v0": direction, "echo": typer.echo})
-        else:
-            ts_node = compute_ts(node=ts_guess_node)
+        # A QM/MM search climbs along the given direction (a path's tangent).
+        ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo) if frozen \
+            else find_ts(ts_guess_node, engine)
     except Exception as exc:
-        typer.echo(f"Transition-state optimization failed ({label}): {type(exc).__name__}: {exc}")
-        return None
-    if not isinstance(ts_node, StructureNode):
-        typer.echo(
-            f"Transition-state optimization did not converge to a usable structure "
-            f"({label}; engine returned {type(ts_node).__name__})."
-        )
+        cause = exc.__cause__ or exc
+        typer.echo(f"Transition-state optimization failed ({label}): {type(cause).__name__}: {cause}")
         return None
 
     output.mkdir(parents=True, exist_ok=True)
@@ -1096,14 +1036,11 @@ def _optimize_ts_and_irc(
     # than "no IRC was run").
     failed_fp = output / ("irc_failed.txt" if label == "ts" else f"{label}_irc_failed.txt")
     try:
-        irc_fn = getattr(engine, "compute_irc_chain", None)
-        if callable(irc_fn) and isinstance(engine, FrozenAtomsEngine):
-            irc_chain = irc_fn(ts_node, keywords={"echo": typer.echo})
-        else:
-            irc_chain = irc_fn(ts_node) if callable(irc_fn) else compute_irc_chain_with_geometric(engine, ts_node)
+        irc_chain = (irc(ts_node, engine, echo=typer.echo) if frozen else irc(ts_node, engine)).path
     except Exception as exc:
-        typer.echo(f"IRC computation failed ({label}; {type(exc).__name__}: {exc}); TS structure was still written.")
-        failed_fp.write_text(f"{type(exc).__name__}: {exc}\n")
+        cause = exc.__cause__ or exc
+        typer.echo(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")
+        failed_fp.write_text(f"{type(cause).__name__}: {cause}\n")
         return TsIrcResult(ts_node=ts_node)
 
     failed_fp.unlink(missing_ok=True)

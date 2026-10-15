@@ -380,7 +380,7 @@ def compute_irc_chain(ts_node, engine, use_bigchem: bool = False, keywords=None,
 
     if _is_qccompute_engine(engine):
         try:
-            from mepd.irc import compute_irc_chain_with_geometric as _compute_irc_chain_with_geometric
+            from mepd.irc_geometric import compute_irc_chain_with_geometric as _compute_irc_chain_with_geometric
 
             irc_chain = _compute_irc_chain_with_geometric(
                 engine=engine,

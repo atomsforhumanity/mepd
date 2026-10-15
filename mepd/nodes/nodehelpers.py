@@ -799,9 +799,6 @@ def _connectivity_matches(a, b) -> bool:
     Stereo SMILES is blind to E/Z of double bonds in small rings, so the
     count of trans/twisted small-ring alkenes must match as well
     (`_n_trans_small_ring_alkenes`)."""
-    if getattr(a, "graph", None) is None or getattr(b, "graph", None) is None:
-        return False
-    if not _is_connectivity_identical(a, b, verbose=False, collect_comparison=False):
-        return False
-    na, nb = _n_trans_small_ring_alkenes(a), _n_trans_small_ring_alkenes(b)
-    return na is None or nb is None or na == nb
+    from mepd.compare import same_molecule   # the public function; this name is kept for old callers
+
+    return same_molecule(a, b)

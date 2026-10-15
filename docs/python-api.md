@@ -1,0 +1,114 @@
+# Python API
+
+mepd's command line is built on a small set of Python functions. Use them to
+write your own workflows: a benchmark over a dataset, a screen, a one-off
+analysis. Everything here is importable from `mepd` directly and is stable:
+names without a leading underscore keep working across releases, and a
+change to one is announced in the CHANGELOG. If something you need is only
+reachable through a private (`_`) function, that is a gap in this API:
+please open an issue or add it here (see [Contributing](#contributing)).
+
+```python
+import mepd
+
+eng = mepd.engine("gxtb")                              # an engine by name
+reactant = mepd.load("reactant.xyz")                   # xyz files are Angstrom
+product = mepd.load("product.xyz")
+reactant, product = mepd.optimize([reactant, product], eng)
+
+path = mepd.interpolate(reactant, product, nimages=12)  # geodesic guess
+mepd.energies(path.nodes, eng)
+ts = mepd.find_ts(path.get_ts_node(), eng)             # highest image -> saddle
+irc = mepd.irc(ts, eng)
+if mepd.connects(irc, reactant, product):              # both sides, either direction
+    print(f"barrier {mepd.barrier_kcal(ts, reactant, eng):.1f} kcal/mol")
+mepd.write_xyz("irc.xyz", irc.nodes)
+```
+
+## Conventions
+
+- **Structures** are `mepd.StructureNode`s, made with `mepd.load`,
+  `mepd.read_frames` or `mepd.from_smiles`. They carry symbols, coordinates,
+  charge, multiplicity, a molecular graph and, once computed, an energy.
+- **Units.** Inside mepd, coordinates are Bohr and energies are Hartree
+  (`node.coords`, `node.energy`, `mepd.energies`). Files are Angstrom. A number
+  in any other unit carries it in its name: `barrier_kcal`. `mepd.units` holds
+  the conversion constants; use those instead of literals.
+- **Engines** compute energies and gradients and, where they can, minimize,
+  find transition states and follow IRCs. Get one with `mepd.engine(name, ...)`
+  or `mepd.engine_from_profile("profile.toml")` (the same file `--inputs` takes).
+- **Errors.** Functions raise instead of returning `None`:
+  `mepd.UnsupportedOperation` (a `NotImplementedError`) when the engine cannot do
+  it, `mepd.ConvergenceError` when the calculation ran but did not reach a usable
+  result, `ValueError` for inputs that cannot work.
+- **No side effects.** Functions print nothing and write no files, except
+  `mepd.write_xyz`. mepd logs through Python's `logging`.
+- **Threads.** `mepd.set_threads(1)` before the first calculation, when
+  running many in parallel.
+
+## Structures
+
+| Function | Returns |
+|---|---|
+| `load(path, *, charge=None, multiplicity=None)` | the (first) structure in an xyz file |
+| `read_frames(path, *, charge=None, multiplicity=None)` | every frame of a multi-frame xyz file |
+| `from_smiles(smiles, *, charge=None, multiplicity=None)` | a 3D structure; several molecules (`"C=C.O"`) in one |
+| `write_xyz(path, structures, comments=None)` | writes one or several frames (Angstrom); returns the path |
+
+qcdata's comment line stores charge and multiplicity, so `write_xyz` then
+`load` round-trips them. `charge=`/`multiplicity=` override what a file says.
+
+## Engines
+
+| Function | |
+|---|---|
+| `engine(name="gxtb", *, program=None, solvation=None, **options)` | `"gxtb"`, `"xtb"` (`method="gfn2"`), `"mlip"` (`model="aimnet2-rxn"`), `"fairchem"`, `"ase"` (`calculator="pkg.module:Class"`), `"psi4"`, `"terachem"`, `"qccompute"`/`"chemcloud"` (`program="psi4"`, plus its keywords) |
+| `engine_from_profile(path)` | the engine a profile `.toml` describes |
+| `set_threads(n)` | OMP/MKL/OpenBLAS threads for this process and the programs it starts |
+
+## Calculations
+
+| Function | Returns |
+|---|---|
+| `energies(structures, engine)` | Hartree, one per structure (also cached on each) |
+| `optimize(structures, engine, **keywords)` | the minimized structure(s); batched when the engine can |
+| `find_ts(guess, engine, **keywords)` | the transition state (a first-order saddle) |
+| `irc(ts, engine, **keywords)` | an `IRCResult`: `.path` (a Chain), `.ends`, `.nodes` |
+| `interpolate(start, end, *, nimages=15, **options)` | a geodesic path (a Chain); start and end in the same atom order |
+| `barrier_kcal(ts, reactants, engine=None)` | TS energy minus the lowest of `reactants`, kcal/mol |
+
+`keywords`/`options` go to the engine's optimizer or the geodesic smoother.
+`barrier_kcal` takes every reactant structure you have, e.g. all conformers
+found, and measures from the lowest, so barriers from different searches
+share a floor.
+
+## Comparing structures
+
+| Function | Returns |
+|---|---|
+| `same_molecule(a, b, *, stereo=True)` | same bond graph (atom order and conformation ignored) and, with `stereo`, the same stereochemistry |
+| `connects(path, start, end, *, stereo=True)` | a `Match`: `.start`, `.end`, `.both`, `.any`, `.none`, `.reversed`; `bool(match)` is `.both` |
+
+`same_molecule` is mepd's one definition of "the same species"; every
+command uses it. `connects` takes an `IRCResult`, a Chain, or any sequence of
+structures, and tries both directions.
+
+## Contributing
+
+The functions here are thin and composable on purpose. To add one:
+
+1. Put the computation in a library module (`mepd/compute.py`,
+   `mepd/compare.py`, `mepd/structures.py`, or a new one). It takes
+   structures and an engine, returns results, raises `mepd` errors, and
+   neither prints nor writes files.
+2. Export it in `mepd/__init__.py` (`_API_EXPORTS`), document it here, and test
+   it in `tests/test_public_api.py`: fast tests with toy inputs, plus one with a
+   real engine that skips when the program is missing.
+3. Make the command line call it rather than keeping its own copy.
+
+To make an engine support minimization, TS search or IRC, give it any of:
+`compute_geometry_optimization(node, keywords=None) -> list[StructureNode]`
+(the trajectory, last = minimum), `compute_geometry_optimizations(nodes,
+keywords=None)` (batched), `compute_transition_state(node, keywords=None) ->
+StructureNode`, and `compute_irc_chain(ts_node, keywords=None) -> Chain`.
+An engine without its own IRC gets geomeTRIC's.

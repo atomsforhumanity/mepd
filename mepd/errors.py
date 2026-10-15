@@ -2,6 +2,16 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class UnsupportedOperation(NotImplementedError):
+    """The engine cannot do what was asked (e.g. a transition-state search
+    with an engine that has no optimizer for it)."""
+
+
+class ConvergenceError(RuntimeError):
+    """A calculation ran but did not reach a usable result: an optimization
+    that did not converge, or a TS search that ended on no saddle."""
+
+
 class InputsError(ValueError):
     """Inputs that cannot work together, found before anything runs. The
     command line prints the message (which says how to fix it) on one line,
@@ -46,7 +56,7 @@ class ElectronicStructureError(Exception):
         super().__init__(self.msg)
 
 
-class GeometryOptimizationNotConvergedError(ElectronicStructureError):
+class GeometryOptimizationNotConvergedError(ElectronicStructureError, ConvergenceError):
     """Raised when a geometry optimization ran to completion but the
     underlying program reported it did not actually converge (as opposed to
     crashing or being unsupported) -- e.g. it exhausted its iteration budget.

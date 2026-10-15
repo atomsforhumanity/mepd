@@ -51,6 +51,22 @@ uv caches the built wheel, so later syncs need none of this until the cache is c
 ## Quick Start
 
 ```python
+import mepd
+
+eng = mepd.engine("gxtb")
+reactant, product = mepd.optimize([mepd.load("start.xyz"), mepd.load("end.xyz")], eng)
+path = mepd.interpolate(reactant, product, nimages=12)
+mepd.energies(path.nodes, eng)
+ts = mepd.find_ts(path.get_ts_node(), eng)
+if mepd.connects(mepd.irc(ts, eng), reactant, product):
+    print(f"barrier {mepd.barrier_kcal(ts, reactant, eng):.1f} kcal/mol")
+```
+
+The [Python API](docs/python-api.md) lists every public function, the units and
+error conventions, and how to add to it. A path minimizer can also be driven
+directly, e.g. NEB:
+
+```python
 from mepd import Chain, ChainInputs, NEB, NEBInputs, StructureNode
 from mepd.engines.qccompute import QCComputeEngine
 from mepd.optimizers.cg import ConjugateGradient

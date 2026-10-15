@@ -55,6 +55,11 @@ if TYPE_CHECKING:
     from mepd.TreeNode import TreeNode
     from mepd.pot import Pot
     from mepd.NetworkBuilder import NetworkBuilder
+    from mepd.compare import Match, connects, same_molecule
+    from mepd.compute import IRCResult, barrier_kcal, energies, find_ts, interpolate, irc, optimize
+    from mepd.engines.factory import engine, engine_from_profile, set_threads
+    from mepd.errors import ConvergenceError, UnsupportedOperation
+    from mepd.structures import from_smiles, load, read_frames, write_xyz
 
 _CORE_EXPORTS = {
     "Node": ("mepd.nodes.node", "Node"),
@@ -71,6 +76,36 @@ _CORE_EXPORTS = {
     "MSMEP": ("mepd.msmep", "MSMEP"),
     "Pot": ("mepd.pot", "Pot"),
 }
+
+# The public API: flat functions for building structures, getting engines and
+# running calculations. See docs/python-api.md.
+_API_EXPORTS = {
+    # structures (Bohr inside; xyz files are Angstrom)
+    "load": ("mepd.structures", "load"),
+    "read_frames": ("mepd.structures", "read_frames"),
+    "from_smiles": ("mepd.structures", "from_smiles"),
+    "write_xyz": ("mepd.structures", "write_xyz"),
+    # engines
+    "engine": ("mepd.engines.factory", "engine"),
+    "engine_from_profile": ("mepd.engines.factory", "engine_from_profile"),
+    "set_threads": ("mepd.engines.factory", "set_threads"),
+    # calculations
+    "energies": ("mepd.compute", "energies"),
+    "optimize": ("mepd.compute", "optimize"),
+    "find_ts": ("mepd.compute", "find_ts"),
+    "irc": ("mepd.compute", "irc"),
+    "IRCResult": ("mepd.compute", "IRCResult"),
+    "interpolate": ("mepd.compute", "interpolate"),
+    "barrier_kcal": ("mepd.compute", "barrier_kcal"),
+    # comparing structures
+    "same_molecule": ("mepd.compare", "same_molecule"),
+    "connects": ("mepd.compare", "connects"),
+    "Match": ("mepd.compare", "Match"),
+    # errors
+    "UnsupportedOperation": ("mepd.errors", "UnsupportedOperation"),
+    "ConvergenceError": ("mepd.errors", "ConvergenceError"),
+}
+_CORE_EXPORTS.update(_API_EXPORTS)
 # `TreeNode` and `NetworkBuilder` (the classes) are intentionally not
 # re-exported here: their modules are named `mepd.TreeNode`/
 # `mepd.NetworkBuilder` too, and Python's import machinery registers each
@@ -79,10 +114,14 @@ _CORE_EXPORTS = {
 # class under the same name. Use `from mepd.TreeNode import TreeNode` /
 # `from mepd.NetworkBuilder import NetworkBuilder` instead.
 
-__all__ = sorted([*_CORE_EXPORTS, "engines"])
+__all__ = sorted([*_CORE_EXPORTS, "engines", "units"])
 
 
 def __getattr__(name: str):
+    if name == "units":
+        import mepd.units as units_module
+        globals()["units"] = units_module
+        return units_module
     if name == "engines":
         import mepd.engines as engines_module
         globals()["engines"] = engines_module

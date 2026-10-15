@@ -754,7 +754,7 @@ def _run_vri_irc(engine, ts_node, *, irc_step: float, irc_fmax: float) -> Chain:
     their own IRC defaults."""
     from mepd.engines.ase import ASEEngine
     from mepd.engines.gxtb import GXTBCalculator
-    from mepd.irc import compute_irc_chain_with_geometric
+    from mepd.irc_geometric import compute_irc_chain_with_geometric
 
     irc_fn = getattr(engine, "compute_irc_chain", None)
     try:
