@@ -3863,5 +3863,32 @@
    "mepd/qmmm_protein.py"
   ],
   "refs": "Solvation"
+ },
+ "other.atom-mapping": {
+  "title": "Atom mapping",
+  "does": "Decides which atom of the end is which atom of the start, so a path can be drawn between them. The panel shows the mapping used and the others it was compared with.",
+  "how": [
+   "SLAPMapper proposes the mapping with the fewest bonds broken and formed ('Fewest bond changes').",
+   "Equivalent atoms (the hydrogens of a methyl, say) can be swapped without changing which bonds change; those versions are compared too ('Equivalent atoms swapped').",
+   "'Best geometric fit' keeps SLAPMapper's bond changes and places the equivalent atoms where the two ends line up best: the lowest endpoint RMSD after alignment, in bohr.",
+   "The candidate with the best score is used for the path search (marked ★)."
+  ],
+  "default": "SLAPMapper's mapping with snap placement of equivalent atoms, scored by endpoint RMSD.",
+  "swap": [
+   {
+    "option": "Keep the end's own atom order",
+    "where": "--no-atom-mapping (CLI), when start and end already share it"
+   },
+   {
+    "option": "Other mechanisms (more bond changes)",
+    "where": "Reaction channels samples them"
+   }
+  ],
+  "code": [
+   "mepd/atom_mapping.py",
+   "mepd/atom_mapping_selection.py",
+   "mepd/web/static/js/components/AtomMapping.js"
+  ],
+  "refs": "Atom mapping"
  }
 }
