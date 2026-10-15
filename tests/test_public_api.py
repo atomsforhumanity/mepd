@@ -25,7 +25,9 @@ def _node(xyz, symbols=("H", "C", "N")):
 def test_public_names_are_exported_and_documented():
     for name in ("load", "read_frames", "from_smiles", "write_xyz", "engine", "engine_from_profile", "set_threads",
                  "energies", "optimize", "find_ts", "irc", "interpolate", "barrier_kcal", "same_molecule",
-                 "connects", "Match", "IRCResult", "UnsupportedOperation", "ConvergenceError", "units"):
+                 "connects", "Match", "IRCResult", "UnsupportedOperation", "ConvergenceError", "units",
+                 "channels", "read_channels", "ChannelsOptions", "ChannelsResult", "Channel", "Step",
+                 "ChannelSearchError"):
         assert name in mepd.__all__
         obj = getattr(mepd, name)
         assert obj.__doc__, name
@@ -164,3 +166,31 @@ def test_the_docs_quickstart_runs(gxtb, tmp_path):
     assert mepd.connects(irc, reactant, product)
     assert 20 < mepd.barrier_kcal(ts, reactant, eng) < 80
     assert len(mepd.read_frames(mepd.write_xyz(tmp_path / "irc.xyz", irc.nodes))) == len(irc.nodes)
+
+
+def test_channel_options_match_the_command_and_reject_bad_settings():
+    import inspect
+
+    from mepd.cli_channels import channels as command
+
+    cli = {k: p.default.default for k, p in inspect.signature(command).parameters.items()}
+    opts = mepd.ChannelsOptions()
+    for name in mepd.ChannelsOptions.__dataclass_fields__:
+        assert getattr(opts, name) == cli[name], name
+    with pytest.raises(ValueError, match="--n-conformers"):
+        mepd.ChannelsOptions(n_conformers=-1).validate()
+    with pytest.raises(TypeError):
+        mepd.ChannelsOptions(no_such_option=1)
+
+
+def test_channels_finds_the_hcn_isomerization_and_reads_back(gxtb, tmp_path):
+    """A whole channel search from Python on HCN -> HNC (one conformer each)."""
+    hcn, hnc = mepd.optimize([_node(HCN), _node(HNC)], gxtb)
+    result = mepd.channels(hcn, hnc, output=tmp_path / "run", engine=gxtb, n_conformers=1, atom_mapping=False,
+                           workers=1, parallel=False, validate_minima_with_hessian=False)
+    assert isinstance(result, mepd.ChannelsResult) and result.routes
+    best = result.lowest()
+    assert mepd.connects(best.steps[0].irc, hcn, hnc).both
+    assert 20 < mepd.barrier_kcal(best.ts, result.start_conformers) < 80
+    again = mepd.read_channels(tmp_path / "run")
+    assert [c.folder for c in again.routes] == [c.folder for c in result.routes]

@@ -743,7 +743,7 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
 def _merge_same_ts(items: list[dict]) -> list[dict]:
     """One entry per TS: runs written before `_same_ts` saw through a
     half-formed bond's ambiguous perception can hold one TS as two channels."""
-    from mepd.cli_channels import _same_ts
+    from mepd.channel_search import _same_ts
     from mepd.inputs import ChainInputs
 
     cutoffs = ChainInputs()
@@ -766,7 +766,7 @@ def collect_ts_extended(ts_out: Path, channels_out: Path, charge: int, multiplic
     search's TSs among its channels (or noted on the channel it also found)
     and its path, all on one barrier floor (the lowest reactant energy
     either found)."""
-    from mepd.cli_channels import _same_ts
+    from mepd.channel_search import _same_ts
     from mepd.inputs import ChainInputs
 
     def read(hint=None):

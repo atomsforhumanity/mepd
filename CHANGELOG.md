@@ -20,6 +20,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `mepd.ConvergenceError`. They take structures and an engine, return results, raise instead of returning
   None, and neither print nor write files. The command line now calls them for loading structures and for
   TS optimization + IRC.
+- **Channel search from Python**: `mepd.channels(start, end, output=..., profile=..., **options)` runs the
+  search `mepd channels` runs and returns a `ChannelsResult` (direct, multistep and off-target channels, each
+  with its TS/IRC steps, plus the conformer pools searched); `mepd.read_channels(folder)` reads an earlier
+  run's folder the same way. The search itself moved from the command into `mepd/channel_search.py`
+  (`ChannelsOptions` holds its settings, same names and defaults as the options); the command is now a thin
+  wrapper, with unchanged options, output and folders.
 
 - **A guided first run in the web UI** (`Welcome.js`, `quests.js`). An empty session opens on a first screen:
   choose a ready-made molecule (glycine, ethanol, formaldehyde, HCN) or build one in Design, put it in the
@@ -275,6 +281,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **A charged reaction's channels were classified as neutral when `--charge` was not given**: the TS and IRC
+  files read back for classification took charge 0 and multiplicity 1 instead of the endpoints' own.
 
 - **Reaction channels no longer crash when a path search ended without energies** (e.g. g-xTB's SCF failed on
   it): that leaf is skipped with a note, and the other leaves are still analyzed. It cost NEB its result on one

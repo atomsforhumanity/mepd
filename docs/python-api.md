@@ -82,6 +82,41 @@ qcdata's comment line stores charge and multiplicity, so `write_xyz` then
 found, and measures from the lowest, so barriers from different searches
 share a floor.
 
+## Channel search
+
+| Function | Returns |
+|---|---|
+| `channels(start, end, *, output, profile=None, engine=None, **options)` | a `ChannelsResult`: every way from start to end found |
+| `read_channels(folder)` | the `ChannelsResult` of an earlier search (`mepd.channels` or `mepd channels`) |
+
+```python
+result = mepd.channels(reactant, product, output="runs/claisen", profile="gsm.toml",
+                       n_conformers=5, search_budget=1800, direct_only=True)
+best = result.lowest()                     # the route with the lowest highest TS
+print(best.kind, mepd.barrier_kcal(best.ts, result.start_conformers))
+for channel in result.routes:              # direct, then multistep
+    for step in channel.steps:
+        print(step.connects, step.ts.energy, len(step.alternatives))
+```
+
+The search samples conformers of both ends, searches paths between pairs of
+them, finds a TS and IRC for every path's peak, and sorts the steps into
+`result.direct` (one step from start to end), `result.multistep` (through
+intermediates) and `result.offtarget` (steps that leave the route). Each is
+a list of `Channel(kind, steps, folder, species)`; a `Step` has `ts`, `irc`
+(an `IRCResult`), `connects` and `alternatives` (other TSs for that step).
+`result.start_conformers`/`end_conformers` are the pools searched, so
+`mepd.barrier_kcal(channel.ts, result.start_conformers)` measures from the
+lowest reactant conformer.
+
+`options` are `mepd.ChannelsOptions` fields: each is the `mepd channels`
+option of the same name with underscores (`n_conformers` is `--n-conformers`),
+with the same default; `mepd channels --help` describes them. The search works
+in `output` (conformers, pair trees, TS/IRC files) and resumes when run into
+the same folder again. It logs progress on the `mepd.channel_search` logger
+(`logging.basicConfig(level=logging.INFO)` shows it), and raises
+`mepd.ChannelSearchError` when it cannot run to the end.
+
 ## Comparing structures
 
 | Function | Returns |

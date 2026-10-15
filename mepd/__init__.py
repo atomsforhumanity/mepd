@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from mepd.pot import Pot
     from mepd.NetworkBuilder import NetworkBuilder
     from mepd.compare import Match, connects, same_molecule
+    from mepd.channel_search import (Channel, ChannelsOptions, ChannelsResult, ChannelSearchError, Step,
+                                     channels, read_channels)
     from mepd.compute import IRCResult, barrier_kcal, energies, find_ts, interpolate, irc, optimize
     from mepd.engines.factory import engine, engine_from_profile, set_threads
     from mepd.errors import ConvergenceError, UnsupportedOperation
@@ -97,6 +99,14 @@ _API_EXPORTS = {
     "IRCResult": ("mepd.compute", "IRCResult"),
     "interpolate": ("mepd.compute", "interpolate"),
     "barrier_kcal": ("mepd.compute", "barrier_kcal"),
+    # channel search
+    "channels": ("mepd.channel_search", "channels"),
+    "read_channels": ("mepd.channel_search", "read_channels"),
+    "ChannelsOptions": ("mepd.channel_search", "ChannelsOptions"),
+    "ChannelsResult": ("mepd.channel_search", "ChannelsResult"),
+    "Channel": ("mepd.channel_search", "Channel"),
+    "Step": ("mepd.channel_search", "Step"),
+    "ChannelSearchError": ("mepd.channel_search", "ChannelSearchError"),
     # comparing structures
     "same_molecule": ("mepd.compare", "same_molecule"),
     "connects": ("mepd.compare", "connects"),

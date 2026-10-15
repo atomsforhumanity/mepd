@@ -41,7 +41,7 @@ def _ts_connector(run_inputs, output: Path, workers: int):
     guess. Returns one record per step whose IRC runs between two different
     minima: its two IRC ends and TS. Resumable: finished pair trees and
     TS/IRC files are reused from `output`."""
-    from mepd.cli_channels import _load_ts_and_irc_from_disk
+    from mepd.channel_search import _load_ts_and_irc_from_disk
     from mepd.cli_common import _fork_map, _optimize_ts_and_irc, _run_msmep_pairs, _ts_guess_tasks_from_tree
     from mepd.inputs import ChainInputs
     from mepd.TreeNode import TreeNode

@@ -124,7 +124,7 @@ def test_run_takes_a_reaction_and_minimizes_its_embedded_ends(tmp_path, monkeypa
 
 
 def test_channels_takes_a_reaction(tmp_path, monkeypatch):
-    import mepd.cli_channels as channels_module
+    import mepd.channel_search as channels_module
 
     seen = _stop_after_endpoints(monkeypatch, channels_module)
     with pytest.raises(_Stop):
