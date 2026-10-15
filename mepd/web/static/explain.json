@@ -229,7 +229,8 @@
    "mepd/msmep.py:MSMEP.make_sequence_of_chains",
    "mepd/msmep.py:MSMEP._rebuild_leg_endpoint"
   ],
-  "cli": "mepd run ... --rebuild-splits-from start|end"
+  "cli": "mepd run ... --rebuild-splits-from start|end",
+  "refs": "Path search"
  },
  "param.ts.atom_mapping_metric": {
   "title": "Mapping metric",
@@ -346,7 +347,8 @@
    "mepd/elementarystep.py:_validate_hessian_minimum",
    "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
   ],
-  "cli": "mepd run ... --validate-minima-with-hessian"
+  "cli": "mepd run ... --validate-minima-with-hessian",
+  "refs": "Path search"
  },
  "param.ts.hessian_minimum_frequency_cutoff": {
   "title": "Lowest allowed frequency (cm⁻¹)",
@@ -391,7 +393,8 @@
   "code": [
    "mepd/msmep.py:MSMEP._consecutive_same_pair_split_count"
   ],
-  "cli": "--same-pair-split-limit 5"
+  "cli": "--same-pair-split-limit 5",
+  "refs": "Path search"
  },
  "op.channels": {
   "title": "Reaction channels",
@@ -515,7 +518,8 @@
    "mepd/msmep.py:MSMEP._split_pieces_on_target",
    "mepd/cli_common.py:direct_only_counts"
   ],
-  "cli": "mepd channels ... --direct-only"
+  "cli": "mepd channels ... --direct-only",
+  "refs": "Path search"
  },
  "param.channels.minimize_ends": {
   "title": "Minimize endpoints",
@@ -605,7 +609,8 @@
    "mepd/msmep.py:MSMEP.make_sequence_of_chains",
    "mepd/msmep.py:MSMEP._rebuild_leg_endpoint"
   ],
-  "cli": "mepd channels ... --rebuild-splits-from start|end"
+  "cli": "mepd channels ... --rebuild-splits-from start|end",
+  "refs": "Path search"
  },
  "param.channels.atom_mapping": {
   "title": "Atom mapping per pair",
@@ -761,7 +766,8 @@
    "mepd/elementarystep.py:_validate_hessian_minimum",
    "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
   ],
-  "cli": "mepd channels ... --validate-minima-with-hessian"
+  "cli": "mepd channels ... --validate-minima-with-hessian",
+  "refs": "Path search"
  },
  "param.channels.crest_method": {
   "title": "CREST method",
@@ -1155,7 +1161,8 @@
    "mepd/elementarystep.py:_validate_hessian_minimum",
    "mepd/engines/gxtb.py:GXTBCalculator._compute_hessian_result"
   ],
-  "cli": "mepd network-splits ... --validate-minima-with-hessian"
+  "cli": "mepd network-splits ... --validate-minima-with-hessian",
+  "refs": "Path search"
  },
  "op.vri": {
   "title": "Valley-ridge inflection",
@@ -3239,7 +3246,8 @@
    "mepd/elementarystep.py:check_if_elem_step",
    "mepd/elementarystep.py:pseudo_irc",
    "mepd/msmep.py:MSMEP._do_minima_based_split"
-  ]
+  ],
+  "refs": "Path search"
  },
  "profile.path_min_inputs.use_geodesic_tangent": {
   "title": "Use geodesic tangent",

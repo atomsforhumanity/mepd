@@ -28,6 +28,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   in (and where to switch it, or where it would plug in), caveats, the code and command behind it, and a link
   to what to cite (`static/explain.json`, `Why.js`). Nothing shows until it is clicked.
 - References: the quasi-RRHO and single-point-Hessian citations behind Kinetics › free energies.
+- References: the recursive autosplitting paper (J. D. Estrada Pabón, M. Stöhr, D. Hait, T. J. Martínez,
+  ChemRxiv 2026) in References › Path search, linked from the splitting options' "?".
 
 - **Run provenance**: every `mepd` command given `--output` (so every web job) writes `provenance.json` there,
   or `<file>.provenance.json` for a file output. It records the command line, the profile text and level key,

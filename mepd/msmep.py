@@ -259,7 +259,12 @@ def _concat_leaf_chains(chains: list[Chain], parameters) -> Chain:
 
 @dataclass
 class MSMEP:
-    """Class for running autosplitting MEP minimizations."""
+    """Class for running autosplitting MEP minimizations.
+
+    Method: J. D. Estrada Pabón, M. Stöhr, D. Hait, T. J. Martínez, "A Recursive
+    Algorithm for Finding Multi-Step Reaction Mechanisms", ChemRxiv (2026),
+    doi:10.26434/chemrxiv.15006363/v1
+    """
 
     inputs: RunInputs
     path_minimizer = None

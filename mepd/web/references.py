@@ -76,6 +76,9 @@ _OTHER = [
         "feature": "Path search",
         "where": "Settings › Advanced",
         "items": [
+            {"what": "Recursive autosplitting of multi-step paths into elementary steps (MSMEP)",
+             "cite": ["J. D. Estrada Pabón, M. Stöhr, D. Hait, T. J. Martínez, “A Recursive Algorithm for Finding "
+                      "Multi-Step Reaction Mechanisms”, ChemRxiv (2026), doi:10.26434/chemrxiv.15006363/v1"]},
             {"what": "Energy-weighted spring constants (k, delta_k)",
              "cite": ["doi:10.1021/acs.jctc.1c00462"]},
             {"what": "MLP-GI path method (geodesic path length on the energy surface)",
