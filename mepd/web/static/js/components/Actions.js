@@ -19,7 +19,7 @@ const SCALES = [
 ];
 // Operations (or families) by scale; anything not listed is at the molecule's.
 const SCALE_OF = {
-  ts: 'reaction', channels: 'reaction', 'channels-more': 'reaction', tsopt: 'reaction', vri: 'reaction', substituents: 'reaction',
+  ts: 'reaction', channels: 'reaction', 'channels-more': 'reaction', vri: 'reaction', substituents: 'reaction',
   network: 'network', retrosynthesis: 'network', 'network-splits': 'network', 'nanoreactor-more': 'network',
 };
 // The operations that build surroundings: on the switch, not tiles.

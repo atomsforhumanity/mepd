@@ -681,6 +681,10 @@ def _method_view(m: dict) -> dict:
             "group": m.get("group", ""), "available": not reason, "reason": reason}
 
 
+OPTIMIZE_FAMILY = {"key": "optimize", "title": "Optimize",
+                   "summary": "Optimize the structure in place: to the nearest minimum, or, from a guess, to a "
+                              "transition state."}
+
 TS_FAMILY = {"key": "ts", "title": "Transition state",
              "summary": "Find the transition state(s) between two structures: from these endpoints only, or "
                         "sampling their conformers and atom mappings for every distinct channel."}
@@ -1716,7 +1720,9 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "optimize", "Optimize geometry", "Minimize the selected structures at the chosen profile's level of "
         "theory, replacing their geometry and energy in place. (`mepd optimize`)",
         "set", EXPLORE, OptimizeParams, _build_optimize, min_structures=1,
-        produces=["optimized geometries (in place)"]),
+        produces=["optimized geometries (in place)"], family=OPTIMIZE_FAMILY, methods=({
+            "label": "Minimum", "rank": 0, "summary": "Minimize at the chosen profile's level of theory, replacing the "
+            "geometry and energy in place."},)),
     Operation(
         "design-optimize", "Minimize the design", "Minimize the Design tab's molecule at the chosen profile's "
         "level of theory; its geometry and energy are replaced in place. (`mepd optimize`)",
@@ -1747,7 +1753,10 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "tsopt", "Optimize TS from guess", "Treat the structure as a TS guess: saddle optimization, "
         "optionally followed by IRC. (`mepd ts`)",
-        "structure", EXPLORE, TsOptParams, _build_tsopt, produces=["transition state", "IRC endpoints"]),
+        "structure", EXPLORE, TsOptParams, _build_tsopt, produces=["transition state", "IRC endpoints"],
+        family=OPTIMIZE_FAMILY, methods=({
+            "label": "Transition state", "rank": 1, "summary": "Treat the structure as a TS guess: saddle "
+            "optimization, optionally followed by IRC to the minima on either side."},)),
     Operation(
         "hessian-sample", "Hessian sampling", "Displace along every normal mode and re-optimize to find "
         "nearby minima. (`mepd discovery hessian-sample`)",

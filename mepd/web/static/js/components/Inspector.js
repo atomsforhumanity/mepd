@@ -488,7 +488,7 @@ export function Inspector() {
     extras = [
       map.feature('complex') && { key: 'x-complex', scale: 'molecule', last: true, icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
         render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
-      map.feature('compose') && { key: 'x-compose', scale: 'network', icon: 'reaction', name: 'Pick products', why: 'other.products',
+      map.feature('compose') && { key: 'x-compose', scale: 'reaction', icon: 'reaction', name: 'Pick products', why: 'other.products',
         tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
         render: () => html`<${InspectorProducts} key=${sids.join(',')} sids=${sids} />` },
       { key: 'x-reactor', scale: 'network', icon: 'reactor', name: 'Reactor', why: 'other.reactor', tip: 'Live dynamics you steer: heat it, squeeze it, pull atoms',
