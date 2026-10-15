@@ -159,6 +159,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **FSM-TS converges its TS optimization to 0.001 eV/Å** (was 0.01; new option `ts_fmax`). At 0.01 a soft mode
+  (20–45 cm⁻¹) could still be unsettled, so a real TS read as a higher-order saddle and the pair fell back to GSM.
+  All 6 such fallbacks in a 20-reaction KAIST run became first-order TSs at 0.001, 0.07–0.48 kcal/mol lower,
+  with the reaction mode within 20%. The g-xTB Hessian was not the cause: its frequencies agree at every SCF
+  accuracy and finite-difference step tried.
+
 - **`mepd.irc` is now the IRC function**; the geomeTRIC IRC module it shadowed is `mepd.irc_geometric`.
   `GeometryOptimizationNotConvergedError` is also a `mepd.ConvergenceError`.
 

@@ -238,6 +238,8 @@ HELP = {
     "grad_tol": "FSM gradient tolerance (Eh/bohr).",
     "max_grow_iter": "Growth iterations (FSM grows the path from both ends).",
     "ts_maxiter": "TS optimization steps (from the path's highest image).",
+    "ts_fmax": "The TS optimization stops when the largest force on an atom is below this (eV/Å). Looser "
+               "settings can stop before a soft mode settles, so the TS looks like a higher-order saddle.",
     "pseudo_irc_amplitude": "How far the TS is pushed along its imaginary mode before each minimization: the "
                             "most-moved atom's displacement (bohr).",
     "pseudo_irc_maxiter": "Steps of each pseudo-IRC minimization.",

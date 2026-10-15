@@ -115,6 +115,19 @@ def test_both_ends_reached_is_an_elementary_step_and_keeps_the_ts(monkeypatch):
     assert final.get_ts_node() is final[1]
 
 
+def test_the_ts_optimization_is_converged_tightly_and_ts_fmax_overrides_it(monkeypatch):
+    # At 0.01 eV/Å a soft mode can be unsettled, so a real TS looked like a saddle of order 2.
+    class Recording(_Engine):
+        def compute_transition_state(self, node, keywords=None):
+            self.keywords = keywords
+            return super().compute_transition_state(node, keywords)
+
+    for params, fmax in (({}, 0.001), ({"ts_fmax": 0.005}, 0.005)):
+        eng = Recording()
+        _run(monkeypatch, [P, R], engine=eng, **params)
+        assert eng.keywords == {"maxiter": 500, "fmax": fmax}
+
+
 def test_a_new_species_on_one_side_splits_there(monkeypatch):
     m, res, neb = _run(monkeypatch, [R, X])
     assert not res.is_elem_step and res.splitting_criterion == "maxima" and not neb

@@ -74,6 +74,10 @@ def fsm_ts_defaults() -> dict:
         "min_images": 3,                      # beads: the path is grown in steps of d0 / (3 + 1)
         "max_min_iter": 3,                    # minimization steps per growth step
         "ts_maxiter": 500,                    # TS optimization steps (engines that take it)
+        # eV/Å, largest atomic force where the TS optimization stops. At 0.01 a soft mode
+        # (~20-45 cm^-1) is still unsettled: all 6 KAIST higher-order-saddle fallbacks
+        # (pathbench_fsm_gi) became first-order TSs, 0.07-0.48 kcal/mol lower, at 0.001.
+        "ts_fmax": 0.001,
         "pseudo_irc_amplitude": 0.3,          # bohr: how far the most-moved atom is pushed off the TS
         "pseudo_irc_maxiter": 500,            # each minimization
         "pseudo_irc_hessian": "auto",         # auto | engine | gradients (auto: gradients for g-xTB)
@@ -151,7 +155,8 @@ class FSMTS(PathMinimizer):
                   f"highest image (step 2 of 4)")
         try:
             try:
-                ts = self.engine.compute_transition_state(node=guess, keywords={"maxiter": int(self._p("ts_maxiter"))})
+                ts = self.engine.compute_transition_state(node=guess, keywords={"maxiter": int(self._p("ts_maxiter")),
+                                                                                     "fmax": float(self._p("ts_fmax"))})
             except TypeError:
                 ts = self.engine.compute_transition_state(node=guess)
         except Exception as exc:
