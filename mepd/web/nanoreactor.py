@@ -562,3 +562,64 @@ def event_view(out: Path, k: int, pad_fs: float = 60.0) -> dict:
                          "formed": c["formed"]} for c in ev.get("bond_changes") or []
                         if c["atoms"][0] in local and c["atoms"][1] in local],   # runs from before that was filtered
             "reaction": ev.get("reaction"), "optimized": ends}
+
+
+# ---------------------------------------------------------------------------
+# Retrying a reaction in other conditions (POST /api/reactions/{rid}/retry)
+# ---------------------------------------------------------------------------
+
+def solvent_profile(ws, base: Optional[str], solvent: str, *, write: bool = True) -> str:
+    """The profile `base` (the run's level) in implicit `solvent`, saved as
+    "<base> in <solvent>" (made once, rewritten if the base changed): a
+    level of its own, so whatever runs at it is told apart from the gas phase."""
+    import re
+
+    from mepd.solvation import get_solvent
+
+    sol = get_solvent(solvent)          # unknown -> ValueError
+    text = ws.read_profile(base) if base else ""
+    text = re.sub(r"(?ms)^\[solvation\][^\[]*", "", text).rstrip()
+    text = (text + "\n\n" if text else "") + f'[solvation]\nsolvent = "{sol.key}"\n'
+    name = f"{base or 'default'} in {sol.key}"
+    try:
+        same = ws.read_profile(name) == text
+    except WorkspaceError:
+        same = False
+    if write and not same:
+        ws.write_profile(name, text)
+    return name
+
+
+def adopt_retry(ws, job: dict) -> Optional[dict]:
+    """A finished reaction-retry: its outcome on the workspace reaction
+    (`retries[job id]`), and when the ends held, those ends as a proposed
+    edge at the retry's level (Find TS from there)."""
+    p = job.get("params") or {}
+    rid = p.get("rid")
+    argv = list(job.get("argv") or [])
+    out = Path(argv[argv.index("--output") + 1]) if "--output" in argv else Path(job.get("output_dir") or "")
+    try:
+        data = json.loads((out / "retry.json").read_text())
+    except (OSError, ValueError):
+        return None
+    c = data.get("complex") or {}
+    with ws._lock:
+        rec = ws._data["reactions"].get(rid)
+    if rec is None:
+        return None
+    out = {"job": job["id"], "solvent": p.get("solvent") or "", "profile": job.get("profile"),
+           "level": (job.get("level") or {}).get("label")}
+    if c.get("reactant") and c.get("product"):
+        label = f"{rec.get('label') or 'reaction'} in {out['solvent'] or 'retry'}"
+        made = _complex_pair(ws, job, {"id": p.get("reaction")}, c, job.get("level"), label)
+        out.update(edge=made[1] if made else None, delta_e_kcal=c.get("delta_e_kcal"),
+                   relaxed=(c.get("relaxed") or {}).get("label"))
+    else:
+        out.update(reason=c.get("reason") or "failed", error=c.get("error") or "the optimizations of its ends failed")
+    with ws._lock:
+        rec = ws._data["reactions"].get(rid)
+        if rec is None:
+            return None
+        rec.setdefault("retries", {})[job["id"]] = out
+        ws._save()
+    return out

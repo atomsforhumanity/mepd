@@ -11,6 +11,7 @@ import { ParamForm, clampToSchema, defaultsFor } from './ParamForm.js';
 import { Viewer3D } from './Viewer3D.js';
 import { EventPlayer } from './ReactorLive.js';
 import { openAnalyze } from './Analyze.js';
+import { Why } from './Why.js';
 
 export function reactionOf(workspace, jobId, index) {
   return Object.values(workspace.reactions || {}).find((r) => r.origin?.job === jobId && r.origin?.index === index) || null;
@@ -232,6 +233,64 @@ function SearchSettings({ r, onDone }) {
   </div>`;
 }
 
+// A reactor reaction with no ends to search between (barrierless, products
+// falling back...) in the gas phase can have them in a solvent, which
+// stabilizes charged and polar species: try it, one solvent at a time
+// (POST /api/reactions/{rid}/retry), and see each try's outcome here.
+const FIRST_SOLVENTS = ['water', 'methanol', 'dmso', 'acetonitrile', 'thf', 'toluene'];
+function RetryInSolvent({ r }) {
+  const solvents = useStore((s) => s.solvents) || [];
+  const operations = useStore((s) => s.operations);
+  const jobsKey = useStore((s) => Object.values(s.jobs).filter((j) => j.op === 'reaction-retry' || j.op === 'ts')
+    .map((j) => `${j.id}:${j.status}`).join('|'));
+  const [solvent, setSolvent] = useState('water');
+  const [busy, setBusy] = useState(false);
+  if (!r.origin?.nanoreactor || !operations.some((o) => o.key === 'reaction-retry' && o.available)) return null;
+  // The latest try in each solvent.
+  const seen = new Set();
+  const tries = Object.values(state.jobs).filter((j) => j.op === 'reaction-retry' && j.params?.rid === r.id)
+    .sort((a, b) => b.created - a.created).filter((j) => !seen.has(j.params?.solvent) && seen.add(j.params?.solvent));
+  const outcome = r.retries || {};
+  const ordered = [...FIRST_SOLVENTS.map((k) => solvents.find((x) => x.key === k)).filter(Boolean),
+    ...solvents.filter((x) => !FIRST_SOLVENTS.includes(x.key))];
+  const name = (k) => solvents.find((x) => x.key === k)?.label || k;
+  const go = async () => {
+    setBusy(true);
+    await attempt(() => api.post(`/api/reactions/${r.id}/retry`, { solvent }), `Trying it in ${name(solvent).toLowerCase()}`);
+    setBusy(false);
+  };
+  const tsOn = (eid) => Object.values(state.jobs).filter((j) => j.op === 'ts' && j.targets.edges.includes(eid))
+    .sort((a, b) => b.created - a.created)[0];
+  const line = (j) => {
+    const o = outcome[j.id];
+    const who = html`<b>${name(j.params?.solvent)}</b>`;
+    if (!o) {
+      if (['queued', 'running'].includes(j.status)) return html`${who}: optimizing its ends… <a href="#" onClick=${(e) => { e.preventDefault(); openJob(j.id); }}>watch</a>`;
+      if (j.status === 'failed') return html`${who}: the try failed (<a href="#" onClick=${(e) => { e.preventDefault(); openJob(j.id, 'log'); }}>log</a>)`;
+      return html`${who}: reading the outcome…`;
+    }
+    if (!o.edge) return html`${who}: still no ends to search between: ${o.error}.`;
+    const ts = tsOn(o.edge);
+    const tsDone = ts?.status === 'done' && ts.summary?.barrier_kcal != null;
+    return html`${who}: the ends hold${o.relaxed ? html` (as ${o.relaxed})` : ''}${o.delta_e_kcal != null ? `, ΔE ${o.delta_e_kcal > 0 ? '+' : ''}${fmtKcal(o.delta_e_kcal)}` : ''}.
+      ${tsDone ? html` <a href="#" onClick=${(e) => { e.preventDefault(); openJob(ts.id); }}>ΔE‡ ${fmtKcal(ts.summary.barrier_kcal)} kcal/mol →</a>`
+        : ts && ['queued', 'running'].includes(ts.status) ? html` TS search ${ts.status}… <a href="#" onClick=${(e) => { e.preventDefault(); openJob(ts.id, 'live'); }}>watch</a>`
+          : html` <button class="btn small primary" onClick=${() => attempt(() => api.post('/api/jobs', { op: 'ts', edges: [o.edge], params: {}, profile: o.profile }),
+            `TS search queued in ${name(j.params?.solvent).toLowerCase()}`)}>Find TS</button>`}`;
+  };
+  return html`<div class="rc-retry small">
+    ${tries.length > 0 && html`<ul>${tries.map((j) => html`<li key=${j.id}>${line(j)}</li>`)}</ul>`}
+    <div class="rc-retry-row">
+      <span class="muted">${tries.length ? 'Another solvent?' : 'That is in the gas phase. A solvent can stabilize charged or polar ends.'}</span>
+      <select value=${solvent} onChange=${(e) => setSolvent(e.target.value)} aria-label="Solvent">
+        ${ordered.map((x) => html`<option value=${x.key}>${x.label}</option>`)}</select>
+      <button class="btn small" disabled=${busy} onClick=${go}
+        title="Optimize this reaction's ends again from its MD frames, at the same level plus this implicit solvent">Try in ${name(solvent).toLowerCase()}</button>
+      <${Why} id="op.reaction-retry" label="Retry in a solvent" />
+    </div>
+  </div>`;
+}
+
 export function ReactionCard({ r, event = null, compact = false }) {
   const nav = useStore((s) => s.analyze) || {};
   const [settings, setSettings] = useState(() => Boolean(nav.retry && nav.reaction === r.id));
@@ -272,7 +331,8 @@ export function ReactionCard({ r, event = null, compact = false }) {
 
     <div class="rc-ts">
       ${!edge ? html`<p class="small warn-box">${noTsWhy(r)}
-          ${['barrierless', 'recombines'].includes(r.complex_reason) ? ' There is no barrier to find; its ΔE is the reaction energy.' : ''}</p>`
+          ${['barrierless', 'recombines'].includes(r.complex_reason) ? ' There is no barrier to find here; its ΔE is the reaction energy.' : ''}</p>
+          <${RetryInSolvent} r=${r} />`
         : running ? html`<p class="small">TS search ${st.status}…
             ${runningJob && html` <a href="#" onClick=${(e) => { e.preventDefault(); openJob(runningJob.id, 'live'); }}>watch it live</a>`}</p>`
           : html`<div class="rc-ts-row">

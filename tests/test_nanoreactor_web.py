@@ -254,3 +254,54 @@ def test_a_reaction_shows_the_events_that_are_it_now(tmp_path):
     got = {r["origin"]["key"]: r["events"] for r in ws.snapshot()["reactions"].values()}
     assert got == {"K1": [12, 13], "K3": [4]}          # event 10 is another reaction now
     assert not _sync_events(ws, {"id": "j1"}, out)     # nothing left to change
+
+
+def test_a_barrierless_reaction_retried_in_a_solvent_gets_its_ends_there(tmp_path, network):
+    from mepd.web.nanoreactor import adopt_retry, solvent_profile
+    from mepd.web.operations import OPERATIONS, JobContext
+
+    ws = Workspace(tmp_path / "ws")
+    ws.write_profile("fast", 'engine_name = "gxtb"\n\n[solvation]\nsolvent = "toluene"\n')
+    # The run's level plus the solvent, saved as a level of its own (any solvent it had is replaced).
+    name = solvent_profile(ws, "fast", "water")
+    assert name == "fast in water"
+    text = ws.read_profile(name)
+    assert 'engine_name = "gxtb"' in text and 'solvent = "water"' in text and "toluene" not in text
+    assert solvent_profile(ws, None, "methanol") == "default in methanol"
+    with pytest.raises(Exception):
+        solvent_profile(ws, "fast", "no such solvent")
+
+    job = {"id": "j1", "op": "nanoreactor", "output_dir": str(network), "params": {},
+           "level": {"key": "L", "label": "g-xTB", "profile": None}}
+    adopt_nanoreactor(ws, job)
+    rec = next(r for r in ws.snapshot()["reactions"].values() if r["origin"]["index"] == 0)
+    # The command: the reaction's saved MD frames, at the solvent profile, with each instance's charge.
+    (network / "reactions" / "reaction_0").mkdir()
+    out = tmp_path / "retry"
+    ctx = JobContext(ws=ws, job_dir=tmp_path / "rj", output_dir=out, structures=[], profile=name,
+                     source={"id": "j1", "output_dir": str(network)})
+    op = OPERATIONS["reaction-retry"]
+    argv = op.build(ctx, op.parse_params({"reaction": 0, "rid": rec["id"], "solvent": "water"}))
+    assert argv[:3] == ["discovery", "nanoreactor-retry", str(network / "reactions" / "reaction_0")]
+    assert "--inputs" in argv and argv[argv.index("--output") + 1] == str(out)
+
+    # Its outcome: the ends held, so they join as a proposed edge at the solvent's level.
+    out.mkdir()
+    c = json.loads((network / "network.json").read_text())["reactions"][0]["complex"]
+    (out / "retry.json").write_text(json.dumps({"complex": c}))
+    retry = {"id": "j2", "op": "reaction-retry", "argv": argv, "profile": name,
+             "params": {"reaction": 0, "rid": rec["id"], "solvent": "water"},
+             "level": {"key": "W", "label": "g-xTB · ALPB(water)", "profile": name}}
+    made = adopt_retry(ws, retry)
+    assert made["edge"] and made["solvent"] == "water" and made["profile"] == name
+    snap = ws.snapshot()
+    assert snap["reactions"][rec["id"]]["retries"]["j2"]["edge"] == made["edge"]
+    assert snap["edges"][made["edge"]]["origin"]["proposed"]
+    assert snap["structures"][snap["edges"][made["edge"]]["source"]]["level"]["key"] == "W"
+    # Still collapsing in that solvent: the reason, and no edge.
+    (out / "retry.json").write_text(json.dumps({"complex": {"reason": "barrierless", "error": "barrierless: ..."}}))
+    still = adopt_retry(ws, {**retry, "id": "j3"})
+    assert still["reason"] == "barrierless" and "edge" not in still
+    # A re-adoption of the run keeps the retries.
+    adopt_nanoreactor(ws, job, final=True)
+    assert set(ws.snapshot()["reactions"][rec["id"]]["retries"]) == {"j2", "j3"}

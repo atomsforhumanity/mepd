@@ -1129,6 +1129,37 @@ def _build_complex(ctx: JobContext, p: ComplexParams) -> list[str]:
     return ["complex", *mols, *generic_flags(p), "--output", str(ctx.output_dir)]
 
 
+class ReactionRetryParams(Params):
+    reaction: int = P(0, "Reaction", "The reaction's number in its reactor run.", kind="custom", ge=0)
+    rid: str = P("", "Workspace reaction", "", kind="custom")
+    solvent: str = P("", "Solvent", "What the try changes (its profile adds it).", kind="custom")
+
+
+def _build_reaction_retry(ctx: JobContext, p: ReactionRetryParams) -> list[str]:
+    """One reactor reaction's ends optimized again from its MD frames, at this
+    job's profile (the run's level plus a solvent): `mepd discovery
+    nanoreactor-retry`."""
+    src = ctx.source
+    if src is None or not src.get("output_dir"):
+        raise WorkspaceError("a retry follows up on a finished reactor run")
+    out = Path(src["output_dir"])
+    d = out / "reactions" / f"reaction_{p.reaction}"
+    if not d.is_dir():
+        raise WorkspaceError(f"that run kept no MD frames for reaction {p.reaction}")
+    charges, label = [], ""
+    try:
+        for rx in json.loads((out / "network.json").read_text()).get("reactions", []):
+            if rx.get("id") == p.reaction:
+                charges = [int(i.get("charge") or 0) for i in rx.get("instances") or []]
+                label = rx.get("label") or ""
+    except (OSError, ValueError):
+        pass
+    flags = ctx.common_flags()
+    inputs = flags[flags.index("--inputs"):flags.index("--inputs") + 2] if "--inputs" in flags else []
+    return ["discovery", "nanoreactor-retry", str(d), *inputs, *[x for q in charges for x in ("--charge", str(q))],
+            *(["--label", label] if label else []), "--output", str(ctx.output_dir)]
+
+
 class NanoreactorMoreParams(Params):
     more_ps: float = P(10.0, "More time (ps)", "Added to the MD, continuing from its last frame: the same reactor, "
                        "piston and settings. Rounded up to whole piston periods.", kind="custom", gt=0)
@@ -1845,6 +1876,13 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "reactions join this page and Explore; everything refined before is reused. (`mepd discovery nanoreactor`)",
         "job", "Reaction discovery", NanoreactorMoreParams, _build_nanoreactor_more, stoppable=True, stop_kind="md",
         source_ops=("nanoreactor",), cli_path=("discovery", "nanoreactor")),
+    Operation(
+        "reaction-retry", "Retry a reaction's ends", "Optimize one reactor reaction's ends again from its MD "
+        "frames at another level, e.g. in implicit solvent: a reaction that is barrierless in the gas phase can "
+        "have ends that hold there, and then a TS to search. (`mepd discovery nanoreactor-retry`)",
+        "job", "Reaction discovery", ReactionRetryParams, _build_reaction_retry, source_ops=("nanoreactor",),
+        cli_path=("discovery", "nanoreactor-retry"), hidden=True,
+        produces=["the reaction's ends at that level, or why there are none"]),
     Operation(
         "vri-check", "Check the bifurcation", "Converge the exact VRI, test that sideways pushes off the IRC "
         "drain into both P1 and P2, and count trajectories into each. (`mepd discovery vri-check`)",

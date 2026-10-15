@@ -1662,3 +1662,10 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .subst-picker .field { margin-bottom: 12px; }
 .subst-sites { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .subst-count { margin: 0 0 12px; }
+
+/* A barrierless reactor reaction, retried in a solvent (Reactions.js RetryInSolvent). */
+.rc-retry { margin: 6px 0 4px; }
+.rc-retry ul { margin: 0 0 6px; padding-left: 18px; }
+.rc-retry li { margin: 2px 0; }
+.rc-retry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rc-retry-row select { width: auto; padding: 2px 6px; font-size: 12.5px; }

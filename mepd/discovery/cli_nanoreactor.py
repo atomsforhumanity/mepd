@@ -421,3 +421,35 @@ def nanoreactor(
     (output / "summary.json").write_text(json.dumps({
         "kind": "nanoreactor", "n_species": len(species), "n_reactions": len(reactions), "n_events": len(events),
         "network": str(output / "network.json"), "methods": nr.REFERENCES}, indent=2))
+
+
+@discovery_app.command("nanoreactor-retry")
+def nanoreactor_retry(
+    reaction_dir: Path = typer.Argument(..., exists=True, file_okay=False,
+                                        help="A run's reaction folder (<output>/reactions/reaction_<id>): its MD frames."),
+    inputs: Optional[Path] = typer.Option(None, "--inputs", "-i", exists=True,
+                                          help="RunInputs TOML for the new try, e.g. with [solvation] solvent = \"water\"."),
+    charge: List[int] = typer.Option([], "--charge", help="Each instance's charge, in order (default 0)."),
+    label: str = typer.Option("", "--label", help="The reaction, for messages."),
+    maxiter: int = typer.Option(300, "--maxiter", help="Geometry-optimization steps per end."),
+    output: Path = typer.Option(Path("nanoreactor_retry"), "--output", "-o", help="Output folder."),
+):
+    """Optimize one reaction's ends again from its MD frames, at another
+    level (e.g. in implicit solvent). A reaction whose ends collapsed in the
+    gas phase (barrierless, products falling back) can have ends that hold
+    in a solvent: then it has ends to search a TS between. Writes
+    retry.json: {"complex": the ends (files, energies) or the reason}."""
+    from mepd.cli_common import _open_run_inputs
+    from mepd.discovery import nanoreactor as nr
+
+    output.mkdir(parents=True, exist_ok=True)
+    run_inputs = _open_run_inputs(inputs)
+    c = nr.retry_reaction(reaction_dir, run_inputs.engine, output, charges=charge, label=label, maxiter=maxiter)
+    solvation = getattr(run_inputs, "solvation", None) or {}
+    (output / "retry.json").write_text(json.dumps({"reaction_dir": str(reaction_dir), "complex": c,
+                                                   "solvation": solvation}, indent=2, default=str))
+    if c.get("reactant"):
+        typer.echo(f"The ends hold: dE {c.get('delta_e_kcal', 0):+.1f} kcal/mol. Search a TS between "
+                   f"{c['reactant']} and {c['product']}.")
+    else:
+        typer.echo(f"Still no ends to search between: {c.get('error') or 'the optimizations failed'}.")

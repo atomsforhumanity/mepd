@@ -1445,6 +1445,36 @@ def refine_reaction_one(rxn, cuts: list, engine, d: Path, maxiter: int, live: bo
                        "tried": len(rxn.instances)}
 
 
+def retry_reaction(reaction_dir: Path, engine, out_dir: Path, *, charges: Sequence[int] = (), label: str = "",
+                   maxiter: int = 300) -> dict:
+    """Optimize a reaction's ends again, from the MD frames a run saved for
+    it (`reaction_dir`/instance_<k>_{reactant,product}_frame.xyz), with
+    another `engine` -- e.g. the same level in implicit solvent, where a
+    reaction that is barrierless in the gas phase can have ends that hold.
+    The outcome as a run's reaction `complex`: the ends to search a TS
+    between, or the reason there are none (see refine_reaction_one).
+    `charges`: each instance's charge, in order (default neutral). The bonds
+    each end should keep are perceived from its frame."""
+    reaction_dir, out_dir = Path(reaction_dir), Path(out_dir)
+    ks = sorted(int(fp.name.split("_")[1]) for fp in reaction_dir.glob("instance_*_reactant_frame.xyz")
+                if (reaction_dir / fp.name.replace("reactant", "product")).is_file())
+    if not ks:
+        raise FileNotFoundError(f"no instance frames in {reaction_dir}")
+    cuts, instances = [], []
+    for n, k in enumerate(ks):
+        syms, xr, _ = read_xyz_frames(reaction_dir / f"instance_{k}_reactant_frame.xyz")
+        _, xp, _ = read_xyz_frames(reaction_dir / f"instance_{k}_product_frame.xyz")
+        q = int(charges[n]) if n < len(charges) else 0
+        cuts.append({"k": n, "syms": syms, "xr": xr[0], "xp": xp[0], "q": q, "mult": _complex_multiplicity(syms, q),
+                     "fr": 0, "fp": 0, "bonds": {"reactant": perceive_bonds(syms, xr[0]),
+                                                 "product": perceive_bonds(syms, xp[0])}})
+        instances.append({"charge": q})
+    rxn = SimpleNamespace(id=reaction_dir.name.split("_")[-1], label=label or reaction_dir.name,
+                          instances=instances, complex={})
+    refine_reaction_one(rxn, cuts, engine, out_dir, maxiter)
+    return rxn.complex
+
+
 def relaxed_complex(instances: list) -> Optional[dict]:
     """A reaction's ends when none kept its bonds on optimization: the first
     instance whose two optimized ends (files and energies in its
