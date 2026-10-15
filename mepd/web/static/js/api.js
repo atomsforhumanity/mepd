@@ -1,5 +1,5 @@
 // REST wrappers + the SSE connection that keeps the store in sync.
-import { state, update, set, toast } from './store.js';
+import { state, update, set, toast, asRedirect } from './store.js';
 
 async function request(method, url, body, { raw = false } = {}) {
   const opts = { method, headers: {} };
@@ -90,7 +90,8 @@ function newer(a, b) {
 }
 
 function applyState(data) {
-  update((s) => {
+  // Its only change of page is the first screen of an empty workspace: a redirect, not a step back to.
+  asRedirect(() => update((s) => {
     // First load of an empty workspace (nothing built, nothing run): start on the first screen.
     if (!s.landed) {
       s.landed = true;
@@ -126,7 +127,7 @@ function applyState(data) {
       structures: s.selection.structures.filter((id) => id in s.workspace.structures),
       edges: s.selection.edges.filter((id) => id in s.workspace.edges),
     };
-  });
+  }));
 }
 
 export async function refreshState() {

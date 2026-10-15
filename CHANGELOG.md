@@ -172,6 +172,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
   every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for
   options the kernel doesn't cover) it falls back to `scipy.optimize.least_squares`.
+- **Back means back in the web UI**: every page (a tab, a calculation, one of its runs) is a browser history
+  step, so the browser's back and forward, a phone's back gesture and the job page's ← walk through what you
+  opened; a reload stays on the page. A follow-up's page (substituent effects, solvent, a VRI check) says which
+  results it came **from**, with a link; queuing one offers **Open it**, and its card links to its page.
+  Substituent results number atoms from 1, like the picker and every viewer on the page.
+- **Edit in Design is a tile**: under Molecule for a molecule, under Reaction for an edge (both ends).
 - **Atom mapping in plain words**: candidates are named for what they are (Fewest bond changes, Best geometric
   fit, Equivalent atoms swapped, As given, Other mechanism), one line says whether the end was renumbered, and
   the fit reads "ends RMSD 1.44 bohr". The method details moved to hover text and a "?".
