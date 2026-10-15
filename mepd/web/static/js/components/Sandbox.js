@@ -9,6 +9,9 @@ import { FULL, cssVar, useStage, xyzText } from './ReactorLive.js';
 import { StepBar, markStep } from './Welcome.js';
 import { Why } from './Why.js';
 
+// After this long with no reaction, a hint on how to make one (left alone, few do).
+const NUDGE_FS = 4000;
+
 const PICK_PX = 18;      // how close (screen pixels) a press must be to an atom to grab it
 const RECENT_FS = 400;   // an event stays marked in the list this long after it starts (and while it is unfolding)
 
@@ -31,6 +34,7 @@ export function SandboxView() {
   const [strength, setStrength] = useState(0.5);      // slider 0..1 -> 2..300 kcal/mol/A^2
   const [temperature, setTemperature] = useState(() => sb?.temperature ?? 800);
   const [paused, setPaused] = useState(false);
+  const [tipGone, setTipGone] = useState(false);   // the "Nothing yet?" hint, once tapped away
   const [wall, setWall] = useState(null);             // the wall radius shown by its slider (radius.current is the truth)
   const [dead, setDead] = useState(null);
   const [events, setEvents] = useState([]);
@@ -202,8 +206,8 @@ export function SandboxView() {
   return html`<div class="job-view sandbox">
     <div class="view-head">
       <button class="btn-icon" title="Back to Explore (it keeps running for 15 minutes; the ◉ button in the top bar brings you back)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
-      <div class="job-head-main"><h2>Interactive reactor: ${sb.names}<${Why} id="other.reactor" label="The interactive reactor" /></h2>
-        <div class="small muted">GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
+      <div class="job-head-main"><h2>Interactive reactor<${Why} id="other.reactor" label="The interactive reactor" /></h2>
+        <div class="small muted"><b class="sb-names">${sb.names}</b> · GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
         <${StepBar} at=${reactions.length ? 'reaction' : 'reactor'} /></div>
       <div class="row-actions">
         <button class="btn" title="Keep this geometry (not minimized; several molecules become a complex)"
@@ -219,8 +223,17 @@ export function SandboxView() {
         <div class="rx-stage-wrap">
           <div class="rx-stage sandbox-stage" ref=${host}></div>
           <div class="rx-hud">${hud ? `${(hud.t_fs / 1000).toFixed(2)} ps · ${hud.rate ?? 0} fs/s · ${hud.T_inst ?? '–'} K · ΔE ${hud.e_rel ?? 0} kcal/mol · wall ${(radius.current ?? hud.radius).toFixed(1)} Å${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
+          ${events.length > 0 && html`<button class="rx-count" title="See the reaction events"
+            onClick=${(e) => e.currentTarget.closest('.rx-live').querySelector('.rx-events').scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+            ${reactions.length ? `⚡ ${reactions.length} reaction${reactions.length > 1 ? 's' : ''}` : `${events.length} event${events.length > 1 ? 's' : ''}`}</button>`}
+          ${hud && !events.length && !tipGone && hud.t_fs > NUDGE_FS && html`<div class="rx-tip" role="status" title="Tap to hide" onClick=${() => setTipGone(true)}>
+            <b>Nothing yet?</b> Molecules rarely react by just bumping around. Drag an atom of one molecule
+            into another (hold it there a moment), or shrink the Wall to squeeze them.</div>`}
           <div class="rx-legend small">drag an atom: pull it · drag elsewhere: rotate · ${COARSE ? 'pinch: zoom · Wall: squeeze' : 'scroll or Wall: squeeze'}</div>
         </div>
+        ${reactions.length > 0 && html`<button class="rx-bulb phone-only" onClick=${analyze}>
+          <span class="bulb-dot"></span><span><b>Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}</b>
+          <span class="small muted"> · stops the reactor</span></span></button>`}
         <div class="sandbox-controls">
           <label class="small">Pull strength <input type="range" min="0" max="1" step="0.01" value=${strength}
             onInput=${(e) => setStrength(+e.target.value)} /> <span class="mono">${k} kcal/mol/Å²</span></label>

@@ -133,7 +133,10 @@ export function announceUnlocks() {
   if (!fresh.length) return;
   for (const id of fresh) seen.add(id);
   prefs.set('seenQuests', [...seen]);
-  const names = fresh.map((id) => BY_ID[id].title);
+  // The first steps are milestones the step bar already shows, not new tools.
+  const tools = fresh.filter((id) => !['molecule', 'reactor', 'reaction'].includes(id));
+  if (!tools.length) return;
+  const names = tools.map((id) => BY_ID[id].title);
   toast(`Unlocked: ${names.join(', ')}`, 'ok', 8000, { label: 'See tools', run: () => openTab('welcome') });
 }
 

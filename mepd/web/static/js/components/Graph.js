@@ -494,7 +494,9 @@ function fitToEdges(c, ids) {
   for (const id of ids) els = els.union(c.getElementById(id)).union(c.getElementById(id + REV));
   els = els.union(els.connectedNodes());
   els = els.union(els.nodes('.cx').connectedEdges('.member').connectedNodes());
-  if (els.nonempty()) c.animate({ fit: { eles: els, padding: 80 }, duration: 450, easing: 'ease-in-out-cubic' });
+  // A phone-wide graph has no 80 px to spare on each side.
+  const pad = Math.round(Math.min(80, c.width() * 0.08));
+  if (els.nonempty()) c.animate({ fit: { eles: els, padding: pad }, duration: 450, easing: 'ease-in-out-cubic' });
 }
 
 function edgeLabel(e, st, reaction = null) {
@@ -660,7 +662,8 @@ export function Graph() {
       if (pendingFit.current && host.current && host.current.offsetWidth > 0) {
         const ids = pendingFit.current;
         pendingFit.current = null;
-        fitToEdges(c, ids);
+        // After the layout settles (a phone's column grows the graph once more), at its final size.
+        requestAnimationFrame(() => requestAnimationFrame(() => { c.resize(); fitToEdges(c, ids); }));
       }
     });
     ro.observe(host.current);
@@ -964,11 +967,19 @@ export function Graph() {
       else if (d.cmd === 'fit') (d.margins ? fitInto(c, d.margins) : fitCapped(c));
       else if (d.cmd === 'select-all') select({ structures: c.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) });
       else if (d.cmd === 'view') setPanelRef.current((x) => !x);
+      else if (d.cmd === 'conditions') { setPanelRef.current(false); setSetupPanel(true); }
       else if (d.cmd === 'restyle') c.style(stylesheet());          // colours come from CSS variables
       else if (d.cmd === 'fit-to' && d.ids?.length) {
         // Hidden (another tab is showing): frame them when the graph is shown.
-        if (host.current && host.current.offsetWidth > 0) fitToEdges(c, d.ids);
-        else pendingFit.current = d.ids;
+        // Visible or not yet: frame them once the page has settled (a tab switch
+        // resizes the graph after this; on reveal the resize observer takes it).
+        pendingFit.current = d.ids;
+        setTimeout(() => {
+          if (pendingFit.current !== d.ids || !host.current || host.current.offsetWidth === 0) return;
+          pendingFit.current = null;
+          c.resize();
+          fitToEdges(c, d.ids);
+        }, 250);
       }
       else if (d.cmd === 'center' && d.id) {
         // {ifHidden}: only when it is off screen; {zoom}: close enough to read; {flash}: pulse it.

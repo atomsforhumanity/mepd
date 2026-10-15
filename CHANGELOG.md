@@ -28,6 +28,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   its barrier search, and forward and reverse barriers as separate arrows. The tabs and tools then unlock as
   they are used, shown as icon tiles under **Your tools** (the mepd logo opens it). **I know mepd: show
   everything** (or Settings › Show everything) unlocks every tab and tool at once.
+- **Edit in Design from an edge**: a selected edge (or reaction arrow) opens in Design as a reaction, its start
+  as the reactant and its end as the product, in the conformers saved on the edge, atoms matched as for an xyz
+  reaction (`POST /api/design/load-edge`).
 - **Products: a new reaction by clicking** (`NewReaction.js`). On a selected molecule (or in Analyze ›
   New reaction), what it can become appears at once as product tiles (bond rules, simplest first); click the
   ones to try and add them as reactions, each with its Find TS. Add a partner molecule, pick products from the
@@ -163,6 +166,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
   every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for
   options the kernel doesn't cover) it falls back to `scipy.optimize.least_squares`.
+- **A path search's results open on an overview**, like a reaction's report: the lowest barrier, how many
+  channels, ΔE and whether the IRC connects the ends; an energy diagram with every channel; and a table of them.
+  Click a channel for its 3D path below. Details (search summary, warnings, the atom mapping, now folded until
+  clicked) and the follow-up calculations move to the bottom.
+- **Web UI tools grouped by scale**: a selection's tools sit under **Molecule** (Optimize, Conformers, Complex),
+  **Reaction** (Pick products, Transition state, Channels, Valley-ridge inflection) and **Network** (Reactor,
+  Network expansion, Retrosynthesis), the same groups in the same order for any selection.
+  Above them, a **surroundings switch** (Gas phase · Solvent · Explicit · Protein) applies to every scale:
+  Solvent opens Explore › Conditions, Explicit and Protein build the QM/MM system (or go to the one already
+  built), and a QM/MM system's tools are the same groups, run embedded. Retrosynthesis has its own card; Optimize
+  offers Minimum or Transition state (the former "TS from a guess"); Edit in Design and Its reactions are
+  buttons above the tools.
+
 - **The demo needs no password** (mepd.atomsforhumanity.org). Opening the page makes a private workspace
   at once; `MEPD_DEMO_PASSWORD` / `--demo-password` is now optional and gates the demo only when set (the
   k8s manifest no longer sets it; `deploy/demo/run.sh` still uses one). The workspace is made on the page's
@@ -172,6 +188,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the visitor's calculations and interactive reactors and deletes everything under `visitors/<id>/`. Before,
   logging out only dropped the cookie and left the workspace on disk, unreachable. A visitor who closes the tab
   instead keeps their workspace. A GET of `/logout` only shows the warning; deletion needs the page's POST.
+- Web UI on phones: the first screen shows the molecule's 3D preview right under the choices; the reactor's 3D
+  view leaves room for its controls, counts reactions on the view and offers Find its barrier under it; job
+  pages stack their header, scroll their tabs sideways and wrap the step bar; Explore shows the graph above
+  the structure list; a new page opens at its top. Reloading while an interactive reactor runs returns to it.
+- The interactive reactor says how to make a reaction when none has happened after 4 ps (left alone, few
+  do), and a run with none offers Run it again with the same mix and tips. Unlock toasts skip the first steps.
 - Web UI, less text and fewer controls: the selected molecule's actions are icon tiles grouped under short
   headings, one form open at a time under its group; field help moved into tooltips; square 4 px corners
   instead of pills; the reverse barrier is its own arrow in Explore; the interactive reactor has a wall-size

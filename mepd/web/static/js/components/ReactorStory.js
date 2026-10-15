@@ -7,7 +7,7 @@ import { html, useEffect, useState } from '../lib.js';
 import { openJob, set, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal } from '../util.js';
 import { Equation, NO_TS_SHORT, ReactionCard, TsCell, findTs, noTsWhy } from './Reactions.js';
-import { StepBar, markStep } from './Welcome.js';
+import { StepBar, markStep, reactorFor } from './Welcome.js';
 
 // Reactant, TS and product levels; an arrow up to the TS from each side.
 function EnergyArrows({ fwd, rev }) {
@@ -73,13 +73,17 @@ export function ReactorStory({ job }) {
     markStep('network');
     window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'fit-to', ids: found.map((r) => r.edge) } }));
     set({ view: { tab: 'graph', jobId: null } });
-    toast('Your reactions: each arrow carries its barrier. Click one to explore it.', 'info', 7000);
+    const tap = window.matchMedia?.('(pointer: coarse)').matches ? 'Tap' : 'Click';
+    toast(`Your reactions: each arrow carries its barrier. ${tap} one to explore it.`, 'info', 7000);
   };
   const n = mine.length;
+  // The same molecule into a new reactor: the run's first species that is not water.
+  const structures = useStore((s) => s.workspace.structures);
+  const again = (job.targets?.structures || []).map((id) => structures[id]).find((r) => r && r.smiles !== 'O') || null;
   const headline = !n ? (busy ? 'Looking at what your reactor made…' : 'Your reactor made no lasting reactions')
     : `Your reactor made ${n} reaction${n > 1 ? 's' : ''}`;
   return html`<div class="story">
-    <${StepBar} at=${found.length ? 'network' : 'barrier'} />
+    <${StepBar} at=${found.length ? 'network' : n ? 'barrier' : 'reaction'} />
     <h3 class="story-head">${headline}</h3>
     ${n > 0 && html`<p class="small muted">${busy ? 'Each one is checked, then its barrier is searched.'
       : `${found.length} of ${n} with a barrier.`}</p>`}
@@ -87,6 +91,12 @@ export function ReactorStory({ job }) {
     ${found.length > 0 && html`<button class="rx-bulb story-bulb" onClick=${toExplore}>
       <span class="bulb-dot"></span><span><b>See ${found.length > 1 ? 'them' : 'it'} in Explore</b>
       <span class="small muted"> · with your other molecules</span></span></button>`}
+    ${!busy && !n && html`<div class="story-empty">
+      <p class="small muted">Left alone, molecules rarely react within a few picoseconds. Next time:</p>
+      <ul><li>drag an atom of one molecule into another and hold it there a moment;</li>
+        <li>shrink the Wall to squeeze them together;</li><li>turn the Temperature up.</li></ul>
+      <div class="row">${again && html`<button class="btn primary" onClick=${() => reactorFor(again)}>Run it again</button>`}</div>
+    </div>`}
     ${!busy && html`<p class="small muted story-again"><a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>Try another molecule</a></p>`}
   </div>`;
 }

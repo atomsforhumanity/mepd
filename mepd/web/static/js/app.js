@@ -16,6 +16,8 @@ import { PlaygroundApp, layoutToggle } from './components/Playground.js';
 import { WelcomeView } from './components/Welcome.js';
 import { announceUnlocks, markQuest, mapOf, useMap } from './quests.js';
 
+let backToReactor = false;   // the first look at the running reactors has been taken
+
 function TopBar() {
   const view = useStore((s) => s.view);
   const connected = useStore((s) => s.connected);
@@ -36,7 +38,14 @@ function TopBar() {
   const sandboxes = useStore((s) => s.sandboxes || []);
   useEffect(() => {   // (a demo visitor's: only their own)
     let alive = true;
-    const refresh = () => api.get('/api/sandboxes').then((list) => { if (alive) set({ sandboxes: list }); }).catch(() => {});
+    const refresh = () => api.get('/api/sandboxes').then((list) => {
+      if (!alive) return;
+      // Loaded while a reactor runs (a reload, a phone woken up): back to it, once.
+      if (!backToReactor && list.length && ['welcome', 'graph'].includes(state.view.tab)) {
+        set({ sandboxes: list, view: { tab: 'sandbox', jobId: null, sandbox: list[0] } });
+      } else set({ sandboxes: list });
+      backToReactor = true;
+    }).catch(() => {});
     refresh();
     const timer = setInterval(refresh, 10000);
     return () => { alive = false; clearInterval(timer); };
@@ -91,6 +100,8 @@ function App() {
   const map = useMap();
   const mapKey = `${[...map.done].join()}|${[...map.open].join()}`;
   useEffect(() => { if (loaded) announceUnlocks(); }, [loaded, mapKey]);
+  // A new page starts at its top (on a phone the whole layout scrolls, and kept the last page's place).
+  useEffect(() => { const el = document.querySelector('.layout'); if (el) el.scrollTop = 0; }, [view.tab, view.jobId]);
   useEffect(() => {
     if (!loaded) return;
     const visit = { profiles: 'method', analyze: 'kinetics', graph: 'network' }[view.tab];

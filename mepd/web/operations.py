@@ -681,6 +681,10 @@ def _method_view(m: dict) -> dict:
             "group": m.get("group", ""), "available": not reason, "reason": reason}
 
 
+OPTIMIZE_FAMILY = {"key": "optimize", "title": "Optimize",
+                   "summary": "Optimize the structure in place: to the nearest minimum, or, from a guess, to a "
+                              "transition state."}
+
 TS_FAMILY = {"key": "ts", "title": "Transition state",
              "summary": "Find the transition state(s) between two structures: from these endpoints only, or "
                         "sampling their conformers and atom mappings for every distinct channel."}
@@ -688,6 +692,10 @@ TS_FAMILY = {"key": "ts", "title": "Transition state",
 NETWORK = {"key": "network", "title": "Reaction network expansion",
            "summary": "Explore the reactions and minima around a structure (or, with the nanoreactor, among "
                       "several). Pick a method; every species found joins Explore."}
+
+RETRO_FAMILY = {"key": "retrosynthesis", "title": "Retrosynthesis",
+                "summary": "Routes back from this molecule to purchasable building blocks. Pick the method that "
+                           "proposes each step; every route's steps join Explore."}
 
 
 def _build_ts(ctx: JobContext, p: TsParams) -> list[str]:
@@ -1068,7 +1076,7 @@ def _parse_copies(text: str, recs: list[dict]) -> list[int]:
 
 
 def _retro_methods():
-    """The retrosynthesis methods as the family card's method switch; each
+    """The retrosynthesis methods as its card's method switch; each
     says why it can't run here (a package or the AiZynthFinder setup missing)."""
     from mepd.retro.proposers import PROPOSERS
 
@@ -1084,8 +1092,8 @@ def _retro_methods():
                          "environment.",
     }
     for rank, (name, prop) in enumerate(PROPOSERS.items()):
-        yield {"label": prop.label, "rank": 10 + rank, "fixed": {"method": name}, "summary": summaries[name],
-               "group": "Retrosynthesis: routes back to building blocks", "check": prop.problem}
+        yield {"label": prop.label, "rank": rank, "fixed": {"method": name}, "summary": summaries[name],
+               "check": prop.problem}
 
 
 def _build_nanoreactor(ctx: JobContext, p: NanoreactorParams) -> list[str]:
@@ -1712,7 +1720,9 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "optimize", "Optimize geometry", "Minimize the selected structures at the chosen profile's level of "
         "theory, replacing their geometry and energy in place. (`mepd optimize`)",
         "set", EXPLORE, OptimizeParams, _build_optimize, min_structures=1,
-        produces=["optimized geometries (in place)"]),
+        produces=["optimized geometries (in place)"], family=OPTIMIZE_FAMILY, methods=({
+            "label": "Minimum", "rank": 0, "summary": "Minimize at the chosen profile's level of theory, replacing the "
+            "geometry and energy in place."},)),
     Operation(
         "design-optimize", "Minimize the design", "Minimize the Design tab's molecule at the chosen profile's "
         "level of theory; its geometry and energy are replaced in place. (`mepd optimize`)",
@@ -1743,7 +1753,10 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "tsopt", "Optimize TS from guess", "Treat the structure as a TS guess: saddle optimization, "
         "optionally followed by IRC. (`mepd ts`)",
-        "structure", EXPLORE, TsOptParams, _build_tsopt, produces=["transition state", "IRC endpoints"]),
+        "structure", EXPLORE, TsOptParams, _build_tsopt, produces=["transition state", "IRC endpoints"],
+        family=OPTIMIZE_FAMILY, methods=({
+            "label": "Transition state", "rank": 1, "summary": "Treat the structure as a TS guess: saddle "
+            "optimization, optionally followed by IRC to the minima on either side."},)),
     Operation(
         "hessian-sample", "Hessian sampling", "Displace along every normal mode and re-optimize to find "
         "nearby minima. (`mepd discovery hessian-sample`)",
@@ -1794,7 +1807,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         produces=["routes", "precursor species", "proposed reactions (optionally path-searched)"],
         cli_path=("retro", "plan"), cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--stock",
                                                      "--option", "--method"),
-        family=NETWORK, methods=tuple(_retro_methods())),
+        family=RETRO_FAMILY, methods=tuple(_retro_methods())),
     Operation(
         "nanoreactor", "Nanoreactor", "Put the selected molecules in a hot box whose wall periodically squeezes "
         "them, and watch what reacts. Each reaction is cut out with only the molecules it needs (a water that "
