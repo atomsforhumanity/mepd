@@ -26,6 +26,9 @@ from mepd.atom_mapping_selection import METRICS as _ATOM_MAPPING_METRICS
 from mepd.atom_mapping_metrics import HELP as _MAPPING_HELP, OFFERED as _OFFERED_METRICS
 from mepd.chain import Chain
 from mepd.cli_channels import channels
+from mepd.cli_common import print_log_on_stdout
+
+print_log_on_stdout()   # commands print mepd's progress log, as they always printed it
 from mepd.cli_conformers import conformers
 from mepd.cli_solvent import solvent
 from mepd.cli_force import force

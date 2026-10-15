@@ -183,11 +183,23 @@ def test_channel_options_match_the_command_and_reject_bad_settings():
         mepd.ChannelsOptions(no_such_option=1)
 
 
-def test_channels_finds_the_hcn_isomerization_and_reads_back(gxtb, tmp_path):
+def test_channels_finds_the_hcn_isomerization_and_reads_back(gxtb, tmp_path, capsys, monkeypatch):
     """A whole channel search from Python on HCN -> HNC (one conformer each)."""
+    import logging
+
+    from mepd.cli_common import PROGRESS_LOGGERS, _EchoHandler
+
     hcn, hnc = mepd.optimize([_node(HCN), _node(HNC)], gxtb)
+    # importing mepd.cli (as other tests do) makes the commands' progress print; measure the library alone
+    for name in PROGRESS_LOGGERS:
+        log = logging.getLogger(name)
+        monkeypatch.setattr(log, "handlers", [h for h in log.handlers if not isinstance(h, _EchoHandler)])
+    capsys.readouterr()
     result = mepd.channels(hcn, hnc, output=tmp_path / "run", engine=gxtb, n_conformers=1, atom_mapping=False,
                            workers=1, parallel=False, validate_minima_with_hessian=False)
+    printed = capsys.readouterr().out
+    # the search's own progress is logged, not printed (path-search step lines still print)
+    assert "Sampling conformers" not in printed and "channel(s) found for the requested pair" not in printed
     assert isinstance(result, mepd.ChannelsResult) and result.routes
     best = result.lowest()
     assert mepd.connects(best.steps[0].irc, hcn, hnc).both

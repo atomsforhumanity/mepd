@@ -10,8 +10,6 @@ classification into `channels/`, `alternate-channels/` and
 """
 from __future__ import annotations
 
-import logging
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -62,30 +60,9 @@ from mepd.cli_common import (
     _load_structure_from_smiles_or_xyz,
     _open_run_inputs,
     _reaction_endpoints,
+    print_log_on_stdout,
 )
 from mepd.errors import InputsError
-
-
-class _EchoHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord) -> None:
-        typer.echo(record.getMessage())
-
-
-@contextmanager
-def _print_search_progress():
-    """Show the channel search's progress log on stdout, as plain lines."""
-    log = logging.getLogger("mepd.channel_search")
-    handler = _EchoHandler()
-    saved = (log.level, log.propagate)
-    log.setLevel(logging.INFO)
-    log.propagate = False
-    log.addHandler(handler)
-    try:
-        yield
-    finally:
-        log.removeHandler(handler)
-        log.setLevel(saved[0])
-        log.propagate = saved[1]
 
 
 def channels(
@@ -457,11 +434,11 @@ def channels(
     start_node = StructureNode(structure=start_structure)
     end_node = StructureNode(structure=end_structure)
 
-    with _print_search_progress():
-        try:
-            run_channels(start_node, end_node, run_inputs, options, output, endpoints_are_guesses=guesses)
-        except InputsError as exc:
-            raise typer.BadParameter(str(exc))
-        except ChannelSearchError as exc:
-            typer.echo(str(exc))
-            raise typer.Exit(code=1)
+    print_log_on_stdout()
+    try:
+        run_channels(start_node, end_node, run_inputs, options, output, endpoints_are_guesses=guesses)
+    except InputsError as exc:
+        raise typer.BadParameter(str(exc))
+    except ChannelSearchError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)

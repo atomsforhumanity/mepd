@@ -26,6 +26,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   run's folder the same way. The search itself moved from the command into `mepd/channel_search.py`
   (`ChannelsOptions` holds its settings, same names and defaults as the options); the command is now a thin
   wrapper, with unchanged options, output and folders.
+- **The channel search and the shared run steps log instead of printing** (loggers `mepd.channel_search`,
+  `mepd.cli_common`; problems at warning level), so `mepd.channels` from Python is quiet unless logging is
+  set up. The commands print the same lines as before. Path searches' step-by-step progress still prints.
 
 - **A guided first run in the web UI** (`Welcome.js`, `quests.js`). An empty session opens on a first screen:
   choose a ready-made molecule (glycine, ethanol, formaldehyde, HCN) or build one in Design, put it in the

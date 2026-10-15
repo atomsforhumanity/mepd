@@ -42,7 +42,11 @@ mepd.write_xyz("irc.xyz", irc.nodes)
   it, `mepd.ConvergenceError` when the calculation ran but did not reach a usable
   result, `ValueError` for inputs that cannot work.
 - **No side effects.** Functions print nothing and write no files, except
-  `mepd.write_xyz`. mepd logs through Python's `logging`.
+  `mepd.write_xyz` and `mepd.channels` (which works in its output folder).
+  mepd logs progress through Python's `logging` (loggers under `mepd`;
+  `logging.basicConfig(level=logging.INFO)` shows it) and warnings appear on
+  stderr. Not yet: path searches (NEB, GSM, MSMEP) still print their
+  step-by-step progress.
 - **Threads.** `mepd.set_threads(1)` before the first calculation, when
   running many in parallel.
 
