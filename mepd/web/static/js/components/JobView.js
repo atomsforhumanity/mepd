@@ -20,6 +20,7 @@ import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
 import { AtomMappingPanel } from './AtomMapping.js';
 import { PathsOverview } from './PathsOverview.js';
+import { SubstituentPicker } from './Substituents.js';
 import { BuiltPairsPanel } from './BuiltPairs.js';
 import { Why } from './Why.js';
 
@@ -610,7 +611,9 @@ function FollowUpCard({ op, job, runs, done, initial = {}, note = null }) {
       </button>
       ${open && html`<div class="op-body">
         ${note && html`<p class="small muted">${note}</p>`}
-        <${ParamForm} op=${op.key} schema=${op.schema} values=${values} onChange=${setValues} />
+        ${op.key === 'substituents'
+          ? html`<${SubstituentPicker} op=${op} job=${job} values=${values} onChange=${setValues} />`
+          : html`<${ParamForm} op=${op.key} schema=${op.schema} values=${values} onChange=${setValues} />`}
         <div class="op-run">
           <button class="btn primary" disabled=${busy || active} onClick=${run}>
             ${active ? 'Running…' : busy ? 'Queuing…' : (last || done) ? 'Run again' : 'Run'}</button>

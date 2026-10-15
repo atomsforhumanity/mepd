@@ -178,6 +178,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
   every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for
   options the kernel doesn't cover) it falls back to `scipy.optimize.least_squares`.
+- **Atom mapping in plain words**: candidates are named for what they are (Fewest bond changes, Best geometric
+  fit, Equivalent atoms swapped, As given, Other mechanism), one line says whether the end was renumbered, and
+  the fit reads "ends RMSD 1.44 bohr". The method details moved to hover text and a "?".
+- **Substituent effects picked on the molecule**: tap atoms of the transition state in 3D to choose where
+  groups go (a hydrogen, or an atom carrying one), pick groups from a short palette (More groups for the rest),
+  and see how many variants that makes. A link loads the reaction into Design to change one group by hand.
+  Replaces the wall of group buttons and the box for 0-based atom numbers.
 - **A path search's results open on an overview**, like a reaction's report: the lowest barrier, how many
   channels, ΔE and whether the IRC connects the ends; an energy diagram with every channel; and a table of them.
   Click a channel for its 3D path below. Details (search summary, warnings, the atom mapping, now folded until

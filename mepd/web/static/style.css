@@ -1657,3 +1657,8 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .result-details .atom-mapping > summary .section-title { display: inline; }
 .result-more { margin-top: 18px; }
 @media (max-width: 640px) { .po-table th:nth-child(5), .po-table td:nth-child(5) { display: none; } }
+
+/* Substituent effects, picked on the transition state (Substituents.js). */
+.subst-picker .field { margin-bottom: 12px; }
+.subst-sites { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.subst-count { margin: 0 0 12px; }
