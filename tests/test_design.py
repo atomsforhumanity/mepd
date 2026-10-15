@@ -69,7 +69,7 @@ def test_design_round_trip_through_the_graph(client):
     undone = client.put("/api/design", json={"molblock": new["molblock"]}).json()
     assert undone["smiles"] == "CCO"
     rec = client.post("/api/design/to-graph").json()
-    assert rec["name"] == "CCO" and not rec["merged"] and rec["origin"]["kind"] == "design"
+    assert rec["name"] == "ethanol" and not rec["merged"] and rec["origin"]["kind"] == "design"
     assert client.post("/api/design/to-graph").json()["duplicate"]         # same geometry again: nothing new
     loaded = client.post("/api/design/load", json={"structure": rec["id"]}).json()
     assert loaded["smiles"] == "CCO" and loaded["source"]["structure"] == rec["id"]

@@ -155,7 +155,9 @@ const handlers = {
     const prev = state.jobs[job.id];
     if (prev && newer(prev, job) === prev) return;   // stale copy, arrived late
     update((s) => { s.jobs = { ...s.jobs, [job.id]: job }; });
-    if (prev && prev.status !== job.status && ['done', 'failed'].includes(job.status)) {
+    // (Not for the run on screen: its page already shows it.)
+    const onIt = state.view.tab === 'job' && state.view.jobId === job.id;
+    if (prev && prev.status !== job.status && ['done', 'failed'].includes(job.status) && !onIt) {
       // What it made or worked on, found in Explore in one click.
       const show = job.status === 'done' && {
         label: 'Show in Explore',

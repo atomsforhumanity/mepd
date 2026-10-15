@@ -13,15 +13,19 @@ function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+// Zoomed out, labels grow (up to a point) so they stay readable on screen.
+let labelScale = 1;
+const scaleFor = (zoom) => Math.round(Math.min(2.6, Math.max(1, 0.95 / zoom)) * 10) / 10;
 function stylesheet() {
+  const L = labelScale;
   return [
     { selector: 'node', style: {
       shape: 'round-rectangle', width: 96, height: 72,
       'background-color': css('--node-bg'), 'border-width': 1, 'border-color': css('--border-strong'), 'corner-radius': 4,
       'background-image': 'data(img)', 'background-fit': 'contain', 'background-clip': 'node',
       'background-image-containment': 'inside', 'background-width': '90%', 'background-height': '90%',
-      label: 'data(label)', 'font-size': 12, 'font-family': css('--font-ui'), color: css('--heading'),
-      'text-valign': 'bottom', 'text-margin-y': 6, 'text-wrap': 'ellipsis', 'text-max-width': 140,
+      label: 'data(label)', 'font-size': 12 * L, 'font-family': css('--font-ui'), color: css('--heading'),
+      'text-valign': 'bottom', 'text-margin-y': 6 * L, 'text-wrap': 'ellipsis', 'text-max-width': 140 * L,
       'text-background-color': css('--bg'), 'text-background-opacity': 0.85, 'text-background-padding': 2,
     } },
     { selector: 'node[?noimg]', style: { 'background-image': 'none', label: 'data(label)', 'text-valign': 'center', 'text-margin-y': 0 } },
@@ -30,7 +34,7 @@ function stylesheet() {
     { selector: 'edge', style: {
       width: 2, 'curve-style': 'bezier', 'line-color': css('--edge-idle'), 'target-arrow-shape': 'triangle',
       'target-arrow-color': css('--edge-idle'), 'arrow-scale': 1.1, 'line-style': 'dashed', 'line-dash-pattern': [6, 4],
-      label: 'data(label)', 'font-size': 11, 'font-family': css('--font-mono'), color: css('--text'),
+      label: 'data(label)', 'font-size': 11 * L, 'font-family': css('--font-mono'), color: css('--text'),
       'text-background-color': css('--bg'), 'text-background-opacity': 0.9, 'text-background-padding': 3,
       'text-background-shape': 'roundrectangle',
     } },
@@ -579,6 +583,15 @@ export function Graph() {
       boxSelectionEnabled: true, selectionType: 'additive',
     });
     cy.current = c;
+    let restyle = 0;
+    c.on('zoom', () => {
+      if (restyle) return;
+      restyle = requestAnimationFrame(() => {
+        restyle = 0;
+        const L = scaleFor(c.zoom());
+        if (L !== labelScale) { labelScale = L; c.style(stylesheet()); }
+      });
+    });
     // Labels are drawn on a canvas: redraw once the web fonts have arrived.
     document.fonts?.ready.then(() => { if (cy.current === c) c.style(stylesheet()); });
 
@@ -1032,10 +1045,10 @@ export function Graph() {
           title="Click a start structure, then an end structure, to draw an edge (C)">
           ${connectMode ? 'Connecting… Esc to stop' : '＋ Connect'}</button>
         <button class="btn small ghost" onClick=${layout} title="Auto-arrange the graph">Arrange</button>
-        <button class="btn small ghost" onClick=${treeLayout}
+        <button class="btn small ghost phone-hide" onClick=${treeLayout}
           title="Lay reactions out as a synthesis tree: each target on the right, the steps that make it to its left, building blocks at the far left">Tree</button>
         <button class="btn small ghost" onClick=${() => fitCapped(cy.current)} title="Fit everything in view">Fit</button>
-        <button class="btn small ghost" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
+        <button class="btn small ghost phone-hide" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
           title="Select every structure shown (then delete, download, or run one calculation on all)">Select all</button>
         <button class=${`btn small ${panel ? 'primary' : 'ghost'}`} onClick=${() => { setSetupPanel(false); setPanel(!panel); }}
           title="Filter what the graph shows, and fold branches away">View${counts.shown < counts.total ? ` · ${counts.shown}/${counts.total}` : ''}</button>

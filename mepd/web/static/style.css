@@ -1690,3 +1690,52 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .rc-retry li { margin: 2px 0; }
 .rc-retry-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .rc-retry-row select { width: auto; padding: 2px 6px; font-size: 12.5px; }
+
+/* Interactive reactor: Collide, and reactions drawn rather than spelled */
+.rx-collide { position: absolute; right: 10px; bottom: 10px; z-index: 3; display: flex; align-items: center; gap: 10px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent); padding: 6px 8px; border-radius: 4px; }
+.rx-collide .btn.key { box-shadow: 0 2px 0 color-mix(in srgb, var(--accent) 60%, #000), 0 3px 8px rgba(0,0,0,.15); }
+.rx-collide .btn.key:active { transform: translateY(1px); box-shadow: 0 1px 0 color-mix(in srgb, var(--accent) 60%, #000); }
+.rx-collide label { display: flex; align-items: center; gap: 4px; }
+.rx-pics { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0; }
+.rx-mol { display: inline-flex; align-items: center; gap: 2px; font: 12px var(--font-mono); }
+.rx-mol img { height: 34px; max-width: 74px; object-fit: contain; background: var(--node-bg); border-radius: 3px; }
+.rx-n { font: 600 12px var(--font-ui); color: var(--muted); }
+.rx-pics .rx-arrow { color: var(--muted); padding: 0 2px; }
+.danger-text { color: var(--danger); }
+/* A reactor run's plain summary: its controls behind "⋯" */
+.more-menu { position: relative; }
+.more-menu > summary { list-style: none; cursor: pointer; border: 1px solid var(--border-strong); border-radius: 4px; padding: 2px 10px; font-size: 18px; line-height: 1.2; color: var(--muted); }
+.more-menu > summary::-webkit-details-marker { display: none; }
+.more-menu[open] > :not(summary) { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.12); display: flex; gap: 6px; white-space: nowrap; }
+.quest.far.more { font: 500 20px var(--font-serif); color: var(--muted); }
+.quest.far.more .q-name { font: 12px var(--font-ui); }
+/* Explore's key: pictures, one line each */
+.graph-key { list-style: none; margin: 4px 0 14px; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.graph-key li { display: flex; align-items: center; gap: 12px; color: var(--text); }
+.graph-key svg { width: 64px; height: 24px; flex: none; }
+.graph-key text { font: 10px var(--font-mono); fill: var(--text); }
+.gk-arrow { stroke: var(--ok); stroke-width: 2; }
+.gk-head { fill: var(--ok); }
+.gk-cx { fill: var(--panel); stroke: var(--accent); stroke-width: 2; }
+.graph-key .gk-cxn { font: 600 10px var(--font-ui); fill: var(--accent); }
+.gk-node { fill: var(--node-bg); stroke: var(--border-strong); }
+.gk-tap { fill: var(--accent); opacity: .7; }
+/* Phones: fewer graph tools, and a fade where a row scrolls on */
+@media (max-width: 720px), (max-height: 520px) {
+  .phone-hide { display: none !important; }
+  .topbar .main-tabs { gap: 14px; padding-right: 24px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+  .topbar .main-tabs button { font-size: 13.5px; }
+  .graph-toolbar { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent); padding-right: 18px; }
+}
+@media (max-width: 720px), (max-height: 520px) {
+  .rx-collide { position: static; margin-top: 8px; padding: 0; background: none; }
+  .rx-collide .btn.key { flex: 1; padding: 10px; font-size: 16px; }
+}
+@media (max-width: 720px), (max-height: 520px) {
+  .rx-legend { display: none; }
+  .rx-collide { padding: 8px; }
+  .rx-collide .btn.key { text-align: center; justify-content: center; }
+}

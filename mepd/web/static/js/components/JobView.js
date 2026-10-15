@@ -1048,6 +1048,9 @@ export function JobView({ jobId: openedId }) {
   const story = job.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(job.params?.trajectory || '');
   const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
     : (job.op === 'nanoreactor' && !job.params?.trajectory) || reactorGen ? 'reactor' : 'live');
+  // On its plain-words summary, a reactor run shows only that: the run's
+  // controls, its command and the other tabs wait behind "⋯" and "All results".
+  const simple = story && current === 'story' && !state.everything;
   const targets = job.targets.structures.map((id) => ({ id, label: structureName(id) }));
   // A follow-up (solvent, substituents, a VRI check...): the results it started from.
   const source = job.source_job && !family.some((j) => j.id === job.source_job) ? state.jobs[job.source_job] : null;
@@ -1059,7 +1062,7 @@ export function JobView({ jobId: openedId }) {
         <button class="btn-icon" title=${historyDepth() > 0 ? 'Back' : 'All calculations'} onClick=${() => goBack({ tab: 'jobs', jobId: null })}>←</button>
         <div class="job-head-main">
           <h2>${job.title}<${Why} id=${`op.${job.op}`} label=${job.title} /></h2>
-          <div class="small muted">
+          ${simple ? html`<div class="small muted">${page.status === 'done' ? '' : html`<span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span> `}${targets.map((t) => t.label).join(', ')}${' · '}<a href="#" onClick=${(e) => { e.preventDefault(); setTab('result'); }}>All results</a></div>` : html`<div class="small muted">
             <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
             ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
               : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
@@ -1067,21 +1070,22 @@ export function JobView({ jobId: openedId }) {
             ${job.profile && html` · profile <b>${job.profile}</b>`}
             ${targets.length > 0 && html` · ${targets.map((t, i) => html`${i ? (job.op === 'ts' || job.op === 'channels' ? ' → ' : ', ') : ''}<a href="#"
               onClick=${(e) => { e.preventDefault(); select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId } }); }}>${t.label}</a>`)}`}
-          </div>
+          </div>`}
         </div>
-        <${JobControls} job=${run} />
+        ${simple ? html`<details class="more-menu"><summary title="Run again, download, delete">⋯</summary><${JobControls} job=${run} /></details>`
+          : html`<${JobControls} job=${run} />`}
       </div>
       ${family.length > 1 && html`<div class="segmented run-picker" title="Live, Log, Files and Command show this run; the other tabs cover all of them">
         ${family.map((j, i) => html`<button class=${j.id === run.id ? 'on' : ''} onClick=${() => setRunId(j.id)}>
           ${runLabel(j, i)}${j.status !== 'done' ? html` <span class=${`pill ${j.status}`}>${STATUS_LABEL[j.status]}</span>` : ''}</button>`)}
       </div>`}
-      <details class="cmd-line">
+      ${!simple && html`<details class="cmd-line">
         <summary>Command</summary>
         <div class="cmd-body" title="Exactly what ran; paste into a shell to reproduce">
           <code>${run.command}</code>
           <button class="btn-icon" onClick=${() => copy(run.command)} title="Copy">⧉</button>
         </div>
-      </details>
+      </details>`}
       ${run.status === 'failed' && run.error && html`<pre class="error-box">${run.error}</pre>`}
       ${Object.keys(job.live_skipped || {}).length > 0 && html`<p class="level-note small">
         ${Object.keys(job.live_skipped).length} species more than ${job.params?.explore_within ?? job.params?.energy_window} kcal/mol above the seed
@@ -1093,12 +1097,12 @@ export function JobView({ jobId: openedId }) {
         searches running then were kept with the paths they had, and no new ones started, so this result covers only what
         was found until then.</p>`)}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
-      <div class="tabs">
+      ${simple ? '' : html`<div class="tabs">
         ${[story && ['story', 'What happened'], ['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
           ['ts', 'channels', 'channels-more', 'network-splits'].includes(job.op) && ['tree', 'Optimization tree'],
           !job.external && ['log', 'Log'], ['files', 'Files']].filter(Boolean)
           .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && !['live', 'reactor', 'story'].includes(k)} onClick=${() => setTab(k)}>${l}</button>`)}
-      </div>
+      </div>`}
       ${job.op === 'nanoreactor' && current !== 'live' && current !== 'story' && html`<${RefiningNote} job=${run} onWatch=${() => setTab('live')} />`}
       <div class="tab-body">
         ${current === 'story' && html`<${ReactorStory} job=${page} />`}

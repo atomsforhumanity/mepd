@@ -53,28 +53,70 @@ def structure_from_smiles(
     return _load_structure_from_smiles_or_xyz(smiles.strip(), charge, multiplicity)
 
 
-# Small molecules whose SMILES reads as something else ("Cl" is HCl, "O"
-# water): named for what they are. Keys are RDKit canonical SMILES.
+# Small molecules, radicals and ions by their everyday names ("O" is water,
+# "[OH]" the hydroxyl radical), so a structure a calculation finds is not
+# named by its SMILES. Any SMILES spelling; read canonically (charge and
+# radicals are part of the SMILES, so OH, OH- and OH+ are different keys).
 _COMMON_NAMES = {
-    "O": "water", "Cl": "HCl", "Br": "HBr", "I": "HI", "F": "HF", "N": "ammonia", "S": "H2S",
-    "[HH]": "H2", "OO": "H2O2", "O=P(O)(O)O": "phosphoric acid", "O=S(=O)(O)O": "sulfuric acid",
-    "O=[N+]([O-])O": "nitric acid", "O=C=O": "CO2", "[C-]#[O+]": "CO", "O=S=O": "SO2",
-    "C": "methane", "CO": "methanol", "CCO": "ethanol", "CC(=O)O": "acetic acid", "C=O": "formaldehyde",
-    "CC(C)=O": "acetone", "CC#N": "acetonitrile", "ClCCl": "dichloromethane", "ClC(Cl)Cl": "chloroform",
-    "CS(C)=O": "DMSO", "C1CCOC1": "THF", "c1ccccc1": "benzene", "Cc1ccccc1": "toluene",
+    # hydrogen, oxygen
+    "[H]": "H atom", "[H][H]": "H2", "[HH]": "H2", "[H+]": "proton", "[H-]": "hydride",
+    "O": "water", "[OH]": "hydroxyl", "[OH-]": "hydroxide", "[OH3+]": "hydronium", "[O]": "O atom",
+    "O=O": "O2", "[O][O]": "O2", "OO": "H2O2", "[O]O": "hydroperoxyl", "[O-][O]": "superoxide",
+    "[O-]O": "hydroperoxide", "[O-2]": "oxide", "[O-]": "oxyl anion",
+    # one carbon
+    "C": "methane", "[CH3]": "methyl", "[CH2]": "methylene", "[CH]": "methylidyne", "[CH3+]": "methyl cation",
+    "[CH3-]": "methyl anion", "CO": "methanol", "C[O]": "methoxy", "[CH2]O": "hydroxymethyl",
+    "C[O-]": "methoxide", "C[OH2+]": "protonated methanol", "C=O": "formaldehyde", "[CH]=O": "formyl",
+    "C#[O+]": "formyl cation", "C=[OH+]": "protonated formaldehyde", "[CH]O": "hydroxymethylene",
+    "[C-]#[O+]": "CO", "O=C=O": "CO2", "O=CO": "formic acid", "O=C[O-]": "formate", "[O]C=O": "formyloxyl",
+    "O=[C]O": "hydroxycarbonyl", "OC(O)=O": "carbonic acid", "O=C([O-])O": "bicarbonate",
+    "O=C([O-])[O-]": "carbonate", "OCO": "methanediol",
+    # nitrogen
+    "N": "ammonia", "[NH2]": "amino radical", "[NH4+]": "ammonium", "[NH2-]": "amide anion", "[NH]": "imidogen",
+    "N#N": "N2", "NN": "hydrazine", "C#N": "HCN", "[C-]#N": "cyanide", "[C]#N": "cyano radical",
+    "[C-]#[NH+]": "HNC", "CN": "methylamine", "C=N": "methanimine", "NC=O": "formamide", "NC(N)=O": "urea",
+    "O=NO": "nitrous acid", "[N]=O": "NO", "[O]N=O": "NO2", "O=[N+]([O-])O": "nitric acid",
+    "N=O": "nitroxyl", "[O-][N+]#N": "N2O",
+    # two and three carbons
+    "CC": "ethane", "C[CH2]": "ethyl", "C=C": "ethene", "C#C": "ethyne", "C=[CH]": "vinyl",
+    "CCO": "ethanol", "CC=O": "acetaldehyde", "C[C]=O": "acetyl", "C=CO": "vinyl alcohol",
+    "CC(=O)O": "acetic acid", "CC(=O)[O-]": "acetate", "O=CC=O": "glyoxal", "OCC=O": "glycolaldehyde",
+    "OCCO": "ethylene glycol", "COC": "dimethyl ether", "C1CO1": "ethylene oxide", "C=C=O": "ketene",
+    "CC(C)=O": "acetone", "CCC": "propane", "C=CC": "propene", "CC(C)O": "isopropanol", "CCCO": "1-propanol",
+    "CC#N": "acetonitrile", "COC=O": "methyl formate", "O=COCO": "hydroxymethyl formate",
+    # amino acids and small biomolecules
+    "NCC(=O)O": "glycine", "[NH3+]CC(=O)[O-]": "glycine zwitterion", "CC(N)C(=O)O": "alanine",
+    "C[C@H](N)C(=O)O": "L-alanine", "OCC(O)CO": "glycerol", "O=C(O)C(=O)O": "oxalic acid",
+    "CC(=O)C(=O)O": "pyruvic acid",
+    # sulfur, halogens, phosphorus, solvents
+    "S": "H2S", "[SH]": "sulfanyl", "O=S=O": "SO2", "O=S(=O)(O)O": "sulfuric acid", "CS(C)=O": "DMSO",
+    "F": "HF", "Cl": "HCl", "Br": "HBr", "I": "HI", "[F-]": "fluoride", "[Cl-]": "chloride", "[Br-]": "bromide",
+    "[I-]": "iodide", "[Cl]": "Cl atom", "[Br]": "Br atom", "ClCl": "Cl2", "BrBr": "Br2",
+    "O=P(O)(O)O": "phosphoric acid", "ClCCl": "dichloromethane", "ClC(Cl)Cl": "chloroform", "CCl": "chloromethane",
+    "C1CCOC1": "THF", "c1ccccc1": "benzene", "Cc1ccccc1": "toluene", "c1ccncc1": "pyridine", "Oc1ccccc1": "phenol",
 }
 
 
+def _canonical(smiles: str) -> Optional[str]:
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():   # scoped: smiles_problem reads RDKit's messages
+        mol = Chem.MolFromSmiles(smiles)
+    return Chem.MolToSmiles(mol) if mol is not None else None
+
+
+@lru_cache(maxsize=1)
+def _common_names() -> dict:
+    return {_canonical(k): v for k, v in _COMMON_NAMES.items()}
+
+
 def common_name(smiles: Optional[str]) -> Optional[str]:
-    """A small molecule's everyday name ("Cl" -> "HCl", "O" -> "water"), or None."""
+    """A small molecule's everyday name ("Cl" -> "HCl", "[OH]" -> "hydroxyl"), or None."""
     if not smiles:
         return None
     try:
-        from rdkit import Chem, rdBase
-
-        with rdBase.BlockLogs():   # scoped: smiles_problem reads RDKit's messages
-            mol = Chem.MolFromSmiles(smiles)
-        return _COMMON_NAMES.get(Chem.MolToSmiles(mol)) if mol is not None else None
+        key = _canonical(smiles)
+        return _common_names().get(key) if key else None
     except Exception:
         return None
 
@@ -107,7 +149,17 @@ def smiles_problem(smiles: str) -> Optional[str]:
     return f"{reason} around position {where}" if where else reason
 
 
+def _atom_smiles(structure: Structure) -> str:
+    """A lone atom or monatomic ion, with no hydrogens added ("[H]", not
+    "[HH]", which is H2; "[Cl-]", "[O]")."""
+    q = int(getattr(structure, "charge", 0) or 0)
+    sign = "" if q == 0 else ("+" if q > 0 else "-") + (str(abs(q)) if abs(q) > 1 else "")
+    return f"[{structure.symbols[0]}{sign}]"
+
+
 def perceive_smiles(structure: Structure) -> Optional[str]:
+    if len(structure.symbols) == 1:   # RDKit gives a lone H an implicit H ("[HH]": H2)
+        return _atom_smiles(structure)
     import qcinf
 
     for backend in ("rdkit", "openbabel"):

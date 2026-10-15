@@ -4,7 +4,7 @@
 // barrier is known, a small energy diagram with the forward and the reverse
 // barrier as arrows of their own. The full results stay on the other tabs.
 import { html, useEffect, useState } from '../lib.js';
-import { openJob, select, set, toast, useStore } from '../store.js';
+import { openJob, set, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal } from '../util.js';
 import { Equation, NO_TS_SHORT, ReactionCard, TsCell, findTs, noTsWhy } from './Reactions.js';
 import { StepBar, markStep, reactorFor } from './Welcome.js';
@@ -76,9 +76,8 @@ export function ReactorStory({ job }) {
     markStep('network');
     window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'fit-to', ids: found.map((r) => r.edge) } }));
     set({ view: { tab: 'graph', jobId: null } });
-    select({ edges: found.map((r) => r.edge) });
     const tap = window.matchMedia?.('(pointer: coarse)').matches ? 'Tap' : 'Click';
-    toast(`Your reactions: each arrow carries its barrier. ${tap} one to explore it.`, 'info', 7000);
+    toast(`Your new reactions glow; the number on each arrow is its barrier. ${tap} one to explore it.`, 'info', 7000);
   };
   const n = mine.length;
   // The same molecule into a new reactor: the run's first species that is not water.
@@ -96,9 +95,8 @@ export function ReactorStory({ job }) {
       <span class="small muted"> · with your other molecules</span></span></button>`}
     <ul class="story-list">${mine.map((r) => html`<${StoryCard} key=${r.id} r=${r} />`)}</ul>
     ${!busy && !n && html`<div class="story-empty">
-      <p class="small muted">Left alone, molecules rarely react within a few picoseconds. Next time:</p>
-      <ul><li>drag an atom of one molecule into another and hold it there a moment;</li>
-        <li>shrink the Wall to squeeze them together;</li><li>turn the Temperature up.</li></ul>
+      <p class="small muted">Left alone, molecules rarely react within a few picoseconds. Next time, press
+        <b>Collide</b> (with “keep going” on), or drag an atom of one molecule into another and hold it there.</p>
       <div class="row">${again && html`<button class="btn primary" onClick=${() => reactorFor(again)}>Run it again</button>`}</div>
     </div>`}
     ${!busy && html`<p class="small muted story-again"><a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>Try another molecule</a></p>`}

@@ -5,6 +5,7 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, set, state, useStore } from '../store.js';
+import { depictUrl } from '../util.js';
 import { FULL, cssVar, useStage, xyzText } from './ReactorLive.js';
 import { StepBar, markStep } from './Welcome.js';
 import { Why } from './Why.js';
@@ -21,6 +22,58 @@ const WALL_MIN = 3, WALL_MAX = 60;
 const COARSE = window.matchMedia?.('(pointer: coarse)').matches;   // a touch screen: no scroll wheel
 const wallOf = (v) => WALL_MIN * Math.exp(Math.log(WALL_MAX / WALL_MIN) * v);
 const sliderOf = (r) => Math.log(r / WALL_MIN) / Math.log(WALL_MAX / WALL_MIN);
+
+// Molecules in a frame: atoms joined when closer than a bond (Angstrom).
+const HEAVY_BOND = 1.95, H_BOND = 1.3;
+function molecules(symbols, pos) {
+  const n = pos.length, parent = [...Array(n).keys()];
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 1; j < n; j += 1) {
+      if (symbols[i] === 'H' && symbols[j] === 'H') continue;
+      const cut = symbols[i] === 'H' || symbols[j] === 'H' ? H_BOND : HEAVY_BOND;
+      const d = Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]);
+      if (d < cut) parent[find(i)] = find(j);
+    }
+  }
+  const groups = {};
+  for (let i = 0; i < n; i += 1) (groups[find(i)] ||= []).push(i);
+  return Object.values(groups);
+}
+// Collide: what a person does by hand (drag an atom of one molecule into
+// another and hold it), done for them: two heavy atoms of two different
+// molecules (not both water, when there is a choice) are pulled together.
+const COLLIDE_MS = 1600, COLLIDE_K = 100;
+function collisionPair(symbols, pos) {
+  const mols = molecules(symbols, pos);
+  if (mols.length < 2) return null;
+  const isWater = (m) => m.length === 3 && m.filter((i) => symbols[i] === 'O').length === 1 && m.filter((i) => symbols[i] === 'H').length === 2;
+  const heavy = (m) => { const h = m.filter((i) => symbols[i] !== 'H'); return h.length ? h : m; };
+  const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
+  const solutes = mols.filter((m) => !isWater(m));
+  const a = pick(solutes.length ? solutes : mols);
+  const rest = mols.filter((m) => m !== a);
+  const b = pick(solutes.filter((m) => m !== a).length && Math.random() < 0.6 ? solutes.filter((m) => m !== a) : rest);
+  return [pick(heavy(a)), pick(heavy(b))];
+}
+
+// "C=O + [H] -> [CH]=O + [H][H]" (a reaction label) -> each side's molecules,
+// a count each, with the ones on both sides (water carrying an H across) left out.
+function sidesOf(label) {
+  const side = (t) => t.split(' + ').map((x) => { const m = x.trim().match(/^(\d+) (.+)$/); return m ? { n: +m[1], smi: m[2] } : { n: 1, smi: x.trim() }; });
+  const [l, r] = (label || '').split(' -> ');
+  if (r == null) return null;
+  const a = side(l), b = side(r);
+  const both = new Set(a.map((x) => x.smi).filter((smi) => b.some((y) => y.smi === smi)));
+  const keep = (xs) => xs.filter((x) => !both.has(x.smi));
+  return keep(a).length && keep(b).length ? [keep(a), keep(b)] : [a, b];
+}
+function EventPics({ label }) {
+  const sides = sidesOf(label);
+  if (!sides) return html`<span class="rx-eq">${label}</span>`;
+  const mol = (x) => { const u = depictUrl(x.smi, 120, 72); return html`<span class="rx-mol" title=${x.smi}>${x.n > 1 && html`<span class="rx-n">${x.n}×</span>`}${u ? html`<img src=${u} alt=${x.smi} loading="lazy" />` : x.smi}</span>`; };
+  return html`<span class="rx-pics">${sides[0].map(mol)}<span class="rx-arrow">→</span>${sides[1].map(mol)}</span>`;
+}
 
 export function SandboxView() {
   const sb = useStore((s) => s.view.sandbox);
@@ -39,10 +92,41 @@ export function SandboxView() {
   const [dead, setDead] = useState(null);
   const [events, setEvents] = useState([]);
   const eventsRef = useRef([]);
+  // Until someone has caught a first reaction, Collide keeps going by itself.
+  const [autoCollide, setAutoCollide] = useState(() => !state.tour?.reaction);
+  const colliding = useRef(null);       // {pair, until}
   const strengthRef = useRef(strength);
   strengthRef.current = strength;
 
   const send = (cmd) => api.post(`/api/sandbox/${sb.id}/command`, cmd).catch((e) => setDead(String(e.message || e)));
+  // Pull the pair toward each other (their midpoint, as they move) for a moment, then let go.
+  const collide = () => {
+    const f = frame.current;
+    if (!f?.pos || colliding.current) return;
+    const pair = collisionPair(sb.symbols, f.pos);
+    if (!pair) return;
+    colliding.current = { pair, until: Date.now() + COLLIDE_MS };
+    const step = () => {
+      const c = colliding.current, g = frame.current;
+      if (!c) return;
+      if (Date.now() > c.until || !g?.pos) {
+        c.pair.forEach((atom) => send({ op: 'release', atom }));
+        colliding.current = null;
+        return;
+      }
+      const [i, j] = c.pair, p = g.pos[i], q = g.pos[j];
+      const mid = [0, 1, 2].map((x) => (p[x] + q[x]) / 2);
+      c.pair.forEach((atom) => send({ op: 'pull', atom, target: mid, k: COLLIDE_K }));
+      setTimeout(step, 150);
+    };
+    step();
+  };
+  useEffect(() => {
+    if (!autoCollide || !sb) return undefined;
+    collide();
+    const t = setInterval(collide, COLLIDE_MS + 1200);
+    return () => clearInterval(t);
+  }, [autoCollide, sb?.id]);
 
   // Draw the latest frame (positions, the wall, the pull lines).
   const draw = () => {
@@ -191,6 +275,8 @@ export function SandboxView() {
   const reactions = events.filter((e) => !e.tentative && e.reaction != null);
   useEffect(() => { if (reactions.length) markStep('reaction'); }, [reactions.length]);
 
+  const shown = [...events].filter((e) => e.tentative || e.reaction != null).sort((a, b) => b.start_fs - a.start_fs);
+  const swaps = events.filter((e) => !e.tentative && e.reaction == null).length;
   if (!sb) return html`<div class="empty-hint"><p>No interactive reactor is open.</p></div>`;
   const k = logSlider(strength, 2, 300);
   const gone = () => ({ sandboxes: (state.sandboxes || []).filter((x) => x.id !== sb.id) });
@@ -200,7 +286,7 @@ export function SandboxView() {
   };
   const analyze = async () => {
     const out = await attempt(() => api.post(`/api/sandbox/${sb.id}/analyze`),
-      'Analyzing the run: watch each species and reaction being optimized; each reaction then gets its own TS search');
+      'Analyzing your run');
     if (out) { set(gone()); openJob(out.job, 'story'); }
   };
   return html`<div class="job-view sandbox">
@@ -208,13 +294,12 @@ export function SandboxView() {
       <button class="btn-icon" title="Back to Explore (it keeps running for 15 minutes; the ◉ button in the top bar brings you back)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
       <div class="job-head-main"><h2>Interactive reactor<${Why} id="other.reactor" label="The interactive reactor" /></h2>
         <div class="small muted"><b class="sb-names">${sb.names}</b> · GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
-        <${StepBar} at=${reactions.length ? 'reaction' : 'reactor'} /></div>
+        <${StepBar} at=${reactions.length ? 'barrier' : 'reactor'} /></div>
       <div class="row-actions">
-        <button class="btn" title="Keep this geometry (not minimized; several molecules become a complex)"
-          onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'Frame added to Explore')}>Add frame to Explore</button>
         <button class="btn primary" onClick=${analyze}
-          title="Stop and keep the run: its reactions are refined, each gets a barrier (TS search), and all go to Explore">Stop & analyze</button>
-        <button class="btn danger-outline" onClick=${discard} title="Stop without keeping anything">Discard</button>
+          title="Stop and keep the run: its reactions are refined, each gets a barrier (TS search), and all go to Explore">${reactions.length
+            ? `Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}` : 'Stop & analyze'}</button>
+        <button class="btn-link small danger-text" onClick=${discard} title="Stop without keeping anything">Discard</button>
       </div>
     </div>
     ${dead && html`<p class="warn-box small">${dead}</p>`}
@@ -222,18 +307,20 @@ export function SandboxView() {
       <div class="rx-main">
         <div class="rx-stage-wrap">
           <div class="rx-stage sandbox-stage" ref=${host}></div>
-          <div class="rx-hud">${hud ? `${(hud.t_fs / 1000).toFixed(2)} ps · ${hud.rate ?? 0} fs/s · ${hud.T_inst ?? '–'} K · ΔE ${hud.e_rel ?? 0} kcal/mol · wall ${(radius.current ?? hud.radius).toFixed(1)} Å${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
-          ${events.length > 0 && html`<button class="rx-count" title="See the reaction events"
+          <div class="rx-hud" title=${hud ? `Simulated time ${(hud.t_fs / 1000).toFixed(2)} ps, running at ${hud.rate ?? 0} fs per second. Temperature right now ${hud.T_inst ?? '–'} K. Energy ${hud.e_rel ?? 0} kcal/mol above the start. Wall radius ${(radius.current ?? hud.radius).toFixed(1)} Å.` : ''}>${hud ? `${(hud.t_fs / 1000).toFixed(1)} ps · ${hud.T_inst ?? '–'} K${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
+          ${reactions.length > 0 && html`<button class="rx-count" title="See the reactions"
             onClick=${(e) => e.currentTarget.closest('.rx-live').querySelector('.rx-events').scrollIntoView({ behavior: 'smooth', block: 'start' })}>
-            ${reactions.length ? `⚡ ${reactions.length} reaction${reactions.length > 1 ? 's' : ''}` : `${events.length} event${events.length > 1 ? 's' : ''}`}</button>`}
+            ⚡ ${reactions.length} reaction${reactions.length > 1 ? 's' : ''}</button>`}
           ${hud && !events.length && !tipGone && hud.t_fs > NUDGE_FS && html`<div class="rx-tip" role="status" title="Tap to hide" onClick=${() => setTipGone(true)}>
-            <b>Nothing yet?</b> Molecules rarely react by just bumping around. Drag an atom of one molecule
-            into another (hold it there a moment), or shrink the Wall to squeeze them.</div>`}
-          <div class="rx-legend small">drag an atom: pull it · drag elsewhere: rotate · ${COARSE ? 'pinch: zoom · Wall: squeeze' : 'scroll or Wall: squeeze'}</div>
+            <b>Nothing yet?</b> Molecules rarely react by just bumping around. Press <b>Collide</b>, or drag an atom
+            of one molecule into another and hold it there.</div>`}
+          <div class="rx-legend small">drag an atom into another: pull it · drag elsewhere: rotate</div>
+          <div class="rx-collide">
+            <button class="btn primary key" onClick=${collide} title="Pull two molecules into each other for a moment, as you would by dragging an atom">Collide</button>
+            <label class="small" title="Collide again every few seconds"><input type="checkbox" checked=${autoCollide}
+              onChange=${(e) => setAutoCollide(e.target.checked)} /> keep going</label>
+          </div>
         </div>
-        ${reactions.length > 0 && html`<button class="rx-bulb phone-only" onClick=${analyze}>
-          <span class="bulb-dot"></span><span><b>Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}</b>
-          <span class="small muted"> · stops the reactor</span></span></button>`}
         <div class="sandbox-controls">
           <label class="small">Pull strength <input type="range" min="0" max="1" step="0.01" value=${strength}
             onInput=${(e) => setStrength(+e.target.value)} /> <span class="mono">${k} kcal/mol/Å²</span></label>
@@ -251,28 +338,25 @@ export function SandboxView() {
               onChange=${(e) => send({ op: 'radius', value: wallOf(+e.target.value) })} />
             <span class="mono">${wall != null ? wall.toFixed(1) : '–'} Å</span></label>
           <button class="btn small" onClick=${() => { send({ op: 'pause', value: !paused }); setPaused(!paused); }}>${paused ? '▶ Resume' : '❚❚ Pause'}</button>
-          <button class="btn small" onClick=${() => send({ op: 'release_all' })}>Release all</button>
+          <button class="btn small" onClick=${() => { setAutoCollide(false); colliding.current = null; send({ op: 'release_all' }); }}>Release all</button>
+          <button class="btn small" title="Keep this geometry in Explore (not minimized; several molecules become a complex)"
+            onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'This moment added to Explore')}>Keep this moment</button>
         </div>
       </div>
       <aside class="rx-events">
-        <div class="section-title">Reaction events · ${events.length}</div>
-        ${!events.length && html`<p class="small muted">None yet. Bonds that change and stay changed show up here.</p>`}
+        <div class="section-title">Reactions · ${reactions.length}</div>
+        ${!shown.length && html`<p class="small muted">None yet. When bonds break or form and stay that way, the reaction shows up here.</p>`}
         <ol>
-          ${[...events].sort((a, b) => b.start_fs - a.start_fs).map((e) => html`<li class=${hud && (e.tentative || hud.t_fs - e.start_fs < RECENT_FS) ? 'on' : ''}>
-            <div class="rx-ev" title=${e.label}>
-              <span class="rx-t">${(e.start_fs / 1000).toFixed(2)} ps</span>
-              <span class="rx-eq">${e.label}</span>
-              ${e.reaction == null && !e.tentative && html`<span class="small muted">exchange</span>`}
-              ${e.tentative && html`<span class="small rx-analyzing" title="Still unfolding: its bonds may change again">analyzing…</span>`}
+          ${shown.map((e) => html`<li class=${hud && (e.tentative || hud.t_fs - e.start_fs < RECENT_FS) ? 'on' : ''}>
+            <div class="rx-ev" title=${`${e.label} · at ${(e.start_fs / 1000).toFixed(2)} ps`}>
+              <${EventPics} label=${e.label} />
+              ${e.tentative && html`<span class="small rx-analyzing" title="Still unfolding: its bonds may change again">forming…</span>`}
             </div></li>`)}
         </ol>
-        ${reactions.length > 0 && html`<button class="rx-bulb" onClick=${analyze}
-          title="Stops the reactor. Each reaction is refined and gets its own TS search; the results land in Explore.">
-          <span class="bulb-dot"></span><span><b>Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}</b>
-          <span class="small muted"> · stops the reactor</span></span></button>`}
+        ${swaps > 0 && html`<p class="small muted" title="An atom (usually H) passed from one molecule to an identical one: nothing new was made">+ ${swaps} H swap${swaps > 1 ? 's' : ''} between identical molecules</p>`}
         <details class="small"><summary>How to play</summary>
         <ul class="small muted how-to-play">
-          <li>Drag an atom to pull it (Shift: harder).</li>
+          <li>Press Collide, or drag an atom into another molecule (Shift: harder).</li>
           <li>Shrink the Wall (or scroll) to squeeze them.</li>
           <li>Heat it up with Temperature.</li>
         </ul>

@@ -114,8 +114,8 @@ export function LevelBar({ status = false, always = false }) {
   const note = (busy > 0 || off.length > 0) && html`<div class="level-status small">
     ${busy > 0 && html`<span class="muted">${busy} minimizing…</span>`}
     ${off.length > 0 && html`<button class="btn-link small warn-text" onClick=${reopt}
-      title="Minimize every structure that is not yet a minimum at this level (force-field embeddings, other levels, failed optimizations)">
-      ${off.length} not at ${levels[levelProfile ?? '']?.label ?? 'this level'} · re-optimize</button>`}
+      title=${`Minimize every structure that is not yet a minimum at the workspace level, ${levels[levelProfile ?? '']?.label ?? 'this level'} (force-field embeddings, other levels, failed optimizations)`}>
+      Optimize ${off.length} more</button>`}
   </div>`;
   if (status) return note ? html`<div class="level-bar">${note}</div>` : null;
   return html`
@@ -149,7 +149,7 @@ function Card({ rec, selected, order, fresh }) {
         else findInGraph(rec.id);
       }}
       onDblClick=${() => findInGraph(rec.id, true)}
-      title=${rec.smiles || rec.formula}>
+      title=${`${rec.smiles || rec.formula} · ${origin === 'job' ? `from ${rec.origin.label || 'a calculation'}` : origin === 'smiles' ? 'entered as SMILES' : 'from an .xyz'}`}>
       <div class="card-img">
         ${url ? html`<img src=${url} alt="" loading="lazy" />` : html`<span class="muted small">${rec.formula}</span>`}
         ${order > 0 && html`<span class="order-badge" title="Selection order (1 = start)">${order}</span>`}
@@ -159,9 +159,8 @@ function Card({ rec, selected, order, fresh }) {
         <div class="card-meta">
           <span>${rec.formula}</span>
           ${(rec.conformers || []).length > 1 && html`<span class="badge" title="Conformers of this molecule; the lowest-energy one represents it">${rec.conformers.length} conformers</span>`}
-          ${(rec.charge !== 0 || rec.multiplicity !== 1) && html`<span class="badge">${rec.charge >= 0 ? '+' : ''}${rec.charge} / ${rec.multiplicity}</span>`}
-          <span class=${`origin origin-${origin}`} title=${origin === 'job' ? `From ${rec.origin.label}` : `Entered as ${origin}`}>
-            ${origin === 'job' ? 'from a calculation' : origin === 'smiles' ? 'SMILES' : 'XYZ'}</span>
+          ${rec.charge !== 0 && html`<span class="badge" title=${`Charge ${rec.charge > 0 ? '+' : ''}${rec.charge}`}>${rec.charge > 0 ? '+' : '−'}${Math.abs(rec.charge) > 1 ? Math.abs(rec.charge) : ''}</span>`}
+          ${rec.multiplicity !== 1 && html`<span class="badge" title=${`Spin multiplicity ${rec.multiplicity}: ${rec.multiplicity - 1} unpaired electron${rec.multiplicity > 2 ? 's' : ''}`}>${rec.multiplicity === 2 ? 'radical' : rec.multiplicity === 3 ? 'triplet' : `mult. ${rec.multiplicity}`}</span>`}
           ${levelStatus(rec).kind !== 'ok' && html`<${LevelChip} rec=${rec} />`}
         </div>
       </div>

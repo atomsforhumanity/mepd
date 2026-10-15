@@ -3,7 +3,7 @@
 // Everything deeper (barriers, networks) opens from what happens there.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openTab, prefs, set, state, update, useStore } from '../store.js';
+import { openJob, openTab, prefs, set, state, update, useStore } from '../store.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
@@ -114,9 +114,10 @@ function QuestMap() {
   // "Show everything": every tool unlocked and usable, none marked new.
   const stateOf = (q) => (map.done.has(q.id) ? 'done' : map.all ? 'all' : map.open.has(q.id) ? 'open' : near(q) ? 'locked' : 'far');
   const found = QUESTS.filter((q) => map.done.has(q.id)).length;
+  const far = QUESTS.filter((q) => stateOf(q) === 'far').length;
   return html`<section class="quest-map">
     <div class="quest-head"><h4 class="section-title">Your tools</h4><span class="small muted mono">${map.all ? `all ${QUESTS.length}` : `${found}/${QUESTS.length}`}</span></div>
-    <ul class="quests">${QUESTS.map((q) => [q, stateOf(q)])
+    <ul class="quests">${QUESTS.map((q) => [q, stateOf(q)]).filter(([, st]) => st !== 'far')
       .sort((a, b) => ORDER[a[1]] - ORDER[b[1]]).map(([q, st]) => {
       const need = q.after.filter((a) => !map.done.has(a)).map((a) => questById(a).short).join(' + ');
       const tip = st === 'far' ? 'Not found yet' : st === 'locked' ? `${q.title}: after ${need}` : `${q.title}: ${q.blurb}`;
@@ -127,7 +128,7 @@ function QuestMap() {
         ${st === 'done' && html`<span class="q-badge">✓</span>`}
         ${st === 'open' && html`<span class="q-new" aria-hidden="true"></span>`}
       </button></li>`;
-    })}</ul>
+    })}${far > 0 && html`<li><span class="quest far more" title="Found as you go: each tool appears once the ones before it are used">+${far}<span class="q-name">to find</span></span></li>`}</ul>
   </section>`;
 }
 
@@ -161,8 +162,12 @@ export function WelcomeView() {
   const phone = usePhone();
   const [pick, setPick] = useState('glycine');
   const [busy, setBusy] = useState(false);
-  const tour = useStore((s) => s.tour || {});
   const map = useMap();
+  // A step is done once it was done here, or the workspace shows it (a reload, another browser).
+  const tour = { molecule: map.done.has('molecule'), reactor: map.done.has('reactor'), reaction: map.done.has('reaction') };
+  const jobs = useStore((s) => s.jobs);
+  const lastRun = Object.values(jobs).filter((j) => j.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(j.params?.trajectory || ''))
+    .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
   const p = PRESETS.find((x) => x.key === pick);
   const start = async () => { setBusy(true); await startPreset(p); setBusy(false); };
   const build = async () => {
@@ -194,10 +199,11 @@ export function WelcomeView() {
         </li>
         <li class=${`welcome-step ${tour.reaction ? 'done' : 'later'}`}>
           <span class="step-num">${tour.reaction ? '✓' : 3}</span>
-          <div><b>Catch a reaction</b>${tour.reaction && html`<span class="small muted">Next: Stop & analyze finds its barrier</span>`}</div>
+          <div><b>Catch a reaction</b>${tour.reaction && html`<span class="small muted">Next: find its barrier</span>`}</div>
         </li>
       </ol>
       <p class="small muted welcome-more">
+        ${lastRun && html`<a href="#" onClick=${(e) => { e.preventDefault(); openJob(lastRun.id, 'story'); }}>Your last reactor run</a>${' · '}`}
         <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>Open a SMILES or .xyz</a>
         ${map.tab('graph') && html`${' · '}<a href="#" onClick=${(e) => { e.preventDefault(); openTab('graph'); }}>Go to Explore</a>`}
       </p>

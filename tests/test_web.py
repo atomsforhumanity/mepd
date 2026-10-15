@@ -1096,7 +1096,7 @@ def test_structure_that_reacts_on_minimization_is_renamed_and_flagged(client):
     rec = ws.replace_geometry(s["id"], geom, energy=-1.0, level={"profile": "default", "key": "k", "label": "test"})
     assert chem.canonical_key(rec["smiles"]) == chem.canonical_key("CO.[Br-]")
     assert rec["name"] == rec["smiles"]  # the automatic name follows the new species
-    assert rec["reacted"]["from"] == "[OH-].CBr"
+    assert chem.canonical_key(rec["reacted"]["from"]) == chem.canonical_key("[OH-].CBr")
     assert "reacted" in rec["status_error"]
     # A name the user chose is kept.
     ws._data["structures"][product["id"]]["name"] = "my product"

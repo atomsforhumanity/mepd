@@ -277,6 +277,32 @@ class Workspace:
             self._save()
         if any([self._tag_members(r) for r in self._data["reactions"].values()]) | self._flatten_nested():
             self._save()   # complexes from before they recorded (flat) molecules
+        if self._tidy_names():
+            self._save()
+
+    def _tidy_names(self) -> bool:
+        """Older records: a molecule still named by its SMILES gets its
+        everyday name when it has one ("[OH]" -> "hydroxyl"), and a complex's
+        SMILES is its molecules' (a complex read as one geometry could come out
+        as ions, "[H+].[OH-]" for H + OH). Names someone typed are kept."""
+        structures = self._data["structures"]
+        complexes = [r for r in structures.values() if r.get("role") == "complex" and r.get("members")]
+        auto = {r["id"]: r.get("name") == complex_name(r["members"], structures) for r in complexes}
+        changed = False
+        for rec in structures.values():
+            if not is_species(rec) or rec.get("qmmm") or not rec.get("smiles") or rec.get("name") != rec["smiles"]:
+                continue
+            common = chem.common_name(rec["smiles"])
+            if common:
+                rec["name"], changed = common, True
+        for rec in complexes:
+            if all(m in structures for m in rec["members"]):
+                smi = ".".join(structures[m].get("smiles") or "" for m in rec["members"])
+                if all(structures[m].get("smiles") for m in rec["members"]) and rec.get("smiles") != smi:
+                    rec["smiles"], changed = smi, True
+                if auto[rec["id"]] and rec["name"] != complex_name(rec["members"], structures):
+                    rec["name"], changed = complex_name(rec["members"], structures), True
+        return changed
 
     # ------------------------------------------------------------------ io
     def _save(self) -> None:
@@ -345,6 +371,10 @@ class Workspace:
             smiles = self.perceive(structure)
         elif not smiles:
             smiles = chem.perceive_smiles(structure)
+        # A molecule named automatically (no name, or its SMILES) gets its
+        # everyday name when it has one ("[OH]" -> "hydroxyl").
+        if qmmm is None and role == "minimum" and (not name or name == smiles):
+            name = chem.common_name(smiles) or name
         members = None
         # Several molecules by its bonds *and* by its SMILES: a hot MD snapshot
         # can stretch one bond past the bond cutoff of _fragments while it is
@@ -397,6 +427,10 @@ class Workspace:
         if members is not None:
             rec["members"] = members
             rec["name"] = name or complex_name(members, self._data["structures"])
+            # Its molecules' SMILES: read as one geometry, H + OH can come out
+            # as ions ("[H+].[OH-]") although each molecule is a radical.
+            if all(self._data["structures"][m].get("smiles") for m in members):
+                rec["smiles"] = ".".join(self._data["structures"][m]["smiles"] for m in members)
         if qmmm is not None:
             rec["qmmm"] = qmmm
             label = self._data["qmmm_systems"][qmmm].get("name") or "QM/MM"

@@ -423,12 +423,14 @@ export function Inspector() {
         <button class="btn-icon" title="Hide this panel (bring it back with ? on the graph)" aria-label="Hide"
           onClick=${() => { prefs.set('hideHowTo', true); set({ howToHidden: true }); }}>✕</button></div>
       <div class="empty-hint">
-        ${network ? html`<ol class="steps">
-          <li><b>Arrows are reactions</b><span>The number is the barrier, kcal/mol. The arrow back is the reverse reaction.</span></li>
-          <li><b>Circles are molecules together</b><span>A complex, joined to its molecules by thin lines.</span></li>
-          <li><b>Click an arrow</b><span>Its energies, the moment it happened, what to try next.</span></li>
-          <li><b>Click a molecule</b><span>Put it back in the reactor, or see what else it can do.</span></li>
-        </ol>` : html`<ol class="steps">
+        ${network ? html`<ul class="graph-key">
+          <li><svg viewBox="0 0 64 24" aria-hidden="true"><line x1="4" y1="12" x2="56" y2="12" class="gk-arrow" /><path d="M54,7 L62,12 L54,17 z" class="gk-head" /><text x="30" y="9" text-anchor="middle">5.7</text></svg>
+            <span>A reaction and its barrier, kcal/mol</span></li>
+          <li><svg viewBox="0 0 64 24" aria-hidden="true"><circle cx="32" cy="12" r="9" class="gk-cx" /><text x="32" y="16" text-anchor="middle" class="gk-cxn">2</text></svg>
+            <span>Molecules together</span></li>
+          <li><svg viewBox="0 0 64 24" aria-hidden="true"><rect x="20" y="3" width="24" height="18" rx="3" class="gk-node" /><circle cx="48" cy="18" r="5" class="gk-tap" /></svg>
+            <span>Click anything: what you can do with it</span></li>
+        </ul>` : html`<ol class="steps">
           <li><b>Add molecules</b><span>On the left, or <a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>get started</a> with one.</span></li>
           <li><b>Select</b><span>One molecule to explore around it; two, or an arrow, to connect them.</span></li>
           <li><b>Run a calculation</b><span>What you can do with your selection appears here.</span></li>

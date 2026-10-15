@@ -57,7 +57,8 @@ function doneSet(s) {
   const tour = s.tour || {};
   const jobs = Object.values(s.jobs || {});
   const ws = s.workspace || {};
-  const ran = new Set(jobs.filter((j) => j.status === 'done').map((j) => j.op));
+  // (The interactive reactor's own analysis is a nanoreactor job too: it is not Discover.)
+  const ran = new Set(jobs.filter((j) => j.status === 'done' && !fromSandbox(j)).map((j) => j.op));
   const done = new Set();
   const nEdges = Object.keys(ws.edges || {}).length;
   const rules = {
@@ -84,7 +85,10 @@ export function mapOf(s = state) {
   for (const q of QUESTS) if (!done.has(q.id) && (all || q.after.every((a) => done.has(a)))) open.add(q.id);
   const reachable = new Set([...done, ...open]);
   const opened = (kind) => new Set(QUESTS.filter((q) => all || reachable.has(q.id)).flatMap((q) => q.opens?.[kind] || []));
-  return { all, done, open, ops: opened('ops'), tabs: opened('tabs'), features: opened('features') };
+  // Calculations once there is one: a run must never be out of reach.
+  const tabs = opened('tabs');
+  if (Object.keys(s.jobs || {}).length) tabs.add('jobs');
+  return { all, done, open, ops: opened('ops'), tabs, features: opened('features') };
 }
 
 const key = (s) => {

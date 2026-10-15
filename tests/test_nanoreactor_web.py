@@ -150,7 +150,7 @@ def test_kinetics_uses_reactions_with_barriers_and_ranks_what_controls_the_targe
     # A complex is its molecules, not a species: every step runs between separated molecules.
     assert sorted(labels) == ["CC=O + O -> C=CO + O", "CC=O -> C=CO"]
     assert all(s["kind"] != "association" for s in out["steps"])
-    assert {s["name"] for s in out["species"]} == {"CC=O", "water", "C=CO"}
+    assert {s["name"] for s in out["species"]} == {"acetaldehyde", "water", "vinyl alcohol"}
     assert out["target"]["final"] > 0
     fwd = {s["label"]: s["barrier_fwd"] for s in out["steps"]}
     assert fwd["CC=O -> C=CO"] == pytest.approx(45.0, abs=1e-6)

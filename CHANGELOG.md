@@ -12,6 +12,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Interactive reactor: Collide.** One button pulls two molecules into each other for a moment (what dragging an
+  atom does by hand), and "keep going" repeats it every few seconds. It is on by default until you have caught a
+  first reaction: left alone, the reactor rarely made any (glycine, 3 Å wall, 2000 K: none in 6.5 ps). With it,
+  formaldehyde + water made 3 reactions in 20 s.
 - **Web UI: finding what was just added.** The sidebar has a Structures | Reactions switch; Reactions lists
   every Explore arrow, newest first, with both ends drawn and its barrier. Structures and reactions a
   calculation added since you last looked carry a blue dot in the lists and a soft glow in the graph until
@@ -169,6 +173,25 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **A first visit is quieter** (from a first-time-user review):
+  - **Reactor:** reactions are drawn as molecules, not spelled as SMILES. H swaps between identical molecules are
+    a one-line count, not entries. The list and the badge count the same thing. The status line is time and
+    temperature (the rest on hover). One button leaves: "Find their barriers" (or "Stop & analyze"); Discard is a
+    link and "Add frame to Explore" is "Keep this moment" among the controls. The step bar ticks Reaction once one
+    is caught.
+  - **The reactor's summary page** hides the run controls behind "⋯", and the command and the other tabs behind
+    "All results". "Show everything" keeps the full page. A finished run you are looking at no longer pops a toast.
+  - **Library rows:** "radical", "triplet" or the charge instead of "+0 / 2"; where a structure came from is in its
+    tooltip, not on every row. The "shuttle" badge reads "carrier".
+  - **Welcome, coming back:** the steps tick from the workspace too; "Your last reactor run" links to it; tools
+    not found yet are one "+N to find" tile instead of a wall of "?"; the interactive reactor no longer counts as
+    "Find new reactions". Calculations is a tab as soon as there is one.
+  - **Explore:** labels grow as you zoom out, so they stay readable. The how-it-works panel is a picture key, a line
+    each. On phones, Tree and Select all are off the toolbar, and the toolbar and tabs fade where they scroll on.
+- **Structures a calculation finds have everyday names** instead of their SMILES, for about 120 small molecules,
+  radicals and ions: hydroxyl, formyl, hydroxymethyl, formic acid, H atom, H2 and so on. A complex is named after its
+  molecules. Names you typed are kept; existing structures still named by their SMILES are renamed when the
+  workspace loads.
 - **FSM-TS converges its TS optimization to 0.001 eV/Å** (was 0.01; new option `ts_fmax`). At 0.01 a soft mode
   (20–45 cm⁻¹) could still be unsettled, so a real TS read as a higher-order saddle and the pair fell back to GSM.
   All 6 such fallbacks in a 20-reaction KAIST run became first-order TSs at 0.001, 0.07–0.48 kcal/mol lower,
@@ -316,6 +339,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Reactor reaction ends were read as ions**: "H + OH" was stored and drawn as `[H+].[OH-]`, because the complex
+  was read as one geometry. A complex now takes its molecules' SMILES. **A lone H atom was read as H2** (`[HH]`);
+  one-atom structures are now perceived as a bare atom or ion. Existing workspaces are repaired when loaded.
 - **Reactor story: a barrier search that found no transition state offered "Find its barrier" again**, as if
   it had never run. It now says "No transition state found" with a link to the search. "See them in
   Explore" moved from below every reaction card to the top, and it selects those reactions.

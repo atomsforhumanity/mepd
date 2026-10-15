@@ -134,7 +134,7 @@ function Tile({ t }) {
     onClick=${() => { select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId: null } }); }}>
     ${img ? html`<img src=${img} alt=${t.rec?.name} />` : html`<span class="mono">${t.rec?.name || '?'}</span>`}
     <span class="rc-name">${t.n > 1 ? `${t.n} × ` : ''}${t.rec?.name || '?'}</span>
-    ${t.shuttle && html`<span class="rc-badge">shuttle</span>`}
+    ${t.shuttle && html`<span class="rc-badge" title="Takes part and comes out unchanged: it carries an atom (often H) across">carrier</span>`}
   </button>`;
 }
 
