@@ -68,10 +68,10 @@ export function PathsOverview({ result, current, onPick }) {
   };
   return html`<section class="paths-overview">
     <div class="po-stats">
-      ${barrier != null && html`<div><b>${fmtKcal(barrier)}</b><span>lowest ΔE‡, kcal/mol${many ? ` (${best.label})` : ''}</span></div>`}
-      <div><b>${paths.length}</b><span>${many ? 'channels found' : 'path'}</span></div>
-      <div><b>${sk(best.end)}</b><span>ΔE, kcal/mol, its product − reactant</span></div>
-      ${result.barrier_verified != null && html`<div><b>${result.barrier_verified ? 'yes' : 'no'}</b><span>IRC connects the ends</span></div>`}
+      ${barrier != null && html`<div><span>Lowest barrier</span><b>${fmtKcal(barrier)} kcal/mol</b></div>`}
+      <div><span>${many ? 'Channels found' : 'Paths found'}</span><b>${paths.length}</b></div>
+      <div><span>Reaction energy</span><b>${sk(best.end)} kcal/mol</b></div>
+      ${result.barrier_verified != null && html`<div><span>IRC connects the ends</span><b>${result.barrier_verified ? 'Yes' : 'No'}</b></div>`}
     </div>
     <div class="po-card"><${Diagram} paths=${paths} lowest=${best.id} current=${current} onPick=${pick} /></div>
     <p class="small muted">Electronic energies, kcal/mol from the lowest reactant geometry found. Click a ${many ? 'channel' : 'path'} to see it in 3D.</p>
