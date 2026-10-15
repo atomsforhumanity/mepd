@@ -41,6 +41,8 @@ export function AtomMappingPanel({ mapping }) {
   const [pick, setPick] = useState(0);
   const [frame, setFrame] = useState(0);
   const [playing, setPlaying] = useState(false);
+  // Folded until asked for: the path is what the page is about.
+  const [open, setOpen] = useState(false);
   const c = cands[Math.min(pick, cands.length - 1)];
   const frames = c?.frames || [];
   useEffect(() => { setFrame(0); setPlaying(false); }, [pick]);
@@ -55,10 +57,13 @@ export function AtomMappingPanel({ mapping }) {
   if (!c) return null;
   const symbols = mapping.symbols || [];
   const several = cands.length > 1;
+  const used = cands.find((x) => x.chosen) || c;
+  const nChange = used.broken.length + used.formed.length;
   return html`
-    <section class="card-block atom-mapping">
-      <h3 class="section-title">Atom mapping</h3>
-      <p class="small">${mapping.summary}${mapping.n_candidates > cands.length
+    <details class="card-block atom-mapping" open=${open} onToggle=${(e) => setOpen(e.currentTarget.open)}>
+      <summary><span class="section-title">Atom mapping</span>
+        <span class="small muted"> · ${nChange} bond change${nChange === 1 ? '' : 's'}${several ? ` · ${cands.length} compared` : ''}</span></summary>
+      ${open && html`<p class="small">${mapping.summary}${mapping.n_candidates > cands.length
         ? ` ${cands.length} of the ${mapping.n_candidates} compared are shown (the chosen one, the current numbering, the best-scoring others).` : ''}</p>
       ${several && html`<div class="mapping-chips">
         ${cands.map((x, i) => html`<button type="button" key=${x.label} class=${`chip ${i === pick ? 'on' : ''}`}
@@ -96,6 +101,6 @@ export function AtomMappingPanel({ mapping }) {
       ${(mapping.notes || []).length > 0 && html`<details class="small"><summary>How the mapping was chosen</summary>
         <ul>${mapping.notes.map((n) => html`<li class="mono">${n}</li>`)}</ul></details>`}
       <p class="small muted">Atoms are numbered by the start's order; each mapping renumbers the end so atom k is the
-        start's atom k. Hydrogens are drawn only where a bond to them changes.</p>
-    </section>`;
+        start's atom k. Hydrogens are drawn only where a bond to them changes.</p>`}
+    </details>`;
 }

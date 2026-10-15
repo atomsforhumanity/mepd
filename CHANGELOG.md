@@ -142,6 +142,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **A path search's results open on an overview**, like a reaction's report: the lowest barrier, how many
+  channels, ΔE and whether the IRC connects the ends; an energy diagram with every channel; and a table of them.
+  Click a channel for its 3D path below. Details (search summary, warnings, the atom mapping, now folded until
+  clicked) and the follow-up calculations move to the bottom.
 - **Web UI tools grouped by scale**: a selection's tools sit under **Molecule** (Optimize, Conformers, Complex),
   **Reaction** (Pick products, Transition state, Channels, Valley-ridge inflection) and **Network** (Reactor,
   Network expansion, Retrosynthesis), the same groups in the same order for any selection.

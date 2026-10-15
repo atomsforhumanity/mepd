@@ -19,6 +19,7 @@ import { ProteinSites } from './ProteinSites.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
 import { AtomMappingPanel } from './AtomMapping.js';
+import { PathsOverview } from './PathsOverview.js';
 import { BuiltPairsPanel } from './BuiltPairs.js';
 import { Why } from './Why.js';
 
@@ -485,17 +486,8 @@ function ResultPanel({ job }) {
           <a class="btn small" href=${`/api/jobs/${job.id}/archive`} title="The full output folder, inputs and logs">All files (.zip)</a>
         </div>
       </div>
-      ${result.summary.length > 0 && html`<dl class="summary">
-        ${result.summary.map((s) => html`<div><dt>${s.label}</dt><dd>${s.value}</dd></div>`)}
-      </dl>`}
       ${(result.barrier_warnings || []).map((w) => html`<p class="error-box small">⚠ ${w}</p>`)}
-      ${result.warnings.length > 0 && html`
-        <details class="warn-box small warnings">
-          <summary>${result.warnings.length} warning${result.warnings.length > 1 ? 's' : ''} reported by mepd — check before trusting every number</summary>
-          <ul>${result.warnings.map((w) => html`<li class="mono">${w}</li>`)}</ul>
-        </details>`}
-      ${result.atom_mapping && html`<${AtomMappingPanel} mapping=${result.atom_mapping} />`}
-      ${result.built_pairs && html`<${BuiltPairsPanel} job=${job} data=${result.built_pairs} />`}
+      <${PathsOverview} result=${result} current=${entryId} onPick=${setEntryId} />
       ${job.op === 'nanoreactor' && html`<${SpawnedSearches} job=${job} />`}
       ${result.nanoreactor && html`<${ReactionTable} job=${job} reactions=${result.nanoreactor.reactions} />`}
       ${result.retro && html`<${RetroRoutes} job=${job} retro=${result.retro} />`}
@@ -504,11 +496,6 @@ function ResultPanel({ job }) {
       ${result.mechano && html`<p class="level-note small">Mechanical-force results are not shown in the web UI for now;
         this job's files are under Files.</p>`}
       ${result.substituents && html`<${SubstituentPanel} x=${result.substituents} />`}
-      ${['ts', 'tsopt', 'design-tsopt', 'channels'].includes(job.op) && html`<${ConditionsFollowUps} job=${job} />`}
-      ${result.vri && html`<${VriFollowUps} job=${job} vri=${result.vri} />`}
-      ${job.op === 'channels' && html`<${ChannelsFollowUps} job=${job} built=${result.built_pairs} />`}
-      ${job.op === 'nanoreactor' && html`<${NanoreactorFollowUps} job=${job} />`}
-      ${job.op === 'ts' && html`<${TsFollowUps} job=${job} />`}
       ${result.groups.length > 0 && html`<div class="result-body">
         <div class="entries-col">
           ${pickGroup && html`<${BulkBar} group=${pickGroup} picked=${picked} inGraph=${inGraph} busy=${adding}
@@ -556,6 +543,27 @@ function ResultPanel({ job }) {
           </div>`}
       </div>`}
       ${result.vri?.explorer && html`<${VriExplorer} job=${job} />`}
+      ${(result.summary.length > 0 || result.warnings.length > 0 || result.atom_mapping || result.built_pairs) && html`
+        <section class="result-details">
+          <h3 class="section-title">Details</h3>
+          ${result.summary.length > 0 && html`<dl class="summary">
+            ${result.summary.map((s) => html`<div><dt>${s.label}</dt><dd>${s.value}</dd></div>`)}
+          </dl>`}
+          ${result.warnings.length > 0 && html`
+            <details class="warn-box small warnings">
+              <summary>${result.warnings.length} warning${result.warnings.length > 1 ? 's' : ''} reported by mepd — check before trusting every number</summary>
+              <ul>${result.warnings.map((w) => html`<li class="mono">${w}</li>`)}</ul>
+            </details>`}
+          ${result.atom_mapping && html`<${AtomMappingPanel} mapping=${result.atom_mapping} />`}
+          ${result.built_pairs && html`<${BuiltPairsPanel} job=${job} data=${result.built_pairs} />`}
+        </section>`}
+      <div class="result-more">
+        ${['ts', 'tsopt', 'design-tsopt', 'channels'].includes(job.op) && html`<${ConditionsFollowUps} job=${job} />`}
+        ${result.vri && html`<${VriFollowUps} job=${job} vri=${result.vri} />`}
+        ${job.op === 'channels' && html`<${ChannelsFollowUps} job=${job} built=${result.built_pairs} />`}
+        ${job.op === 'nanoreactor' && html`<${NanoreactorFollowUps} job=${job} />`}
+        ${job.op === 'ts' && html`<${TsFollowUps} job=${job} />`}
+      </div>
     </div>`;
 }
 

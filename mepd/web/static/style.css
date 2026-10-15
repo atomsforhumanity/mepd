@@ -1629,3 +1629,31 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .surr-switch button.picked { box-shadow: inset 0 -2px 0 var(--accent); }
 .surr-switch button:disabled { color: var(--muted); opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .nav-link, .nav-link:hover { transform: none; transition: none; } }
+
+/* A path search's results open on its overview (PathsOverview.js), as in a reaction's report. */
+.paths-overview { margin: 4px 0 18px; }
+.po-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.po-stats > div { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; }
+.po-stats b { display: block; font: 650 22px/1.1 var(--font-ui); color: var(--heading); }
+.po-stats span { font-size: 12px; color: var(--muted); }
+.po-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 6px 10px; }
+.po-diagram { display: block; width: 100%; max-width: 720px; height: auto; margin: 0 auto; }
+.po-level { stroke: var(--text); stroke-width: 3; }
+.po-line { fill: none; stroke: var(--c); stroke-width: 2; opacity: .75; }
+.po-ch { cursor: pointer; }
+.po-ch:hover .po-line, .po-ch.on .po-line { stroke-width: 3.5; opacity: 1; }
+.po-num { font: 650 11px var(--font-ui); fill: var(--heading); text-anchor: middle; }
+.po-lab { font: 400 11px var(--font-ui); fill: var(--muted); text-anchor: middle; }
+.po-lab.b { font-weight: 650; fill: var(--text); }
+.po-table { width: 100%; max-width: 760px; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.po-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.po-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+.po-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.po-table tbody tr { cursor: pointer; }
+.po-table tbody tr:hover, .po-table tbody tr.on { background: var(--accent-soft); }
+.po-table i { display: inline-block; width: 12px; height: 3px; margin-right: 6px; vertical-align: 3px; }
+.result-details { margin-top: 22px; }
+.result-details .atom-mapping > summary { cursor: pointer; list-style-position: inside; }
+.result-details .atom-mapping > summary .section-title { display: inline; }
+.result-more { margin-top: 18px; }
+@media (max-width: 640px) { .po-table th:nth-child(5), .po-table td:nth-child(5) { display: none; } .po-stats b { font-size: 18px; } }
