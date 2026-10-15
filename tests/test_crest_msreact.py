@@ -39,10 +39,11 @@ def test_the_network_card_offers_five_methods_and_msreact_builds_its_command():
     assert labels == ["Nanoreactor", "Bond rules", "CREST msreact", "Hessian sampling", "Basin hopping"]
     # On a QM/MM system the nanoreactor is a generator of the expansion (its own operation needs molecules).
     assert [m["label"] for _, m in ordered if m.get("qmmm_only")] == ["Nanoreactor"]
-    # The retrosynthesis methods share the card, as their own group after these.
-    retro = [m["label"] for op, m in ordered if op.key == "retrosynthesis"]
-    assert retro == ["Templates", "ReactionT5", "Local LLM", "AiZynthFinder"]
-    assert all(m.get("group") for op, m in ordered if op.key == "retrosynthesis")
+    # Retrosynthesis has its own card, with its methods.
+    assert not [op for op, _ in ordered if op.key == "retrosynthesis"]
+    retro = OPERATIONS["retrosynthesis"]
+    assert retro.family["key"] == "retrosynthesis"
+    assert [m["label"] for m in retro.methods] == ["Templates", "ReactionT5", "Local LLM", "AiZynthFinder"]
     assert (OPERATIONS["nanoreactor"].family or {}).get("key") == "network"   # its own operation, on the same card
     op = OPERATIONS["graph-enumeration"]
     p = op.parse_params({"generator": "crest-msreact", "msreact_mode": "isomers", "msreact_nshifts": 2})

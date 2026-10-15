@@ -23,6 +23,9 @@ const TILE = {
   'qmmm-protein-sites': ['protein', 'In a protein'], 'qmmm-embed': ['explicit', 'Into this system'], 'qmmm-inspect': ['explicit', 'Energy split'],
   'hessian-sample': ['discover', 'Hessian sampling'], 'hessian-global': ['discover', 'Basin hopping'], 'graph-enumeration': ['discover', 'Network expansion'],
 };
+// A family card that an extra (not a calculation) can join when none of its operations fit here.
+const EXPLORE_CAT = 'Explore around a structure';
+const FAMILY_FALLBACK = { network: { key: 'network', title: 'Reaction network expansion' } };
 // The first sentence, without the trailing CLI hint: what the tile's tooltip and form head say.
 export const oneLine = (s) => (s || '').replace(/\s*\(`[^`]*`\)\s*$/, '').split(/(?<=[.;])\s/)[0];
 
@@ -339,7 +342,7 @@ function FamilyCard({ family, methods, sel, open, onToggle, embedded = false }) 
   const focusOp = useStore((s) => s.focusOp);
   useEffect(() => {
     if (!focusOp || Date.now() - focusOp.at > 10000) return;
-    const hit = methods.find((x) => x.op.key === focusOp.key);
+    const hit = methods.find((x) => x.op?.key === focusOp.key);
     if (hit) choose(hit.id);
   }, [focusOp?.at]);
   const body = html`<div class="family-body">
@@ -349,8 +352,9 @@ function FamilyCard({ family, methods, sel, open, onToggle, embedded = false }) 
           ${methods.filter((x) => (x.group || '') === g).map((x) => html`<button role="tab" aria-selected=${x.id === m.id} class=${`method ${x.id === m.id ? 'on' : ''} ${x.available ? '' : 'off'}`}
             title=${x.available ? x.summary : x.reason} onClick=${() => choose(x.id)}>${x.label}</button>`)}
         </div>`)}
-        <p class="small method-summary" title=${m.summary}>${oneLine(m.summary)}<${Why} ids=${[`method.${m.id}`, `op.${m.op.key}`]} label=${m.label} /></p>
-        ${!m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
+        <p class="small method-summary" title=${m.summary}>${oneLine(m.summary)}<${Why} ids=${m.op ? [`method.${m.id}`, `op.${m.op.key}`] : [m.why]} label=${m.label} /></p>
+        ${m.render ? m.render()
+          : !m.available ? html`<p class="warn-box small">Not available here: ${m.reason}.</p>`
           : m.fit.disabled ? html`<p class="small why-disabled">${m.fit.disabled}</p>`
             : html`<${OperationCard} key=${m.id} op=${m.op} sel=${sel} fit=${m.fit} open=${true} embedded fixed=${m.fixed} />`}
       </div>`;
@@ -396,6 +400,9 @@ export function ActionPanel({ sel, extras = [] }) {
     }, 150);
   }, [focusOp?.at]);
   if (!all.length && !extras.length) return null;
+  // Extras that belong on a family's card (e.g. picking products, on the network one) join it as a method.
+  const asMethods = extras.filter((x) => x.family);
+  extras = extras.filter((x) => !x.family);
   const fits = all.filter((x) => x.op.available);
   const later = all.filter((x) => !x.op.available);
   const byCat = {};
@@ -416,13 +423,20 @@ export function ActionPanel({ sel, extras = [] }) {
       families[fam.key].methods.push({ ...meth, id: `${x.op.key}:${i}`, op: x.op, fit: x.fit });
     }
   }
+  for (const x of asMethods) {
+    if (!families[x.family]) {
+      families[x.family] = { family: FAMILY_FALLBACK[x.family] || { key: x.family, title: x.name }, methods: [] };
+      (byCat[EXPLORE_CAT] ||= []).push({ familyKey: x.family });
+    }
+    families[x.family].methods.push({ id: x.key, label: x.name, summary: x.tip, why: x.why, rank: x.rank, available: true, render: x.render });
+  }
   Object.values(families).forEach((f) => f.methods.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0)));
   const toggle = (k) => setOpenKey(openKey === k ? null : k);
   const tileOf = (item) => {
     if (item.familyKey) {
       const f = families[item.familyKey].family;
-      const first = families[item.familyKey].methods[0]?.op.key;
-      const several = new Set(families[item.familyKey].methods.map((x) => x.op.key)).size > 1;
+      const first = families[item.familyKey].methods[0]?.op?.key;
+      const several = new Set(families[item.familyKey].methods.map((x) => x.op?.key ?? x.id)).size > 1;
       const [icon, name] = TILE[f.key] || (several ? ['discover', f.title] : TILE[first]) || ['discover', f.title];
       return { key: item.familyKey, icon, name: f.key === first ? name : f.title.replace(/^Reaction network /, 'Network '), tip: families[item.familyKey].methods.map((x) => x.label).join(' · '),
         form: () => html`<${ActForm} title=${f.title} onClose=${() => setOpenKey(null)}>

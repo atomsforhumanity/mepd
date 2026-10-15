@@ -474,7 +474,9 @@ export function Inspector() {
         act: () => attempt(() => api.post('/api/design/load', { structure: sids[0], network: state.network || null }), 'Loaded into Design').then((d) => d && openTab('design')) },
       map.feature('complex') && { key: 'x-complex', icon: 'complex', name: 'Complex', tip: 'Several of these molecules together, arranged and minimized',
         render: (close) => html`<${CombineComplex} key=${sids.join(',')} sids=${sids} embedded onClose=${close} />` },
-      map.feature('compose') && { key: 'x-compose', icon: 'reaction', name: 'Products', why: 'other.products', tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
+      // Picking products by hand is one way of expanding the network: a method on that card.
+      map.feature('compose') && { key: 'x-compose', family: 'network', name: 'Pick products', why: 'other.products', rank: -2,
+        tip: `What ${nS > 1 ? 'these' : 'this'} can become: click products to make reactions`,
         render: () => html`<${InspectorProducts} key=${sids.join(',')} sids=${sids} />` },
       n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
         act: () => openAnalyze({ species: [...sids], reaction: null }) },

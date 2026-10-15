@@ -166,7 +166,7 @@ def test_web_operation_builds_the_command(tmp_path):
     from mepd.web.operations import OPERATIONS, RetroParams, _build_retro
 
     op = OPERATIONS["retrosynthesis"]
-    assert op.family["key"] == "network" and {m["fixed"]["method"] for m in op.methods} >= {"templates", "reactiont5", "local-llm", "aizynthfinder"}
+    assert op.family["key"] == "retrosynthesis" and {m["fixed"]["method"] for m in op.methods} >= {"templates", "reactiont5", "local-llm", "aizynthfinder"}
 
     class Ctx:
         structures = [{"smiles": "CCO", "charge": 0, "multiplicity": 1}]

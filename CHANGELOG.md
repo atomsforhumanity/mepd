@@ -142,6 +142,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web UI tools**: Products is now **Pick products**, the first method on the Network expansion card, and
+  Retrosynthesis has its own card (its four methods) instead of sharing the network one with the nanoreactor.
+
 - **The demo needs no password** (mepd.atomsforhumanity.org). Opening the page makes a private workspace
   at once; `MEPD_DEMO_PASSWORD` / `--demo-password` is now optional and gates the demo only when set (the
   k8s manifest no longer sets it; `deploy/demo/run.sh` still uses one). The workspace is made on the page's
