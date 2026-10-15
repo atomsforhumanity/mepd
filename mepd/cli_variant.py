@@ -32,7 +32,7 @@ from typing import Optional
 import numpy as np
 import typer
 
-from qcconst.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
+from qcref.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
 
 ANGSTROM_TO_BOHR = 1 / 0.529177210903
 

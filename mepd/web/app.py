@@ -2346,7 +2346,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def sandbox_snapshot(sid: str):
         """The current frame into Explore (several molecules: a complex), not minimized."""
         import numpy as np
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
         from qcdata import Structure
 
         box = _sandbox(sid)

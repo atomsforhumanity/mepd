@@ -293,8 +293,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 ### Fixed
 
 - **mepd failed to import with qcconst 0.3** (`KeyError: 'Hartree energy'` in `mepd.engines.engine`), which
-  any install without uv.lock now gets: qcconst 0.3 renamed its CODATA keys (`HARTREE_ENERGY`). Both spellings
-  are read now. (qcconst itself is deprecated in favour of qcref.)
+  any install without uv.lock got: qcconst 0.3 renamed its CODATA keys and is deprecated (renamed qcref).
+  mepd now depends on **qcref** (>=0.3) instead of qcconst and reads the new key names; constants are unchanged.
 
 - **A charged reaction's channels were classified as neutral when `--charge` was not given**: the TS and IRC
   files read back for classification took charge 0 and multiplicity 1 instead of the endpoints' own.

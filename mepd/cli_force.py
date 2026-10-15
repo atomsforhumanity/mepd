@@ -24,7 +24,7 @@ from typing import List, Optional
 import numpy as np
 import typer
 
-from qcconst.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
+from qcref.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
 
 
 def _coords(xyz: str) -> np.ndarray:

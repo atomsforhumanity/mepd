@@ -27,7 +27,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 from mepd.qmmm import QMMMRegion, bonds, molecules
 

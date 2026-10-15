@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
+from qcref.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
 
 from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import _connectivity_matches

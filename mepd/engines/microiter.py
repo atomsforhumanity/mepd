@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 from mepd.chain import Chain
 from mepd.errors import ElectronicStructureError

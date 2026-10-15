@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from qcdata import Structure
 
 

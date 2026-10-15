@@ -53,7 +53,7 @@ from types import SimpleNamespace
 from typing import Callable, Optional, Sequence
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
+from qcref.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
 
 from mepd import search_control
 

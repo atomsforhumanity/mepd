@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+from qcref.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 
 from mepd.chain import Chain
 from mepd.engines.engine import build_hessian_result_from_matrix

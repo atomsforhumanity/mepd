@@ -452,7 +452,7 @@ def test_visualize_rejects_unrecognized_directory(tmp_path):
 
 
 def _embedded_node(smiles: str):
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
     from qcdata.models.structure import Structure
     from rdkit import Chem
     from rdkit.Chem import AllChem

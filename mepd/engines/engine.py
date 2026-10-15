@@ -16,7 +16,7 @@ from mepd.nodes.node import Node
 from mepd.fakeoutputs import FakeQCIOOutput
 from mepd.helper_functions import get_mass
 from qcdata import ProgramOutput
-import qcconst.constants as _qcconst_constants
+import qcref.constants as _qcref_constants
 
 # Hartree/(bohr^2 * amu) -> (cm^-1)^2, derived from CODATA constants (matches
 # the standard ~5140.487 cm^-1 per sqrt(Hartree/(bohr^2*amu)) conversion used
@@ -24,16 +24,13 @@ import qcconst.constants as _qcconst_constants
 # eigenvalues into physically meaningful wavenumbers -- see
 # build_hessian_result_from_matrix.
 def _codata(name: str) -> float:
-    """A CODATA constant from qcconst: "Hartree energy" up to 0.2, HARTREE_ENERGY from 0.3."""
-    try:
-        return float(_qcconst_constants.phys[name])
-    except KeyError:
-        return float(_qcconst_constants.phys[name.upper().replace(" ", "_")])
+    """A CODATA 2022 constant from qcref, e.g. HARTREE_ENERGY."""
+    return float(_qcref_constants.phys[name])
 
 
 _HESSIAN_EIGENVALUE_TO_CM2 = (
-    _codata("Hartree energy") / _codata("Bohr radius") ** 2 / _codata("atomic mass constant")
-) / (2 * np.pi * _codata("speed of light in vacuum") * 100) ** 2
+    _codata("HARTREE_ENERGY") / _codata("BOHR_RADIUS") ** 2 / _codata("ATOMIC_MASS_CONSTANT")
+) / (2 * np.pi * _codata("SPEED_OF_LIGHT_IN_VACUUM") * 100) ** 2
 
 
 @dataclass

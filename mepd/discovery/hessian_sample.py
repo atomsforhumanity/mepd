@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 import numpy as np
-import qcconst.constants as _qcconst_constants
+import qcref.constants as _qcref_constants
 
 from mepd.elementarystep import prepare_modes
 from mepd.engines.engine import Engine, build_hessian_result_from_matrix
@@ -29,9 +29,9 @@ from mepd.nodes.nodehelpers import displace_by_dr, is_identical
 
 # kcal/(mol*K), derived from CODATA constants rather than hardcoded.
 _R_GAS_KCAL_MOL_K = (
-    float(_qcconst_constants.BOLTZMANN_CONSTANT)
-    * float(_qcconst_constants.AVOGADRO_NUMBER)
-    / float(_qcconst_constants.KCAL_TO_JOULE)
+    float(_qcref_constants.BOLTZMANN_CONSTANT)
+    * float(_qcref_constants.AVOGADRO_NUMBER)
+    / float(_qcref_constants.KCAL_TO_JOULE)
 )
 
 # Optional progress hook: called as `on_event(event_name, payload)` at
@@ -178,7 +178,7 @@ def _harmonic_displacement_energy_kcal(force_constant: float, effective_dr: floa
     if force_constant is None or not np.isfinite(force_constant):
         return None
     hartree = 0.5 * float(force_constant) * float(effective_dr) ** 2
-    return hartree * float(_qcconst_constants.HARTREE_TO_KCAL_PER_MOL)
+    return hartree * float(_qcref_constants.HARTREE_TO_KCAL_PER_MOL)
 
 
 _DEFAULT_FORCE_CONSTANT_MIN = 1.0e-4  # Hartree/bohr^2
@@ -219,7 +219,7 @@ def _amplitudes_for_modes(
         return [effective for _ in mode_set.freqs_wavenumber]
 
     if amplitude_policy == "energy":
-        target_hartree = float(scan_value) / float(_qcconst_constants.HARTREE_TO_KCAL_PER_MOL)
+        target_hartree = float(scan_value) / float(_qcref_constants.HARTREE_TO_KCAL_PER_MOL)
         amplitudes: List[Optional[float]] = []
         for force_constant, freq in zip(mode_set.force_constants, mode_set.freqs_wavenumber):
             if freq < 0:
@@ -621,7 +621,7 @@ def run_hessian_sample(
     for failed in failed_candidates:
         failed["meta"].outcome = "opt_failed"
 
-    hartree_to_kcal = float(_qcconst_constants.HARTREE_TO_KCAL_PER_MOL)
+    hartree_to_kcal = float(_qcref_constants.HARTREE_TO_KCAL_PER_MOL)
     outcomes = _classify_optimized_outcomes(optimized_nodes, seed_node, chain_inputs)
     for node, meta, outcome in zip(optimized_nodes, optimized_metadata, outcomes):
         meta.outcome = outcome
@@ -803,7 +803,7 @@ def run_hessian_global_optimization(
     if chain_inputs is None:
         chain_inputs = ChainInputs()
 
-    from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+    from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
     hartree_to_kcal = float(HARTREE_TO_KCAL_PER_MOL)
     start_energy = float(engine.compute_energies([seed_node])[0])

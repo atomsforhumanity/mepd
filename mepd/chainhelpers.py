@@ -353,7 +353,7 @@ def _coords_reordered_to_reference_symbols(
     return np.array(coords, copy=False)[np.array(reordered_indices, dtype=int)]
 
 
-from qcconst.constants import BOHR_TO_ANGSTROM  # noqa: E402
+from qcref.constants import BOHR_TO_ANGSTROM  # noqa: E402
 
 GEODESIC_IN_ANGSTROM = True     # False: the old behaviour (Bohr into an Angstrom metric)
 

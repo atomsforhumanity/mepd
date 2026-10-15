@@ -21,7 +21,7 @@ from ase.units import Hartree
 from numpy.typing import NDArray
 
 from mepd.chain import Chain
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from mepd.engines.engine import (
     Engine,
     FiniteDifferenceHessianOutput,

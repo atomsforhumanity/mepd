@@ -1,7 +1,7 @@
 """Network expansion with metals and ions: metals are ions bound by dative
 bonds, kept out of the main-group Lewis check."""
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 from mepd.cli_common import _load_structure_from_smiles_or_xyz
 from mepd.discovery.network_expansion import enumerate_bond_changes, graph_edges, lewis_smiles

@@ -489,7 +489,7 @@ def _molecule_node(smiles: str, seed: int = 1) -> StructureNode:
     mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
     AllChem.EmbedMolecule(mol, randomSeed=seed)
     AllChem.MMFFOptimizeMolecule(mol)
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     positions = mol.GetConformer().GetPositions()
     symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]

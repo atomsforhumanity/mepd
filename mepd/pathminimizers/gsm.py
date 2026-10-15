@@ -199,7 +199,7 @@ import threading
 import traceback
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 HARTREE_TO_EV = 27.2114
 KCAL_PER_HARTREE = 627.5
@@ -715,7 +715,7 @@ class GSM(PathMinimizer):
         real `.energy` and `.coords`) to `fp` in the same block format GSM's
         own `stringfile.xyz<run>`/`restart.xyz<run>` files use.
         """
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
 
         lines = []
         for node in nodes:
@@ -1231,7 +1231,7 @@ class GSM(PathMinimizer):
         the post-step geometries nor always the energies GSM reports (its
         kNNR surrogate skips some gradients), so no fallback is attempted.
         """
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
 
         natoms = len(reactant.symbols)
         out = []
@@ -1264,7 +1264,7 @@ class GSM(PathMinimizer):
     def _chain_from_blocks(self, blocks, reactant, product, e_reactant: float, chain_parameters) -> Chain:
         """`[(energy kcal/mol vs reactant, coords Angstrom), ...]` -> Chain with
         cached energies and the real reactant/product pinned as endpoints."""
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
 
         nodes = []
         for v_kcal, coords in blocks:
@@ -1335,7 +1335,7 @@ class GSM(PathMinimizer):
         if not blocks:
             return None
 
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
 
         import json
 
@@ -1393,7 +1393,7 @@ class GSM(PathMinimizer):
     def _parse_stringfile(
         self, workdir: Path, reactant, e_reactant: float, chain_parameters
     ) -> Chain:
-        from qcconst.constants import ANGSTROM_TO_BOHR
+        from qcref.constants import ANGSTROM_TO_BOHR
 
         text = (workdir / "stringfile.xyz0000").read_text()
         blocks = self._parse_string_blocks(text, len(reactant.symbols))

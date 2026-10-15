@@ -13,7 +13,7 @@ from openbabel import openbabel, pybel
 from qcdata.models.inputs import ProgramInput
 from qcdata.models.structure import Structure
 
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from mepd.geodesic_interpolation2.fileio import read_xyz
 from mepd.helper_functions import (
     bond_ord_number_to_string,

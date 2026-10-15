@@ -20,7 +20,7 @@ def _butane_node(seed: int = 1, smiles: str = "CCCC") -> StructureNode:
     mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
     AllChem.EmbedMolecule(mol, randomSeed=seed)
     AllChem.MMFFOptimizeMolecule(mol)
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     positions = mol.GetConformer().GetPositions()
     symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
@@ -76,7 +76,7 @@ def test_generate_conformers_rdkit_samples_a_two_fragment_complex():
     different molecule, and the pool silently collapsed to the input. Each
     fragment must keep its sampled internal conformation but be put back
     where it sits in the input complex."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     mol = Chem.AddHs(Chem.MolFromSmiles("CCCCC.O"))
     AllChem.EmbedMolecule(mol, randomSeed=3)
@@ -214,7 +214,7 @@ def _write_fake_crest(tmp_path, frames_text: str):
 
 
 def _frames_xyz(nodes, energies, symbols=None) -> str:
-    from qcconst.constants import BOHR_TO_ANGSTROM
+    from qcref.constants import BOHR_TO_ANGSTROM
 
     blocks = []
     for node, energy in zip(nodes, energies):
@@ -341,7 +341,7 @@ def test_generate_conformers_crest_backend_real_binary_finds_butane_conformers()
 def _pentane_water(shift_bohr: float, energy: float) -> StructureNode:
     """pentane + water, the water moved `shift_bohr` further out; same
     internal geometry of both molecules every time."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     mol = Chem.AddHs(Chem.MolFromSmiles("CCCCC.O"))
     AllChem.EmbedMolecule(mol, randomSeed=3)
@@ -408,7 +408,7 @@ def test_rdkit_backend_samples_s_cis_butadiene_only_without_torsion_prefs():
             _butane_node(smiles="C=CC=C"),
             ConformerInputs(n_conformers=None, n_embed=50, rdkit_torsion_prefs=mode),
         )
-        from qcconst.constants import BOHR_TO_ANGSTROM
+        from qcref.constants import BOHR_TO_ANGSTROM
         n = 0
         for c in confs:
             g = np.asarray(c.structure.geometry) * BOHR_TO_ANGSTROM
@@ -440,7 +440,7 @@ def test_rdkit_backend_keeps_the_input_when_bond_orders_cant_be_perceived():
 def test_rdkit_backend_samples_when_only_openbabel_perceives_the_bond_orders():
     """RDKit's bond-order perception fails on 4-nitrobenzaldehyde (a
     closed-shell, neutral molecule); openbabel's is used instead."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     m = Chem.AddHs(Chem.MolFromSmiles("O=Cc1ccc([N+](=O)[O-])cc1"))
     AllChem.EmbedMolecule(m, randomSeed=1)
@@ -457,7 +457,7 @@ def test_rdkit_backend_samples_when_only_openbabel_perceives_the_bond_orders():
 def test_openbabel_bond_orders_are_rejected_when_implausible():
     """An ammonium N gets no charge from openbabel: rejected, not sampled
     with the wrong total charge."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     from mepd.conformers import _bond_orders_from_openbabel
 

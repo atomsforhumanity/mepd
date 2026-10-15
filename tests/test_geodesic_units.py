@@ -4,7 +4,7 @@ convert on the way in and back on the way out."""
 from __future__ import annotations
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+from qcref.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 from qcdata import Structure
 
 from mepd import chainhelpers as ch

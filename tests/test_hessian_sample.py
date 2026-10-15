@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from qcconst.constants import BOHR_TO_ANGSTROM
+from qcref.constants import BOHR_TO_ANGSTROM
 from qcdata import Structure
 
 from mepd.engines.engine import Engine

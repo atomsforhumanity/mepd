@@ -11,7 +11,7 @@ from mepd.geodesic_interpolation2.fileio import write_xyz
 
 
 from mepd.nodes.node import Node, StructureNode
-from qcconst.constants import BOHR_TO_ANGSTROM
+from qcref.constants import BOHR_TO_ANGSTROM
 from mepd.inputs import ChainInputs
 from mepd.fakeoutputs import FakeQCIOResults, FakeQCIOOutput
 from qcdata import ProgramOutput

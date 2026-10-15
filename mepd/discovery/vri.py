@@ -679,7 +679,7 @@ def scan_irc_for_vrt(
         freqs = [p.lowest_freq for p in branch.points]
         may_start = None
         if max_vrt_depth is not None:
-            from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+            from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
             e_ts = float(ts_node._cached_energy)
             may_start = [

@@ -313,7 +313,7 @@ def _mechanism(label: str) -> str:
 
 def _bond_changes(start_structure: Structure, end_structure: Structure) -> int:
     """How many bonds break or form between start and end (same atom order)."""
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     from mepd.discovery.nanoreactor import perceive_bonds
 
@@ -396,7 +396,7 @@ def _relaxed_barrier(chain: Chain, start_structure: Structure, end_structure: St
     import tempfile
     from pathlib import Path
 
-    from qcconst.constants import ANGSTROM_TO_BOHR
+    from qcref.constants import ANGSTROM_TO_BOHR
 
     from mepd.discovery.nanoreactor import perceive_bonds
 

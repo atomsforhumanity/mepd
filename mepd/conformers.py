@@ -23,7 +23,7 @@ from typing import Optional
 
 import numpy as np
 import qcinf
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from qcdata.models.structure import Structure
 
 from mepd._qcinf_compat import snap_rmsd

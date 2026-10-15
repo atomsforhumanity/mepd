@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 METHODS = ("packed", "dock", "nci", "qcg")
 INSTANT = ("packed",)

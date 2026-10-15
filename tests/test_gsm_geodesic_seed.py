@@ -9,7 +9,7 @@ from qcdata import Structure
 from mepd.chain import Chain
 from mepd.nodes.node import StructureNode
 from mepd.pathminimizers.gsm import GSM, _inpfileq_text
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from types import SimpleNamespace
 
 

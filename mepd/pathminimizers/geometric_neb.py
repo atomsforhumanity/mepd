@@ -11,7 +11,7 @@ import numpy as np
 from qcdata import Structure
 
 from mepd.chain import Chain
-from qcconst.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
+from qcref.constants import ANGSTROM_TO_BOHR, BOHR_TO_ANGSTROM
 from mepd.elementarystep import IS_ELEM_STEP, elem_step_check_kwargs, ElemStepResults, check_if_elem_step
 from mepd.engines.engine import Engine
 from mepd.errors import ElectronicStructureError

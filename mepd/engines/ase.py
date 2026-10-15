@@ -10,7 +10,7 @@ from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.units import Hartree
 from numpy.typing import NDArray
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 from mepd.qcdata_structure_helpers import (
     structure_to_ase_atoms,
     ase_atoms_to_structure,

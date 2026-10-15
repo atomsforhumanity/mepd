@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from qcconst.constants import HARTREE_TO_KCAL_PER_MOL
+from qcref.constants import HARTREE_TO_KCAL_PER_MOL
 
 from mepd.engines.engine import Engine
 from mepd.discovery.hessian_sample import (

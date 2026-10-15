@@ -18,7 +18,7 @@ from typing import List, Union
 import numpy as np
 from ase.units import Hartree
 from numpy.typing import NDArray
-from qcconst.constants import ANGSTROM_TO_BOHR
+from qcref.constants import ANGSTROM_TO_BOHR
 
 from mepd.chain import Chain
 from mepd.engines.ase import AVAIL_OPTS, ASEEngine
