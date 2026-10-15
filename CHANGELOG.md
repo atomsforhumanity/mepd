@@ -139,6 +139,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Faster NEB defaults.** The conjugate-gradient chain optimizer grows its step 1.5x (was 1.2x) after 3 correlated
+  steps (`positive_steps_thre`, was 15), and the TS-region stop needs the barrier steady over 15 steps
+  (`ts_converged_window`, was 50). On the 6 KAIST reactions where NEB spent longest, channels found the same
+  lowest channel (within 1 kcal/mol) on all 6 with about 80k g-xTB calls instead of at least 208k. Faster step
+  growth alone lost a channel; FIRE and L-BFGS found fewer (0/6, 2/6). Set the old values in
+  `[optimizer_kwds]` / `[path_min_inputs]` to reproduce earlier NEB runs.
 - **Geodesic interpolation ~2.5x faster, same paths**: the least-squares solve runs in a numba kernel that
   repeats scipy's trf/lsmr steps operation for operation, and the Jacobians are built vectorized. On set30
   every path is bit-identical; median call 0.39 → 0.16 s. `numba` is now a dependency; without it (or for

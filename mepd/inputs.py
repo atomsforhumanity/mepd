@@ -171,7 +171,7 @@ class NEBInputs:
         has a same-named attribute (currently only `ConjugateGradient` does).
 
     `positive_steps_thre`: number of stable steps before increasing the step size
-        (default: 15). Synced onto `NEB.optimizer` the same way as `negative_steps_thre`.
+        (default: 3). Synced onto `NEB.optimizer` the same way as `negative_steps_thre`.
 
     `max_steps`: maximum number of NEB steps allowed (default: 1000)
 
@@ -221,7 +221,7 @@ class NEBInputs:
         the last step and <= ts_converged_window_thre over the last
         ts_converged_window steps.
     `ts_converged_window`: steps over which the barrier must have stopped moving
-        before the TS-region stop (default: 50; 0 = only the last step).
+        before the TS-region stop (default: 15; 0 = only the last step).
     `ts_converged_window_thre`: largest barrier change over that window, kcal/mol
         (default: 0.5).
     `recursive_same_pair_split_limit`: during recursive autosplitting, if a branch
@@ -265,7 +265,7 @@ class NEBInputs:
     early_stop_force_thre: float = 0.01
 
     negative_steps_thre: int = 2
-    positive_steps_thre: int = 15
+    positive_steps_thre: int = 3
     use_geodesic_tangent: bool = False
     do_elem_step_checks: bool = True
     adaptive_resolution: bool = False
@@ -285,7 +285,7 @@ class NEBInputs:
     recursive_cycle_revisits: int = 5
     direct_only: bool = False
     ts_converged_stop: bool = True
-    ts_converged_window: int = 50
+    ts_converged_window: int = 15
     ts_converged_window_thre: float = 0.5  # kcal/mol
 
     max_steps: float = 2000

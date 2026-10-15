@@ -11,7 +11,7 @@ import numpy as np
 class ConjugateGradient(Optimizer):
     timestep: float = 0.5
     max_step_norm: float = 1.0
-    step_up: float = 1.2
+    step_up: float = 1.5
     step_down: float = 0.5
     min_timestep: float | None = None
     max_timestep: float | None = None
@@ -19,7 +19,7 @@ class ConjugateGradient(Optimizer):
     corr_decrease_thre: float = 0.75
     corr_increase_thre: float = 0.95
     negative_steps_thre: int = 2
-    positive_steps_thre: int = 15
+    positive_steps_thre: int = 3
 
     def __post_init__(self):
         if self.timestep <= 0:

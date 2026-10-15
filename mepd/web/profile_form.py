@@ -83,9 +83,9 @@ OPTIMIZERS = [
 ]
 # Constructor defaults of each chain optimizer (mepd/optimizers/*.py).
 OPTIMIZER_DEFAULTS = {
-    "cg": {"timestep": 0.5, "max_step_norm": 1.0, "step_up": 1.2, "step_down": 0.5, "min_timestep": None,
+    "cg": {"timestep": 0.5, "max_step_norm": 1.0, "step_up": 1.5, "step_down": 0.5, "min_timestep": None,
            "max_timestep": None, "adaptive_dt": True, "corr_decrease_thre": 0.75, "corr_increase_thre": 0.95,
-           "negative_steps_thre": 2, "positive_steps_thre": 15},
+           "negative_steps_thre": 2, "positive_steps_thre": 3},
     "vpo": {"timestep": 1.0, "activation_tol": 0.1, "zero_vel_count_thre": 5},
     "lbfgs": {"timestep": 1.0, "history_size": 10, "min_curvature": 1e-10},
     "adam": {"timestep": 0.05, "beta1": 0.9, "beta2": 0.999, "epsilon": 1e-8},
