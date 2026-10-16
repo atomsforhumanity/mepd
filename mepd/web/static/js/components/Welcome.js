@@ -133,6 +133,46 @@ function QuestMap() {
 }
 
 // ---- the first screen ---------------------------------------------------------
+// What mepd does is the way in: one column per scale its tools are grouped
+// by (Actions.js), each saying what mepd does there and holding your step.
+// What a reaction step is to mepd: up over a barrier, down to the product.
+function ProfilePic() {
+  return html`<svg class="scale-pic" viewBox="0 0 240 120" role="img" aria-label="An energy profile: reactant, transition state, product">
+    <path class="sp-line" d="M14 78 H58 C88 78 96 24 120 24 C144 24 152 92 182 92 H226" />
+    <path class="sp-level" d="M14 78 H58 M182 92 H226 M104 24 H136" />
+    <path class="sp-arrow" d="M36 74 V30" marker-end="url(#sp-head)" />
+    <defs><marker id="sp-head" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="sp-head" /></marker></defs>
+    <text x="42" y="54" class="sp-num">barrier</text>
+    <text x="36" y="108" class="sp-cap" text-anchor="middle">start</text>
+    <text x="120" y="14" class="sp-cap" text-anchor="middle">transition state</text>
+    <text x="204" y="108" class="sp-cap" text-anchor="middle">product</text>
+  </svg>`;
+}
+
+// What a network is: molecules joined by the reactions between them.
+function NetworkPic() {
+  const nodes = [[30, 60], [92, 26], [96, 92], [160, 54], [212, 22], [210, 98]];
+  const edges = [[0, 1, '18'], [0, 2, '25'], [1, 3, '12'], [2, 3, ''], [3, 4, '31'], [3, 5, '9']];
+  return html`<svg class="scale-pic" viewBox="0 0 240 120" role="img" aria-label="A reaction network: molecules joined by reactions">
+    ${edges.map(([a, b, t]) => { const [x1, y1] = nodes[a], [x2, y2] = nodes[b];
+      return html`<line x1=${x1} y1=${y1} x2=${x2} y2=${y2} class=${`sp-edge ${t ? '' : 'idle'}`} />
+        ${t && html`<text x=${(x1 + x2) / 2} y=${(y1 + y2) / 2 + 3} class="sp-enum" text-anchor="middle">${t}</text>`}`; })}
+    ${nodes.map(([x, y], i) => html`<rect x=${x - 11} y=${y - 9} width="22" height="18" rx="3" class=${`sp-node ${i ? '' : 'start'}`} />`)}
+  </svg>`;
+}
+
+function Scale({ n, icon, name, what, done, on, later, children }) {
+  return html`<li class=${`scale ${on ? 'on' : ''} ${done ? 'done' : ''} ${later ? 'scale-later' : ''}`}>
+    <div class="scale-head">
+      <span class="ws-icon"><${QuestIcon} id=${icon} size=${26} /></span>
+      <b>${name}</b>
+      <span class="step-num" title=${done ? 'Done' : `Step ${n}`}>${done ? '✓' : n}</span>
+    </div>
+    <p class="scale-what">${what}</p>
+    <div class="scale-do">${children}</div>
+  </li>`;
+}
+
 function Recent() {
   const [data, setData] = useState(null);
   useEffect(() => { api.get('/api/sessions').then(setData).catch(() => setData(null)); }, []);
@@ -175,47 +215,44 @@ export function WelcomeView() {
     if (out) openTab('design');
   };
   return html`<div class="welcome">
-    <div class="welcome-main">
+    <header class="welcome-hero">
       <div class="welcome-brand">
         <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="16" cy="16" r="3.2" fill="currentColor"/></svg>
         <h1>mepd</h1>
       </div>
-      <p class="welcome-tag">Watch molecules react.</p>
-      <ol class="welcome-steps">
-        <li class=${`welcome-step on ${tour.molecule ? 'done' : ''}`}>
-          <span class="step-num">${tour.molecule ? '✓' : 1}</span>
-          <div><b>Choose a molecule</b>
-            <div class="chips">
-              ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
-              <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
-            </div>
-            ${phone && html`<div class="welcome-preview inline"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${140} /></div>`}</div>
-        </li>
-        <li class=${`welcome-step ${tour.reactor ? 'done' : ''}`}>
-          <span class="step-num">${tour.reactor ? '✓' : 2}</span>
-          <div><b>Put it in the reactor</b>
-            <span class="small muted">${p.n} ${p.name.toLowerCase()} + ${p.water} water · ${TEMPERATURE} K</span></div>
-          <button class="btn primary" disabled=${busy} onClick=${start}>${busy ? 'Starting…' : 'Start reactor'}</button>
-        </li>
-        <li class=${`welcome-step ${tour.reaction ? 'done' : 'later'}`}>
-          <span class="step-num">${tour.reaction ? '✓' : 3}</span>
-          <div><b>Catch a reaction</b>${tour.reaction && html`<span class="small muted">Next: find its barrier</span>`}</div>
-        </li>
-      </ol>
+      <p class="welcome-tag">Compute how molecules react.</p>
+      <p class="welcome-sub">Try it here in a few minutes, one step at a time.</p>
+    </header>
+    <ol class="welcome-scales">
+      <${Scale} n=${1} icon="molecule" name="Molecule" what="Build one and find its stable shapes." on=${!tour.molecule} done=${tour.molecule}>
+        <div class="welcome-preview"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${phone ? 130 : 150} /></div>
+        <div class="chips">
+          ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
+          <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
+        </div>
+      <//>
+      <${Scale} n=${2} icon="reaction" name="Reaction" what="Find what it turns into, and the energy each step takes." on=${tour.molecule && !tour.reaction} done=${tour.reaction}>
+        <${ProfilePic} />
+        <button class="btn primary" disabled=${busy} onClick=${start}>${busy ? 'Starting…' : `Put ${p.name.toLowerCase()} in the reactor`}</button>
+        <span class="small muted">${tour.reaction ? (map.done.has('barrier') ? 'Again, or with another molecule.' : 'Next: find its barrier') : `${p.n} ${p.name.toLowerCase()} + ${p.water} water at ${TEMPERATURE} K: watch bonds break and form.`}</span>
+      <//>
+      <${Scale} n=${3} icon="network" name="Network" what="Connect the steps to see what a mixture becomes." on=${tour.reaction} later=${!tour.reaction}>
+        <${NetworkPic} />
+        ${map.tab('graph')
+          ? html`<button class="btn" onClick=${() => openTab('graph')}>Open Explore</button>`
+          : html`<span class="small muted">Opens with your first reaction.</span>`}
+      <//>
+    </ol>
+    <div class="welcome-main">
       <p class="small muted welcome-more">
         ${lastRun && html`<a href="#" onClick=${(e) => { e.preventDefault(); openJob(lastRun.id, 'story'); }}>Your last reactor run</a>${' · '}`}
         <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>Open a SMILES or .xyz</a>
-        ${map.tab('graph') && html`${' · '}<a href="#" onClick=${(e) => { e.preventDefault(); openTab('graph'); }}>Go to Explore</a>`}
       </p>
       ${(map.done.has('reactor') || map.all) && html`<${QuestMap} />`}
       <p class="small welcome-all">${map.all
         ? html`Showing everything. <a href="#" onClick=${(e) => { e.preventDefault(); setEverything(false); }}>Show only what I've found</a>`
         : html`<a href="#" title="Every tab and tool at once" onClick=${(e) => { e.preventDefault(); setEverything(true); }}>I know mepd: show everything</a>`}</p>
     </div>
-    <aside class="welcome-side">
-      ${!phone && html`<div class="welcome-preview"><${Viewer3D} xyz=${p.xyz} height=${300} /></div>
-      <div class="welcome-caption"><b>${p.name}</b><span class="mono small muted">${p.formula}</span></div>`}
-      <${Recent} />
-    </aside>
+    <aside class="welcome-side"><${Recent} /></aside>
   </div>`;
 }

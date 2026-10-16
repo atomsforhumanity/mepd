@@ -1329,18 +1329,11 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 /* ---- First screen (Welcome.js) and the getting-started steps ---- */
 .layout.tab-welcome { grid-template-columns: minmax(0, 1fr); }
 .layout.tab-welcome .library { display: none; }
-.welcome { max-width: 1040px; margin: 0 auto; padding: 56px 32px; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 48px; }
+.welcome { max-width: 1080px; margin: 0 auto; padding: 48px 32px; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 28px 48px; }
 .welcome-brand { display: flex; align-items: center; gap: 10px; color: var(--heading); }
 .welcome-brand .logo { width: 34px; height: 34px; }
 .welcome-brand h1 { font: 600 38px/1 var(--font-serif); margin: 0; }
 .welcome-tag { color: var(--muted); font-size: 17px; margin: 6px 0 28px; }
-.welcome-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.welcome-step { display: flex; gap: 14px; align-items: center; padding: 14px 16px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); }
-.welcome-step > div { flex: 1; min-width: 0; display: grid; gap: 2px; }
-.welcome-step.on { border-color: var(--accent); }
-.welcome-step.later { opacity: .5; }
-.welcome-step .step-num { width: 24px; height: 24px; flex: none; border-radius: 50%; border: 1.5px solid var(--border-strong); display: grid; place-items: center; font: 600 13px var(--font-ui); color: var(--muted); }
-.welcome-step.on .step-num { border-color: var(--accent); color: var(--accent); }
 .welcome .chips { gap: 6px; margin-top: 8px; }
 .welcome .chip { border: 1px solid var(--border-strong); background: var(--panel); color: var(--text); border-radius: var(--radius); padding: 4px 12px; font: inherit; font-size: 14px; cursor: pointer; }
 .welcome .chip:hover { border-color: var(--accent); }
@@ -1349,8 +1342,6 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .welcome-more { margin-top: 16px; }
 .welcome-side { display: grid; gap: 10px; align-content: start; }
 .welcome-preview { border: 1px solid var(--border); border-radius: 5px; overflow: hidden; background: var(--viewer-bg); }
-.welcome-caption { display: flex; justify-content: space-between; align-items: baseline; }
-.welcome-caption b { font: 600 18px var(--font-serif); color: var(--heading); }
 .welcome-recent ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .welcome-recent li { display: flex; gap: 8px; align-items: baseline; }
 @media (max-width: 820px) { .welcome { grid-template-columns: minmax(0, 1fr); padding: 28px 16px; gap: 24px; } }
@@ -1389,7 +1380,6 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
   .topbar .brand[role="button"], .topbar .brand[role="button"]:hover, .topbar .brand[role="button"]:active { transform: none; transition: none; }
 }
 .page-head.design-head { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
-.welcome-step.done .step-num { border-color: var(--ok); background: var(--ok); color: var(--accent-text); }
 
 /* ---- "What happened" after an interactive reactor (ReactorStory.js) ---- */
 .story { max-width: 860px; display: grid; gap: 10px; padding-top: 6px; }
@@ -1590,13 +1580,10 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 @media (max-width: 720px) {
   .welcome { padding: 18px 16px 28px; gap: 16px; }
   .welcome-brand { display: none; }   /* the top bar's logo says it */
-  .welcome-tag { font: 500 22px/1.25 var(--font-serif); color: var(--heading); margin: 0 0 14px; }
-  .welcome-step { padding: 12px; gap: 10px; }
-  .welcome-preview.inline { margin-top: 10px; }
+  .welcome-hero .welcome-tag { font: 500 22px/1.25 var(--font-serif); color: var(--heading); margin: 0; }
+  .scale { padding: 14px; }
 }
 @media (max-width: 720px) {
-  .welcome-step { align-items: flex-start; }
-  .welcome-step .step-num { margin-top: 2px; }
   .quests { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
   .quest { gap: 4px; }
   .quest .q-icon { width: 26px; height: 26px; }
@@ -1747,3 +1734,36 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 
 .has-tip { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
 .rc-nots { display: block; margin-top: 2px; }
+
+/* First screen: what mepd does, one column per scale, each holding your step */
+.welcome-hero, .welcome-scales { grid-column: 1 / -1; }
+.welcome-hero .welcome-tag { font: 500 24px/1.3 var(--font-serif); color: var(--heading); margin: 10px 0 0; }
+.welcome-scales { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.scale { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); }
+.scale.on { border-color: var(--accent); }
+.scale.scale-later { background: transparent; }
+.scale-pic { align-self: stretch; width: 100%; height: 150px; border: 1px solid var(--border); border-radius: 5px; background: var(--viewer-bg); padding: 10px; box-sizing: border-box; }
+.sp-line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.sp-level { fill: none; stroke: var(--heading); stroke-width: 3; }
+.sp-arrow { stroke: var(--accent); stroke-width: 1.5; }
+.sp-head { fill: var(--accent); }
+.sp-num { font: 600 11px var(--font-ui); fill: var(--accent); }
+.sp-cap { font: 10.5px var(--font-ui); fill: var(--muted); }
+.sp-edge { stroke: var(--ok); stroke-width: 1.8; }
+.sp-edge.idle { stroke: var(--edge-idle); stroke-dasharray: 4 3; }
+.sp-enum { font: 600 10px var(--font-mono); fill: var(--text); paint-order: stroke; stroke: var(--viewer-bg); stroke-width: 4px; }
+.sp-node { fill: var(--node-bg); stroke: var(--border-strong); stroke-width: 1.2; }
+.sp-node.start { stroke: var(--accent); stroke-width: 2; }
+.welcome-sub { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+.scale-head { display: flex; align-items: center; gap: 10px; }
+.scale-head b { flex: 1; font: 600 18px var(--font-serif); color: var(--heading); }
+.scale-head .ws-icon { color: var(--accent); display: flex; }
+.scale .step-num { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border-strong); display: grid; place-items: center;
+  font: 600 12px var(--font-ui); color: var(--muted); flex: none; }
+.scale.on .step-num { border-color: var(--accent); color: var(--accent); }
+.scale.done .step-num { border-color: var(--ok); background: var(--ok); color: var(--accent-text); }
+.scale-what { margin: 0; color: var(--text); font-size: 14.5px; line-height: 1.4; }
+.scale-do { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; margin-top: auto; }
+.scale-do .chips { margin-top: 0; }
+.scale-do .welcome-preview { align-self: stretch; }
+@media (max-width: 820px) { .welcome-scales { grid-template-columns: minmax(0, 1fr); } }

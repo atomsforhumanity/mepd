@@ -173,6 +173,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web UI: the first screen says what mepd does.** "Compute how molecules react", then one card per
+  scale the tools are grouped by: Molecule (build one, find its stable shapes), Reaction (what it turns
+  into and the energy each step takes, drawn as an energy profile) and Network (the steps connected, drawn
+  as a small graph). Each card holds your step there (pick a molecule, put it in the reactor, open
+  Explore), so what mepd does and how to try it are the same three steps.
 - **Web UI: first results say what they are.** A TS search that found no transition state joining its ends
   is no longer shown as a barrier: Explore draws it as a grey "no TS" arrow (not green), the Calculations
   list and job pages say "No TS" / "No transition state found (path top ≈ x kcal/mol)", Analyze puts it
