@@ -58,7 +58,7 @@ const TOOLS = [
   ['view', 'View', 'Rotate and zoom; click an atom to see what it is.'],
   ['element', 'Element', 'Click an atom to turn it into the chosen element (hydrogens are re-added to fit).'],
   ['add', 'Add atom', 'Click an atom to bond a new atom of the chosen element to it (it takes a hydrogen\'s place), click a hydrogen to replace it, or click empty space to drop a new atom there.'],
-  ['place', 'Add molecule', 'Click an atom to put whole molecules or ions next to it, not bonded: a metal ion or Lewis acid to coordinate it, or several waters to solvate it. Click empty space to put one there.'],
+  ['place', 'Add molecule', 'Click empty space to put a whole molecule or ion there, or click an atom to put it next to that atom, not bonded: a metal ion or Lewis acid to coordinate it, or several waters to solvate it.'],
   ['group', 'Swap group', 'Click a hydrogen, or the first atom of a terminal group (e.g. a methyl carbon), to replace it with the chosen group.'],
   ['bond', 'Bond', 'Click two atoms to give them the chosen bond order (or remove their bond).'],
   ['charge', 'Charge', 'Click an atom to add (+) or remove (−) a formal charge.'],
@@ -574,8 +574,9 @@ export function DesignView() {
           </div>`}
           ${tool === 'place' && html`<div>
             <${Steps} steps=${[`Choose what to add (now ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}): a preset, any SMILES, or an xyz file.`,
-              placeXyz ? 'Click the atom in the 3D view it should go next to: the file\'s first atom goes beside that atom, the structure kept exactly as in the file. Or click empty space to put it there.'
-                : 'Click the atom in the 3D view it should go next to: it lands in the free space beside that atom, not bonded (click a hydrogen to H-bond to it). Or click empty space to put it there.']} />
+              'Click empty space to put it there.',
+              placeXyz ? 'Or click an atom to put it beside that atom (the file\'s first atom goes next to it; the structure is kept exactly as in the file).'
+                : 'Or click an atom to put it next to that atom, not bonded (a hydrogen: H-bonded to it).']} />
             ${placeXyz ? html`<div class="xyz-chosen">
                 <span><b>${placeXyz.name}</b> <span class="muted small">${placeXyz.natoms} atoms, from xyz</span></span>
                 <label class="small">charge <input type="number" value=${placeXyz.charge}
@@ -629,7 +630,7 @@ export function DesignView() {
           <div class="design-hint small">${running ? html`${running.op === 'design-tsopt' ? 'Optimizing as a TS (then IRC)' : 'Minimizing'} at ${level?.label ?? 'the workspace level'}… <a href="#" onClick=${(e) => { e.preventDefault(); openJob(running.id); }}>details</a>`
             : busy ? `Applying the edit…${queued ? ` (${queued} more queued)` : ''}`
               : tool === 'bond' && picked.length === 1 ? `Atom ${picked[0] + 1} picked: click the second atom.`
-              : tool === 'element' || tool === 'add' ? '' : toolHelp}</div>
+              : ['element', 'add', 'place'].includes(tool) ? '' : toolHelp}</div>
           <div class="design-bar">
             ${!rx && html`<button class="btn small primary phone-only" onClick=${toReactor} disabled=${busy || running || reacting || !design.natoms}>${reacting ? 'Starting…' : 'Put in reactor'}</button>`}
             <button class="btn small" disabled=${!history.current.undo.length || busy} onClick=${undo} title="Undo (Ctrl+Z)">Undo</button>

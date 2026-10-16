@@ -378,7 +378,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 - **Design: Add molecule on empty space.** With Add molecule picked (e.g. AlCl3), a click on an empty
   canvas dropped a carbon (methane) instead; it now puts the chosen molecule there, and a click on empty
-  space next to an existing design adds it at that spot (`place` edit with `point` and no `atom`).
+  space next to an existing design adds it at that spot (`place` edit with `point` and no `atom`), as Add
+  atom does; clicking an atom still puts it next to that atom. The hints say empty space first.
 - **A reaction's Report (.html) / Data (.zip) could leave out its energies and paths.** With ends that have
   no energies at one level of theory (e.g. added from SMILES and never optimized; every edge with no reaction),
   the diagram said "No energies"; it now uses the search's own (its reactant at 0, its path's end). A search
