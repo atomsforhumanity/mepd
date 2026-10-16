@@ -3,7 +3,7 @@
 import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
 import { familyOf, goBack, historyDepth, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
-import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, safeName, structureName, tsFrameIndex } from '../util.js';
+import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, reactionOfEdge, safeName, structureName, tsFrameIndex } from '../util.js';
 import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { JobControls, useTick } from './Jobs.js';
@@ -310,6 +310,15 @@ function downloadAllTs(job, result) {
 // adds its structure: the only frame, or the TS of a path).
 const PICKABLE = new Set(['minima', 'conformers', 'rejected', 'ts', 'ts_other', 'channel', 'alternate', 'offtarget']);
 
+// The reaction a finished search's report covers (/api/reactions/{id}/export,
+// as Analyze exports it: every search on its edge), or, on no edge, the search alone.
+const REPORT_OPS = new Set(['ts', 'channels', 'channels-more']);
+function reportId(job, workspace) {
+  if (job.status !== 'done' || !REPORT_OPS.has(job.op)) return null;
+  const eid = job.targets.edges.find((e) => workspace.edges[e]);
+  return eid ? (reactionOfEdge(workspace, eid)?.id ?? `edge:${eid}`) : `job:${job.id}`;
+}
+
 // Relative energy used by the bulk selectors (kcal/mol).
 function entryEnergy(e) {
   if (e.frames.length === 1) return e.frames[0].energy_kcal;
@@ -430,6 +439,7 @@ function ResultPanel({ job }) {
   const inGraphKey = useStore((s) => Object.values(s.workspace.structures)
     .filter((r) => r.origin?.job === job.id).map((r) => r.origin.entry).sort().join('|'));
   const inGraph = useMemo(() => new Set(inGraphKey ? inGraphKey.split('|') : []), [inGraphKey]);
+  const report = useStore((s) => reportId(job, s.workspace));
   const [picked, setPicked] = useState(() => new Set());
   const [adding, setAdding] = useState(false);
   useEffect(() => setPicked(new Set()), [job.id]);
@@ -484,6 +494,11 @@ function ResultPanel({ job }) {
           ${tsEntries(result).length > 0 && html`
             <button class="btn small" onClick=${() => downloadTsTable(job, result)} title="One row per TS: barrier, energy, what it connects">TS table (CSV)</button>
             <button class="btn small" onClick=${() => downloadAllTs(job, result)} title="Every TS geometry, one frame each, energies in the comment line">All TSs (XYZ)</button>`}
+          ${report && html`
+            <a class="btn small" href=${`/api/reactions/${encodeURIComponent(report)}/export?format=html`} download
+              title="One HTML file to share: energy diagram, every channel found for this reaction (TS, IRC and path in 3D), energies. Opens offline.">Report (.html)</a>
+            <a class="btn small" href=${`/api/reactions/${encodeURIComponent(report)}/export?format=zip`} download
+              title="The report's data: XYZ per structure, IRCs and paths, energies as CSV and JSON, the diagram as SVG, the profiles">Data (.zip)</a>`}
           <a class="btn small" href=${`/api/jobs/${job.id}/archive`} title="The full output folder, inputs and logs">All files (.zip)</a>
         </div>
       </div>

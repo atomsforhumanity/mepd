@@ -379,6 +379,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Design: Add molecule on empty space.** With Add molecule picked (e.g. AlCl3), a click on an empty
   canvas dropped a carbon (methane) instead; it now puts the chosen molecule there, and a click on empty
   space next to an existing design adds it at that spot (`place` edit with `point` and no `atom`).
+- **A reaction's Report (.html) / Data (.zip) could leave out its energies and paths.** With ends that have
+  no energies at one level of theory (e.g. added from SMILES and never optimized; every edge with no reaction),
+  the diagram said "No energies"; it now uses the search's own (its reactant at 0, its path's end). A search
+  that found no TS joining the ends is shown as its path top ("no TS found"), with the path in 3D and as
+  `path_*.xyz`, never as a TS; with Sample more paths added, its off-target saddles were taken for the route.
+  An edge added from a search's page (Add to graph) now reports that IRC or path, and every TS search channel
+  carries the path it searched. The export is also on a TS search's or channel search's result page, next to
+  All files (.zip); a search on no edge exports on its own.
 - **Reactor reaction ends were read as ions**: "H + OH" was stored and drawn as `[H+].[OH-]`, because the complex
   was read as one geometry. A complex now takes its molecules' SMILES. **A lone H atom was read as H2** (`[HH]`);
   one-atom structures are now perceived as a bare atom or ion. Existing workspaces are repaired when loaded.
