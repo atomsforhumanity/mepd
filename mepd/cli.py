@@ -52,7 +52,7 @@ from mepd.cli_common import (
     _optimize_ts_and_irc,
     _run_msmep_pairs,
 )
-from mepd.inputs import NetworkInputs, RunInputs
+from mepd.inputs import DEFAULT_PATH_METHOD, NetworkInputs, RunInputs
 
 
 def _teardown_live_display(*_args, **_kwargs) -> None:
@@ -1625,7 +1625,7 @@ def make_default_inputs(
         help="Path to write a starter RunInputs TOML file to.",
     ),
     method: str = typer.Option(
-        "NEB", "--method", "-m",
+        DEFAULT_PATH_METHOD, "--method", "-m",
         help="Path-minimization method the starter file's [path_min_inputs] "
         f"section should default to: {', '.join(_DEFAULT_INPUTS_PATH_METHODS)} "
         "(case-insensitive; underscores/spaces normalize to '-', so 'geometric_neb' "
@@ -1743,7 +1743,7 @@ def _serve_demo(root: Path, host: str, port: int, max_jobs: int, password: Optio
     (root / "profiles").mkdir(parents=True, exist_ok=True)
     if not list((root / "profiles").glob("*.toml")):
         # Starter profiles the admin can edit on disk (visitors cannot).
-        for name, method in (("default", "NEB"), ("gsm", "GSM")):
+        for name, method in (("default", DEFAULT_PATH_METHOD), ("gsm", "GSM")):
             subprocess.run([sys.executable, "-m", "mepd.cli", "init", "--method", method,
                             "--output", str(root / "profiles" / f"{name}.toml")], check=False, capture_output=True)
     try:

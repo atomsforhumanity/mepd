@@ -185,7 +185,9 @@ def path_summary(profile_text: Optional[str]) -> dict:
         data = tomli.loads(profile_text) if profile_text else {}
     except Exception:
         return {"text": "invalid TOML", "warnings": []}
-    method = str(data.get("path_min_method", "NEB")).upper()
+    from mepd.inputs import DEFAULT_PATH_METHOD, _normalized_path_method
+
+    method = _normalized_path_method(data.get("path_min_method") or DEFAULT_PATH_METHOD)
     pmi = data.get("path_min_inputs") or {}
     nimages = int((data.get("gi_inputs") or {}).get("nimages", 10))
     warnings = []
@@ -1270,7 +1272,9 @@ class Workspace:
                 check=True, capture_output=True, timeout=300,
             )
         except Exception:
-            fp.write_text('engine_name = "gxtb"\npath_min_method = "NEB"\n')
+            from mepd.inputs import DEFAULT_PATH_METHOD
+
+            fp.write_text(f'engine_name = "gxtb"\npath_min_method = "{DEFAULT_PATH_METHOD}"\n')
 
 
 def validate_profile_text(text: str, timeout: float = 120.0) -> dict:

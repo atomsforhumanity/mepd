@@ -29,6 +29,11 @@ def _import_ase_calculator(path: str):
     return load_calculator(path)
 
 
+# The path method a profile gets when it names none: FSM-TS is the cheapest at
+# about GSM's quality (path-method benchmark, 20 KAIST reactions).
+DEFAULT_PATH_METHOD = "FSM-TS"
+
+
 def _normalized_path_method(path_min_method: str) -> str:
     method = str(path_min_method or "").strip().upper().replace("_", "-")
     aliases = {
@@ -555,7 +560,7 @@ class RunInputs:
     print_stdout: bool = False
     nanoreactor_inputs: dict = None
 
-    path_min_method: str = 'NEB'
+    path_min_method: str = DEFAULT_PATH_METHOD
     path_min_inputs: dict = None
 
     chain_inputs: dict = None

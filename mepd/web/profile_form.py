@@ -380,9 +380,9 @@ def _set(data: dict, path: str, value) -> None:
 
 
 def normalized_method(value: Optional[str]) -> str:
-    from mepd.inputs import _normalized_path_method
+    from mepd.inputs import DEFAULT_PATH_METHOD, _normalized_path_method
 
-    return _normalized_path_method(value or "NEB")
+    return _normalized_path_method(value or DEFAULT_PATH_METHOD)
 
 
 @functools.lru_cache(maxsize=16)

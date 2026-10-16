@@ -58,7 +58,7 @@ const TOOLS = [
   ['view', 'View', 'Rotate and zoom; click an atom to see what it is.'],
   ['element', 'Element', 'Click an atom to turn it into the chosen element (hydrogens are re-added to fit).'],
   ['add', 'Add atom', 'Click an atom to bond a new atom of the chosen element to it (it takes a hydrogen\'s place), click a hydrogen to replace it, or click empty space to drop a new atom there.'],
-  ['place', 'Add molecule', 'Click an atom to put whole molecules or ions next to it, not bonded: a metal ion or Lewis acid to coordinate it, or several waters to solvate it.'],
+  ['place', 'Add molecule', 'Click an atom to put whole molecules or ions next to it, not bonded: a metal ion or Lewis acid to coordinate it, or several waters to solvate it. Click empty space to put one there.'],
   ['group', 'Swap group', 'Click a hydrogen, or the first atom of a terminal group (e.g. a methyl carbon), to replace it with the chosen group.'],
   ['bond', 'Bond', 'Click two atoms to give them the chosen bond order (or remove their bond).'],
   ['charge', 'Charge', 'Click an atom to add (+) or remove (−) a formal charge.'],
@@ -417,12 +417,18 @@ export function DesignView() {
     return runEdit(item);
   };
 
-  // A click on empty space: drop a new atom there (Add atom / Element, or any tool on an empty canvas).
+  // What Add molecule puts down: an uploaded xyz, any SMILES, or a preset.
+  const placeOp = () => (placeXyz ? { op: 'place', xyz: placeXyz.xyz, charge: placeXyz.charge, count: placeCount }
+    : placeSmiles.trim() ? { op: 'place', smiles: placeSmiles.trim(), count: placeCount }
+    : { op: 'place', species: placeWhat, count: placeCount });
+  // A click on empty space: Add molecule puts its molecule there; Add atom / Element (or
+  // any other tool on an empty canvas) drops a new atom there.
   const onBackground = (xyz) => {
     if (running) return;
-    if (!(['add', 'element'].includes(tool) || empty)) return;
+    if (!(['add', 'element', 'place'].includes(tool) || empty)) return;
     if (rx) { toast('Drop new atoms in a single-molecule design; in a reaction, grow atoms from the ones you have', 'info'); return; }
-    edit({ op: 'drop', element, xyz, hydrogens: dropH });
+    if (tool === 'place') edit({ ...placeOp(), point: xyz });
+    else edit({ op: 'drop', element, xyz, hydrogens: dropH });
   };
   const onAtom = (idx, side = 'reactant') => {
     if (running) { toast('Wait for the minimization to finish (or stop it) before editing', 'info'); return; }
@@ -431,9 +437,7 @@ export function DesignView() {
     if (tool === 'element') e({ op: 'element', atom: idx, element });
     else if (tool === 'add') e({ op: 'add', atom: idx, element });
     else if (tool === 'group') e(groupSmiles.trim() ? { op: 'group', atom: idx, smiles: groupSmiles.trim() } : { op: 'group', atom: idx, group });
-    else if (tool === 'place') e(placeXyz ? { op: 'place', atom: idx, xyz: placeXyz.xyz, charge: placeXyz.charge, count: placeCount }
-      : placeSmiles.trim() ? { op: 'place', atom: idx, smiles: placeSmiles.trim(), count: placeCount }
-      : { op: 'place', atom: idx, species: placeWhat, count: placeCount });
+    else if (tool === 'place') e({ ...placeOp(), atom: idx });
     else if (tool === 'delete') e({ op: 'delete', atom: idx });
     else if (tool === 'charge') e({ op: 'charge', atom: idx, delta: order === 0 ? -1 : 1 });
     else if (tool === 'bond') {
@@ -570,8 +574,8 @@ export function DesignView() {
           </div>`}
           ${tool === 'place' && html`<div>
             <${Steps} steps=${[`Choose what to add (now ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}): a preset, any SMILES, or an xyz file.`,
-              placeXyz ? 'Click the atom in the 3D view it should go next to: the file\'s first atom goes beside that atom, the structure kept exactly as in the file.'
-                : 'Click the atom in the 3D view it should go next to: it lands in the free space beside that atom, not bonded (click a hydrogen to H-bond to it).']} />
+              placeXyz ? 'Click the atom in the 3D view it should go next to: the file\'s first atom goes beside that atom, the structure kept exactly as in the file. Or click empty space to put it there.'
+                : 'Click the atom in the 3D view it should go next to: it lands in the free space beside that atom, not bonded (click a hydrogen to H-bond to it). Or click empty space to put it there.']} />
             ${placeXyz ? html`<div class="xyz-chosen">
                 <span><b>${placeXyz.name}</b> <span class="muted small">${placeXyz.natoms} atoms, from xyz</span></span>
                 <label class="small">charge <input type="number" value=${placeXyz.charge}
@@ -616,8 +620,11 @@ export function DesignView() {
           : html`<div class="design-single">
               <${Canvas} molblock=${design.molblock} liveXyz=${liveXyz} picked=${picked} changed=${changed} onAtom=${onAtom} labels=${labels}
                 clickable=${tool !== 'view' || empty} onBackground=${onBackground} />
-              ${empty && html`<div class="design-empty-hint"><b>Click anywhere to place a ${element} atom.</b>
-                <span>Pick another element on the left. Then click a hydrogen to grow the next atom from it.</span></div>`}
+              ${empty && (tool === 'place'
+                ? html`<div class="design-empty-hint"><b>Click anywhere to place ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}.</b>
+                  <span>Choose another molecule on the left.</span></div>`
+                : html`<div class="design-empty-hint"><b>Click anywhere to place a ${element} atom.</b>
+                  <span>Pick another element on the left. Then click a hydrogen to grow the next atom from it.</span></div>`)}
             </div>`}
           <div class="design-hint small">${running ? html`${running.op === 'design-tsopt' ? 'Optimizing as a TS (then IRC)' : 'Minimizing'} at ${level?.label ?? 'the workspace level'}… <a href="#" onClick=${(e) => { e.preventDefault(); openJob(running.id); }}>details</a>`
             : busy ? `Applying the edit…${queued ? ` (${queued} more queued)` : ''}`

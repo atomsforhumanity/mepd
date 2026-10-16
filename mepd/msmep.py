@@ -41,7 +41,7 @@ from mepd.optimizers.gd import DeterministicGradientDescentOptimizer
 from mepd.pathminimizers.fneb import FreezingNEB
 from mepd.pathminimizers.geometric_neb import GeometricNEB
 from mepd.pathminimizers.nebdlf import DLFindNEB
-from mepd.inputs import RunInputs
+from mepd.inputs import DEFAULT_PATH_METHOD, RunInputs
 from mepd.progress import (
     get_progress_printer,
     preserve_chain_snapshot,
@@ -151,7 +151,7 @@ def _run_inputs_payload_for_worker(run_inputs: RunInputs) -> dict:
         "nanoreactor_inputs": _to_plain_dict(
             getattr(run_inputs, "nanoreactor_inputs", None)
         ),
-        "path_min_method": getattr(run_inputs, "path_min_method", "NEB"),
+        "path_min_method": getattr(run_inputs, "path_min_method", DEFAULT_PATH_METHOD),
         "path_min_inputs": _to_plain_dict(
             getattr(run_inputs, "path_min_inputs", None)
         ),

@@ -173,6 +173,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **FSM-TS is the default path method** (`RunInputs.path_min_method`, `mepd init`, a new web session's
+  default profile, the demo's starter profile): the cheapest in the path-method benchmark at about GSM's
+  quality. Profiles that name a method keep it; existing workspaces keep their saved profiles. QM/MM
+  profiles still default to NEB (FSM regrows its string by geodesic interpolation, slow for hundreds of
+  solvent atoms).
 - **Interactive reactor: "Find their barriers" sits under the reactions it acts on** (it was at the top
   of the page). The top keeps "Stop & analyze" only while there are no reactions yet.
 - **Web UI: the first screen says what mepd does.** "Compute how molecules react", then one card per
@@ -371,6 +376,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Design: Add molecule on empty space.** With Add molecule picked (e.g. AlCl3), a click on an empty
+  canvas dropped a carbon (methane) instead; it now puts the chosen molecule there, and a click on empty
+  space next to an existing design adds it at that spot (`place` edit with `point` and no `atom`).
 - **Reactor reaction ends were read as ions**: "H + OH" was stored and drawn as `[H+].[OH-]`, because the complex
   was read as one geometry. A complex now takes its molecules' SMILES. **A lone H atom was read as H2** (`[HH]`);
   one-atom structures are now perceived as a bare atom or ion. Existing workspaces are repaired when loaded.

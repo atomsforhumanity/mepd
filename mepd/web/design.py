@@ -22,8 +22,8 @@ Edits (see `edit`):
                                       with hydrogens to fill its valence
   place     {atom, species | smiles | put whole molecules/ions (water, Li+, Mg2+, BF3, any SMILES, an xyz
              xyz (+charge),           structure placed rigidly as given) next to
-             count}
-                                      `atom`, not bonded: count waters make a small solvation shell
+             count} or {point, ...}   `atom`, not bonded: count waters make a small solvation shell;
+                                      with `point` and no atom, at that point (also an empty design)
 """
 from __future__ import annotations
 
@@ -676,16 +676,33 @@ def _fibonacci_directions(n: int) -> np.ndarray:
     return np.stack([np.cos(theta) * np.sin(phi), np.sin(theta) * np.sin(phi), np.cos(phi)], axis=1)
 
 
+def _add_fragment(Chem, rw, frag, xyz, placed: set) -> None:
+    """`frag`'s atoms and bonds into `rw` at positions `xyz`; their indices into `placed`."""
+    start = rw.GetNumAtoms()
+    for a in frag.GetAtoms():
+        new = Chem.Atom(a.GetAtomicNum())
+        new.SetFormalCharge(a.GetFormalCharge())
+        new.SetNoImplicit(True)
+        rw.AddAtom(new)
+    for b in frag.GetBonds():
+        rw.AddBond(start + b.GetBeginAtomIdx(), start + b.GetEndAtomIdx(), b.GetBondType())
+    for i, p in enumerate(xyz):
+        _set_position(rw, start + i, p)
+    placed |= set(range(start, start + frag.GetNumAtoms()))
+
+
 def _edit_place(mol, op):
     """Whole molecules or ions next to `atom`, not bonded to it: each at the
     species' contact distance, in the free direction with the most room
     (the atom's open side first), turned to clear the rest; only the placed
     species are then relaxed. `count` > 1 builds a small shell (e.g. of
-    waters) around the atom."""
+    waters) around the atom. With no `atom` (a click on empty space, or an
+    empty design), the species goes at `point` instead."""
     Chem = _chem()
     from rdkit.Chem import AllChem
 
-    idx = int(op["atom"])
+    free = op.get("atom") is None
+    idx = None if free else int(op["atom"])
     count = max(1, min(int(op.get("count", 1)), 30))
     xyz_frag = None
     if op.get("xyz"):
@@ -705,7 +722,7 @@ def _edit_place(mol, op):
     parsed = xyz_frag if xyz_frag is not None else Chem.MolFromSmiles(smiles)
     if parsed is None:
         raise WorkspaceError(f"could not read the SMILES {smiles!r}")
-    if contact is None:
+    if contact is None and not free:
         # Any species: a contact (ion, metal) or non-bonded (neutral) distance
         # from covalent radii, measured to its first atom.
         pt = Chem.GetPeriodicTable()
@@ -714,7 +731,7 @@ def _edit_place(mol, op):
         metal = first.GetAtomicNum() in (3, 4, 11, 12, 13, 19, 20) or 21 <= first.GetAtomicNum() <= 30 \
             or first.GetAtomicNum() >= 37 and first.GetSymbol() not in ("Kr", "I", "Xe", "Te", "Sb", "Rn", "At")
         contact = r + (0.25 if (first.GetFormalCharge() or metal) else 1.2)
-    if mol.GetAtomWithIdx(idx).GetAtomicNum() == 1:
+    if not free and mol.GetAtomWithIdx(idx).GetAtomicNum() == 1:
         contact -= 0.9   # clicked a hydrogen: an H-bond / contact to the H itself, not to its heavy atom
     frag = parsed if xyz_frag is not None else Chem.AddHs(parsed)
     if xyz_frag is not None:
@@ -734,10 +751,25 @@ def _edit_place(mol, op):
     fpos0 = fpos0 - fpos0[0]             # the contact atom at the origin
     rng = np.random.default_rng(int(op.get("seed", 0)))
     rw = Chem.RWMol(mol)
+    if rw.GetNumConformers() == 0:
+        rw.AddConformer(Chem.Conformer(rw.GetNumAtoms()), assignId=True)
     placed = set()
-    open_dir = _open_direction(mol, idx)
-    dirs = _fibonacci_directions(96)
+    if free:
+        point = np.asarray(op.get("point") if op.get("point") is not None else (0.0, 0.0, 0.0), dtype=float)
+        if point.shape != (3,) or not np.all(np.isfinite(point)):
+            raise WorkspaceError("a placed molecule needs a point, point = [x, y, z] in Angstrom")
+        shape = fpos0 - fpos0.mean(axis=0)   # centred on the point
+        step = 2 * float(np.linalg.norm(shape, axis=1).max()) + 2.5
+    else:
+        open_dir = _open_direction(mol, idx)
+        dirs = _fibonacci_directions(96)
     for k in range(count):
+        if free:
+            # Copies beyond the first sit around it, a molecule's width apart.
+            d = _fibonacci_directions(max(count - 1, 1))[k - 1] if k else np.zeros(3)
+            best_xyz = shape + point + d * step
+            _add_fragment(Chem, rw, frag, best_xyz, placed)
+            continue
         pos = _positions(rw)
         centre = pos[idx]
         best, best_xyz = -1.0, None
@@ -755,17 +787,7 @@ def _edit_place(mol, op):
                     score = min(clearance, 2.6) + 0.2 * float(np.dot(d, open_dir)) - 0.05 * (r - contact)
                     if score > best:
                         best, best_xyz = score, xyz
-        start = rw.GetNumAtoms()
-        for a in frag.GetAtoms():
-            new = Chem.Atom(a.GetAtomicNum())
-            new.SetFormalCharge(a.GetFormalCharge())
-            new.SetNoImplicit(True)
-            rw.AddAtom(new)
-        for b in frag.GetBonds():
-            rw.AddBond(start + b.GetBeginAtomIdx(), start + b.GetEndAtomIdx(), b.GetBondType())
-        for i, p in enumerate(best_xyz):
-            _set_position(rw, start + i, p)
-        placed |= set(range(start, start + frag.GetNumAtoms()))
+        _add_fragment(Chem, rw, frag, best_xyz, placed)
     m = rw.GetMol()
     m.UpdatePropertyCache(strict=False)
     warnings = []

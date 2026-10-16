@@ -5,7 +5,7 @@
   "how": [
    "Snapshots both geometries into the job folder and runs `mepd run --start --end` with the job's profile as --inputs (operations._build_ts).",
    "Minimizes endpoints not yet minima at this level (engine geometry optimization, up to 500 cycles), then SLAPMapper checks and, if on, fixes the atom correspondence.",
-   "Builds the initial path (the profile's interpolation, default geodesic, 10 images) and relaxes it with the profile's path method (default NEB).",
+   "Builds the initial path (the profile's interpolation, default geodesic, 10 images) and relaxes it with the profile's path method (default FSM-TS).",
    "Recursive: MSMEP checks each path for intermediate minima and pseudo-IRC endpoints and splits it into new searches (msmep.MSMEP.run_recursive_minimize).",
    "TS optimization from each leaf's highest image, then IRC; for g-xTB both through ASE/Sella (cli_common._optimize_ts_and_irc)."
   ],
@@ -2874,7 +2874,7 @@
    "MLP-GI: minimizes the path's energy-weighted geodesic length with two FIRE stages (mepd/mlp_geodesic.py). geomeTRIC NEB: geometric.neb. DL-FIND NEB: TeraChem's DL-FIND via QCCompute/ChemCloud.",
    "Unless switched off, the converged path is checked for being one elementary step; if not, it is split and each piece searched again."
   ],
-  "default": "NEB (RunInputs.path_min_method). It needs no external binary and works with every engine.",
+  "default": "FSM-TS (RunInputs.path_min_method), the cheapest at about GSM's quality. When its own TS check fails it falls back to GSM, or to NEB without the GSM binary.",
   "swap": [
    {
     "option": "FSM, FSM + TS check, GSM, MLP-GI, geomeTRIC NEB, DL-FIND NEB",

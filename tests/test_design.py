@@ -277,3 +277,16 @@ def test_an_edge_opens_in_design_as_a_reaction_of_its_two_ends(client):
     assert out["source"] == {"kind": "edge", "edge": edge["id"], "structures": [keto["id"], enol["id"]]}
     assert out["name"] == "acetone → enol"
     assert client.post("/api/design/load-edge", json={"edge": "e_missing"}).status_code in (400, 404)
+
+
+def test_add_molecule_on_empty_space_places_that_molecule():
+    """Add molecule + a click on empty space (also on an empty design) puts the
+    chosen molecule there, never a default carbon (methane)."""
+    from mepd.web import design
+
+    out = design.edit(design.empty()["molblock"], {"op": "place", "smiles": "Cl[Al](Cl)Cl", "point": [1.0, 2.0, 3.0]})
+    assert out["formula"] == "AlCl3" and out["natoms"] == 4
+    out = design.edit(out["molblock"], {"op": "place", "species": "water", "point": [7.0, 2.0, 3.0]})
+    assert out["formula"] == "H2AlCl3O"
+    out = design.edit(design.empty()["molblock"], {"op": "place", "species": "water", "count": 3})
+    assert out["formula"] == "H6O3"

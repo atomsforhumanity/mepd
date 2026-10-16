@@ -267,7 +267,7 @@ class DemoPolicy:
         import tomllib
 
         from mepd.engines.mlip import MODELS, weights_available
-        from mepd.inputs import _normalized_path_method
+        from mepd.inputs import DEFAULT_PATH_METHOD, _normalized_path_method
         from mepd.web.profile_form import FAIRCHEM_DEFAULTS, _mlip_missing
 
         def usable(model: str) -> bool:
@@ -309,7 +309,7 @@ class DemoPolicy:
             if gb > self.psi4_max_memory_gb:
                 raise WorkspaceError(f"psi4_engine_kwds.memory = {memory!r} is above the demo's limit "
                                      f"({self.psi4_max_memory_gb:g} GB)")
-        if _normalized_path_method(data.get("path_min_method") or "NEB") == "NEB-DLF":
+        if _normalized_path_method(data.get("path_min_method") or DEFAULT_PATH_METHOD) == "NEB-DLF":
             raise WorkspaceError("DL-FIND NEB (TeraChem) is not available in the demo")
         models = [((data.get("mlip_engine_kwds") or {}).get("model"), "mlip_engine_kwds.model")] if engine == "mlip" else []
         if engine == "fairchem":   # the same models by FAIR-Chem's own engine; blank = its default
