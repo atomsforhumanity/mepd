@@ -299,9 +299,8 @@ export function SandboxView() {
         <div class="small muted"><b class="sb-names">${sb.names}</b> · <span class="has-tip" title="The reactor runs GFN2-xTB because it is fast. Barriers and energies afterwards use your session's level of theory.">GFN2-xTB</span> · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
         <${StepBar} at=${reactions.length ? 'barrier' : 'reactor'} /></div>
       <div class="row-actions">
-        <button class="btn primary" onClick=${analyze}
-          title="Stop and keep the run: its reactions are refined, each gets a barrier (TS search), and all go to Explore">${reactions.length
-            ? `Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}` : 'Stop & analyze'}</button>
+        ${!reactions.length && html`<button class="btn" onClick=${analyze}
+          title="Stop and keep the run: any reactions are refined, each gets a barrier (TS search), and all go to Explore">Stop & analyze</button>`}
         <button class="btn-link small danger-text" onClick=${discard} title="Stop without keeping anything">Discard</button>
       </div>
     </div>
@@ -357,6 +356,9 @@ export function SandboxView() {
             </div></li>`)}
         </ol>
         ${swaps > 0 && html`<p class="small muted" title="An atom (usually H) passed from one molecule to an identical one: nothing new was made">+ ${swaps} H swap${swaps > 1 ? 's' : ''} between identical molecules</p>`}
+        ${reactions.length > 0 && html`<button class="btn primary rx-find" onClick=${analyze}
+          title="Stop and keep the run: its reactions are refined, each gets a barrier (TS search), and all go to Explore">
+          Find ${reactions.length > 1 ? 'their barriers' : 'its barrier'}</button>`}
         <details class="small"><summary>How to play</summary>
         <ul class="small muted how-to-play">
           <li>Press Collide, or drag an atom into another molecule (Shift: harder).</li>

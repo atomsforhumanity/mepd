@@ -1767,3 +1767,4 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .scale-do .chips { margin-top: 0; }
 .scale-do .welcome-preview { align-self: stretch; }
 @media (max-width: 820px) { .welcome-scales { grid-template-columns: minmax(0, 1fr); } }
+.rx-events .rx-find { width: 100%; margin: 10px 0 8px; }

@@ -173,6 +173,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Interactive reactor: "Find their barriers" sits under the reactions it acts on** (it was at the top
+  of the page). The top keeps "Stop & analyze" only while there are no reactions yet.
 - **Web UI: the first screen says what mepd does.** "Compute how molecules react", then one card per
   scale the tools are grouped by: Molecule (build one, find its stable shapes), Reaction (what it turns
   into and the energy each step takes, drawn as an energy profile) and Network (the steps connected, drawn
