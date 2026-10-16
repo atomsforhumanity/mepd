@@ -5,7 +5,7 @@
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, select, set, state, useStore } from '../store.js';
-import { depictUrl, edgeStatus, fmtKcal, levelBarrierText } from '../util.js';
+import { depictUrl, edgeStatus, fmtKcal, jobHeadline, levelBarrierText } from '../util.js';
 import { ProfilePicker, defaultProfile } from './Actions.js';
 import { ParamForm, clampToSchema, defaultsFor } from './ParamForm.js';
 import { Viewer3D } from './Viewer3D.js';
@@ -23,6 +23,22 @@ export const NO_TS_SHORT = {
   barrierless: 'barrierless', recombines: 'barrierless (recombines)', reverts: 'unstable product',
   falls_apart: 'falls apart', rearranges: 'rearranges', failed: 'optimization failed',
 };
+// The same, as an outcome in plain words (the reactor's story cards).
+export const NO_TS_OUTCOME = {
+  barrierless: 'Happens on contact: no barrier', recombines: 'Recombines on contact: no barrier',
+  reverts: 'The product falls back when relaxed', falls_apart: 'Falls apart when relaxed',
+  rearranges: 'Rearranges when relaxed', failed: 'Relaxing its molecules failed',
+};
+// A search that found no TS, with the path's highest point as a hint (a
+// very high one means the search went wrong, not that the step is hard).
+export function noTsHint(v) {
+  return v > 100 ? `the path went implausibly high (≈${fmtKcal(v)} kcal/mol): the search likely went wrong`
+    : `the path's highest point was ≈${fmtKcal(v)} kcal/mol, but no TS there joins the two ends`;
+}
+// A finished search's page with its "Sample more paths" card open.
+export function sampleMore(jobId) {
+  set({ view: { tab: 'job', jobId, jobTab: 'result' }, focusOp: { key: 'channels-more', at: Date.now() } });
+}
 export function noTsWhy(r) {
   const why = r.complex_error && !/no instance kept/.test(r.complex_error) ? r.complex_error
     : 'its reactant or product complex changed bonds when optimized';
@@ -55,7 +71,7 @@ export function TsCell({ r, why = 'not in Explore (deleted?)' }) {
     const j = Object.values(state.jobs).find((x) => x.targets.edges.includes(r.edge) && ['running', 'queued'].includes(x.status));
     return html`<a href="#" class="small" title="Watch it live" onClick=${(e) => { e.preventDefault(); if (j) openJob(j.id, 'live'); }}>${st.status}…</a>`;
   }
-  const label = st.barrier != null ? `ΔE‡ ${fmtKcal(st.barrier)}` : st.barrierUnverified != null ? `≈${fmtKcal(st.barrierUnverified)}?` : null;
+  const label = st.barrier != null ? `ΔE‡ ${fmtKcal(st.barrier)}` : st.barrierUnverified != null ? 'no TS' : null;
   // Several levels of theory: each level's lowest, each opening its own calculation.
   const perLevel = st.levels?.length > 1 && html`${st.levels.map((l, i) => html`${i ? ' · ' : ''}${l.job
     ? html`<a href="#" class="mono" title="Open the calculation behind this barrier" onClick=${(e) => { e.preventDefault(); openJob(l.job); }}>${levelBarrierText(l)}</a>`
@@ -63,8 +79,8 @@ export function TsCell({ r, why = 'not in Explore (deleted?)' }) {
   return html`<span class="ts-cell">
     ${perLevel || label && (st.barrierJob
     ? html`<a href="#" class="mono" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}
-        title=${`${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : 'Path maximum; no TS/IRC confirmed it'}. Open its TS search (TS, IRC, sample more paths)`}>${label}</a>`
-    : html`<span class="mono" title=${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : 'Path maximum; no TS/IRC confirmed it'}>${label}</span>`)}
+        title=${`${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : `No transition state found: ${noTsHint(st.barrierUnverified)}`}. Open its TS search (TS, IRC, sample more paths)`}>${label}</a>`
+    : html`<span class="mono" title=${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : `No transition state found: ${noTsHint(st.barrierUnverified)}`}>${label}</span>`)}
     ${label
     ? html`<button class="btn small" onClick=${() => openAnalyze({ reaction: r.id, retry: Date.now() })}
         title="Open its settings (from the last search) to change what to try, then search again">Search again…</button>`
@@ -84,7 +100,9 @@ export function SpawnedSearches({ job }) {
     <ul>${list.map((j) => html`<li>
       <a href="#" onClick=${(e) => { e.preventDefault(); openJob(j.id, j.status === 'running' ? 'live' : undefined); }}>${j.title.replace(/^TS: /, '')}</a>
       <span class=${`pill ${j.status}`}>${j.status}</span>
-      ${j.summary?.barrier_kcal != null && html`<span class="mono small">${j.summary.barrier_verified === false ? '≈' : 'ΔE‡ '}${fmtKcal(j.summary.barrier_kcal)}</span>`}
+      ${j.summary?.barrier_kcal != null && (j.summary.barrier_verified === false
+        ? html`<span class="small muted" title=${noTsHint(j.summary.barrier_kcal)}>no TS</span>`
+        : html`<span class="mono small">ΔE‡ ${fmtKcal(j.summary.barrier_kcal)}</span>`)}
     </li>`)}</ul>
   </div>`;
 }
@@ -164,12 +182,12 @@ function ladderFromGraph(r, structures) {
 function Ladder({ r, st, structures }) {
   const L = (r.ladder && r.ladder.reactant_complex != null ? r.ladder : ladderFromGraph(r, structures)) || r.ladder || {};
   const ts = st.barrier != null && L.reactant_complex != null ? L.reactant_complex + st.barrier
-    : st.barrierUnverified != null && L.reactant_complex != null ? L.reactant_complex + st.barrierUnverified : null;
+    : null;   // (a path top no TS confirmed is not drawn as one)
   const levels = [
     // One molecule on a side: its "complex" is the molecule itself, no extra level.
     { key: 'reactants', label: r.reactants.length > 1 ? 'separated' : 'reactant', v: L.reactants },
     r.reactants.length > 1 && { key: 'rc', label: 'reactant complex', v: L.reactant_complex },
-    { key: 'ts', label: st.barrier != null ? 'TS' : st.barrierUnverified != null ? 'path max?' : 'TS (not searched)', v: ts },
+    { key: 'ts', label: st.barrier != null ? 'TS' : st.barrierUnverified != null ? 'no TS found' : 'TS (not searched)', v: ts },
     r.products.length > 1 && { key: 'pc', label: 'product complex', v: L.product_complex },
     { key: 'products', label: r.products.length > 1 ? 'separated' : 'product', v: L.products },
   ].filter(Boolean);
@@ -222,7 +240,7 @@ function SearchSettings({ r, onDone }) {
     if (out) onDone(out[0]);
   };
   return html`<div class="rc-settings">
-    ${prev && html`<p class="small muted">Last search: ${prev.summary?.headline || prev.status} · profile <b>${prev.profile || 'built-in defaults'}</b>.
+    ${prev && html`<p class="small muted">Last search: ${jobHeadline(prev) || prev.status} · profile <b>${prev.profile || 'built-in defaults'}</b>.
       Change what to try: another profile (its path method, e.g. GSM, or more NEB images), or a single path instead of recursive splitting.</p>`}
     <${ParamForm} op="ts" schema=${schema} values=${values} onChange=${setValues} />
     <${ProfilePicker} value=${profile} onChange=${setProfile} />
@@ -238,7 +256,7 @@ function SearchSettings({ r, onDone }) {
 // stabilizes charged and polar species: try it, one solvent at a time
 // (POST /api/reactions/{rid}/retry), and see each try's outcome here.
 const FIRST_SOLVENTS = ['water', 'methanol', 'dmso', 'acetonitrile', 'thf', 'toluene'];
-function RetryInSolvent({ r }) {
+export function RetryInSolvent({ r }) {
   const solvents = useStore((s) => s.solvents) || [];
   const operations = useStore((s) => s.operations);
   const jobsKey = useStore((s) => Object.values(s.jobs).filter((j) => j.op === 'reaction-retry' || j.op === 'ts')
@@ -314,19 +332,18 @@ export function ReactionCard({ r, event = null, compact = false }) {
   const running = st.status === 'running' || st.status === 'queued';
   const runningJob = running ? Object.values(state.jobs).find((j) => j.targets.edges.includes(r.edge) && ['running', 'queued'].includes(j.status)) : null;
   const views = [
-    ev != null && job && ['event', 'MD event'],
+    ev != null && job && ['event', 'In the reactor'],
     rc && ['rc', 'Reactant complex'],
     pc && ['pc', 'Product complex'],
-    st.barrierJob && ['ts', verified ? 'TS' : 'Path max'],
+    st.barrierJob && ['ts', verified ? 'TS' : 'Path top'],
   ].filter(Boolean);
   const height = compact ? 230 : 340;
   return html`<div class=${`reaction-card ${compact ? 'compact' : ''}`}>
     <${Equation} r=${r} structures=${structures} />
-    <div class="small muted rc-meta">${r.origin?.kind === 'composed' ? 'composed by hand' : r.retro ? `retrosynthesis step · ${r.retro.method}${r.retro.reagents?.length ? ` · reagents ${r.retro.reagents.join(', ')}` : ''}` : html`seen ${r.count || 0}× in the MD${r.reverse_count ? `, reverse ${r.reverse_count}×` : ''}`}
-      · energies over the same atoms, kcal/mol
+    <div class="small muted rc-meta" title="Energies in kcal/mol, all over the same atoms">${r.origin?.kind === 'composed' ? 'composed by hand' : r.retro ? `retrosynthesis step · ${r.retro.method}${r.retro.reagents?.length ? ` · reagents ${r.retro.reagents.join(', ')}` : ''}` : html`seen ${(r.count || 0) === 1 ? 'once' : `${r.count || 0}×`} in the reactor${r.reverse_count ? `, reverse ${r.reverse_count}×` : ''}`}
       ${compact && html` · <a href="#" onClick=${(e) => { e.preventDefault(); openAnalyze({ reaction: r.id }); }}>open in Analyze</a>`}</div>
-    ${r.relaxed_from && html`<p class="small muted rc-relaxed" title=${(r.relaxed_why || []).join(' ')}>
-      Sampled in the MD as ${r.relaxed_from}; its ends changed bonds when optimized, so this is the reaction between them.</p>`}
+    ${r.relaxed_from && html`<p class="small muted rc-relaxed" title=${`The reactor showed ${r.relaxed_from}. ${(r.relaxed_why || []).join(' ')} This is the reaction between the relaxed ends.`}>
+      <span class="has-tip">Changed when relaxed</span></p>`}
     <${Ladder} r=${r} st=${st} structures=${structures} />
 
     <div class="rc-ts">
@@ -341,7 +358,8 @@ export function ReactionCard({ r, event = null, compact = false }) {
               : levelBarrierText(l)}`)} kcal/mol</span>`
             : st.barrierJob ? html`<a href="#" class="rc-barrier" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}
                 title="Its TS search: TS, IRC, energy profile, sample more paths">
-                ${st.barrier != null ? `ΔE‡ ${fmtKcal(st.barrier)}` : `≈${fmtKcal(st.barrierUnverified)}? (not verified)`} kcal/mol from the reactant complex →</a>`
+                ${st.barrier != null ? `ΔE‡ ${fmtKcal(st.barrier)} kcal/mol from the reactant complex →` : 'No transition state found →'}</a>
+                ${st.barrier == null && st.barrierUnverified != null && html`<span class="small muted rc-nots">${noTsHint(st.barrierUnverified)}.</span>`}`
               : html`<span class="small muted">No TS yet.</span>`}
             <span class="spacer"></span>
             ${st.barrierJob

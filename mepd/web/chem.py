@@ -111,14 +111,41 @@ def _common_names() -> dict:
 
 
 def common_name(smiles: Optional[str]) -> Optional[str]:
-    """A small molecule's everyday name ("Cl" -> "HCl", "[OH]" -> "hydroxyl"), or None."""
+    """A small molecule's everyday name ("Cl" -> "HCl", "[OH]" -> "hydroxyl"),
+    or that of the molecule it is a protonation state of ("[NH3+]CC(=O)O" ->
+    "protonated glycine"), or None."""
     if not smiles:
         return None
     try:
         key = _canonical(smiles)
-        return _common_names().get(key) if key else None
+        if not key:
+            return None
+        return _common_names().get(key) or _protonation_name(key)
     except Exception:
         return None
+
+
+def _protonation_name(smiles: str) -> Optional[str]:
+    """An ion or zwitterion of a named neutral molecule, by that name:
+    "protonated X", "deprotonated X" or "X zwitterion" (one proton off or on,
+    or charges that cancel). Radicals and anything else: None."""
+    from rdkit import Chem, rdBase
+    from rdkit.Chem.MolStandardize import rdMolStandardize
+
+    with rdBase.BlockLogs():
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None or any(a.GetNumRadicalElectrons() for a in mol.GetAtoms()):
+            return None
+        if not any(a.GetFormalCharge() for a in mol.GetAtoms()):
+            return None
+        charge = Chem.GetFormalCharge(mol)
+        neutral = rdMolStandardize.Uncharger().uncharge(Chem.Mol(mol))
+    if Chem.GetFormalCharge(neutral) != 0 or any(a.GetFormalCharge() for a in neutral.GetAtoms()):
+        return None
+    name = _common_names().get(Chem.MolToSmiles(neutral))
+    if not name:
+        return None
+    return {1: f"protonated {name}", -1: f"deprotonated {name}", 0: f"{name} zwitterion"}.get(charge)
 
 
 def smiles_problem(smiles: str) -> Optional[str]:

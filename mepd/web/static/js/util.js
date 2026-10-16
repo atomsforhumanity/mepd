@@ -1,9 +1,25 @@
+import { html } from './lib.js';
 import { state } from './store.js';
 
 export const STATUS_LABEL = {
   queued: 'Queued', running: 'Running', done: 'Done', failed: 'Failed',
   cancelled: 'Cancelled', interrupted: 'Interrupted',
 };
+// A job's one-line result. (Summaries saved before RESULT_VERSION 36 still
+// call a path top a "ΔE‡ ≈ x"; say what it is.)
+export function jobHeadline(j) {
+  const s = j.summary;
+  if (s?.barrier_verified === false && s.barrier_kcal != null && /^ΔE‡ ≈/.test(s.headline || '')) {
+    return `No transition state found (path top ≈ ${s.barrier_kcal.toFixed(1)} kcal/mol)`;
+  }
+  return s?.headline;
+}
+// A job's status pill; a finished TS search that found no TS joining its ends says so.
+export function JobPill({ j }) {
+  const nots = j.status === 'done' && j.summary?.barrier_verified === false;
+  return html`<span class=${`pill ${nots ? 'nots' : j.status}`}
+    title=${nots ? 'Finished, but no transition state joins the two ends' : ''}>${nots ? 'No TS' : STATUS_LABEL[j.status]}</span>`;
+}
 
 export function fmtDuration(sec) {
   if (sec == null || !isFinite(sec)) return '';
@@ -48,9 +64,9 @@ function levelLabel(key, jobs) {
     ?? (String(key).includes('+qmmm') ? 'QM/MM' : 'level unknown');
 }
 
-// One level's barrier as edges and lists write it: "gxtb 31.2", "GFN2-xTB ≈25.0?", "gxtb 2 steps 30.1".
+// One level's barrier as edges and lists write it: "gxtb 31.2", "GFN2-xTB no TS", "gxtb 2 steps 30.1".
 export function levelBarrierText(l, withLabel = true) {
-  const v = l.barrier != null ? l.barrier.toFixed(1) : l.barrierUnverified != null ? `≈${l.barrierUnverified.toFixed(1)}?` : '—';
+  const v = l.barrier != null ? l.barrier.toFixed(1) : l.barrierUnverified != null ? 'no TS' : '—';
   const name = l.label.length > 18 ? `${l.label.slice(0, 17)}…` : l.label;
   return `${withLabel ? `${name} ` : ''}${l.routeSteps > 1 ? `${l.routeSteps} steps ` : ''}${v}`;
 }

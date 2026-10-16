@@ -173,6 +173,31 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web UI: first results say what they are.** A TS search that found no transition state joining its ends
+  is no longer shown as a barrier: Explore draws it as a grey "no TS" arrow (not green), the Calculations
+  list and job pages say "No TS" / "No transition state found (path top ≈ x kcal/mol)", Analyze puts it
+  under "No TS yet", and the reaction card's energy diagram leaves the TS out. A path top above 100 kcal/mol
+  is called out as a search that likely went wrong. The TS results overview then shows the path itself, not
+  another saddle's IRC (which drew a reaction that was not this one).
+- **Web UI: one reaction count everywhere.** The sidebar's Reactions list now also lists reactions with no
+  arrow in Explore (barrierless, unstable product, ...; a click opens them in Analyze), so it matches the
+  reactor, Analyze and "Its reactions". While a reactor run is being read, the story page says "N so far".
+- **Web UI: after the reactor, always a next step.** Story cards say each outcome in words ("Happens on
+  contact: no barrier", "The product falls back when relaxed"), offer "Try in <solvent>" for reactions with
+  no TS ends and "Sample more paths" when no TS was found; "See them in Explore" and "Run the reactor again"
+  show even when no barrier was found. Explore opens after a first reaction, not a first barrier.
+- **Web UI: tool ticks are earned.** Barrier needs a TS whose IRC joins the ends; Method is done by changing
+  the level of theory or saving a profile, and Kinetics by opening it (opening their tabs no longer counts).
+  Unlock toasts use the tools' short names ("New tools: Barrier · Explore").
+- **Web UI: names and wording.** Ions and zwitterions of a named molecule are named after it ("protonated
+  glycine", "deprotonated glycine"); the reactor's TS searches are titled with species names, not SMILES.
+  Reactor: "keep colliding", "Save this frame", a running-mean temperature (the instantaneous one swings
+  far around the setting), bigger reaction pictures that stay inside the panel, and a note on why it runs
+  GFN2-xTB. Reaction card: "seen once in the reactor", "In the reactor", "Path top"; the relaxed-ends note
+  moved into a tooltip. Analyze's "Shuttled" filter is "With a carrier". Names and equations are no longer
+  in monospace. Design shows one instruction at a time and its minimize/TS/clean buttons only once there is
+  an atom; Settings' intro is one plain sentence; "Optimize N more" reads "N not optimized · Optimize".
+
 - **A first visit is quieter** (from a first-time-user review):
   - **Reactor:** reactions are drawn as molecules, not spelled as SMILES. H swaps between identical molecules are
     a one-line count, not entries. The list and the badge count the same thing. The status line is time and

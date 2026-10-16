@@ -12,11 +12,14 @@ export const QUESTS = [
   { id: 'molecule', short: 'Molecule', title: 'A molecule', blurb: 'Pick one, or build your own.', after: [], opens: { tabs: ['design'] }, start: { tab: 'design' } },
   { id: 'reactor', short: 'Reactor', title: 'The reactor', blurb: 'Heat it, squeeze it, pull atoms.', after: ['molecule'], start: { tab: 'welcome' } },
   { id: 'reaction', short: 'Reaction', title: 'A reaction', blurb: 'Catch bonds changing.', after: ['reactor'], start: { tab: 'welcome' } },
-  { id: 'barrier', short: 'Barrier', title: 'Its barrier', blurb: 'How hard the step is.', after: ['reaction'],
+  { id: 'barrier', short: 'Barrier', title: 'Barrier', blurb: 'How hard the step is.', after: ['reaction'],
+    // Done once a barrier is found (a TS whose IRC joins the ends), not when a search only ran.
+    uses: ['tsopt', 'design-tsopt'],
     // Also everything else that makes a barrier: between two ends you pick, or from a reaction drawn in Design.
     opens: { tabs: ['jobs'], ops: ['ts', 'tsopt', 'design-tsopt', 'complex'], features: ['connect', 'new-calculation', 'compose', 'design-reaction', 'complex'] },
     start: { tab: 'jobs' } },
-  { id: 'network', short: 'Explore', title: 'Explore', blurb: 'Your molecules and reactions, as a graph.', after: ['barrier'], opens: { tabs: ['graph'], ops: ['optimize'] }, start: { tab: 'graph' } },
+  // After a reaction, not its barrier: a reaction with none to find must not be a dead end.
+  { id: 'network', short: 'Explore', title: 'Explore', blurb: 'Your molecules and reactions, as a graph.', after: ['reaction'], opens: { tabs: ['graph'], ops: ['optimize'] }, start: { tab: 'graph' } },
   // Branches.
   { id: 'shapes', short: 'Conformers', title: 'Conformers', blurb: 'The same molecule, folded differently.', after: ['network'],
     opens: { ops: ['conformers'] }, start: { pick: 'molecule', op: 'conformers' } },
@@ -65,7 +68,7 @@ function doneSet(s) {
     molecule: () => Object.keys(ws.structures || {}).length > 0,
     reactor: () => jobs.some(fromSandbox),
     reaction: () => Object.keys(ws.reactions || {}).length > 0,
-    barrier: () => jobs.some((j) => j.op === 'ts' && j.status === 'done' && j.summary?.barrier_kcal != null),
+    barrier: () => jobs.some((j) => j.op === 'ts' && j.status === 'done' && j.summary?.barrier_kcal != null && j.summary.barrier_verified !== false),
     // A graph someone has been building by hand: they know Explore.
     network: () => nEdges >= 2 && jobs.length >= 3,
     product: () => Boolean(ws.design?.reaction),
@@ -140,8 +143,8 @@ export function announceUnlocks() {
   // The first steps are milestones the step bar already shows, not new tools.
   const tools = fresh.filter((id) => !['molecule', 'reactor', 'reaction'].includes(id));
   if (!tools.length) return;
-  const names = tools.map((id) => BY_ID[id].title);
-  toast(`Unlocked: ${names.join(', ')}`, 'ok', 8000, { label: 'See tools', run: () => openTab('welcome') });
+  const names = tools.map((id) => BY_ID[id].short);
+  toast(`New tool${names.length > 1 ? 's' : ''}: ${names.join(' · ')}`, 'ok', 8000, { label: 'See tools', run: () => openTab('welcome') });
 }
 
 // The most recent finished barrier search (its job), if any.

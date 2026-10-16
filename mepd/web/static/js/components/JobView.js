@@ -3,7 +3,7 @@
 import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
 import { familyOf, goBack, historyDepth, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
-import { STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, safeName, structureName, tsFrameIndex } from '../util.js';
+import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, safeName, structureName, tsFrameIndex } from '../util.js';
 import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { JobControls, useTick } from './Jobs.js';
@@ -1063,7 +1063,7 @@ export function JobView({ jobId: openedId }) {
         <div class="job-head-main">
           <h2>${job.title}<${Why} id=${`op.${job.op}`} label=${job.title} /></h2>
           ${simple ? html`<div class="small muted">${page.status === 'done' ? '' : html`<span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span> `}${targets.map((t) => t.label).join(', ')}${' · '}<a href="#" onClick=${(e) => { e.preventDefault(); setTab('result'); }}>All results</a></div>` : html`<div class="small muted">
-            <span class=${`pill ${page.status}`}>${STATUS_LABEL[page.status]}</span>
+            <${JobPill} j=${page} />
             ${job.step_of ? html` · step ${job.step_of.step} of ${job.step_of.steps} of <a href="#" onClick=${(e) => { e.preventDefault(); openJob(job.step_of.job); }}>the whole route</a>, on its own`
               : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
             ${source && html` · from <a href="#" onClick=${(e) => { e.preventDefault(); openJob(source.id); }}>${source.title}</a>`}

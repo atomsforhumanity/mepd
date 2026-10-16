@@ -90,6 +90,7 @@ export function SandboxView() {
   const [tipGone, setTipGone] = useState(false);   // the "Nothing yet?" hint, once tapped away
   const [wall, setWall] = useState(null);             // the wall radius shown by its slider (radius.current is the truth)
   const [dead, setDead] = useState(null);
+  const tMean = useRef(null);
   const [events, setEvents] = useState([]);
   const eventsRef = useRef([]);
   // Until someone has caught a first reaction, Collide keeps going by itself.
@@ -175,6 +176,8 @@ export function SandboxView() {
             frame.current = f;
             if (radius.current == null) { radius.current = f.radius; setWall(f.radius); }
             draw();
+            // The thermometer swings far around the setting (and Collide heats it): show a running mean.
+            if (f.T_inst != null) tMean.current = tMean.current == null ? f.T_inst : 0.92 * tMean.current + 0.08 * f.T_inst;
             if (Date.now() - lastHud > 250) { lastHud = Date.now(); setHud(f); }
           }
         } catch (e) {
@@ -293,7 +296,7 @@ export function SandboxView() {
     <div class="view-head">
       <button class="btn-icon" title="Back to Explore (it keeps running for 15 minutes; the ◉ button in the top bar brings you back)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
       <div class="job-head-main"><h2>Interactive reactor<${Why} id="other.reactor" label="The interactive reactor" /></h2>
-        <div class="small muted"><b class="sb-names">${sb.names}</b> · GFN2-xTB · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
+        <div class="small muted"><b class="sb-names">${sb.names}</b> · <span class="has-tip" title="The reactor runs GFN2-xTB because it is fast. Barriers and energies afterwards use your session's level of theory.">GFN2-xTB</span> · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
         <${StepBar} at=${reactions.length ? 'barrier' : 'reactor'} /></div>
       <div class="row-actions">
         <button class="btn primary" onClick=${analyze}
@@ -307,7 +310,7 @@ export function SandboxView() {
       <div class="rx-main">
         <div class="rx-stage-wrap">
           <div class="rx-stage sandbox-stage" ref=${host}></div>
-          <div class="rx-hud" title=${hud ? `Simulated time ${(hud.t_fs / 1000).toFixed(2)} ps, running at ${hud.rate ?? 0} fs per second. Temperature right now ${hud.T_inst ?? '–'} K. Energy ${hud.e_rel ?? 0} kcal/mol above the start. Wall radius ${(radius.current ?? hud.radius).toFixed(1)} Å.` : ''}>${hud ? `${(hud.t_fs / 1000).toFixed(1)} ps · ${hud.T_inst ?? '–'} K${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
+          <div class="rx-hud" title=${hud ? `Simulated time ${(hud.t_fs / 1000).toFixed(2)} ps, running at ${hud.rate ?? 0} fs per second. Temperature ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K averaged (right now ${hud.T_inst ?? '–'} K: it swings around the setting, and Collide adds heat). Energy ${hud.e_rel ?? 0} kcal/mol above the start. Wall radius ${(radius.current ?? hud.radius).toFixed(1)} Å.` : ''}>${hud ? `${(hud.t_fs / 1000).toFixed(1)} ps · ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
           ${reactions.length > 0 && html`<button class="rx-count" title="See the reactions"
             onClick=${(e) => e.currentTarget.closest('.rx-live').querySelector('.rx-events').scrollIntoView({ behavior: 'smooth', block: 'start' })}>
             ⚡ ${reactions.length} reaction${reactions.length > 1 ? 's' : ''}</button>`}
@@ -318,7 +321,7 @@ export function SandboxView() {
           <div class="rx-collide">
             <button class="btn primary key" onClick=${collide} title="Pull two molecules into each other for a moment, as you would by dragging an atom">Collide</button>
             <label class="small" title="Collide again every few seconds"><input type="checkbox" checked=${autoCollide}
-              onChange=${(e) => setAutoCollide(e.target.checked)} /> keep going</label>
+              onChange=${(e) => setAutoCollide(e.target.checked)} /> keep colliding</label>
           </div>
         </div>
         <div class="sandbox-controls">
@@ -340,7 +343,7 @@ export function SandboxView() {
           <button class="btn small" onClick=${() => { send({ op: 'pause', value: !paused }); setPaused(!paused); }}>${paused ? '▶ Resume' : '❚❚ Pause'}</button>
           <button class="btn small" onClick=${() => { setAutoCollide(false); colliding.current = null; send({ op: 'release_all' }); }}>Release all</button>
           <button class="btn small" title="Keep this geometry in Explore (not minimized; several molecules become a complex)"
-            onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'This moment added to Explore')}>Keep this moment</button>
+            onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'This frame added to Explore')}>Save this frame</button>
         </div>
       </div>
       <aside class="rx-events">

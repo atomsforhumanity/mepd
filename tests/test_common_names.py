@@ -78,3 +78,21 @@ def test_a_lone_atom_is_not_given_hydrogens():
     assert chem.perceive_smiles(_s(["H"], [[0, 0, 0]], mult=2)) == "[H]"       # not "[HH]" (H2)
     assert chem.perceive_smiles(_s(["Cl"], [[0, 0, 0]], charge=-1)) == "[Cl-]"
     assert chem.common_name(chem.perceive_smiles(_s(["H"], [[0, 0, 0]], mult=2))) == "H atom"
+
+
+def test_ions_are_named_after_their_neutral_molecule():
+    assert chem.common_name("[NH3+]CC(=O)O") == "protonated glycine"
+    assert chem.common_name("NCC(=O)[O-]") == "deprotonated glycine"
+    assert chem.common_name("[NH3+]CC(=O)[O-]") == "glycine zwitterion"     # the table's own entry
+    assert chem.common_name("CC(=O)[O-]") == "acetate"                      # a listed name wins
+    assert chem.common_name("NCC([O-])(O)[OH2+]") is None                   # no named parent: keeps its SMILES
+    assert chem.common_name("[CH3]") == "methyl"                            # radicals are not protonation states
+
+
+def test_reactor_ts_searches_are_titled_with_names():
+    from mepd.web.nanoreactor import _names_label
+
+    snap = {"structures": {"g": {"name": "Glycine"}, "w": {"name": "water"}, "p": {"name": "glycine hydrate"}}}
+    r = {"label": "NCC(=O)O + O -> X", "reactants": ["g", "g", "w"], "products": ["p", "g"]}
+    assert _names_label(r, snap) == "2 Glycine + water → glycine hydrate + Glycine"
+    assert _names_label({**r, "products": ["gone"]}, snap) == r["label"]

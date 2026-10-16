@@ -44,6 +44,8 @@ function stylesheet() {
     { selector: 'edge[status = "running"]', style: { 'line-style': 'solid', 'line-color': css('--accent'), 'target-arrow-color': css('--accent'), width: 3.5 } },
     { selector: 'edge[status = "queued"]', style: { 'line-color': css('--warn'), 'target-arrow-color': css('--warn') } },
     { selector: 'edge[status = "failed"]', style: { 'line-color': css('--danger'), 'target-arrow-color': css('--danger') } },
+    // Searched, but no TS joins the two ends: an outcome, not a barrier (never green).
+    { selector: 'edge[status = "nots"]', style: { 'line-style': 'solid', width: 1.5, 'line-color': css('--muted'), 'target-arrow-color': css('--muted'), color: css('--muted') } },
     // Under an experimental setup (Setups.js): does the step run in the reaction time?
     { selector: 'edge[runs = "yes"]', style: { 'line-style': 'solid', 'line-color': css('--ok'), 'target-arrow-color': css('--ok'), width: 3.5 } },
     { selector: 'edge[runs = "slow"]', style: { 'line-style': 'solid', 'line-color': css('--warn'), 'target-arrow-color': css('--warn') } },
@@ -492,7 +494,7 @@ function ViewPanel({ view, setView, collapsed, setCollapsed, kids, shown, total,
 const REV = '~rev';
 function reverseEdge(e, st, source, target) {
   if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return null;
-  return { id: e.id + REV, of: e.id, source: target, target: source, status: st.status, label: st.barrierRev.toFixed(1),
+  return { id: e.id + REV, of: e.id, source: target, target: source, status: edgeDrawStatus(st), label: st.barrierRev.toFixed(1),
     runs: '', route: st.routeSteps ? 'yes' : '' };
 }
 const edgeOf = (el) => el.data('of') || el.id();
@@ -508,6 +510,10 @@ function fitToEdges(c, ids) {
   if (els.nonempty()) c.animate({ fit: { eles: els, padding: pad }, duration: 450, easing: 'ease-in-out-cubic' });
 }
 
+// A search that found only a path maximum is drawn apart from a barrier.
+const edgeDrawStatus = (st) => (st.status === 'done' && st.barrier == null && st.barrierUnverified != null
+  && !(st.levels?.length > 1) ? 'nots' : st.status);
+
 function edgeLabel(e, st, reaction = null) {
   const parts = [];
   // Barriers at several levels of theory: each level's own lowest, side by side.
@@ -520,7 +526,7 @@ function edgeLabel(e, st, reaction = null) {
   // Both directions known: the forward barrier here, the reverse on its own arrow (reverseEdge).
   if (st.barrierRev != null && st.barrierFwd != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrierFwd.toFixed(1)}`);
   else if (st.barrier != null) parts.push(`${st.warning ? '⚠ ' : ''}${st.barrier.toFixed(1)}`);
-  else if (st.barrierUnverified != null) parts.push(`≈${st.barrierUnverified.toFixed(1)}?`);
+  else if (st.barrierUnverified != null) parts.push('no TS');
   else if (e.origin?.estimate?.barrier_shift != null && e.origin.estimate.status === 'ok')
     // A network variant's fast estimate: the shift from its parent reaction, until re-optimized.
     parts.push(`est. ${e.origin.estimate.barrier_shift >= 0 ? '+' : ''}${e.origin.estimate.barrier_shift.toFixed(1)}`);
@@ -765,7 +771,7 @@ export function Graph() {
         if (!source || !target || source === target) continue;
         ids.add(e.id);
         const st = edgeStatus(e, state.jobs);
-        const data = { id: e.id, source, target, status: st.status, label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
+        const data = { id: e.id, source, target, status: edgeDrawStatus(st), label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
           route: st.routeSteps ? 'yes' : '' };
         let rev = reverseEdge(e, st, source, target);
         if (cond && !['running', 'queued'].includes(st.status)) {
@@ -1066,10 +1072,11 @@ export function Graph() {
         <span><i class="lg queued"></i>within 100×</span>
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
-      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified first; when both directions are known, each direction is its own arrow with its own barrier; ≈x? means the path maximum, not yet confirmed by TS + IRC. Dotted: no single step joins the two, only a route through intermediates (its highest step).">
+      ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified; when both directions are known, each direction is its own arrow with its own barrier. No TS: searched, but no transition state joins the two ends (click it for the path's highest point). Dotted: no single step joins the two, only a route through intermediates (its highest step).">
         <span><i class="lg idle"></i>not computed</span>
         <span><i class="lg running"></i>running</span>
-        <span><i class="lg done"></i>ΔE‡, kcal/mol</span>
+        <span><i class="lg done"></i>barrier, kcal/mol</span>
+        <span><i class="lg nots"></i>no TS found</span>
         <span><i class="lg route"></i>multi-step route</span>
         <span><i class="lg failed"></i>failed</span>
       </div>`}

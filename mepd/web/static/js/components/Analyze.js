@@ -7,13 +7,14 @@
 //    event, TS;
 //  * New reaction: click molecules of the graph, then the products they can
 //    become (NewReaction.js).
-import { html, useState } from '../lib.js';
+import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, select, set, state, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
-import { NO_TS_SHORT, ReactionCard, findTs, noTsWhy } from './Reactions.js';
+import { NO_TS_SHORT, ReactionCard, findTs, noTsHint, noTsWhy } from './Reactions.js';
 import { KineticsView } from './Kinetics.js';
 import { ReactionMaker } from './NewReaction.js';
+import { markQuest } from '../quests.js';
 
 const count = (ids) => ids.reduce((m, id) => ({ ...m, [id]: (m[id] || 0) + 1 }), {});
 
@@ -49,10 +50,10 @@ function tsState(r, edges, jobs) {
   if (st.status === 'running' || st.status === 'queued') return { kind: 'busy', text: `${st.status}…` };
   if (st.levels?.length > 1) {   // each level of theory its own lowest; sorted by the workspace level's
     return { kind: st.barrier != null ? 'ts' : 'unverified', text: st.levels.map((l) => levelBarrierText(l)).join(' · '),
-      v: st.barrier ?? st.barrierUnverified, title: 'Lowest barrier at each level of theory (not comparable across levels)' };
+      v: st.barrier, title: 'Lowest barrier at each level of theory (not comparable across levels)' };
   }
   if (st.barrier != null) return { kind: 'ts', text: `ΔE‡ ${fmtKcal(st.barrier)}`, v: st.barrier };
-  if (st.barrierUnverified != null) return { kind: 'unverified', text: `≈${fmtKcal(st.barrierUnverified)}?`, v: st.barrierUnverified, title: 'path maximum; no TS/IRC confirmed it' };
+  if (st.barrierUnverified != null) return { kind: 'unverified', text: 'no TS', v: null, title: `No transition state found: ${noTsHint(st.barrierUnverified)}` };
   if (edge.origin?.qmmm_ts) return { kind: 'busy', text: 'TS, barrier pending', title: edge.origin.headline || '' };
   return { kind: 'todo', text: 'no TS yet' };
 }
@@ -99,6 +100,7 @@ function ExportAll() {
 export function AnalyzeView() {
   const mode = useStore((s) => (s.analyze || {}).view) || 'reactions';
   const nav0 = useStore((s) => s.analyze) || {};
+  useEffect(() => { if (mode === 'kinetics') markQuest('kinetics'); }, [mode]);
   const toggle = html`<div class="segmented an-mode">
     <button class=${mode === 'reactions' ? 'on' : ''} onClick=${() => set({ analyze: { ...nav0, view: 'reactions' } })}>Reactions</button>
     <button class=${mode === 'kinetics' ? 'on' : ''} onClick=${() => set({ analyze: { ...nav0, view: 'kinetics' } })}
@@ -133,8 +135,8 @@ function ReactionsAnalyze() {
       if (!text.includes(q.toLowerCase())) return false;
     }
     const t = tsState(r, edges, jobs);
-    if (only === 'todo' && t.kind !== 'todo') return false;
-    if (only === 'ts' && !['ts', 'unverified'].includes(t.kind)) return false;
+    if (only === 'todo' && !['todo', 'unverified'].includes(t.kind)) return false;   // (no TS found: worth another try)
+    if (only === 'ts' && t.kind !== 'ts') return false;
     if (only === 'shuttle' && !(r.shuttles || []).length) return false;
     return true;
   });
@@ -171,7 +173,7 @@ function ReactionsAnalyze() {
       <div class="an-bar">
         <input type="search" placeholder="Filter by species" value=${q} onInput=${(e) => setQ(e.target.value)} />
         <div class="segmented">
-          ${[['all', 'All'], ['todo', 'No TS yet'], ['ts', 'With TS'], ['shuttle', 'Shuttled']].map(([k, l]) => html`
+          ${[['all', 'All'], ['todo', 'No TS yet'], ['ts', 'With TS'], ['shuttle', 'With a carrier']].map(([k, l]) => html`
             <button class=${only === k ? 'on' : ''} onClick=${() => setOnly(k)}>${l}</button>`)}
         </div>
         <button class="btn primary small" onClick=${() => set({ analyze: { ...nav, compose: true, reaction: null } })}>New reaction</button>

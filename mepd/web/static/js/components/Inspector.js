@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
 import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
-import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
+import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
 import { ActionPanel } from './Actions.js';
@@ -10,7 +10,7 @@ import { QuestIcon } from '../icons.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
 import { LevelChip } from './Library.js';
-import { ReactionCard, TsCell } from './Reactions.js';
+import { ReactionCard, TsCell, noTsHint } from './Reactions.js';
 import { openAnalyze } from './Analyze.js';
 import { ProductPicker } from './NewReaction.js';
 import { ComplexMethodForm } from './ComplexBuild.js';
@@ -60,9 +60,9 @@ function JobList({ jobs }) {
       <ul class="mini-jobs">
         ${jobs.map((j) => html`
           <li onClick=${() => openJob(j.id)} title=${j.command}>
-            <span class=${`pill ${j.status}`}>${STATUS_LABEL[j.status]}</span>
+            <${JobPill} j=${j} />
             <span class="mini-title">${j.title}</span>
-            <span class="mini-sub">${j.summary?.headline || lastLine(j) || fmtAgo(j.created)}</span>
+            <span class="mini-sub">${jobHeadline(j) || lastLine(j) || fmtAgo(j.created)}</span>
           </li>`)}
       </ul>
     </section>`;
@@ -258,11 +258,11 @@ function EdgeDetail({ edge }) {
       <div class="stat-row">
         <div class=${`stat ${st.barrierJob ? 'linked' : ''}`} onClick=${() => st.barrierJob && openJob(st.barrierJob)}
           title=${(st.routeSteps ? `No single step joins these two structures: the highest step of a ${st.routeSteps}-step route through intermediates`
-            : st.barrier == null && st.barrierUnverified != null ? 'No TS/IRC found so far connects these two structures; this is only the highest point of the path' : 'Lowest barrier whose IRCs connect these two structures')
+            : st.barrier == null && st.barrierUnverified != null ? `No transition state found so far: ${noTsHint(st.barrierUnverified)}` : 'Lowest barrier whose IRCs connect these two structures')
             + (st.barrierJob ? '. Click for its TS, IRC and follow-ups' : '')}>
-          <span class="stat-v">${st.barrier != null ? fmtKcal(st.barrier) : st.barrierUnverified != null ? `≈${fmtKcal(st.barrierUnverified)}?` : '—'}</span>
+          <span class="stat-v">${st.barrier != null ? fmtKcal(st.barrier) : st.barrierUnverified != null ? 'no TS' : '—'}</span>
           <span class="stat-l">${st.routeSteps ? `${st.routeSteps}-step route, highest ΔE‡${st.barrier == null ? ' (not verified)' : ''}`
-            : st.barrier == null && st.barrierUnverified != null ? 'path max, not IRC-verified' : 'best ΔE‡ (kcal/mol)'}</span></div>
+            : st.barrier == null && st.barrierUnverified != null ? 'no transition state found' : 'best ΔE‡ (kcal/mol)'}</span></div>
         <div class="stat"><span class="stat-v">${st.count}</span><span class="stat-l">calculations</span></div>
       </div>
       ${st.levels?.length > 1 && html`<p class="small muted" title="Barriers at different levels of theory are not comparable: each level's own lowest">

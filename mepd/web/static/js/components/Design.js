@@ -552,10 +552,10 @@ export function DesignView() {
         <div class="design-tools">
           ${TOOLS.map(([k, label, help]) => html`<button class=${`tool ${tool === k ? 'on' : ''}`} title=${help} onClick=${() => setTool(k)}>${label}</button>`)}
           ${(tool === 'element' || tool === 'add') && html`<div>
-            <${Steps} steps=${[`Pick the element (now ${element}).`, tool === 'add'
+            ${!empty && html`<${Steps} steps=${[`Pick the element (now ${element}).`, tool === 'add'
               ? 'Click an atom to bond the new one to it (it takes one of its hydrogens), or click a hydrogen to put it in that hydrogen\'s place.'
               : 'Click the atom in the 3D view to change: its hydrogens are redone to fit.',
-              'Click empty space to drop a new, unbonded atom there.']} />
+              'Click empty space to drop a new, unbonded atom there.']} />`}
             <label class="small drop-h" title="A dropped atom comes with the hydrogens its valence wants (C becomes CH4); off: a bare atom or ion">
               <input type="checkbox" checked=${dropH} onChange=${(e) => { setDropH(e.target.checked); prefs.set('designDropH', e.target.checked); }} />
               dropped atoms get their hydrogens</label>
@@ -621,10 +621,12 @@ export function DesignView() {
             </div>`}
           <div class="design-hint small">${running ? html`${running.op === 'design-tsopt' ? 'Optimizing as a TS (then IRC)' : 'Minimizing'} at ${level?.label ?? 'the workspace level'}… <a href="#" onClick=${(e) => { e.preventDefault(); openJob(running.id); }}>details</a>`
             : busy ? `Applying the edit…${queued ? ` (${queued} more queued)` : ''}`
-              : tool === 'bond' && picked.length === 1 ? `Atom ${picked[0] + 1} picked: click the second atom.` : toolHelp}</div>
+              : tool === 'bond' && picked.length === 1 ? `Atom ${picked[0] + 1} picked: click the second atom.`
+              : tool === 'element' || tool === 'add' ? '' : toolHelp}</div>
           <div class="design-bar">
             ${!rx && html`<button class="btn small primary phone-only" onClick=${toReactor} disabled=${busy || running || reacting || !design.natoms}>${reacting ? 'Starting…' : 'Put in reactor'}</button>`}
             <button class="btn small" disabled=${!history.current.undo.length || busy} onClick=${undo} title="Undo (Ctrl+Z)">Undo</button>
+            ${!empty && html`
             <button class="btn small" disabled=${!history.current.redo.length || busy} onClick=${redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
             <button class="btn small" disabled=${busy || running} onClick=${() => apply(() => api.post('/api/design/edit', { op: { op: 'hydrogens' } }))} title="Re-add hydrogens everywhere from valences">Fix H</button>
             <button class="btn small" disabled=${busy || running} onClick=${() => apply(() => api.post('/api/design/clean'))}
@@ -635,7 +637,7 @@ export function DesignView() {
               title=${`Minimize at ${level?.label ?? 'the workspace level'} (mepd optimize); the result replaces the design`}>Minimize</button>
             <label class="small" title="After minimizing, check for imaginary frequencies (and try to push off a saddle). Slow for large or floppy structures, e.g. with explicit solvent or ions, which rarely pass a strict check.">
               <input type="checkbox" checked=${hessian} onChange=${(e) => { setHessian(e.target.checked); prefs.set('designHessian', e.target.checked); }} /> Hessian check</label>`}
-            <label class="small"><input type="checkbox" checked=${labels} onChange=${(e) => setLabels(e.target.checked)} /> atom numbers</label>
+            <label class="small"><input type="checkbox" checked=${labels} onChange=${(e) => setLabels(e.target.checked)} /> atom numbers</label>`}
           </div>
         </div>
         <aside class="design-side">

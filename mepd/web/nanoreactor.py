@@ -194,6 +194,21 @@ def _adopt_one(ws, job: dict, data: dict, nodes: dict, refined: dict, *, final: 
     return changed
 
 
+def _names_label(r: dict, snap: dict) -> str:
+    """A reaction as its species' names ("2 Glycine + water -> ..."), the way
+    the rest of the UI writes it; its SMILES label when a species is gone."""
+    def side(ids):
+        names = [snap["structures"].get(i, {}).get("name") for i in ids]
+        if not ids or None in names:
+            return None
+        counts = {}
+        for n in names:
+            counts[n] = counts.get(n, 0) + 1
+        return " + ".join(f"{k} {n}" if k > 1 else n for n, k in counts.items())
+    a, b = side(r.get("reactants") or []), side(r.get("products") or [])
+    return f"{a} → {b}" if a and b else r["label"]
+
+
 def spawn_ts_searches(manager, job: dict) -> list:
     """With 'Find each reaction's TS': an ordinary TS search per reaction of
     this run (on its subsystem edge), each its own job -- queued, watchable
@@ -220,7 +235,7 @@ def spawn_ts_searches(manager, job: dict) -> list:
     for r in todo:
         try:
             created = manager.submit("ts", structure_ids=[], edge_ids=[r["edge"]], params={},
-                                     profile=job.get("profile"), label=f"TS: {r['label']}")
+                                     profile=job.get("profile"), label=f"TS: {_names_label(r, snap)}")
         except WorkspaceError as exc:
             logging.getLogger(__name__).warning("could not start the TS search of %s: %s", r["label"], exc)
             continue

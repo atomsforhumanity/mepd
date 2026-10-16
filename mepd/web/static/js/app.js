@@ -104,7 +104,8 @@ function App() {
   useEffect(() => { const el = document.querySelector('.layout'); if (el) el.scrollTop = 0; }, [view.tab, view.jobId]);
   useEffect(() => {
     if (!loaded) return;
-    const visit = { profiles: 'method', analyze: 'kinetics', graph: 'network' }[view.tab];
+    // (Method and Kinetics are done by using them, not by opening their tab.)
+    const visit = { graph: 'network' }[view.tab];
     if (visit && mapOf().open.has(visit) && map.tab(view.tab)) markQuest(visit);
     if (['graph', 'analyze', 'jobs', 'profiles'].includes(view.tab) && !map.tab(view.tab)) replaceView({ tab: 'welcome', jobId: null });
   }, [loaded, view.tab, mapKey]);

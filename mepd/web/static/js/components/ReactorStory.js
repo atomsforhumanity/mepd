@@ -6,7 +6,7 @@
 import { html, useEffect, useState } from '../lib.js';
 import { openJob, set, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal } from '../util.js';
-import { Equation, NO_TS_SHORT, ReactionCard, TsCell, findTs, noTsWhy } from './Reactions.js';
+import { Equation, NO_TS_OUTCOME, ReactionCard, RetryInSolvent, TsCell, findTs, noTsHint, noTsWhy, sampleMore } from './Reactions.js';
 import { StepBar, markStep, reactorFor } from './Welcome.js';
 
 // Reactant, TS and product levels; an arrow up to the TS from each side.
@@ -42,7 +42,7 @@ function StoryCard({ r }) {
   const searchJob = searching && Object.values(jobs).find((j) => j.targets.edges.includes(r.edge) && ['running', 'queued'].includes(j.status));
   let status;
   if (r.live) status = html`<span class="muted">Checking the molecules…</span>`;
-  else if (!edge) status = html`<span class="muted" title=${noTsWhy(r)}>No barrier: ${NO_TS_SHORT[r.complex_reason] || 'no stable ends'}</span>`;
+  else if (!edge) status = html`<span class="muted" title=${noTsWhy(r)}>${NO_TS_OUTCOME[r.complex_reason] || 'Its ends change when relaxed: no barrier to search'}.</span>`;
   else if (searching) {
     status = html`<span class="story-busy">Finding the barrier…</span>${searchJob && html` <a href="#" class="small"
       onClick=${(e) => { e.preventDefault(); openJob(searchJob.id, 'live'); }}>watch</a>`}`;
@@ -50,13 +50,15 @@ function StoryCard({ r }) {
     <span class="muted">· ${fmtKcal(st.barrierRev)} back</span>`;
   else if (st.barrier != null) status = html`<b>Barrier ${fmtKcal(st.barrier)} kcal/mol</b>`;
   else if (st.barrierUnverified != null) {
-    status = html`<span class="muted" title=${`The highest point on the path (≈${fmtKcal(st.barrierUnverified)} kcal/mol) did not lead to a transition state joining the two ends`}>No transition state found.</span>
-      ${st.barrierJob && html` <a href="#" class="small" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}>see why</a>`}`;
+    status = html`<span class="muted has-tip" title=${`No transition state found: ${noTsHint(st.barrierUnverified)}.`}>No transition state found.</span>
+      ${st.barrierJob && html` <button class="btn small" onClick=${() => sampleMore(st.barrierJob)}
+        title="Search again from more conformers and atom mappings">Sample more paths</button>`}`;
   } else if (st.status === 'failed') status = html`<span class="muted">No barrier found.</span> <${TsCell} r=${r} />`;
   else status = html`<button class="btn small primary" onClick=${() => findTs(r)}>Find its barrier</button>`;
   return html`<li class="story-card">
     <${Equation} r=${r} structures=${structures} />
     <div class="story-status">${status}</div>
+    ${!r.live && !edge && html`<${RetryInSolvent} r=${r} />`}
     ${st?.barrierFwd != null && st?.barrierRev != null && html`<${EnergyArrows} fwd=${st.barrierFwd} rev=${st.barrierRev} />`}
     <button class="btn-link small story-more" onClick=${() => setMore(!more)}>${more ? 'Less' : 'Details'}</button>
     ${more && html`<${ReactionCard} r=${r} compact=${true} />`}
@@ -74,24 +76,29 @@ export function ReactorStory({ job }) {
   useEffect(() => { if (found.length) markStep('barrier'); }, [found.length]);
   const toExplore = () => {
     markStep('network');
-    window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'fit-to', ids: found.map((r) => r.edge) } }));
+    const ids = (found.length ? found : mine).map((r) => r.edge).filter((id) => id && edges[id]);
+    if (ids.length) window.dispatchEvent(new CustomEvent('mepd:graph', { detail: { cmd: 'fit-to', ids } }));
     set({ view: { tab: 'graph', jobId: null } });
     const tap = window.matchMedia?.('(pointer: coarse)').matches ? 'Tap' : 'Click';
-    toast(`Your new reactions glow; the number on each arrow is its barrier. ${tap} one to explore it.`, 'info', 7000);
+    toast(`Your new reactions glow${found.length ? '; the number on each arrow is its barrier' : ''}. ${tap} one to explore it.`, 'info', 7000);
   };
   const n = mine.length;
   // The same molecule into a new reactor: the run's first species that is not water.
   const structures = useStore((s) => s.workspace.structures);
   const again = (job.targets?.structures || []).map((id) => structures[id]).find((r) => r && r.smiles !== 'O') || null;
+  // (While the run is read, reactions still arrive: no final count yet.)
   const headline = !n ? (busy ? 'Looking at what your reactor made…' : 'Your reactor made no lasting reactions')
+    : busy ? `Reading your reactor run… ${n} reaction${n > 1 ? 's' : ''} so far`
     : `Your reactor made ${n} reaction${n > 1 ? 's' : ''}`;
+  const searching = mine.some((r) => r.live || (r.edge && edges[r.edge] && ['running', 'queued'].includes(edgeStatus(edges[r.edge], jobs).status)));
   return html`<div class="story">
     <${StepBar} at=${found.length ? 'network' : n ? 'barrier' : 'reaction'} />
     <h3 class="story-head">${headline}</h3>
-    ${n > 0 && html`<p class="small muted">${busy ? 'Each one is checked, then its barrier is searched.'
-      : `${found.length} of ${n} with a barrier.`}</p>`}
-    ${found.length > 0 && html`<button class="rx-bulb story-bulb" onClick=${toExplore}>
-      <span class="bulb-dot"></span><span><b>See ${found.length > 1 ? 'them' : 'it'} in Explore</b>
+    ${n > 0 && html`<p class="small muted">${busy || searching ? 'Each one is checked, then its barrier is searched.'
+      : found.length ? `${found.length} of ${n} with a barrier.`
+      : `None of them had a barrier to find. Try one in a solvent below, or run the reactor again.`}</p>`}
+    ${n > 0 && !busy && html`<button class="rx-bulb story-bulb" onClick=${toExplore}>
+      <span class="bulb-dot"></span><span><b>See ${n > 1 ? 'them' : 'it'} in Explore</b>
       <span class="small muted"> · with your other molecules</span></span></button>`}
     <ul class="story-list">${mine.map((r) => html`<${StoryCard} key=${r.id} r=${r} />`)}</ul>
     ${!busy && !n && html`<div class="story-empty">
@@ -99,6 +106,6 @@ export function ReactorStory({ job }) {
         <b>Collide</b> (with “keep going” on), or drag an atom of one molecule into another and hold it there.</p>
       <div class="row">${again && html`<button class="btn primary" onClick=${() => reactorFor(again)}>Run it again</button>`}</div>
     </div>`}
-    ${!busy && html`<p class="small muted story-again"><a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>Try another molecule</a></p>`}
+    ${!busy && html`<p class="small muted story-again">${n > 0 && again && html`<a href="#" onClick=${(e) => { e.preventDefault(); reactorFor(again); }}>Run the reactor again</a> · `}<a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>Try another molecule</a></p>`}
   </div>`;
 }

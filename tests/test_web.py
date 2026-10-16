@@ -985,7 +985,7 @@ H 0.509 0.882 -1.160
     r = collect_ts(out, 0, 1)
     assert r["barrier_verified"] is False
     assert r["barrier_kcal"] == pytest.approx(0.20 * 627.509474, abs=1e-2)       # path max, not the 3 kcal saddle
-    assert "not verified" in r["headline"]
+    assert r["headline"].startswith("No transition state found")
     other = {g["kind"]: g for g in r["groups"]}["ts_other"]["entries"][0]
     assert "conformer change" in other["note"]
     assert summarize(r)["barrier_verified"] is False

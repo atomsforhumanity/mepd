@@ -341,14 +341,16 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
     else:
         barrier, source = None, ""
     n_steps = len(leaves) if leaves else (1 if mep is not None else 0)
-    approx = "" if verified else "≈ "
-    headline = (f"ΔE‡ {approx}{_one_decimal(barrier)} kcal/mol ({source})" if barrier is not None else "No path found") + \
+    # An unverified barrier is a path top, not a result: say what was found.
+    headline = (f"ΔE‡ {_one_decimal(barrier)} kcal/mol ({source})" if verified
+                else f"No transition state found (path top ≈ {_one_decimal(barrier)} kcal/mol)" if barrier is not None
+                else "No path found") + \
         (f" · {n_steps} path steps" if n_steps > 1 else "")
     summary = [
         {"label": "Elementary steps", "value": n_steps or None},
         {"label": "Optimized TSs", "value": len(ts_items) or None},
-        {"label": "Barrier", "value": "verified: IRCs connect start → end" if verified else "not verified by IRC"},
-        {"label": "Barrier reference", "value": "lowest reactant-side energy (path start / IRC ends)"},
+        {"label": "Transition state", "value": "found: its IRC joins start → end" if verified else "none joins start → end"},
+        {"label": "Measured from", "value": "the lowest reactant energy found (path start / IRC ends)"},
     ]
     result = _result(headline, groups, summary, barrier, warnings)
     result["barrier_floor_hartree"] = floor     # barrier_kcal = E(TS) - this (summarize: the TS's energy)
@@ -1843,7 +1845,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 35
+RESULT_VERSION = 36
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

@@ -2,7 +2,7 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { prefs, set, state, toast, useStore } from '../store.js';
-import { setEverything } from '../quests.js';
+import { markQuest, setEverything } from '../quests.js';
 import { Why } from './Why.js';
 import { LevelBar } from './Library.js';
 
@@ -37,6 +37,7 @@ export function ProfilesView() {
   const save = async () => {
     if (isBuiltin) { await saveAs(); return false; }   // (the demo's built-ins are kept as they are)
     const ok = await attempt(() => api.put(`/api/profiles/${encodeURIComponent(name)}`, { text }), `Saved ${name}`);
+    if (ok) markQuest('method');
     if (ok) setSaved(text);
     return !!ok;
   };
@@ -62,6 +63,7 @@ export function ProfilesView() {
     const n = prompt('New profile name (letters, digits, - and _):', `${name || 'profile'}-copy`);
     if (!n) return;
     const ok = await attempt(() => api.put(`/api/profiles/${encodeURIComponent(n)}`, { text }), `Created ${n}`);
+    if (ok) markQuest('method');
     if (ok) { setSaved(text); setName(n); }
   };
   const del = async () => {
@@ -82,7 +84,7 @@ export function ProfilesView() {
         <label class="check small everything-switch" title="Every tab and tool at once">
           <input type="checkbox" class="switch" checked=${everything} onChange=${(e) => setEverything(e.target.checked)} /> Show everything</label>
         <div class="settings-level"><${LevelBar} always /></div>
-        <p class="small muted">Each profile is a <code>RunInputs</code> TOML (the file <code>mepd … --inputs</code> takes): engine, program and level of theory, path minimizer, optimizer, thresholds. A job copies its profile into its own folder, so editing one later never changes past results.</p>
+        <p class="small muted" title="Each profile is a RunInputs TOML, the file mepd … --inputs takes. A calculation copies its profile, so editing one later never changes past results.">A profile is how calculations are run: method, path search and thresholds. Editing one never changes past results.</p>
       </div>
       <div class="profiles-body">
         <ul class="profile-list">

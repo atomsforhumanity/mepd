@@ -11,12 +11,14 @@ const short = (label) => label.replace(/^Channel /, 'ch ').replace(/^First searc
 const HUES = ['#2f6fdb', '#e0662f', '#1f9e74', '#8a55c9', '#c8417a', '#7a8b2b', '#2b97b8', '#b8862b'];
 
 // The paths worth comparing: the channels when there are (channels, sampled
-// TS searches), else the IRC-verified TSs, else the paths themselves.
+// TS searches), else the IRC-verified TSs, else the paths themselves. With
+// no TS joining the ends, the path itself: another saddle's IRC would draw a
+// reaction that is not this one.
 export function overviewPaths(result) {
   const groups = result.groups || [];
   const of = (kind) => groups.filter((g) => g.kind === kind).flatMap((g) => g.entries);
   const usable = (es) => es.filter((e) => e.frames.length > 1 && e.ts_index != null && e.frames[e.ts_index]?.energy_kcal != null);
-  for (const kind of ['channel', 'irc', 'path']) {
+  for (const kind of result.barrier_verified === false ? ['channel', 'path', 'irc'] : ['channel', 'irc', 'path']) {
     const es = usable(of(kind));
     if (es.length) return es.map((e) => {
       const fr = e.frames;
@@ -27,7 +29,7 @@ export function overviewPaths(result) {
   return [];
 }
 
-function Diagram({ paths, lowest, current, onPick }) {
+function Diagram({ paths, lowest, current, onPick, top = 'TS' }) {
   const W = 640, H = 210, padT = 26, padB = 44;
   const ys = paths.flatMap((p) => [p.start, p.ts, p.end, 0]);
   const lo = Math.min(...ys), hi = Math.max(...ys);
@@ -49,7 +51,7 @@ function Diagram({ paths, lowest, current, onPick }) {
       return html`<g class=${`po-ch ${on ? 'on' : ''}`} style=${`--c:${c}`} onClick=${() => onPick(p.id)}>
         <path d=${`M${xR + 26},${y(0)}L${x - 16},${y(p.ts)}H${x + 16}L${xP - 26},${y(prod)}`} class="po-line" />
         <text x=${x} y=${y(p.ts) - 7} class="po-num">${sk(p.ts)}</text>
-        <text x=${x} y=${H - 24} class="po-lab">${n > 1 ? short(p.label) : 'TS'}</text>
+        <text x=${x} y=${H - 24} class="po-lab">${n > 1 ? short(p.label) : top}</text>
         ${p.id === lowest && n > 1 && html`<text x=${x} y=${H - 10} class="po-lab b">lowest</text>`}
       </g>`;
     })}
@@ -62,18 +64,20 @@ export function PathsOverview({ result, current, onPick }) {
   const best = paths.reduce((a, b) => ((b.barrier ?? Infinity) < (a.barrier ?? Infinity) ? b : a));
   const barrier = result.barrier_kcal ?? best.barrier;
   const many = paths.length > 1;
+  const nots = result.barrier_verified === false;
   const pick = (id) => {
     onPick(id);
     setTimeout(() => document.querySelector('.result-body')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
   return html`<section class="paths-overview">
     <div class="po-stats">
-      ${barrier != null && html`<div><span>Lowest barrier</span><b>${fmtKcal(barrier)} kcal/mol</b></div>`}
+      ${nots ? html`<div title=${`The path's highest point is ≈${barrier != null ? fmtKcal(barrier) : '?'} kcal/mol, but no TS there has an IRC joining the two ends`}><span>Transition state</span><b>None found</b></div>`
+        : barrier != null && html`<div><span>Lowest barrier</span><b>${fmtKcal(barrier)} kcal/mol</b></div>`}
       <div><span>${many ? 'Channels found' : 'Paths found'}</span><b>${paths.length}</b></div>
       <div><span>Reaction energy</span><b>${sk(best.end)} kcal/mol</b></div>
-      ${result.barrier_verified != null && html`<div><span>IRC connects the ends</span><b>${result.barrier_verified ? 'Yes' : 'No'}</b></div>`}
+
     </div>
-    <div class="po-card"><${Diagram} paths=${paths} lowest=${best.id} current=${current} onPick=${pick} /></div>
+    <div class="po-card"><${Diagram} paths=${paths} lowest=${best.id} current=${current} onPick=${pick} top=${nots ? 'path top' : 'TS'} /></div>
     <p class="small muted">Electronic energies, kcal/mol from the lowest reactant geometry found. Click a ${many ? 'channel' : 'path'} to see it in 3D.</p>
     ${many && html`<table class="po-table">
       <thead><tr><th>Channel</th><th class="num">ΔE‡</th><th class="num">TS</th><th class="num">ΔE</th><th>Connects</th></tr></thead>

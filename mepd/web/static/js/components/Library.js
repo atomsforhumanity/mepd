@@ -2,10 +2,10 @@
 // browse the library. Library entries and graph nodes are the same thing.
 import { html, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { isNew, markAllSeen, openTab, prefs, select, state, useStore } from '../store.js';
+import { isNew, markAllSeen, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { cls, depictUrl, edgeStatus, fmtKcal, isComplex, isSpecies, levelStatus } from '../util.js';
 import { QmmmAdd } from './QMMM.js';
-import { useMap } from '../quests.js';
+import { markQuest, useMap } from '../quests.js';
 import { Why } from './Why.js';
 
 // Point the graph at a node or an arrow: centre it, close enough to read, and
@@ -107,15 +107,15 @@ export function LevelBar({ status = false, always = false }) {
   // TS structures (kind 'ts') are never counted: minimizing them would destroy them.
   const off = Object.values(structures).filter((r) => !isComplex(r) && ['other', 'none', 'failed'].includes(levelStatus(r, levels[levelProfile ?? '']?.key).kind));
   const busy = Object.values(structures).filter((r) => r.status === 'optimizing').length;
-  const setLevel = (profile) => attempt(() => api.put('/api/level', { profile: profile || null }));
+  const setLevel = (profile) => attempt(() => api.put('/api/level', { profile: profile || null })).then((r) => { if (r) markQuest('method'); });
   const reopt = () => attempt(() => api.post('/api/structures/reoptimize', { structures: off.map((r) => r.id) }),
     (js) => `Re-optimizing ${off.length} structure${off.length > 1 ? 's' : ''} (${js.length} job${js.length > 1 ? 's' : ''})`);
   if (!always && !map.feature('level')) return null;   // opens with "A better method" (quests.js)
   const note = (busy > 0 || off.length > 0) && html`<div class="level-status small">
     ${busy > 0 && html`<span class="muted">${busy} minimizing…</span>`}
-    ${off.length > 0 && html`<button class="btn-link small warn-text" onClick=${reopt}
+    ${off.length > 0 && html`<span class="muted">${off.length} not optimized ·</span> <button class="btn-link small" onClick=${reopt}
       title=${`Minimize every structure that is not yet a minimum at the workspace level, ${levels[levelProfile ?? '']?.label ?? 'this level'} (force-field embeddings, other levels, failed optimizations)`}>
-      Optimize ${off.length} more</button>`}
+      Optimize</button>`}
   </div>`;
   if (status) return note ? html`<div class="level-bar">${note}</div>` : null;
   return html`
@@ -188,6 +188,26 @@ function ReactionRow({ e, selected, fresh }) {
   </li>`;
 }
 
+// A reaction with no arrow in Explore (barrierless, or its ends changed when
+// relaxed): it is still a reaction, so it is listed; its card is in Analyze.
+const NO_ARROW = { barrierless: 'no barrier', recombines: 'no barrier', reverts: 'unstable product',
+  falls_apart: 'falls apart', rearranges: 'rearranges', failed: 'relaxing failed' };
+function ArrowlessRow({ r }) {
+  const structures = useStore((s) => s.workspace.structures);
+  const side = (ids) => ids.map((id) => structures[id]).filter(Boolean);
+  const a = side(r.reactants || []), b = side(r.products || []);
+  if (!a.length || !b.length) return null;
+  const pic = (recs) => { const u = depictUrl(recs.map((x) => x.smiles).join('.'), 150, 90); return u ? html`<img src=${u} alt="" loading="lazy" />` : html`<span class="small muted">${recs.map((x) => x.formula).join(' + ')}</span>`; };
+  const names = (recs) => Object.entries(recs.reduce((m, x) => ({ ...m, [x.name]: (m[x.name] || 0) + 1 }), {}))
+    .map(([n, k]) => (k > 1 ? `${k} ${n}` : n)).join(' + ');
+  return html`<li class="card rxn-row" title=${`${names(a)} → ${names(b)} · open it in Analyze`}
+    onClick=${() => set({ analyze: { ...(state.analyze || {}), compose: false, view: 'reactions', reaction: r.id }, view: { tab: 'analyze', jobId: null } })}>
+    <div class="rxn-pics">${pic(a)}<span class="rxn-arrow">→</span>${pic(b)}</div>
+    <div class="rxn-meta small"><span class="rxn-names">${names(a)} → ${names(b)}</span>
+      <span class="rxn-tag muted">${NO_ARROW[r.complex_reason] || 'no TS ends'}</span></div>
+  </li>`;
+}
+
 export function Library() {
   const structures = useStore((s) => s.workspace.structures);
   const selected = useStore((s) => s.selection.structures);
@@ -206,6 +226,10 @@ export function Library() {
   const rxns = Object.values(edges || {}).filter((e) => structures[e.source] && structures[e.target])
     .filter((e) => !q || `${structures[e.source].name} ${structures[e.target].name}`.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => (b.created || 0) - (a.created || 0));
+  const reactions = useStore((s) => s.workspace.reactions) || {};
+  const arrowless = Object.values(reactions).filter((r) => !r.edge || !edges?.[r.edge])
+    .filter((r) => !q || [...(r.reactants || []), ...(r.products || [])].some((id) => (structures[id]?.name || '').toLowerCase().includes(q.toLowerCase())));
+  const nRxns = rxns.length + arrowless.length;   // the same count as Analyze and the reactor
   const newS = list.filter(isNew).length, newE = rxns.filter(isNew).length;
   const nNew = what === 'reactions' ? newE : newS;
   const showNew = onlyNew && nNew > 0;
@@ -231,12 +255,12 @@ export function Library() {
       onDragLeave=${(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDrag(false); }}
       onDrop=${onDrop}>
       <div class="pane-head">
-        ${rxns.length || what === 'reactions'
+        ${nRxns || what === 'reactions'
     ? html`<div class="lib-switch" role="tablist">
             <button role="tab" class=${cls(what === 'structures' && 'active')} onClick=${() => setWhat('structures')}>
               Structures <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>${newS > 0 && html`<span class="new-dot"></span>`}</button>
             <button role="tab" class=${cls(what === 'reactions' && 'active')} onClick=${() => setWhat('reactions')}>
-              Reactions <span class="count">${rxns.length}</span>${newE > 0 && html`<span class="new-dot"></span>`}</button>
+              Reactions <span class="count">${nRxns}</span>${newE > 0 && html`<span class="new-dot"></span>`}</button>
           </div>`
     : html`<h2>Structures${!empty && html` <span class="count">${Object.values(structures).filter((r) => !isComplex(r)).length}</span>`}</h2>`}
         ${nNew > 0 && html`<div class="new-bar small">
@@ -253,6 +277,7 @@ export function Library() {
       ${what === 'reactions'
         ? html`<ul class="cards rxn-list">
             ${(showNew ? rxns.filter(isNew) : rxns).map((e) => html`<${ReactionRow} key=${e.id} e=${e} selected=${selEdges.includes(e.id)} fresh=${isNew(e)} />`)}
+            ${!showNew && arrowless.map((r) => html`<${ArrowlessRow} key=${r.id} r=${r} />`)}
           </ul>`
         : empty
         ? html`<p class="empty-hint small muted">Molecules you <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>build or open in Design</a> show up here. You can also drop .xyz files here.</p>`

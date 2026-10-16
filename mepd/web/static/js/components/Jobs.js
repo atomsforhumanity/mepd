@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, set, useStore } from '../store.js';
-import { STATUS_LABEL, fmtAgo, fmtDuration, jobElapsed, lastLine } from '../util.js';
+import { JobPill, STATUS_LABEL, jobHeadline, fmtAgo, fmtDuration, jobElapsed, lastLine } from '../util.js';
 
 export function useTick(ms = 1000, on = true) {
   const [, setT] = useState(0);
@@ -84,10 +84,10 @@ export function JobsView() {
             <tbody>
               ${list.map((j) => html`
                 <tr key=${j.id} onClick=${() => openJob(j.id)}>
-                  <td><span class=${`pill ${j.status}`}>${STATUS_LABEL[j.status]}</span></td>
+                  <td><${JobPill} j=${j} /></td>
                   <td><div class="job-title">${j.title}</div>
                     <div class="small muted">${opTitle[j.op] || j.op}${j.batch ? ' · batch' : ''}${j.profile ? ` · ${j.profile}` : ''}</div></td>
-                  <td class="job-line">${j.summary?.headline || (j.status === 'failed' ? (j.error || '').split('\n').pop() : lastLine(j, progress)) || ''}</td>
+                  <td class="job-line">${jobHeadline(j) || (j.status === 'failed' ? (j.error || '').split('\n').pop() : lastLine(j, progress)) || ''}</td>
                   <td class="nowrap small">${j.step_of ? 'one step' : j.external ? 'imported' : j.status === 'queued' ? fmtAgo(j.created) : fmtDuration(jobElapsed(j))}</td>
                   <td class="nowrap"><${JobControls} job=${j} compact /></td>
                 </tr>`)}

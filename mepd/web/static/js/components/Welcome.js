@@ -47,7 +47,7 @@ export function StepBar({ at }) {
   return html`<nav class="step-bar small" aria-label="Getting started">
     ${shown.map(([k, label], i) => html`${i > 0 && html`<span class="step-sep">›</span>`}
       <span class=${`step ${k === at ? 'on' : ''} ${done(k, i) ? 'done' : ''}`}>${done(k, i) && k !== at ? '✓' : i + 1} ${label}</span>`)}
-    <button class="btn-icon step-close" title="Hide these steps" onClick=${hide}>✕</button>
+    <button class="btn-link small step-close" title="Hide these steps" onClick=${hide}>hide</button>
   </nav>`;
 }
 
