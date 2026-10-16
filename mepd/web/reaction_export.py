@@ -15,8 +15,9 @@ Two forms of the same data (`reaction_bundle`):
 A channel is one way the reaction goes that a search on its edge found and
 IRC-verified: each direct channel of a Reaction channels / Sample more
 paths run, or the route of a TS search (one TS, or several steps through
-intermediates). Exits to other products (off-target) are not this
-reaction's and are only counted.
+intermediates). A search that found no TS joining the two ends still has
+one: its path top, labelled as such (unverified). Exits to other products
+(off-target) are not this reaction's and are only counted.
 """
 from __future__ import annotations
 
@@ -86,6 +87,8 @@ def route_ts_xyz(job: dict, job_dir: Path, result_of: Callable[[], dict], reacti
 def _ladder_from_graph(r: dict, structures: dict) -> Optional[dict]:
     """Every species and both complexes at one level of theory: kcal/mol
     from the separated reactants (as the reaction card draws it)."""
+    if not r["reactants"] or not r["products"]:
+        return None
     recs = [structures.get(i) for i in r["reactants"] + r["products"]]
     cx = [structures.get(i) for i in r.get("complexes") or []]
     if not all(x and x.get("energy") is not None for x in recs):
@@ -105,9 +108,22 @@ def _ladder_from_graph(r: dict, structures: dict) -> Optional[dict]:
 
 # ------------------------------------------------------------------ channels
 
-def _step(entry: dict, irc: Optional[dict] = None) -> Optional[dict]:
+def _frames_of(entry: dict, kind: str = "irc") -> Optional[dict]:
+    """A result entry's frames as the export keeps them: `kind` "irc" (an
+    IRC through a TS) or "path" (a searched path, its top marked)."""
+    frames = entry.get("frames") or []
+    if len(frames) < 2:
+        return None
+    k = entry.get("ts_index")
+    return {"kind": kind, "ts_index": k if k is not None and 0 <= k < len(frames) else None,
+            "frames": [f["xyz"] for f in frames], "energy_kcal": [f.get("energy_kcal") for f in frames],
+            "energy_hartree": [f.get("energy_hartree") for f in frames]}
+
+
+def _step(entry: dict, irc: Optional[dict] = None, kind: str = "irc") -> Optional[dict]:
     """One TS of a channel from a result entry: an IRC (frames, ts_index)
-    or a lone TS (`irc`: its IRC entry, if any)."""
+    or a lone TS (`irc`: its IRC entry, if any). `kind` "path": the entry
+    is a searched path and its top stands in for the TS (unverified)."""
     path = irc if irc is not None else entry if len(entry.get("frames") or []) > 1 else None
     frames = (path or entry).get("frames") or []
     if not frames:
@@ -118,22 +134,33 @@ def _step(entry: dict, irc: Optional[dict] = None) -> Optional[dict]:
            "ts_hartree": frames[k].get("energy_hartree"), "barrier_search_kcal": entry.get("barrier_kcal"),
            "irc": None}
     if path is not None:
-        out["irc"] = {"ts_index": k, "frames": [f["xyz"] for f in frames],
-                      "energy_kcal": [f.get("energy_kcal") for f in frames],
-                      "energy_hartree": [f.get("energy_hartree") for f in frames]}
+        out["irc"] = {**_frames_of(path, kind), "ts_index": k}
     return out
 
 
+def _path_top(groups: dict) -> Optional[dict]:
+    """The path's highest point as a channel: no TS whose IRC joins the
+    two ends was found (an unverified barrier, as the result page says)."""
+    path = next((e for e in groups.get("path", []) if e.get("ts_index") is not None), None)
+    st = _step(path, kind="path") if path else None
+    return {"kind": "path top", "label": "path top (no TS found)", "verified": False, "steps": [st],
+            "path": None} if st else None   # (its step's frames are the path)
+
+
 def _result_channels(result: dict) -> tuple[list[dict], int]:
-    """(channels, off-target exits) of one search's page result."""
+    """(channels, off-target exits) of one search's page result. A channel
+    of a TS search also carries the path that search found (`path`)."""
     groups: dict[str, list] = {}
     for g in result.get("groups") or []:
         groups.setdefault(g.get("kind"), []).extend(g.get("entries") or [])
+    # The first search's path: a TS search's own, or (Sample more paths added to it) its "first_" copy.
+    mep = next((_frames_of(e, "path") for e in groups.get("path", []) if e["id"] in ("mep", "first_mep")), None)
     out = []
     for e in groups.get("channel", []):                       # direct channels (Reaction channels)
         st = _step(e)
         if st:
-            out.append({"kind": "direct", "label": e.get("label") or e["id"], "verified": True, "steps": [st]})
+            out.append({"kind": "direct", "label": e.get("label") or e["id"], "verified": True, "steps": [st],
+                        "path": mep if e["id"].startswith("first_") else None})
     routes: dict[str, list] = {}
     for e in groups.get("alternate", []):                     # multi-step channels, one entry per step
         m = re.match(r"^(alt_\d+)_step_\d+$", e["id"])
@@ -142,46 +169,65 @@ def _result_channels(result: dict) -> tuple[list[dict], int]:
         steps = [s for s in (_step(e) for e in entries) if s]
         if steps:
             out.append({"kind": "multi-step", "label": f"{key.replace('_', ' ')} ({len(steps)} steps)",
-                        "verified": True, "steps": steps})
+                        "verified": True, "steps": steps, "path": mep if key == "first search" else None})
     offtarget = len(groups.get("offtarget", []))
     if out or "channel" in groups:
         return out, offtarget
-    # A TS search (or TS optimization): the TSs on its start -> end route, in order.
+    # A TS search (or TS optimization): the TSs on its start -> end route, in order. Not the "All
+    # TS searches" of a channels-shaped result: those are every saddle found, off-target ones too.
+    sampled = any(k in groups for k in ("offtarget", "conformers"))
     ircs = {e["id"]: e for e in groups.get("irc", [])}
-    steps = [s for s in (_step(e, ircs.get(f"{e['id']}_irc")) for e in groups.get("ts", [])) if s]
-    if steps:
-        verified = result.get("barrier_verified", True) is not False
+    steps = [] if sampled else [s for s in (_step(e, ircs.get(f"{e['id']}_irc")) for e in groups.get("ts", [])) if s]
+    if steps and result.get("barrier_verified", True) is not False:
         out.append({"kind": "direct" if len(steps) == 1 else "multi-step",
                     "label": "TS search" if len(steps) == 1 else f"TS search route ({len(steps)} steps)",
-                    "verified": verified, "steps": steps})
-    elif result.get("barrier_kcal") is not None:            # only the path's highest point: unverified
-        path = next((e for e in groups.get("path", []) if e.get("ts_index") is not None), None)
-        st = _step(path) if path else None
-        if st:
-            out.append({"kind": "path maximum", "label": "path maximum (no TS/IRC confirms it)", "verified": False,
-                        "steps": [st]})
+                    "verified": True, "steps": steps, "path": mep})
+    elif (top := _path_top(groups)) is not None:              # only the path's highest point: unverified
+        out.append(top)
     return out, offtarget
+
+
+def _entry_channel(result: dict, entry_id: str, verified: Optional[bool]) -> Optional[dict]:
+    """The channel of an edge added from one entry of a search's result
+    (the edge's origin: an IRC, a TS or a path picked from its page)."""
+    for g in result.get("groups") or []:
+        e = next((x for x in g.get("entries") or [] if x["id"] == entry_id), None)
+        if e is None:
+            continue
+        path = g.get("kind") == "path"
+        st = _step(e, kind="path" if path else "irc")
+        if st is None:
+            return None
+        if path or verified is False:
+            return {"kind": "path top", "label": f"{e.get('label') or e['id']}: path top (no TS found)",
+                    "verified": False, "steps": [st], "path": None}
+        return {"kind": "direct", "label": e.get("label") or e["id"], "verified": True, "steps": [st], "path": None}
+    return None
 
 
 def _channels(r: dict, S: dict, edge: Optional[dict], jobs: dict, ladder: dict, *,
               page_of: Callable[[dict], dict], result_of: Callable[[dict], dict]) -> tuple[list, int, list]:
-    """Every channel found for the reaction (all searches on its edge),
-    placed on the diagram: (channels, off-target exits, the searches)."""
-    if not edge:
+    """Every channel found for the reaction (all searches on its edge, and
+    the result entry the edge was added from), placed on the diagram:
+    (channels, off-target exits, the searches). With no energies for the
+    reaction's ends, `ladder` gets its search's (marked `from_search`)."""
+    if not edge and not r.get("job"):
         return [], 0, []
     pages: dict[str, dict] = {}
     for j in jobs.values():
-        if j["op"] in _SEARCH_OPS and edge["id"] in (j.get("targets") or {}).get("edges", []) and j["status"] == "done":
+        if j["status"] == "done" and (j["id"] == r["job"] if r.get("job") else
+                                      j["op"] in _SEARCH_OPS and edge["id"] in (j.get("targets") or {}).get("edges", [])):
             page = page_of(j)
             pages.setdefault(page["id"], page)
+    # An edge added from a search's page (Add to graph on an IRC or path): that entry is its channel.
+    origin = (edge or {}).get("origin") or {}
+    src = jobs.get(origin.get("job") or "") if origin.get("kind") == "job" and origin.get("entry") else None
+    if src is not None and (src["op"] not in _SEARCH_OPS + ("design-tsopt",) or src["status"] != "done"
+                            or origin.get("nanoreactor")):
+        src = None
     found, offtarget, seen = [], 0, set()
-    for page in sorted(pages.values(), key=lambda j: j.get("created") or 0):
-        try:
-            result = result_of(page)
-        except Exception:
-            continue
-        chans, off = _result_channels(result)
-        offtarget += off
+
+    def add(chans: list, page: dict) -> None:
         level = page.get("level") or {}
         for c in chans:
             top = max(c["steps"], key=lambda s: s["ts_hartree"] if s["ts_hartree"] is not None else float("-inf"))
@@ -191,14 +237,45 @@ def _channels(r: dict, S: dict, edge: Optional[dict], jobs: dict, ladder: dict, 
             seen.add(key)
             found.append({**c, "level": level.get("label"), "level_key": level.get("key"), "job": page["id"],
                           "job_title": page.get("title"), "top": top})
-    # Placement: the TS's own energy against the separated reactants (same level of theory), else
-    # (another level, or no reactant energies) the reactant complex plus the search's barrier.
+    for page in sorted(pages.values(), key=lambda j: j.get("created") or 0):
+        try:
+            result = result_of(page)
+        except Exception:
+            continue
+        chans, off = _result_channels(result)
+        offtarget += off
+        add(chans, page)
+    if src is not None:
+        page = page_of(src)
+        try:
+            c = _entry_channel(result_of(page), origin["entry"], origin.get("barrier_verified"))
+        except Exception:
+            c = None
+        if c is not None:
+            add([c], page)
+            pages.setdefault(page["id"], page)
+    found.sort(key=lambda c: not c["verified"])
+    # The reference: the reactant complex (a lone reactant is its own). With no energies for the
+    # reaction's ends at all, the first channel's search sets the diagram: its reactant floor is 0,
+    # the last point of its IRC (or path) the product side.
+    many_r, many_p = len(r["reactants"]) > 1, len(r["products"]) > 1
     rc = ladder.get("reactant_complex")
+    if rc is None and not many_r:
+        rc = ladder.get("reactants")
+    if rc is None and ladder.get("reactants") is None and found:
+        ref = found[0]
+        last = ref["steps"][-1]["irc"]
+        ladder.update({"reactant_complex" if many_r else "reactants": 0.0,
+                       "product_complex" if many_p else "products": last["energy_kcal"][-1] if last else None,
+                       "from_search": ref["job_title"] or ref["job"]})
+        rc = 0.0
+    # Placement: the TS's own energy against the separated reactants (same level of theory), else
+    # (another level, or no reactant energies) the reference plus the search's barrier.
     for c in found:
         recs = [S.get(i) or {} for i in r["reactants"]]
         same = all(x.get("energy") is not None and (x.get("level") or {}).get("key") == c["level_key"] for x in recs)
         e_ts = c["top"]["ts_hartree"]
-        if same and e_ts is not None and c["level_key"] is not None:
+        if same and e_ts is not None and c["level_key"] is not None and not ladder.get("from_search"):
             c["ts_kcal"] = (e_ts - sum(x["energy"] for x in recs)) * KCAL
             c["placed"] = "absolute"
         else:
@@ -232,6 +309,21 @@ def edge_reaction(snap: dict, rid: str) -> Optional[dict]:
             "origin": {"kind": "edge"}}
 
 
+def job_reaction(snap: dict, jobs: dict, rid: str) -> Optional[dict]:
+    """`job:<id>`: a finished search on no edge of the workspace (e.g. an
+    imported one), as the reaction between its two structures, with only
+    that search's channels."""
+    j = jobs.get(rid[4:]) if rid.startswith("job:") else None
+    if j is None or j["op"] not in _SEARCH_OPS:
+        return None
+    sids = [s for s in (j.get("targets") or {}).get("structures", []) if s in snap["structures"]]
+    S = snap["structures"]
+    name = lambda i: (S.get(i) or {}).get("name") or i
+    return {"id": rid, "label": " -> ".join(name(i) for i in sids[:2]) if len(sids) > 1 else j.get("title") or rid,
+            "reactants": sids[:1], "products": sids[1:2], "complexes": [], "job": j["id"],
+            "origin": {"kind": "job", "job": j["id"]}}
+
+
 def reaction_bundle(ws, jobs: dict, rid: str, *, job_dir: Callable[[str], Path],
                     result_of: Callable[[dict], dict], page_of: Callable[[dict], dict] = lambda j: j) -> dict:
     """Everything the export shows of reaction `rid`, as plain data: its
@@ -240,7 +332,7 @@ def reaction_bundle(ws, jobs: dict, rid: str, *, job_dir: Callable[[str], Path],
     from mepd.web.workspace import WorkspaceError
 
     snap = ws.snapshot()
-    r = (snap.get("reactions") or {}).get(rid) or edge_reaction(snap, rid)
+    r = (snap.get("reactions") or {}).get(rid) or edge_reaction(snap, rid) or job_reaction(snap, jobs, rid)
     if r is None:
         raise WorkspaceError(f"no reaction {rid!r}")
     S = snap["structures"]
@@ -317,7 +409,7 @@ def _safe(name: str) -> str:
 
 
 def _many(side: list) -> bool:
-    return len(side) > 1 or side[0]["count"] > 1
+    return len(side) > 1 or bool(side) and side[0]["count"] > 1
 
 
 def _levels(b: dict) -> list[dict]:
@@ -329,7 +421,7 @@ def _levels(b: dict) -> list[dict]:
     if _many(b["reactants"]):
         rows.append({"key": "reactant_complex", "label": "reactant complex", "kcal": L.get("reactant_complex")})
     for c in b["channels"]:
-        rows.append({"key": c["id"], "label": f"{c['name']} TS" + ("" if c["verified"] else " (path maximum)"),
+        rows.append({"key": c["id"], "label": f"{c['name']} " + ("TS" if c["verified"] else "path top (no TS found)"),
                      "kcal": c["ts_kcal"], "channel": c["n"]})
     if not b["channels"]:
         rows.append({"key": "ts", "label": "TS (not searched)", "kcal": None})
@@ -443,28 +535,43 @@ def _structures(b: dict) -> list[tuple[str, str, Optional[str]]]:
     for c in b["channels"]:
         for k, st in enumerate(c["steps"], start=1):
             tag = f"_step{k}" if len(c["steps"]) > 1 else ""
-            out.append((f"ts_{c['id']}{tag}.xyz", f"{c['name']}{f' step {k}' if tag else ''} TS", st["ts_xyz"]))
+            what = "TS" if c["verified"] else "path top"
+            out.append((f"{'ts' if c['verified'] else 'path_top'}_{c['id']}{tag}.xyz",
+                        f"{c['name']}{f' step {k}' if tag else ''} {what}", st["ts_xyz"]))
     return [x for x in out if x[2]]
 
 
 def _ircs(b: dict) -> list[tuple[str, str, dict]]:
+    """(file name, title, frames) of every IRC and searched path the export carries."""
     out = []
     for c in b["channels"]:
         for k, st in enumerate(c["steps"], start=1):
             if st.get("irc"):
                 tag = f"_step{k}" if len(c["steps"]) > 1 else ""
-                out.append((f"irc_{c['id']}{tag}.xyz", f"{c['name']}{f' step {k}' if tag else ''} IRC", st["irc"]))
+                kind = st["irc"].get("kind") or "irc"
+                out.append((f"{kind}_{c['id']}{tag}.xyz", f"{c['name']}{f' step {k}' if tag else ''} "
+                            f"{'IRC' if kind == 'irc' else 'path'}", st["irc"]))
+        if c.get("path"):
+            out.append((f"path_{c['id']}.xyz", f"{c['name']} path (as its search found it)", c["path"]))
     return out
 
 
 def _irc_xyz(irc: dict) -> str:
+    path = irc.get("kind") == "path"
     out = []
     for k, (xyz, e) in enumerate(zip(irc["frames"], irc["energy_hartree"])):
         lines = xyz.splitlines()
-        lines[1] = f"IRC frame {k}" + (f" E={e:.10f} Eh" if e is not None else "") + \
-            (" (TS)" if k == irc.get("ts_index") else "")
+        lines[1] = f"{'path' if path else 'IRC'} frame {k}" + (f" E={e:.10f} Eh" if e is not None else "") + \
+            ((" (path top)" if path else " (TS)") if k == irc.get("ts_index") else "")
         out.append("\n".join(lines) + "\n")
     return "".join(out)
+
+
+def _from_search_note(b: dict) -> str:
+    """Why the diagram's ends are a search's own (see `_channels`), or ''."""
+    by = b["ladder"].get("from_search")
+    return (f"The reaction's ends have no energies at one level of theory, so the diagram's ends are those of {by}: "
+            f"0 is the lowest reactant geometry it found.") if by else ""
 
 
 def _placed_note(c: dict) -> str:
@@ -505,7 +612,7 @@ def _readme(b: dict) -> str:
         for c in b["channels"]:
             bar = f"{c['barrier_kcal']:.1f} kcal/mol from the reactant complex" if c["barrier_kcal"] is not None else "barrier unknown"
             lines.append(f"- {c['name']} ({c['kind']}{', lowest' if c['id'] == b.get('lowest') else ''}): {bar}, "
-                         f"{'IRC-verified' if c['verified'] else 'not IRC-verified'}"
+                         f"{'IRC-verified' if c['verified'] else 'no TS found, the path top (not IRC-verified)'}"
                          + (f", {c['level']}" if c.get("level") else "") + (f"; {_placed_note(c)}" if _placed_note(c) else ""))
         lines.append("")
     else:
@@ -513,7 +620,7 @@ def _readme(b: dict) -> str:
     if b.get("delta_e_kcal") is not None:
         lines += [f"Reaction energy: {b['delta_e_kcal']:+.1f} kcal/mol (separated products minus separated reactants).", ""]
     lines += ["Energies are electronic energies (no ZPE or thermal corrections), kcal/mol relative to the separated "
-              "reactants, all over the same atoms.", "",
+              "reactants, all over the same atoms." + (f" {_from_search_note(b)}" if _from_search_note(b) else ""), "",
               "## Files", "",
               "- `report.html`: the interactive page (opens offline; embed it with an <iframe>)",
               "- `reaction.json`: everything below as data",
@@ -605,9 +712,11 @@ const viewsOf = (ch) => {
   if (rc && rc.xyz) v.push({key:'reactant-complex', label:'Reactant complex', xyz:[rc.xyz]});
   if (ch) ch.steps.forEach((s, k) => {
     const tag = ch.steps.length > 1 ? ` (step ${k + 1})` : '';
-    v.push({key: k ? `ts${k + 1}` : 'ts', label: (ch.verified ? 'TS' : 'Path maximum') + tag, xyz:[s.ts_xyz]});
-    if (s.irc) v.push({key: k ? `irc${k + 1}` : 'irc', label:'IRC' + tag, xyz:s.irc.frames, irc:s.irc});
+    v.push({key: k ? `ts${k + 1}` : 'ts', label: (ch.verified ? 'TS' : 'Path top') + tag, xyz:[s.ts_xyz]});
+    const kind = s.irc && s.irc.kind === 'path' ? 'path' : 'irc';
+    if (s.irc) v.push({key: k ? `${kind}${k + 1}` : kind, label:(kind === 'path' ? 'Path' : 'IRC') + tag, xyz:s.irc.frames, irc:s.irc});
   });
+  if (ch && ch.path) v.push({key:'path', label:'Path', xyz:ch.path.frames, irc:ch.path});
   if (pc && pc.xyz) v.push({key:'product-complex', label:'Product complex', xyz:[pc.xyz]});
   if (!v.length) for (const s of D.reactants.concat(D.products)) if (s.xyz) v.push({key:s.id + s.role, label:s.name, xyz:[s.xyz]});
   return v;
@@ -623,7 +732,7 @@ function draw(k, refit){
   v.removeAllModels(); v.addModel(cur.xyz[k], 'xyz'); v.setStyle({}, {stick:{radius:0.14}, sphere:{scale:0.25}});
   if (refit) v.zoomTo(); v.render();
   if (cur.irc){ const e = cur.irc.energy_kcal[k]; slider.value = k;
-    label.textContent = `frame ${k + 1}/${cur.xyz.length}` + (e != null ? ` · ${e.toFixed(1)} kcal/mol` : '') + (k === cur.irc.ts_index ? ' · TS' : '');
+    label.textContent = `frame ${k + 1}/${cur.xyz.length}` + (e != null ? ` · ${e.toFixed(1)} kcal/mol` : '') + (k === cur.irc.ts_index ? (cur.irc.kind === 'path' ? ' · top' : ' · TS') : '');
     const m = document.getElementById('irc-mark'), x = (8 + 584 * k / Math.max(1, cur.xyz.length - 1)).toFixed(1);
     m.setAttribute('x1', x); m.setAttribute('x2', x); }
 }
@@ -636,7 +745,7 @@ function show(i){
     slider.max = cur.xyz.length - 1;
     const ys = cur.irc.energy_kcal, ok = ys.filter((y) => y != null), lo = Math.min(...ok), hi = Math.max(...ok);
     line.setAttribute('points', ys.map((y, k) => y == null ? '' : `${(8 + 584 * k / Math.max(1, ys.length - 1)).toFixed(1)},${(6 + 78 * (1 - (y - lo) / ((hi - lo) || 1))).toFixed(1)}`).join(' '));
-    document.getElementById('irc-note').textContent = `IRC energy from ${lo.toFixed(1)} to ${hi.toFixed(1)} kcal/mol (relative to the reactant side of its search)`;
+    document.getElementById('irc-note').textContent = `${cur.irc.kind === 'path' ? 'Path' : 'IRC'} energy from ${lo.toFixed(1)} to ${hi.toFixed(1)} kcal/mol (relative to the reactant side of its search)`;
   }
   document.getElementById('irc-note').hidden = !cur.irc;
   frame = cur.irc && cur.irc.ts_index != null ? cur.irc.ts_index : 0;
@@ -663,8 +772,10 @@ pick(D.channels.find((c) => c.id === m[1]) || D.channels.find((c) => c.id === D.
 const files = document.getElementById('files');
 const add = (name, text) => { const a = document.createElement('a'); a.textContent = name; a.href = URL.createObjectURL(new Blob([text], {type:'chemical/x-xyz'})); a.download = name; files.appendChild(a); };
 for (const s of D.reactants.concat(D.products, D.complexes)) if (s.xyz) add(`${s.role.replace(/ /g,'_')}_${s.name.replace(/[^A-Za-z0-9._+-]+/g,'_')}.xyz`, s.xyz);
-for (const c of D.channels) c.steps.forEach((s, k) => { const tag = c.steps.length > 1 ? `_step${k + 1}` : '';
-  add(`ts_${c.id}${tag}.xyz`, s.ts_xyz); if (s.irc) add(`irc_${c.id}${tag}.xyz`, s.irc.frames.join('')); });
+for (const c of D.channels) { c.steps.forEach((s, k) => { const tag = c.steps.length > 1 ? `_step${k + 1}` : '';
+  add(`${c.verified ? 'ts' : 'path_top'}_${c.id}${tag}.xyz`, s.ts_xyz);
+  if (s.irc) add(`${s.irc.kind === 'path' ? 'path' : 'irc'}_${c.id}${tag}.xyz`, s.irc.frames.join('')); });
+  if (c.path) add(`path_${c.id}.xyz`, c.path.frames.join('')); }
 })();
 """
 
@@ -684,11 +795,16 @@ def export_html(b: dict, viewer_js: Optional[str] = None) -> str:
         return (f'<div class="sp"><div class="img">{img}</div><div class="nm">'
                 f'{count}{e(sp["name"])}{tag}</div></div>')
     side = lambda xs: '<span class="op">+</span>'.join(species(sp) for sp in xs)
+    # (a search exported on its own may have no structures of the workspace)
+    eq = f'<div class="eq">{side(b["reactants"])}<span class="op">→</span>{side(b["products"])}</div>' \
+        if b["reactants"] or b["products"] else ""
     chans = b["channels"]
     lowest = next((c for c in chans if c["id"] == b.get("lowest")), None)
     stats = []
     if lowest is not None and lowest["barrier_kcal"] is not None:
         stats.append((f'{lowest["barrier_kcal"]:.1f}', f'lowest ΔE‡, kcal/mol from the reactant complex ({lowest["name"]})'))
+    elif (top := next((c for c in chans if not c["verified"] and c["barrier_kcal"] is not None), None)) is not None:
+        stats.append((f'≈{top["barrier_kcal"]:.1f}', f'No transition state found: path top, kcal/mol ({top["name"]})'))
     if chans:
         stats.append((str(len(chans)), "channels found" + (f" · {b['offtarget']} more led elsewhere" if b["offtarget"] else "")))
     if b.get("delta_e_kcal") is not None:
@@ -742,12 +858,13 @@ def export_html(b: dict, viewer_js: Optional[str] = None) -> str:
 <h1>{e(title)}</h1>
 <div class="meta">{e(b["source"])}{f" · sampled in the MD as {e(b['relaxed_from'])}" if b.get("relaxed_from") else ""}
  · level of theory: {e(", ".join(levels) or "not recorded")}</div>
-<div class="eq">{side(b["reactants"])}<span class="op">→</span>{side(b["products"])}</div>
+{eq}
 <div class="stats">{"".join(f'<div class="stat"><b>{v}</b><span>{e(t)}</span></div>' for v, t in stats)}</div>
 <h2>Energy diagram</h2>
 <div class="card diagram">{energy_diagram_svg(b)}</div>
 <p class="note">Electronic energies (no ZPE or thermal corrections), kcal/mol from the separated reactants, all over the
- same atoms; one transition state per channel (a multi-step channel: its highest step).</p>
+ same atoms; one transition state per channel (a multi-step channel: its highest step; a search that found no TS:
+ its path top).{f" {e(_from_search_note(b))}" if _from_search_note(b) else ""}</p>
 <h2>Channels</h2>{ch_table}
 <section id="views"><h2>Structures</h2><div class="card"><div class="picker">{picker}<div class="tabs" id="tabs"></div></div>
 <div id="viewer"></div>

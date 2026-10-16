@@ -1792,3 +1792,115 @@ def test_channels_are_read_from_a_channels_result_and_a_ts_search():
 def test_reaction_export_refuses_an_unknown_format_or_reaction(client):
     assert client.get("/api/reactions/r_missing/export?format=html").status_code == 400
     assert client.get("/api/reactions/r_missing/export?format=pdf").status_code == 400
+    assert client.get("/api/reactions/job:j_missing/export?format=html").status_code == 400
+
+
+_START, _TOP = _water("start"), _water("top", h1=(1.300, 0.000, 0.480))
+_END, _ROT = _water("end", h1=(2.600, 0.000, 0.450)), _water("rotated", h1=(0.700, 0.300, 0.504))
+
+
+def _search_output(out: Path, verified: bool) -> Path:
+    """A `mepd ts` output on start -> end: a TS whose IRC joins them, or
+    (not `verified`) only a saddle whose IRC comes back to the start."""
+    out.mkdir(parents=True)
+    _write_chain(out / "mep_output.xyz", [_START, _TOP, _END], [-76.40, -76.30, -76.35])
+    if verified:
+        _write_chain(out / "ts.xyz", [_TOP], [-76.30])
+        _write_chain(out / "irc.xyz", [_START, _TOP, _END], [-76.40, -76.30, -76.35])
+    else:
+        _write_chain(out / "ts_leaf_0.xyz", [_ROT], [-76.39])
+        _write_chain(out / "ts_leaf_0_irc.xyz", [_START, _ROT, _START], [-76.40, -76.39, -76.40])
+    return out
+
+
+def _search_job(client, jid: str, out: Path, sids: list, eids: list) -> dict:
+    jobs = client.app.state.sessions.current.jobs
+    jobs.job_dir(jid).mkdir(parents=True)
+    jobs.jobs[jid] = job = {"id": jid, "op": "ts", "status": "done", "title": f"TS {jid}", "created": 0, "finished": 1,
+                            "charge": 0, "multiplicity": 1, "targets": {"structures": sids, "edges": eids},
+                            "output_dir": str(out)}
+    return job
+
+
+def _report(client, rid: str) -> tuple[dict, str]:
+    r = client.get(f"/api/reactions/{rid}/export?format=html")
+    assert r.status_code == 200, r.text
+    return json.loads(r.text.split('id="data">')[1].split("</script>")[0]), r.text
+
+
+def test_a_report_has_the_search_energies_and_paths_when_the_ends_have_no_energies(client, tmp_path):
+    """Ends added from SMILES/XYZ and never optimized: the diagram is the search's own (its reactant at 0)
+    instead of empty, and the searched path is embedded next to the IRC."""
+    import io
+    import zipfile
+
+    (a,) = _add(client, _START)
+    (b,) = _add(client, _END)
+    edge = client.post("/api/edges", json={"source": a["id"], "target": b["id"]}).json()
+    _search_job(client, "j_ver", _search_output(tmp_path / "ver", True), [a["id"], b["id"]], [edge["id"]])
+    data, page = _report(client, f"edge:{edge['id']}")
+    assert "No energies for this reaction yet" not in page
+    levels = {x["key"]: x["kcal"] for x in data["energy_levels"]}
+    assert levels["reactants"] == 0.0 and levels["ch1"] == pytest.approx(0.10 * 627.509474, abs=1e-2)
+    assert levels["products"] == pytest.approx(0.05 * 627.509474, abs=1e-2)
+    assert data["ladder"]["from_search"] == "TS j_ver" and "have no energies at one level of theory" in page
+    (ch,) = data["channels"]
+    assert ch["verified"] and ch["steps"][0]["irc"]["kind"] == "irc" and ch["path"]["kind"] == "path"
+    assert len(ch["path"]["frames"]) == 3 and ch["path"]["energy_kcal"][1] == pytest.approx(62.75, abs=1e-2)
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/api/reactions/edge:{edge['id']}/export?format=zip").content))
+    names = {n.split("/", 1)[1] for n in z.namelist()}
+    assert {"structures/ts_ch1.xyz", "irc_ch1.xyz", "path_ch1.xyz"} <= names
+
+
+def test_a_search_that_found_no_ts_is_reported_as_its_path_top(client, tmp_path):
+    """No TS joins start and end (the only saddle is a rotation of the start): the report shows the path
+    top, labelled as such, never the saddle as a TS -- also once Sample more paths has been added to it."""
+    import io
+    import zipfile
+
+    from mepd.web.reaction_export import _result_channels
+    from mepd.web.results import collect_ts_extended
+
+    (a,) = _add(client, _START)
+    (b,) = _add(client, _END)
+    edge = client.post("/api/edges", json={"source": a["id"], "target": b["id"]}).json()
+    out = _search_output(tmp_path / "unv", False)
+    _search_job(client, "j_unv", out, [a["id"], b["id"]], [edge["id"]])
+    data, page = _report(client, f"edge:{edge['id']}")
+    (ch,) = data["channels"]
+    assert ch["kind"] == "path top" and not ch["verified"] and data["lowest"] is None
+    assert ch["barrier_kcal"] == pytest.approx(62.75, abs=1e-2) and ch["steps"][0]["irc"]["kind"] == "path"
+    assert "Channel 1 path top (no TS found)" in [x["label"] for x in data["energy_levels"]]
+    assert "≈62.8" in page and "No transition state found: path top" in page
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/api/reactions/edge:{edge['id']}/export?format=zip").content))
+    names = {n.split("/", 1)[1] for n in z.namelist()}
+    assert {"structures/path_top_ch1.xyz", "path_ch1.xyz"} <= names and not any("irc_" in n for n in names)
+    root = z.namelist()[0].split("/")[0]
+    assert "path frame 1 E=-76.3000000000 Eh (path top)" in z.read(f"{root}/path_ch1.xyz").decode()
+    # Sample more paths added, nothing classified yet: still the path top, not the rotation saddle (6 kcal/mol).
+    (ext,), _ = _result_channels(collect_ts_extended(out, tmp_path / "no_channels_yet", 0, 1))
+    assert ext["kind"] == "path top" and ext["steps"][0]["barrier_search_kcal"] == pytest.approx(62.75, abs=1e-2)
+
+
+def test_an_edge_added_from_a_search_result_reports_that_entry(client, tmp_path):
+    """Add to graph on a search's IRC: the edge's barrier comes from its origin (no search targets it), and so
+    does its report's channel."""
+    (a,) = _add(client, _START)
+    (b,) = _add(client, _END)
+    job = _search_job(client, "j_src", _search_output(tmp_path / "src", True), [a["id"], b["id"]], [])
+    edge = client.post(f"/api/jobs/{job['id']}/import-entry",
+                       json={"entry": "ts_irc", "frames": "endpoints", "connect": True}).json()["edge"]
+    assert edge["origin"]["job"] == "j_src" and edge["id"] not in job["targets"]["edges"]
+    data, _ = _report(client, f"edge:{edge['id']}")
+    (ch,) = data["channels"]
+    assert ch["verified"] and ch["job"] == "j_src" and ch["barrier_kcal"] == pytest.approx(62.75, abs=1e-2)
+    assert len(ch["steps"][0]["irc"]["frames"]) == 3
+
+
+def test_a_search_on_no_edge_exports_on_its_own(client, tmp_path):
+    (a,) = _add(client, _START)
+    (b,) = _add(client, _END)
+    _search_job(client, "j_alone", _search_output(tmp_path / "alone", True), [a["id"], b["id"]], [])
+    data, _ = _report(client, "job:j_alone")
+    assert [s["id"] for s in data["reactants"]] == [a["id"]] and [s["id"] for s in data["products"]] == [b["id"]]
+    assert [c["job"] for c in data["channels"]] == ["j_alone"]
