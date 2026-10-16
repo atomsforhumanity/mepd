@@ -501,6 +501,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   An edge added from a search's page (Add to graph) now reports that IRC or path, and every TS search channel
   carries the path it searched. The export is also on a TS search's or channel search's result page, next to
   All files (.zip); a search on no edge exports on its own.
+- **An interactive reactor outlived its server**: a web server that was killed (SIGKILL, `fuser -k`) left its
+  reactors' GFN2-xTB dynamics running at a full CPU each, with no one to stop them, for days. A reactor now
+  exits with its server, as the result-parsing workers already did.
 - **Reactor reaction ends were read as ions**: "H + OH" was stored and drawn as `[H+].[OH-]`, because the complex
   was read as one geometry. A complex now takes its molecules' SMILES. **A lone H atom was read as H2** (`[HH]`);
   one-atom structures are now perceived as a bare atom or ion. Existing workspaces are repaired when loaded.

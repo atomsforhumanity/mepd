@@ -178,3 +178,39 @@ def test_the_piston_moves_the_wall_in_the_dynamics():
         assert {1.0, 0.5} <= seen and f["radius"] == wide                   # the Wall stays the user's
     finally:
         sandbox.stop("t_piston")
+
+
+def test_a_reactor_exits_when_its_server_is_killed():
+    """Only the server's reader thread stops an idle reactor; a server killed
+    outright (SIGKILL) must not leave its MD process stepping on forever."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import textwrap
+
+    server = subprocess.Popen([sys.executable, "-c", textwrap.dedent("""
+        import time
+        from mepd.web import chem, sandbox
+        box = sandbox.start("t_orphan", [chem.structure_from_smiles("O")] * 2, temperature=300)
+        print(box.proc.pid, flush=True)
+        time.sleep(600)
+    """)], stdout=subprocess.PIPE, text=True)
+    try:
+        pid = int(server.stdout.readline())
+        time.sleep(3)                                # past the start-up, into the MD loop
+        os.kill(server.pid, signal.SIGKILL)
+        server.wait(10)
+        t0 = time.time()
+        while time.time() - t0 < 15:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.2)
+        else:
+            os.kill(pid, signal.SIGKILL)
+            pytest.fail("the reactor outlived its server")
+    finally:
+        if server.poll() is None:
+            server.kill()

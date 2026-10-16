@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing as mp
+import os
 import queue
 import threading
 import time
@@ -80,9 +81,15 @@ def _piston_view(piston: Optional[dict]) -> Optional[dict]:
     return {k: piston[k] for k in PISTON} if piston else None
 
 
-def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q):
-    """The MD process: steps until told to stop, applying commands between steps."""
+def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q, parent_pid):
+    """The MD process: steps until told to stop, applying commands between steps.
+    Exits with the server too (`parent_pid`): only the server's reader thread
+    stops an idle reactor, so an orphan would step on forever."""
     import os
+
+    from mepd.web.procs import die_with_parent
+
+    die_with_parent(parent_pid)
 
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     from tblite.interface import Calculator
@@ -146,6 +153,8 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
     traj, next_traj = [], 0.0          # evenly spaced frames for event detection (sent losslessly)
     started = time.time()
     while True:
+        if os.getppid() != parent_pid:   # the server is gone (no prctl off Linux)
+            return
         while True:                      # commands, between steps
             try:
                 cmd = cmd_q.get_nowait()
@@ -235,7 +244,8 @@ class Sandbox:
             int(multiplicity), names
         self.cmd_q, self.out_q, self.traj_q = ctx.Queue(), ctx.Queue(maxsize=8), ctx.Queue()
         self.proc = ctx.Process(target=_run, args=(self.symbols, np.asarray(coords_A).tolist(), charge, multiplicity,
-                                                   radius, temperature, self.cmd_q, self.out_q, self.traj_q),
+                                                   radius, temperature, self.cmd_q, self.out_q, self.traj_q,
+                                                   os.getpid()),
                                 daemon=True)
         self.proc.start()
         self.latest: Optional[dict] = None
