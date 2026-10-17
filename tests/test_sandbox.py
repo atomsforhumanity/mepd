@@ -55,6 +55,7 @@ def test_the_endpoints_start_steer_snapshot_and_stop(tmp_path):
                 f = c.get(f"/api/sandbox/{sid}/frame", params={"since": f["seq"]}).json()
             assert f["pos"]
             assert c.post(f"/api/sandbox/{sid}/command", json={"op": "temperature", "value": 500}).json()["ok"]
+            assert c.post(f"/api/sandbox/{sid}/command", json={"op": "piston", "value": True}).json()["ok"]
             assert c.post(f"/api/sandbox/{sid}/command", json={"op": "rm -rf"}).status_code == 400
             snap = c.post(f"/api/sandbox/{sid}/snapshot").json()
             assert snap["natoms"] == 9 and snap["role"] in ("complex", "minimum")
@@ -144,3 +145,35 @@ def test_a_sandbox_starts_from_a_geometry_as_it_is():
         assert 2.0 < f["radius"] < 8.0                                    # just beyond its farthest atom
     finally:
         sandbox.stop("t_geo")
+
+
+def test_the_piston_cycle_matches_the_nanoreactor():
+    """Wide for 75 % of a 1 ps cycle, a 100 fs ramp, then 0.7 x the radius;
+    settings that cannot be a cycle keep the previous ones."""
+    p = sandbox.piston_settings({"value": True}, None)
+    assert p == sandbox.PISTON
+    p["t0"] = 100.0
+    r = [sandbox.piston_radius(t, 10.0, p) for t in (100, 849, 900, 950, 1000, 1099, 1100)]
+    assert r == pytest.approx([10.0, 10.0, 8.5, 7.0, 7.0, 7.0, 10.0])
+    assert sandbox.piston_radius(500, 10.0, None) == 10.0
+    q = sandbox.piston_settings({"value": True, "period_ps": 0.25, "compress": 2.0, "duty": "x"}, p)
+    assert q == {"period_ps": 0.25, "compress": 0.7, "duty": 0.75}
+    assert sandbox.piston_settings({"value": False}, p) is None
+
+
+def test_the_piston_moves_the_wall_in_the_dynamics():
+    box = sandbox.start("t_piston", [chem.structure_from_smiles("O")] * 3, temperature=300)
+    try:
+        f = _wait(box, 0, 1.5)
+        wide = f["radius"]
+        assert f["wall_now"] == pytest.approx(wide) and f["piston"] is None
+        box.command({"op": "piston", "value": True, "period_ps": 0.4, "compress": 0.5, "duty": 0.5})
+        seen = set()
+        t0 = time.time()
+        while time.time() - t0 < 8 and not {1.0, 0.5} <= seen:
+            f = box.frame(f["seq"])
+            seen.add(round(f["wall_now"] / wide, 1))
+        assert f["piston"] == {"period_ps": 0.4, "compress": 0.5, "duty": 0.5}
+        assert {1.0, 0.5} <= seen and f["radius"] == wide                   # the Wall stays the user's
+    finally:
+        sandbox.stop("t_piston")

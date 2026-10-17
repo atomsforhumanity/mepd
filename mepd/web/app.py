@@ -2383,8 +2383,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     @app.post("/api/sandbox/{sid}/command")
     def sandbox_command(sid: str, body: dict):
         """pull {atom, target [x,y,z] A, k kcal/mol/A^2} | release {atom} | release_all |
-        radius {value A} | temperature {value K} | pause {value}."""
-        if body.get("op") not in ("pull", "release", "release_all", "radius", "temperature", "pause"):
+        radius {value A} | temperature {value K} | pause {value} |
+        piston {value: on/off, period_ps, compress (narrow/wide), duty (wide share of a cycle)}."""
+        if body.get("op") not in ("pull", "release", "release_all", "radius", "temperature", "pause", "piston"):
             raise WorkspaceError(f"unknown command {body.get('op')!r}")
         try:
             _sandbox(sid).command(body)

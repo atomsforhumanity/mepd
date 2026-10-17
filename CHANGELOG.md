@@ -12,6 +12,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Interactive reactor: a piston.** A Piston switch squeezes the wall in and out again and again, as the
+  nanoreactor does (by default every 1 ps: open 75 % of the cycle, then in to 70 % of the Wall radius over
+  100 fs). "cycle" opens the period, how far in and how long open; the Wall slider stays the open radius.
+  The `piston` sandbox command takes `value`, `period_ps`, `compress` and `duty`.
 - **Interactive reactor: Collide.** One button pulls two molecules into each other for a moment (what dragging an
   atom does by hand), and "keep going" repeats it every few seconds. It is on by default until you have caught a
   first reaction: left alone, the reactor rarely made any (glycine, 3 Å wall, 2000 K: none in 6.5 ps). With it,
@@ -173,6 +177,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Interactive reactor: Collide also pulls two atoms of one molecule together** (3 or more bonds apart:
+  a ring closing, an H moving across), about a third of the time and always once everything is one
+  molecule, where it used to do nothing.
 - **FSM-TS is the default path method** (`RunInputs.path_min_method`, `mepd init`, a new web session's
   default profile, the demo's starter profile): the cheapest in the path-method benchmark at about GSM's
   quality. Profiles that name a method keep it; existing workspaces keep their saved profiles. QM/MM

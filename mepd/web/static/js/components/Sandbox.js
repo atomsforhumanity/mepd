@@ -23,30 +23,65 @@ const COARSE = window.matchMedia?.('(pointer: coarse)').matches;   // a touch sc
 const wallOf = (v) => WALL_MIN * Math.exp(Math.log(WALL_MAX / WALL_MIN) * v);
 const sliderOf = (r) => Math.log(r / WALL_MIN) / Math.log(WALL_MAX / WALL_MIN);
 
-// Molecules in a frame: atoms joined when closer than a bond (Angstrom).
+// Bonds in a frame (Angstrom): atoms closer than a bond, as neighbour lists.
 const HEAVY_BOND = 1.95, H_BOND = 1.3;
-function molecules(symbols, pos) {
-  const n = pos.length, parent = [...Array(n).keys()];
-  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+function bonds(symbols, pos) {
+  const n = pos.length, nb = Array.from({ length: n }, () => []);
   for (let i = 0; i < n; i += 1) {
     for (let j = i + 1; j < n; j += 1) {
       if (symbols[i] === 'H' && symbols[j] === 'H') continue;
       const cut = symbols[i] === 'H' || symbols[j] === 'H' ? H_BOND : HEAVY_BOND;
       const d = Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]);
-      if (d < cut) parent[find(i)] = find(j);
+      if (d < cut) { nb[i].push(j); nb[j].push(i); }
     }
   }
-  const groups = {};
-  for (let i = 0; i < n; i += 1) (groups[find(i)] ||= []).push(i);
-  return Object.values(groups);
+  return nb;
+}
+// Molecules: the connected groups of the bond graph.
+function molecules(nb) {
+  const seen = new Array(nb.length).fill(false), out = [];
+  for (let s0 = 0; s0 < nb.length; s0 += 1) {
+    if (seen[s0]) continue;
+    const m = [s0];
+    seen[s0] = true;
+    for (let k = 0; k < m.length; k += 1) for (const j of nb[m[k]]) if (!seen[j]) { seen[j] = true; m.push(j); }
+    out.push(m);
+  }
+  return out;
+}
+// Bonds between atom a and every atom of its molecule (breadth first).
+function hops(nb, a) {
+  const d = { [a]: 0 }, q = [a];
+  for (let k = 0; k < q.length; k += 1) for (const j of nb[q[k]]) if (d[j] == null) { d[j] = d[q[k]] + 1; q.push(j); }
+  return d;
 }
 // Collide: what a person does by hand (drag an atom of one molecule into
 // another and hold it), done for them: two heavy atoms of two different
-// molecules (not both water, when there is a choice) are pulled together.
-const COLLIDE_MS = 1600, COLLIDE_K = 100;
-function collisionPair(symbols, pos) {
-  const mols = molecules(symbols, pos);
-  if (mols.length < 2) return null;
+// molecules (not both water, when there is a choice), or of one molecule
+// three or more bonds apart (a ring closing, an H moving across), are pulled
+// together. With everything in one molecule, only the second is left.
+const COLLIDE_MS = 1600, COLLIDE_K = 100, INTRA_HOPS = 3;
+function intraPair(symbols, nb, mols) {
+  const pairs = [];
+  for (const m of mols) {
+    if (m.length < 4) continue;
+    const heavy = m.filter((i) => symbols[i] !== 'H');
+    for (const a of heavy) {
+      const d = hops(nb, a);
+      for (const b of m) if (b > a || symbols[b] === 'H') { if (d[b] >= INTRA_HOPS && b !== a) pairs.push([a, b, symbols[b] !== 'H']); }
+    }
+  }
+  if (!pairs.length) return null;
+  const hh = pairs.filter((p) => p[2]);   // two heavy atoms first; else a heavy atom and an H
+  const pool = hh.length ? hh : pairs;
+  const [a, b] = pool[Math.floor(Math.random() * pool.length)];
+  return [a, b];
+}
+export function collisionPair(symbols, pos) {
+  const nb = bonds(symbols, pos);
+  const mols = molecules(nb);
+  const intra = intraPair(symbols, nb, mols);
+  if (mols.length < 2 || (intra && Math.random() < 0.3)) return intra;
   const isWater = (m) => m.length === 3 && m.filter((i) => symbols[i] === 'O').length === 1 && m.filter((i) => symbols[i] === 'H').length === 2;
   const heavy = (m) => { const h = m.filter((i) => symbols[i] !== 'H'); return h.length ? h : m; };
   const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
@@ -96,6 +131,13 @@ export function SandboxView() {
   // Until someone has caught a first reaction, Collide keeps going by itself.
   const [autoCollide, setAutoCollide] = useState(() => !state.tour?.reaction);
   const colliding = useRef(null);       // {pair, until}
+  // The piston: off at first; its cycle (as the nanoreactor's) behind "cycle".
+  const [piston, setPiston] = useState({ on: false, period_ps: 1, compress: 0.7, duty: 0.75 });
+  const [cycleOpen, setCycleOpen] = useState(false);
+  const setPistonTo = (next) => {
+    setPiston(next);
+    send({ op: 'piston', value: next.on, period_ps: next.period_ps, compress: next.compress, duty: next.duty });
+  };
   const strengthRef = useRef(strength);
   strengthRef.current = strength;
 
@@ -135,14 +177,15 @@ export function SandboxView() {
     const v = stage.viewer() || null;
     if (!f || !f.pos) return;
     const flat = f.pos.flat();
-    const r = radius.current ?? f.radius;
+    const wide = radius.current ?? f.radius;
+    const r = f.piston && f.wall_now != null ? f.wall_now : wide;   // the piston's wall, in and out
     const pulls = { ...(f.pulls || {}) };
     if (drag.current) pulls[drag.current.atom] = drag.current.target;
     stage.draw((vv) => {
       vv.addModel(xyzText(sb.symbols, flat), 'xyz');
       vv.setStyle({}, FULL);
       if (drag.current) vv.setStyle({ index: drag.current.atom }, { stick: { radius: 0.12 }, sphere: { scale: 0.35, color: cssVar('--warn', '#b7791f') } });
-    }, { extent: r + 1, shapes: Object.keys(pulls).length > 0 });
+    }, { extent: wide + 1, shapes: Object.keys(pulls).length > 0 });
     stage.setWall(r, cssVar('--accent', '#3868b8'));
     const viewer = stage.viewer();
     if (viewer && Object.keys(pulls).length) {
@@ -174,7 +217,10 @@ export function SandboxView() {
           if (f.seq > seq) {
             seq = f.seq;
             frame.current = f;
-            if (radius.current == null) { radius.current = f.radius; setWall(f.radius); }
+            if (radius.current == null) {   // the first frame: the wall and the piston as the reactor has them
+              radius.current = f.radius; setWall(f.radius);
+              if (f.piston) setPiston({ on: true, ...f.piston });
+            }
             draw();
             // The thermometer swings far around the setting (and Collide heats it): show a running mean.
             if (f.T_inst != null) tMean.current = tMean.current == null ? f.T_inst : 0.92 * tMean.current + 0.08 * f.T_inst;
@@ -318,7 +364,7 @@ export function SandboxView() {
             of one molecule into another and hold it there.</div>`}
           <div class="rx-legend small">drag an atom into another: pull it · drag elsewhere: rotate</div>
           <div class="rx-collide">
-            <button class="btn primary key" onClick=${collide} title="Pull two molecules into each other for a moment, as you would by dragging an atom">Collide</button>
+            <button class="btn primary key" onClick=${collide} title="Pull two atoms together for a moment, as you would by dragging one: of two molecules, or far apart in one">Collide</button>
             <label class="small" title="Collide again every few seconds"><input type="checkbox" checked=${autoCollide}
               onChange=${(e) => setAutoCollide(e.target.checked)} /> keep colliding</label>
           </div>
@@ -339,6 +385,20 @@ export function SandboxView() {
               }}
               onChange=${(e) => send({ op: 'radius', value: wallOf(+e.target.value) })} />
             <span class="mono">${wall != null ? wall.toFixed(1) : '–'} Å</span></label>
+          <span class="piston-ctl">
+            <label class="small" title="Squeeze the wall in and out, again and again, as the nanoreactor does"><input type="checkbox" class="switch"
+              checked=${piston.on} onChange=${(e) => setPistonTo({ ...piston, on: e.target.checked })} /> Piston</label>
+            ${piston.on && html`<button class="btn-link small" aria-expanded=${cycleOpen} onClick=${() => setCycleOpen(!cycleOpen)}
+              title="How often it squeezes, how far, and for how long">cycle ${cycleOpen ? '▾' : '▸'}</button>`}
+            ${piston.on && cycleOpen && html`<span class="piston-fields small">
+              <label title="One squeeze and release">every <input type="number" class="tiny" min="0.05" step="0.1" value=${piston.period_ps}
+                onChange=${(e) => +e.target.value > 0 && setPistonTo({ ...piston, period_ps: +e.target.value })} /> ps</label>
+              <label title="The squeezed wall, as a share of the Wall radius">in to <input type="number" class="tiny" min="5" max="100" step="5" value=${Math.round(piston.compress * 100)}
+                onChange=${(e) => +e.target.value > 0 && +e.target.value <= 100 && setPistonTo({ ...piston, compress: +e.target.value / 100 })} /> %</label>
+              <label title="How much of each cycle the wall stays open">open <input type="number" class="tiny" min="5" max="95" step="5" value=${Math.round(piston.duty * 100)}
+                onChange=${(e) => +e.target.value > 0 && +e.target.value < 100 && setPistonTo({ ...piston, duty: +e.target.value / 100 })} /> % of it</label>
+            </span>`}
+          </span>
           <button class="btn small" onClick=${() => { send({ op: 'pause', value: !paused }); setPaused(!paused); }}>${paused ? '▶ Resume' : '❚❚ Pause'}</button>
           <button class="btn small" onClick=${() => { setAutoCollide(false); colliding.current = null; send({ op: 'release_all' }); }}>Release all</button>
           <button class="btn small" title="Keep this geometry in Explore (not minimized; several molecules become a complex)"
@@ -364,6 +424,7 @@ export function SandboxView() {
           <li>Press Collide, or drag an atom into another molecule (Shift: harder).</li>
           <li>Shrink the Wall (or scroll) to squeeze them.</li>
           <li>Heat it up with Temperature.</li>
+          <li>Turn on Piston to squeeze them again and again.</li>
         </ul>
         </details>
       </aside>

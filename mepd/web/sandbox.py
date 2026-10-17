@@ -5,7 +5,8 @@ pointer, scroll to grow or shrink the wall, set the temperature.
 The MD runs in its own process (one per sandbox): Langevin dynamics
 (BAOAB) on GFN2-xTB from tblite (in-process, the wavefunction carried from
 step to step: ~15 ms a step for 40 atoms), inside the nanoreactor's soft
-logfermi wall. Pulls are harmonic springs from an atom to a target point,
+logfermi wall, which a piston can swing between the user's radius and a
+squeezed one (the nanoreactor's cycle: wide, a short ramp in, narrow). Pulls are harmonic springs from an atom to a target point,
 their force capped so a fast drag cannot blow the system up. The page
 sends commands; the process streams frames back (~25 per second). A
 sandbox nobody has looked at for a while stops by itself.
@@ -33,9 +34,50 @@ EVENT_EVERY_S = 1.5              # look for reaction events this often
 EVENT_WINDOW = 15000             # ...in at most this many frames (30 ps); earlier settled events are kept
 FRAME_EVERY_S = 0.04             # stream a frame at most this often
 MAX_PULL = 0.08                  # Hartree/bohr cap on a pull's force (~100 kcal/mol/A)
+# The piston's cycle, as the nanoreactor's (ReactorSettings): 1 ps, wide 75% of it, 0.7 x the radius narrow.
+PISTON = {"period_ps": 1.0, "compress": 0.7, "duty": 0.75}
+PISTON_RAMP_FS = 100.0           # the wall closes over this long (no shock)
+
+
+def piston_radius(t_fs: float, wide: float, piston: Optional[dict]) -> float:
+    """The wall radius at time `t_fs` of a piston cycle (none: `wide`): wide for
+    `duty` of the period, then a ramp in to `compress` x wide, held to the cycle's end."""
+    if not piston:
+        return wide
+    period = piston["period_ps"] * 1000.0
+    phase = (t_fs - piston["t0"]) % period
+    t_wide = piston["duty"] * period
+    narrow = wide * piston["compress"]
+    if phase < t_wide:
+        return wide
+    ramp = min(PISTON_RAMP_FS, period - t_wide)
+    if phase < t_wide + ramp:
+        return wide + (narrow - wide) * (phase - t_wide) / ramp
+    return narrow
+
+
+def piston_settings(cmd: dict, old: Optional[dict]) -> Optional[dict]:
+    """A `piston` command's cycle (None: off). Values that cannot describe a
+    cycle (a period <= 0, a squeeze outside (0, 1], a wide share outside (0, 1))
+    keep the previous ones; anything else is taken as given."""
+    if not cmd.get("value", True):
+        return None
+    out = {**PISTON, **{k: v for k, v in (old or {}).items() if k in PISTON}}
+    for key, ok in (("period_ps", lambda v: v > 0), ("compress", lambda v: 0 < v <= 1), ("duty", lambda v: 0 < v < 1)):
+        try:
+            v = float(cmd[key]) if cmd.get(key) is not None else None
+        except (TypeError, ValueError):
+            v = None
+        if v is not None and math.isfinite(v) and ok(v):
+            out[key] = v
+    return out
 
 _Z = {"H": 1, "He": 2, "Li": 3, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "Mg": 12, "Si": 14, "P": 15,
       "S": 16, "Cl": 17, "K": 19, "Br": 35, "I": 53}
+
+
+def _piston_view(piston: Optional[dict]) -> Optional[dict]:
+    return {k: piston[k] for k in PISTON} if piston else None
 
 
 def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q):
@@ -54,7 +96,8 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
     calc = Calculator("GFN2-xTB", Z, pos, charge=float(charge), uhf=int(multiplicity) - 1)
     calc.set("verbosity", 0)
     calc.set("temperature", 3000.0 * 3.166811563e-6)   # Fermi smearing: bonds break without SCF failures
-    state = {"radius": float(radius_A), "T": float(temperature), "pulls": {}, "paused": False, "dt": 0.5,
+    state = {"radius": float(radius_A), "r_now": float(radius_A), "piston": None, "T": float(temperature),
+             "pulls": {}, "paused": False, "dt": 0.5,
              "friction": 0.02, "wall": 20.0 / KCAL * BOHR}   # 20 kcal/mol/A, in Eh/bohr
     res = [None]
 
@@ -66,7 +109,7 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
             r = calc.singlepoint()          # without the previous wavefunction
         res[0] = r
         e, g = float(r.get("energy")), np.array(r.get("gradient"))
-        ew, gw = _wall(x, state["radius"] / BOHR, state["wall"])
+        ew, gw = _wall(x, state["r_now"] / BOHR, state["wall"])
         e, g = e + ew, g + gw
         for atom, (target, k) in state["pulls"].items():
             d = x[atom] - target
@@ -124,11 +167,18 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 state["T"] = float(min(max(cmd["value"], 0.0), 5000.0))
             elif op == "pause":
                 state["paused"] = bool(cmd.get("value", True))
+            elif op == "piston":
+                was = state["piston"]
+                state["piston"] = piston_settings(cmd, was)
+                if state["piston"]:   # a new cycle starts now, wide; a change of settings keeps its phase
+                    state["piston"]["t0"] = was["t0"] if was else t_fs
+        state["r_now"] = piston_radius(t_fs, state["radius"], state["piston"])
         if state["paused"]:
             time.sleep(0.03)
             if time.time() - last_frame > 0.2:
                 last_frame = time.time()
                 send("frame", pos=np.round(pos * BOHR, 3).tolist(), t_fs=t_fs, radius=state["radius"],
+                     wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
                      T=state["T"], e_rel=(energy - e0) * KCAL, paused=True, rate=0.0,
                      pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
             continue
@@ -168,6 +218,7 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 traj = []
             ekin = 0.5 * float((masses[:, None] * vel * vel).sum()) * 1.066551
             send("frame", pos=np.round(pos * BOHR, 3).tolist(), t_fs=round(t_fs, 1), radius=state["radius"],
+                 wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
                  T=state["T"], T_inst=round(2 * ekin / (3 * n * 3.166811563e-6), 0),
                  e_rel=round((energy - e0) * KCAL, 1), paused=False, rate=round(t_fs / max(now - started, 1e-6), 1),
                  pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
