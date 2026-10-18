@@ -21,6 +21,7 @@
 // computed for.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
+import { prefs } from '../store.js';
 import { drawLinks, ENV_MODES, parseXyz, styleRegion, useAutoSystem, useRegion } from '../qmmm.js';
 
 function themeBackground() {
@@ -179,17 +180,39 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
 }
 
 // ---- orbitals ---------------------------------------------------------------
-const ISO = { small: 0.08, medium: 0.05, large: 0.03 };   // |psi| of the drawn surface (bohr^-3/2)
+const DENSITY_PCT = 85;   // the surface encloses this share of the orbital's density (|psi|^2), by default
 
-// An orbital as two isosurfaces (+ and − lobes) in viewer `v`, replacing the
-// ones in `surfaces` (a ref); none when `orb` is null.
+// The |psi| at which an orbital's surface encloses `pct` % of its density on
+// the grid: the largest |psi|^2 values, summed until they reach that share.
+// (Sorted once per orbital and kept on it.)
+export function isoFor(orb, pct) {
+  if (!orb?.cube) return 0.05;
+  if (!orb._dens) {
+    const lines = orb.cube.split('\n');
+    const natoms = Math.abs(parseInt(lines[2], 10));
+    const vals = lines.slice(6 + natoms).join(' ').trim().split(/\s+/).map(Number);
+    const d = Float64Array.from(vals, (x) => x * x).sort().reverse();
+    let total = 0;
+    for (let i = 0; i < d.length; i += 1) total += d[i];
+    orb._dens = { d, total };
+  }
+  const { d, total } = orb._dens;
+  const want = Math.min(Math.max(pct, 1), 99.9) / 100 * total;
+  let acc = 0;
+  for (let i = 0; i < d.length; i += 1) { acc += d[i]; if (acc >= want) return Math.sqrt(d[i]); }
+  return Math.sqrt(d[d.length - 1]);
+}
+
+// An orbital as two wireframe isosurfaces (+ lobe blue, − lobe red) in viewer
+// `v`, replacing the ones in `surfaces` (a ref); none when `orb` is null.
 export function drawOrbital(v, surfaces, orb, iso) {
   (surfaces.current || []).forEach((sh) => { try { v.removeShape(sh); } catch { /* gone with the model */ } });
   surfaces.current = [];
   if (orb?.cube) {
+    const look = { wireframe: true, linewidth: 1, opacity: 0.9, smoothness: 1 };
     surfaces.current = [
-      v.addVolumetricData(orb.cube, 'cube', { isoval: iso, color: '#3868b8', opacity: 0.8, smoothness: 1 }),
-      v.addVolumetricData(orb.cube, 'cube', { isoval: -iso, color: '#d0583a', opacity: 0.8, smoothness: 1 }),
+      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: iso, color: '#1f4fd1' }),
+      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: -iso, color: '#d42a2a' }),
     ];
   }
   v.render();
@@ -200,7 +223,8 @@ export function drawOrbital(v, surfaces, orb, iso) {
 export function useOrbitals(chem, source, index = 0) {
   const [on, setOn] = useState(false);
   const [which, setWhich] = useState('homo');
-  const [size, setSize] = useState('medium');
+  const [pct, setPctState] = useState(() => prefs.get('orbitalPct', DENSITY_PCT));
+  const setPct = (v) => { setPctState(v); prefs.set('orbitalPct', v); };
   const [follow, setFollow] = useState(false);
   const [data, setData] = useState(null);        // {xyz, result}
   const [busy, setBusy] = useState(false);
@@ -225,7 +249,7 @@ export function useOrbitals(chem, source, index = 0) {
   const result = data?.result || null;
   const current = on && fresh && result ? result.orbitals[which] || null : null;
   const turn = (v) => { setOn(v); if (v) setAsked(geom); };
-  return { on, setOn: turn, update: () => setAsked(geom), which, setWhich, size, setSize, iso: ISO[size], follow, setFollow, busy, error, result,
+  return { on, setOn: turn, update: () => setAsked(geom), which, setWhich, pct, setPct, iso: isoFor(on && fresh && result ? result.orbitals[which] : null, pct), follow, setFollow, busy, error, result,
     fresh, current, symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
 }
 
@@ -245,8 +269,9 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
     ${mo.on && r && html`
       <span class="segmented mini">${['homo', 'lumo'].filter((k) => r.orbitals[k]).map((k) => html`<button class=${mo.which === k ? 'on' : ''}
         onClick=${() => mo.setWhich(k)} title=${`${name(k)}: ${fmt(ev(k))} eV`}>${name(k)}</button>`)}</span>
-      <span class="segmented mini" title="Surface size (the |ψ| it is drawn at)">${Object.keys(ISO).map((k) => html`<button class=${mo.size === k ? 'on' : ''}
-        onClick=${() => mo.setSize(k)}>${k[0].toUpperCase()}</button>`)}</span>
+      <label class="mo-pct" title=${`The surface encloses this share of the orbital's density (|ψ|²); drawn at |ψ| = ${mo.iso.toFixed(3)}. Smaller: tighter lobes.`}>
+        <input type="number" class="tiny" min="1" max="99.9" step="5" value=${mo.pct}
+          onChange=${(e) => { const v = +e.target.value; if (v > 0 && v < 100) mo.setPct(v); }} /> % density</label>
       <span class="mo-numbers" title=${`${method} orbital energies (eV), from its minimal basis`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
       ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
       ${path && html`<label title="Recompute the orbitals for every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}

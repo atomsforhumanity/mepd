@@ -1782,3 +1782,4 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .mo-bar .mo-numbers { color: var(--text); }
 .mo-bar .mo-sites { color: var(--muted); }
 .mo-bar label { display: inline-flex; align-items: center; gap: 4px; }
+.mo-bar .mo-pct input { width: 56px; }

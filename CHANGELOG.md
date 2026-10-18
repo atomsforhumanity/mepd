@@ -14,7 +14,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 - **Frontier orbitals (HOMO / LUMO).** An "Orbitals" button under the 3D view of a structure (Explore's
   inspector, a reaction's ends and TS), a calculation's paths and live optimizations, and in Design draws
-  the HOMO or LUMO as an isosurface (S/M/L size), with both energies, the gap, and the atoms the shown
+  the HOMO or LUMO as a wireframe isosurface (+ lobe blue, − lobe red) enclosing 85 % of its density
+  (any share in "% density"; remembered per browser), with both energies, the gap, and the atoms the shown
   orbital sits on. On a path, "follow" recomputes them for each frame shown, e.g. a TS optimization as it
   runs; Design recomputes after each edit. They come from a g-xTB single point when the session's level is
   g-xTB, else GFN2-xTB (`xtb --molden`), evaluated on a grid in `mepd.orbitals` (every orbital checked to
