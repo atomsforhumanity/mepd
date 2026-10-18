@@ -261,7 +261,7 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
   const fmt = (x) => (x == null ? '–' : `${x > 0 ? '+' : ''}${x.toFixed(2)}`.replace('-', '−'));
   // Where the shown orbital sits: atoms with at least a tenth of it, largest first.
   const sites = mo.current ? mo.current.atoms.map((w, i) => [w, i]).filter(([w]) => w >= 0.1).sort((a, b) => b[0] - a[0]).slice(0, 4) : [];
-  const method = r?.method === 'gfn2' ? 'GFN2-xTB' : 'g-xTB';
+  const method = r?.label || (r?.method === 'gfn2' ? 'GFN2-xTB' : 'g-xTB');
   return html`<div class="mo-bar small">
     <button class=${`btn small ${mo.on ? 'on' : ''}`} onClick=${() => mo.setOn(!mo.on)} aria-pressed=${mo.on}
       title="The highest occupied and lowest unoccupied molecular orbitals of this geometry: where it gives and takes electrons">
@@ -272,7 +272,8 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
       <label class="mo-pct" title=${`The surface encloses this share of the orbital's density (|ψ|²); drawn at |ψ| = ${mo.iso.toFixed(3)}. Smaller: tighter lobes.`}>
         <input type="number" class="tiny" min="1" max="99.9" step="5" value=${mo.pct}
           onChange=${(e) => { const v = +e.target.value; if (v > 0 && v < 100) mo.setPct(v); }} /> % density</label>
-      <span class="mo-numbers" title=${`${method} orbital energies (eV), from its minimal basis`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
+      <span class="mo-numbers" title=${`${method} orbital energies (eV)${r.method === 'terachem' ? '' : ', from its minimal basis'}`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
+      <span class="mo-method muted" title="Where these orbitals come from: a single point at this level on the geometry shown">${method}</span>
       ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
       ${path && html`<label title="Recompute the orbitals for every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}
         onChange=${(e) => mo.setFollow(e.target.checked)} /> follow</label>`}

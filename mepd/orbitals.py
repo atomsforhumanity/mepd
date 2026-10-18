@@ -1,25 +1,29 @@
 """Frontier molecular orbitals (HOMO, LUMO) of one geometry, for viewing.
 
-A single point with xtb's `--molden` (g-xTB, or GFN2-xTB), whose orbitals
-are then evaluated on a grid around the molecule and written as Gaussian
+A single point that writes a molden file -- TeraChem (the method and basis
+of the session's TeraChem profile), or xtb's `--molden` (g-xTB, or
+GFN2-xTB) -- whose orbitals are then evaluated on a grid around the molecule and written as Gaussian
 cube files (what 3Dmol.js draws as isosurfaces). Along with each orbital:
 its energy and how much of it sits on each atom (|psi|^2 over the grid,
 each point counted for its nearest atom), so the orbitals also say where a
 molecule gives or takes electrons.
 
-The orbitals come from the semi-empirical method's minimal basis: right in
-shape and ordering for what they are used for here (where the HOMO and LUMO
-sit, how they change along a path), not a basis-set-converged picture.
+xtb's orbitals come from the semi-empirical method's minimal basis: right
+in shape and ordering for what they are used for here (where the HOMO and
+LUMO sit, how they change along a path), not a basis-set-converged picture;
+TeraChem's are those of its own method and basis.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -28,7 +32,7 @@ import numpy as np
 
 BOHR = 0.529177210903       # Angstrom
 EV = 27.211386245988        # eV per Hartree
-METHODS = ("gxtb", "gfn2")
+METHODS = ("gxtb", "gfn2", "terachem")
 MAX_POINTS = 56 ** 3        # grid points per orbital (a cube of ~2 MB of text, ~0.5 MB gzipped)
 MARGIN_BOHR = 5.0           # grid beyond the outermost atoms
 SPACING_BOHR = 0.3          # finest grid spacing
@@ -92,7 +96,9 @@ def parse_molden(text: str) -> dict:
                 if "=" in ln:
                     k, v = (x.strip() for x in ln.split("=", 1))
                     k = k.lower()
-                    if k == "sym" or (cur is None):
+                    # A new orbital at Sym= (xtb) or, without one, at Ene= once the current one has its
+                    # coefficients (TeraChem writes no Sym= line).
+                    if cur is None or k == "sym" or (k == "ene" and (cur["coef"] or cur["energy"] is not None)):
                         cur = {"energy": None, "spin": "alpha", "occ": 0.0, "coef": {}}
                         mos.append(cur)
                     if k == "ene":
@@ -129,14 +135,23 @@ def _self_overlap(alphas: np.ndarray, cs: np.ndarray, lx: int, ly: int, lz: int)
     return float((np.outer(cs, cs) * fac * (math.pi / a) ** 1.5 / a ** L).sum())
 
 
-# How the two programs scale a shell's Cartesian components (found by
-# integrating every orbital on a grid: each comes out with norm 1 only so):
-# GFN2-xTB gives each component unit norm; g-xTB gives all of them the norm
-# of the x^l one.
-D_NORM = {"gfn2": "own", "gxtb": "axis"}
+# How each program writes its basis (found by integrating every orbital on a
+# grid: each comes out with norm 1 only so). xtb's contraction coefficients
+# are for unnormalized primitives, TeraChem's (the Molden convention) for
+# normalized ones; GFN2-xTB and TeraChem give each Cartesian component unit
+# norm, g-xTB gives all of a shell's the norm of its x^l one.
+D_NORM = {"gfn2": "own", "gxtb": "axis", "terachem": "own"}
+NORMALIZED_PRIMS = {"gfn2": False, "gxtb": False, "terachem": True}
 
 
-def evaluate(mol: dict, coefs: list, points: np.ndarray, d_norm: str = "own") -> np.ndarray:
+def _prim_norm(a: float, lx: int, ly: int, lz: int) -> float:
+    """The norm of x^lx y^ly z^lz exp(-a r^2)."""
+    L = lx + ly + lz
+    return (2 * a / math.pi) ** 0.75 * (4 * a) ** (L / 2) / math.sqrt(
+        _dfact(2 * lx - 1) * _dfact(2 * ly - 1) * _dfact(2 * lz - 1))
+
+
+def evaluate(mol: dict, coefs: list, points: np.ndarray, d_norm: str = "own", normalized_prims: bool = False) -> np.ndarray:
     """The orbitals with coefficient vectors `coefs` at `points` (bohr, (n, 3)).
     xtb's contraction coefficients are for unnormalized primitives; each
     contracted function is scaled as `d_norm` says (see D_NORM)."""
@@ -150,6 +165,8 @@ def evaluate(mol: dict, coefs: list, points: np.ndarray, d_norm: str = "own") ->
         comps = _CART[l]
         alphas = np.array([a for a, _ in prims])
         cs = np.array([c for _, c in prims])
+        if normalized_prims:   # coefficients of normalized primitives (the s-type norm per exponent)
+            cs = cs * np.array([_prim_norm(a, l, 0, 0) for a in alphas])
         keep = r2 < (40.0 / alphas.min())          # exp(-40): nothing left beyond this
         if not keep.any():
             k += len(comps)
@@ -222,19 +239,56 @@ def _executable(method: str) -> list[str]:
     return [exe, "--gfn", "2"]
 
 
+_TERACHEM = threading.Lock()     # one GPU: one TeraChem orbital run at a time
+
+
+def _xyz_text(symbols, coords_A) -> str:
+    return "\n".join([str(len(symbols)), "mepd orbitals"]
+                     + [f"{s} {x:.8f} {y:.8f} {z:.8f}" for s, (x, y, z) in zip(symbols, coords_A)]) + "\n"
+
+
+def run_terachem_molden(symbols: list, coords_A: np.ndarray, charge: int = 0, multiplicity: int = 1,
+                        engine_kwds: Optional[dict] = None, timeout_s: float = 600.0) -> str:
+    """A TeraChem single point (`run energy`) with the engine's method, basis
+    and keywords (a profile's terachem_engine_kwds); the molden file TeraChem
+    writes to its scratch folder."""
+    import dataclasses
+
+    from mepd.engines.gxtb import _run_gxtb_process
+    from mepd.engines.terachem import TeraChemEngine, _failure
+
+    names = {f.name for f in dataclasses.fields(TeraChemEngine)}
+    engine = TeraChemEngine(**{k: v for k, v in (engine_kwds or {}).items() if k in names})
+    with _TERACHEM, tempfile.TemporaryDirectory(prefix="mepd-mo-tc-") as tmp:
+        tmpd = Path(tmp)
+        (tmpd / "geom.xyz").write_text(_xyz_text(symbols, coords_A))
+        (tmpd / "tc.in").write_text(engine.tc_input(int(charge), int(multiplicity), False, None)
+                                    .replace("run gradient", "run energy"))
+        done = _run_gxtb_process([*engine._cmd, "tc.in"], cwd=tmpd, env=os.environ.copy(), timeout_s=timeout_s)
+        found = sorted((tmpd / "scr").glob("*.molden"))
+        if not found:
+            raise OrbitalError(f"TeraChem wrote no orbitals: {_failure(done.stdout + done.stderr)}")
+        return found[0].read_text()
+
+
+def terachem_label(engine_kwds: Optional[dict]) -> str:
+    from mepd.engines.terachem import TeraChemEngine
+
+    kw = engine_kwds or {}
+    return f"TeraChem {kw.get('method', TeraChemEngine.method)}/{kw.get('basis', TeraChemEngine.basis)}"
+
+
 def run_molden(symbols: list, coords_A: np.ndarray, charge: int = 0, multiplicity: int = 1,
                method: str = "gxtb", timeout_s: float = 120.0) -> str:
-    """A single point with `--molden`; the molden file's text."""
+    """A single point with xtb's `--molden`; the molden file's text."""
     from mepd.engines.gxtb import _run_gxtb_process
 
-    if method not in METHODS:
+    if method not in ("gxtb", "gfn2"):
         raise OrbitalError(f"orbitals come from one of {', '.join(METHODS)}, not {method!r}")
     base = _executable(method)
     with tempfile.TemporaryDirectory(prefix="mepd-mo-") as tmp:
         tmpd = Path(tmp)
-        xyz = "\n".join([str(len(symbols)), "mepd orbitals"]
-                        + [f"{s} {x:.8f} {y:.8f} {z:.8f}" for s, (x, y, z) in zip(symbols, coords_A)]) + "\n"
-        (tmpd / "mol.xyz").write_text(xyz)
+        (tmpd / "mol.xyz").write_text(_xyz_text(symbols, coords_A))
         cmd = [base[0], "mol.xyz", *base[1:], "--molden", "--chrg", str(int(charge))]
         if int(multiplicity) > 1:
             cmd += ["--uhf", str(int(multiplicity) - 1)]
@@ -263,9 +317,25 @@ def _frontier(mos: list) -> tuple[list, int, int]:
 
 
 @lru_cache(maxsize=64)
-def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: int, method: str, extra: int) -> dict:
+def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: int, method: str, extra: int,
+            engine_json: str = "{}") -> dict:
     coords_A = np.array(coords).reshape(-1, 3)
-    mol = parse_molden(run_molden(list(symbols), coords_A, charge, multiplicity, method))
+    if method == "terachem":
+        kwds = json.loads(engine_json)
+        text = run_terachem_molden(list(symbols), coords_A, charge, multiplicity, kwds)
+        label = terachem_label(kwds)
+    else:
+        text = run_molden(list(symbols), coords_A, charge, multiplicity, method)
+        label = "g-xTB" if method == "gxtb" else "GFN2-xTB"
+    out = orbitals_from_molden(text, method, extra, multiplicity)
+    out["label"] = label
+    return out
+
+
+def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: int = 1) -> dict:
+    """The frontier orbitals of a molden file written by `method` (whose basis
+    conventions D_NORM / NORMALIZED_PRIMS say how to read it)."""
+    mol = parse_molden(text)
     orbs, homo, lumo = _frontier(mol["mos"])
     xyz = np.array([p for _, p in mol["atoms"]])
     origin, h, n = grid_for(xyz)
@@ -281,7 +351,7 @@ def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: 
         if lumo is not None and lumo + j < len(orbs):
             picks[f"lumo+{j}"] = lumo + j
     names = list(picks)
-    vals = evaluate(mol, [orbs[picks[k]]["coef"] for k in names], pts, D_NORM[method])
+    vals = evaluate(mol, [orbs[picks[k]]["coef"] for k in names], pts, D_NORM[method], NORMALIZED_PRIMS[method])
     # Where each orbital sits: |psi|^2 over the grid, each point for its nearest atom.
     nearest = np.argmin(((pts[:, None, :] - xyz[None, :, :]) ** 2).sum(-1), axis=1) if len(xyz) * len(pts) <= 6e7 else \
         np.concatenate([np.argmin(((c[:, None, :] - xyz[None]) ** 2).sum(-1), axis=1) for c in np.array_split(pts, 16)])
@@ -304,10 +374,15 @@ def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: 
 
 
 def frontier_orbitals(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1,
-                      method: str = "gxtb", extra: int = 0) -> dict:
+                      method: str = "gxtb", extra: int = 0, engine_kwds: Optional[dict] = None) -> dict:
     """HOMO and LUMO (and `extra` more on each side) of one geometry: each
-    with its energy (eV), occupation, share on each atom, and a cube file.
-    Results are cached per geometry (rounded to 1e-4 Angstrom)."""
+    with its energy (eV), occupation, share on each atom, and a cube file;
+    `label` names the method. `method` "terachem" runs TeraChem with
+    `engine_kwds` (a profile's terachem_engine_kwds). Results are cached per
+    geometry (rounded to 1e-4 Angstrom) and method."""
+    if method not in METHODS:
+        raise OrbitalError(f"orbitals come from one of {', '.join(METHODS)}, not {method!r}")
     coords = tuple(round(float(x), 4) for x in np.asarray(coords_A, dtype=float).ravel())
-    key = hashlib.sha1(repr((tuple(symbols), coords, charge, multiplicity, method, extra)).encode()).hexdigest()
-    return _cached(key, tuple(symbols), coords, int(charge), int(multiplicity), method, int(extra))
+    engine_json = json.dumps(engine_kwds or {}, sort_keys=True, default=str) if method == "terachem" else "{}"
+    key = hashlib.sha1(repr((tuple(symbols), coords, charge, multiplicity, method, extra, engine_json)).encode()).hexdigest()
+    return _cached(key, tuple(symbols), coords, int(charge), int(multiplicity), method, int(extra), engine_json)

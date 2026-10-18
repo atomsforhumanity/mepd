@@ -12,6 +12,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Orbitals from TeraChem.** In a session whose level of theory is TeraChem, the HOMO / LUMO come
+  from a TeraChem single point with the profile's method, basis and keywords (TeraChem's own molden
+  file), not from xtb. The bar now names where the orbitals come from (e.g. "TeraChem b3lyp/6-31gs",
+  "g-xTB"). TeraChem's molden (no `Sym=` lines, normalized primitives) is read with its own conventions;
+  every orbital checked integrates to 1. Not in the demo.
 - **Frontier orbitals (HOMO / LUMO).** An "Orbitals" button under the 3D view of a structure (Explore's
   inspector, a reaction's ends and TS), a calculation's paths and live optimizations, and in Design draws
   the HOMO or LUMO as a wireframe isosurface (+ lobe blue, − lobe red) enclosing 85 % of its density

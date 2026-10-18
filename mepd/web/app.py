@@ -1542,8 +1542,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     @app.post("/api/orbitals")
     def frontier_orbitals(body: dict, request: Request):
         """HOMO and LUMO of one geometry {xyz, charge, multiplicity, extra (0-2 more each side)}:
-        energies (eV), each one's share on every atom, and cube files. g-xTB when the session's
-        level is g-xTB, else GFN2-xTB (or `method`)."""
+        energies (eV), each one's share on every atom, and cube files. TeraChem's (the profile's
+        method and basis) when the session's level is TeraChem, g-xTB's when it is g-xTB, else
+        GFN2-xTB's (or `method`)."""
         import gzip
         import json
 
@@ -1563,18 +1564,22 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("orbitals need a geometry as xyz text")
         if demo is not None and n > demo.max_atoms:
             raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
-        method = body.get("method")
-        if method is None:
-            ws = W()
-            try:
-                engine = str(tomli.loads(ws.read_profile(ws.level_profile)).get("engine_name") or "gxtb")
-            except Exception:
-                engine = "gxtb"
-            method = "gxtb" if engine.lower() == "gxtb" else "gfn2"
+        # The session's level: its own orbitals when it is TeraChem (its method and basis) or
+        # g-xTB; any other level, GFN2-xTB's.
+        ws = W()
+        try:
+            profile = tomli.loads(ws.read_profile(ws.level_profile))
+        except Exception:
+            profile = {}
+        engine = str(profile.get("engine_name") or "gxtb").lower()
+        method = body.get("method") or ("terachem" if engine == "terachem" else "gxtb" if engine == "gxtb" else "gfn2")
+        if method == "terachem" and demo is not None:
+            raise WorkspaceError("TeraChem orbitals are not available in the demo")
         try:
             out = orbitals.frontier_orbitals(symbols, coords, int(body.get("charge") or 0),
                                              int(body.get("multiplicity") or 1), str(method),
-                                             int(min(max(int(body.get("extra") or 0), 0), 2)))
+                                             int(min(max(int(body.get("extra") or 0), 0), 2)),
+                                             engine_kwds=profile.get("terachem_engine_kwds") or {})
         except Exception as exc:   # (OrbitalError, or the program failing on this geometry)
             raise WorkspaceError(f"no orbitals: {exc}") from None
         data = json.dumps(out).encode()
