@@ -389,6 +389,10 @@ class GXTBCalculator(Engine):
         if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
             cmd.append("--gxtb")
         cmd.extend(self.extra_args if extra_args is None else extra_args)
+        # A job's viewer can show this SCF's orbitals (mepd.orbitals): write them as molden.
+        orbitals_kind = self._orbitals_kind(cmd)
+        if orbitals_kind:
+            cmd.append("--molden")
 
         env = os.environ.copy()
         env["OMP_NUM_THREADS"] = str(int(self.n_threads))
@@ -417,7 +421,23 @@ class GXTBCalculator(Engine):
                 msg=f"g-xTB calculation failed with exit code {completed.returncode}{tried}.",
                 obj=completed.stdout + completed.stderr,
             )
+        if orbitals_kind:
+            from mepd.orbitals import save_run_orbitals
+
+            final = cwd / "xtbopt.xyz" if optimize and (cwd / "xtbopt.xyz").is_file() else xyz_path
+            save_run_orbitals(cwd / "molden.input", final.read_text(), orbitals_kind,
+                              "g-xTB" if orbitals_kind == "gxtb" else "GFN2-xTB")
         return completed
+
+    def _orbitals_kind(self, cmd: list) -> str | None:
+        """"gxtb" / "gfn2" when this run's orbitals are to be kept ($MEPD_ORBITALS_DIR set) and
+        mepd.orbitals reads that program's molden files; else None (e.g. GFN1-xTB)."""
+        if not os.environ.get("MEPD_ORBITALS_DIR", "").strip():
+            return None
+        if self.add_gxtb_flag or Path(self.executable).name == "gxtb":
+            return "gxtb"
+        gfn = cmd[cmd.index("--gfn") + 1] if "--gfn" in cmd and cmd.index("--gfn") + 1 < len(cmd) else "2"
+        return "gfn2" if str(gfn) == "2" else None
 
     def compute_hessian(
         self,

@@ -751,6 +751,8 @@ class JobManager:
             "MEPD_DRIVE_CHAIN_JSON": str(jdir / "chain.json"),
             # One file per concurrent path search (e.g. per channels pair).
             "MEPD_DRIVE_CHAIN_DIR": str(jdir / "live"),
+            # Every SCF's orbitals, for the viewer (mepd.orbitals: a running TS optimization's frames).
+            "MEPD_ORBITALS_DIR": str(jdir / "orbitals"),
             # Stop & analyze: this file appearing ends the run's searches (mepd.search_control).
             search_control.STOP_ENV: str(jdir / STOP_FILE),
             "COLUMNS": "160",

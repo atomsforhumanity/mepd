@@ -119,3 +119,40 @@ def test_terachem_runs_when_installed():
     except orbitals.OrbitalError as exc:
         pytest.skip(f"TeraChem cannot run here: {exc}")
     assert out["label"] == "TeraChem hf/sto-3g" and out["orbitals"]["homo"]["norm"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_a_calculation_keeps_its_orbitals_and_the_viewer_reads_them(tmp_path, monkeypatch):
+    """With MEPD_ORBITALS_DIR set, every g-xTB SCF keeps its molden file; asking for that
+    geometry then reads it (no new calculation), and only the newest KEEP_RUNS are kept."""
+    if not _has("gxtb"):
+        pytest.skip("g-xTB not available")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.web import chem
+
+    monkeypatch.setenv("MEPD_ORBITALS_DIR", str(tmp_path / "orbitals"))
+    monkeypatch.setattr(orbitals, "KEEP_RUNS", 3)
+    s = chem.structure_from_smiles("C=O")
+    eng = GXTBCalculator()
+    for k in range(4):
+        eng.compute_gradients([StructureNode(structure=s.model_copy(update={"geometry": s.geometry + 0.02 * k}))])
+    kept = sorted((tmp_path / "orbitals").glob("*.molden"))
+    assert len(kept) == 3
+    monkeypatch.setattr(orbitals, "run_molden", lambda *a, **k: pytest.fail("ran a new single point"))
+    last = (s.geometry + 0.06) * 0.529177210903
+    out = orbitals.frontier_orbitals(list(s.symbols), last, 0, 1, "gxtb", run_dirs=[tmp_path / "orbitals"])
+    assert out["source"] == "run" and out["label"] == "g-xTB" and out["orbitals"]["homo"]["norm"] == pytest.approx(1.0, abs=0.01)
+    assert orbitals.find_run_orbitals([tmp_path / "orbitals"], list(s.symbols), s.geometry * 0.529177210903) is None   # dropped
+
+
+def test_no_orbitals_dir_means_nothing_is_kept(tmp_path, monkeypatch):
+    if not _has("gxtb"):
+        pytest.skip("g-xTB not available")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.web import chem
+
+    monkeypatch.delenv("MEPD_ORBITALS_DIR", raising=False)
+    eng = GXTBCalculator()
+    assert eng._orbitals_kind(["gxtb", "x.xyz"]) is None
+    eng.compute_gradients([StructureNode(structure=chem.structure_from_smiles("O"))])

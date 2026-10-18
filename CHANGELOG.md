@@ -12,6 +12,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
+  TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
+  g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS
+  optimization's frames show their orbitals without a new single point ("· this run" after the method);
+  only a geometry no calculation has computed gets one. A running calculation's live view follows its
+  frames by default, on a coarser grid (~0.1 s a frame to build; 0.12-0.2 s per frame in the browser
+  while a search ran), and the next frames are built in the background. The grid evaluation is ~2x faster.
 - **Orbitals from TeraChem.** In a session whose level of theory is TeraChem, the HOMO / LUMO come
   from a TeraChem single point with the profile's method, basis and keywords (TeraChem's own molden
   file), not from xtb. The bar now names where the orbitals come from (e.g. "TeraChem b3lyp/6-31gs",

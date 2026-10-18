@@ -12,6 +12,12 @@ xtb's orbitals come from the semi-empirical method's minimal basis: right
 in shape and ordering for what they are used for here (where the HOMO and
 LUMO sit, how they change along a path), not a basis-set-converged picture;
 TeraChem's are those of its own method and basis.
+
+Orbitals a calculation already has: with $MEPD_ORBITALS_DIR set (the web
+app sets it per job), the g-xTB / GFN2-xTB and TeraChem engines keep the
+molden file of every SCF they run there (the newest KEEP_RUNS), indexed by
+geometry. Asking for a geometry the job has computed -- a TS optimization's
+frame as it runs -- then reads its file instead of running anything.
 """
 from __future__ import annotations
 
@@ -34,7 +40,11 @@ BOHR = 0.529177210903       # Angstrom
 EV = 27.211386245988        # eV per Hartree
 METHODS = ("gxtb", "gfn2", "terachem")
 MAX_POINTS = 56 ** 3        # grid points per orbital (a cube of ~2 MB of text, ~0.5 MB gzipped)
+LIVE_POINTS = 38 ** 3       # ...when following a running calculation: a third of the points, built ~3x faster
 MARGIN_BOHR = 5.0           # grid beyond the outermost atoms
+ORBITALS_ENV = "MEPD_ORBITALS_DIR"
+KEEP_RUNS = 400             # molden files kept per job (the newest)
+MATCH_A = 2e-3              # same geometry: every coordinate within this (Angstrom)
 SPACING_BOHR = 0.3          # finest grid spacing
 _L = {"s": 0, "p": 1, "d": 2, "f": 3, "g": 4}
 # Molden's Cartesian component order per shell.
@@ -153,34 +163,54 @@ def _prim_norm(a: float, lx: int, ly: int, lz: int) -> float:
 
 def evaluate(mol: dict, coefs: list, points: np.ndarray, d_norm: str = "own", normalized_prims: bool = False) -> np.ndarray:
     """The orbitals with coefficient vectors `coefs` at `points` (bohr, (n, 3)).
-    xtb's contraction coefficients are for unnormalized primitives; each
-    contracted function is scaled as `d_norm` says (see D_NORM)."""
-    out = np.zeros((len(coefs), len(points)))
-    C = np.asarray(coefs)
-    k = 0
-    for atom, l, prims in mol["shells"]:
-        centre = mol["atoms"][atom][1]
-        d = points - centre
-        r2 = np.einsum("ij,ij->i", d, d)
-        comps = _CART[l]
-        alphas = np.array([a for a, _ in prims])
-        cs = np.array([c for _, c in prims])
-        if normalized_prims:   # coefficients of normalized primitives (the s-type norm per exponent)
-            cs = cs * np.array([_prim_norm(a, l, 0, 0) for a in alphas])
-        keep = r2 < (40.0 / alphas.min())          # exp(-40): nothing left beyond this
-        if not keep.any():
-            k += len(comps)
+    xtb's contraction coefficients are for unnormalized primitives, TeraChem's
+    for normalized ones (`normalized_prims`); each contracted function is
+    scaled as `d_norm` says (see D_NORM). Single precision on the grid (plenty
+    for drawing), each atom's distances computed once for all its shells, and
+    every shell only where it has not died off."""
+    C = np.asarray(coefs, dtype=float)
+    out = np.zeros((len(C), len(points)), dtype=np.float32)
+    pts = np.asarray(points, dtype=np.float32)
+    # Each shell's first function index, so shells can be taken atom by atom.
+    starts, k = [], 0
+    for _, l, _ in mol["shells"]:
+        starts.append(k)
+        k += len(_CART[l])
+    by_atom: dict = {}
+    for sh, start in zip(mol["shells"], starts):
+        by_atom.setdefault(sh[0], []).append((sh, start))
+    for atom, shells in by_atom.items():
+        if not any(np.any(C[:, start:start + len(_CART[l])]) for (_, l, _), start in shells):
             continue
-        dk = d[keep]
-        radial = np.exp(-np.outer(r2[keep], alphas)) @ cs
-        axis = _self_overlap(alphas, cs, l, 0, 0)
-        for lx, ly, lz in comps:
-            norm = axis if d_norm == "axis" else _self_overlap(alphas, cs, lx, ly, lz)
-            phi = radial * (dk[:, 0] ** lx * dk[:, 1] ** ly * dk[:, 2] ** lz) / math.sqrt(norm)
-            w = C[:, k]
-            if np.any(w):
-                out[:, keep] += np.outer(w, phi)
-            k += 1
+        d = pts - np.asarray(mol["atoms"][atom][1], dtype=np.float32)
+        r2 = np.einsum("ij,ij->i", d, d)
+        for (_, l, prims), start in shells:
+            comps = _CART[l]
+            w_all = C[:, start:start + len(comps)]
+            if not np.any(w_all):
+                continue
+            alphas = np.array([a for a, _ in prims])
+            cs = np.array([c for _, c in prims])
+            if normalized_prims:   # coefficients of normalized primitives (the s-type norm per exponent)
+                cs = cs * np.array([_prim_norm(a, l, 0, 0) for a in alphas])
+            keep = np.nonzero(r2 < (40.0 / alphas.min()))[0]   # exp(-40): nothing left beyond this
+            if not len(keep):
+                continue
+            dk, r2k = d[keep], r2[keep]
+            radial = np.exp(-np.outer(r2k, alphas.astype(np.float32))) @ cs.astype(np.float32)
+            axis = _self_overlap(alphas, cs, l, 0, 0)
+            # The angular factor of each component, times its coefficient in each orbital.
+            ang = np.zeros((len(C), len(keep)), dtype=np.float32)
+            for (lx, ly, lz), w in zip(comps, w_all.T):
+                if not np.any(w):
+                    continue
+                norm = axis if d_norm == "axis" else _self_overlap(alphas, cs, lx, ly, lz)
+                part = np.ones(len(keep), dtype=np.float32)
+                for axis_i, power in enumerate((lx, ly, lz)):
+                    if power:
+                        part *= dk[:, axis_i] ** power
+                ang += np.outer((w / math.sqrt(norm)).astype(np.float32), part)
+            out[:, keep] += ang * radial
     return out
 
 
@@ -209,14 +239,11 @@ def cube_text(title: str, mol: dict, origin: np.ndarray, h: float, n: tuple, val
              f"{n[2]:5d} {0:12.6f} {0:12.6f} {h:12.6f}"]
     for z, p in mol["atoms"]:
         lines.append(f"{z:5d} {float(z):12.6f} {p[0]:12.6f} {p[1]:12.6f} {p[2]:12.6f}")
-    v = values.reshape(n)
-    body = []
-    for ix in range(n[0]):
-        for iy in range(n[1]):
-            row = v[ix, iy]
-            for s in range(0, n[2], 6):
-                body.append(" ".join(f"{x:.4e}" for x in row[s:s + 6]))
-    return "\n".join(lines + body) + "\n"
+    # One format string per z-row (6 values a line, the cube convention): C-level formatting.
+    nz = n[2]
+    fmt = "\n".join(" ".join(["%.4e"] * min(6, nz - k)) for k in range(0, nz, 6)) + "\n"
+    rows = np.asarray(values, dtype=float).reshape(-1, nz)
+    return "\n".join(lines) + "\n" + "".join(fmt % tuple(r) for r in rows)
 
 
 # ------------------------------------------------------------------ run
@@ -318,7 +345,7 @@ def _frontier(mos: list) -> tuple[list, int, int]:
 
 @lru_cache(maxsize=64)
 def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: int, method: str, extra: int,
-            engine_json: str = "{}") -> dict:
+            engine_json: str = "{}", max_points: int = MAX_POINTS) -> dict:
     coords_A = np.array(coords).reshape(-1, 3)
     if method == "terachem":
         kwds = json.loads(engine_json)
@@ -327,18 +354,19 @@ def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: 
     else:
         text = run_molden(list(symbols), coords_A, charge, multiplicity, method)
         label = "g-xTB" if method == "gxtb" else "GFN2-xTB"
-    out = orbitals_from_molden(text, method, extra, multiplicity)
-    out["label"] = label
+    out = orbitals_from_molden(text, method, extra, multiplicity, max_points)
+    out.update(label=label, source="single point")
     return out
 
 
-def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: int = 1) -> dict:
+def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: int = 1,
+                         max_points: int = MAX_POINTS) -> dict:
     """The frontier orbitals of a molden file written by `method` (whose basis
     conventions D_NORM / NORMALIZED_PRIMS say how to read it)."""
     mol = parse_molden(text)
     orbs, homo, lumo = _frontier(mol["mos"])
     xyz = np.array([p for _, p in mol["atoms"]])
-    origin, h, n = grid_for(xyz)
+    origin, h, n = grid_for(xyz, max_points=max_points)
     axes = [origin[i] + h * np.arange(n[i]) for i in range(3)]
     pts = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
     picks = {}
@@ -373,16 +401,132 @@ def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: i
     return result
 
 
+# ------------------------------------------------------------------ a run's own orbitals
+
+def _parse_xyz(text: str) -> tuple[list, list]:
+    lines = text.strip().splitlines()
+    n = int(lines[0].split()[0])
+    rows = [ln.split() for ln in lines[2:2 + n]]
+    return [r[0] for r in rows], [[float(x) for x in r[1:4]] for r in rows]
+
+
+def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str) -> None:
+    """Keep a finished SCF's molden file in $MEPD_ORBITALS_DIR (if set) with
+    its geometry, and drop the oldest beyond KEEP_RUNS. Never raises: a
+    calculation must not fail over a viewer's cache."""
+    where = os.environ.get(ORBITALS_ENV, "").strip()
+    if not where or not molden.is_file():
+        return
+    try:
+        import time
+
+        d = Path(where)
+        d.mkdir(parents=True, exist_ok=True)
+        symbols, coords = _parse_xyz(xyz_text)
+        name = f"{time.time_ns()}-{os.getpid()}.molden"
+        shutil.copyfile(molden, d / name)
+        line = json.dumps({"file": name, "method": method, "label": label, "symbols": symbols,
+                           "coords": [[round(x, 5) for x in c] for c in coords]})
+        with open(d / "index.jsonl", "a") as fh:
+            fh.write(line + "\n")
+        files = sorted(d.glob("*.molden"))
+        for old in files[:max(0, len(files) - KEEP_RUNS)]:
+            old.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+_INDEX: dict = {}   # index.jsonl path -> ((mtime, size), entries)
+
+
+def _index(fp: Path) -> list:
+    try:
+        st = fp.stat()
+    except OSError:
+        return []
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _INDEX.get(str(fp))
+    if hit and hit[0] == key:
+        return hit[1]
+    entries = []
+    for ln in fp.read_text().splitlines():
+        try:
+            e = json.loads(ln)
+            e["xyz"] = np.asarray(e["coords"], dtype=float)
+            entries.append(e)
+        except Exception:
+            continue
+    _INDEX[str(fp)] = (key, entries)
+    return entries
+
+
+def find_run_orbitals(dirs, symbols: list, coords_A) -> Optional[dict]:
+    """The newest kept SCF (index entry plus its folder) at this geometry
+    in any of `dirs`, or None."""
+    xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
+    best = None
+    for d in dirs:
+        d = Path(d)
+        for e in reversed(_index(d / "index.jsonl")):
+            if e["symbols"] != list(symbols) or e["xyz"].shape != xyz.shape:
+                continue
+            if np.abs(e["xyz"] - xyz).max() <= MATCH_A and (d / e["file"]).is_file():
+                if best is None or e["file"] > best["file"]:
+                    best = {**e, "dir": str(d)}
+                break
+    return best
+
+
+_PREFETCH = threading.Lock()
+
+
+def prefetch(run_dir, extra: int = 0, multiplicity: int = 1, newest: int = 2, max_points: int = LIVE_POINTS) -> None:
+    """Build (in a background thread) the orbitals of the newest SCFs kept in
+    `run_dir` that are not built yet: a running calculation's next frame is
+    then ready before the viewer asks for it."""
+    def work():
+        if not _PREFETCH.acquire(blocking=False):
+            return                      # one prefetcher at a time
+        try:
+            d = Path(run_dir)
+            for e in list(reversed(_index(d / "index.jsonl")))[:newest]:
+                fp = d / e["file"]
+                if fp.is_file() and e.get("method") in METHODS:
+                    try:
+                        _from_file(str(fp), e["method"], e["label"], int(extra), int(multiplicity), int(max_points))
+                    except Exception:
+                        pass
+        finally:
+            _PREFETCH.release()
+    threading.Thread(target=work, daemon=True).start()
+
+
+@lru_cache(maxsize=256)
+def _from_file(path: str, method: str, label: str, extra: int, multiplicity: int, max_points: int = MAX_POINTS) -> dict:
+    out = orbitals_from_molden(Path(path).read_text(), method, extra, multiplicity, max_points)
+    out.update(label=label, source="run")
+    return out
+
+
 def frontier_orbitals(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1,
-                      method: str = "gxtb", extra: int = 0, engine_kwds: Optional[dict] = None) -> dict:
+                      method: str = "gxtb", extra: int = 0, engine_kwds: Optional[dict] = None,
+                      run_dirs: Optional[list] = None, max_points: int = MAX_POINTS) -> dict:
     """HOMO and LUMO (and `extra` more on each side) of one geometry: each
     with its energy (eV), occupation, share on each atom, and a cube file;
-    `label` names the method. `method` "terachem" runs TeraChem with
-    `engine_kwds` (a profile's terachem_engine_kwds). Results are cached per
-    geometry (rounded to 1e-4 Angstrom) and method."""
+    `label` names the method. A geometry a calculation has already computed
+    (its SCF kept in one of `run_dirs`, see save_run_orbitals) is read from
+    there (`source` "run"); otherwise a single point is run: `method`
+    "terachem" with `engine_kwds` (a profile's terachem_engine_kwds), else xtb.
+    Results are cached per geometry (rounded to 1e-4 Angstrom) and method."""
     if method not in METHODS:
         raise OrbitalError(f"orbitals come from one of {', '.join(METHODS)}, not {method!r}")
+    if run_dirs:
+        hit = find_run_orbitals(run_dirs, symbols, coords_A)
+        if hit and hit["method"] in METHODS:
+            return _from_file(str(Path(hit["dir"]) / hit["file"]), hit["method"], hit["label"], int(extra),
+                              int(multiplicity), int(max_points))
     coords = tuple(round(float(x), 4) for x in np.asarray(coords_A, dtype=float).ravel())
     engine_json = json.dumps(engine_kwds or {}, sort_keys=True, default=str) if method == "terachem" else "{}"
     key = hashlib.sha1(repr((tuple(symbols), coords, charge, multiplicity, method, extra, engine_json)).encode()).hexdigest()
-    return _cached(key, tuple(symbols), coords, int(charge), int(multiplicity), method, int(extra), engine_json)
+    return _cached(key, tuple(symbols), coords, int(charge), int(multiplicity), method, int(extra), engine_json,
+                   int(max_points))

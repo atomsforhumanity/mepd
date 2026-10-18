@@ -219,6 +219,12 @@ class TeraChemEngine(Engine):
                 if orbitals and ("c0" in orbitals or len(orbitals) == 2):
                     self._guess[key] = {n: b for n, b in orbitals.items() if n == "c0" or "c0" not in orbitals}
                 self.last_charges = parse_mulliken(scr / "charge_mull.xls")
+                if not pcs:   # a job's viewer can show this SCF's orbitals (mepd.orbitals)
+                    from mepd.orbitals import save_run_orbitals, terachem_label
+
+                    for molden in sorted(scr.glob("*.molden"))[:1]:
+                        save_run_orbitals(molden, (run / "geom.xyz").read_text(), "terachem",
+                                          terachem_label({"method": self.method, "basis": self.basis}))
             finally:
                 if not self.keep_runs:
                     shutil.rmtree(run, ignore_errors=True)

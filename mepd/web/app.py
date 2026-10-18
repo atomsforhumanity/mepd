@@ -1575,11 +1575,21 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         method = body.get("method") or ("terachem" if engine == "terachem" else "gxtb" if engine == "gxtb" else "gfn2")
         if method == "terachem" and demo is not None:
             raise WorkspaceError("TeraChem orbitals are not available in the demo")
+        if body.get("job") and not re.fullmatch(r"j_[0-9a-f]+", str(body["job"])):
+            raise WorkspaceError("unknown calculation")
         try:
+            # A geometry a calculation already computed: its own orbitals (that job's first when given).
+            jobs_root = ws.jobs_dir
+            runs = [jobs_root / str(body["job"]) / "orbitals"] if body.get("job") else []
+            runs += [d for d in sorted(jobs_root.glob("*/orbitals"), key=lambda p: p.stat().st_mtime, reverse=True)
+                     if d not in runs]
             out = orbitals.frontier_orbitals(symbols, coords, int(body.get("charge") or 0),
                                              int(body.get("multiplicity") or 1), str(method),
                                              int(min(max(int(body.get("extra") or 0), 0), 2)),
-                                             engine_kwds=profile.get("terachem_engine_kwds") or {})
+                                             engine_kwds=profile.get("terachem_engine_kwds") or {}, run_dirs=runs,
+                                             max_points=orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS)
+            if body.get("job") and body.get("follow"):   # a running calculation: get its next frames ready
+                orbitals.prefetch(runs[0], int(min(max(int(body.get("extra") or 0), 0), 2)), int(body.get("multiplicity") or 1))
         except Exception as exc:   # (OrbitalError, or the program failing on this geometry)
             raise WorkspaceError(f"no orbitals: {exc}") from None
         data = json.dumps(out).encode()

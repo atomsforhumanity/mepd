@@ -27,6 +27,11 @@ import { Why } from './Why.js';
 // ------------------------------------------------------------ live
 // Every live path of a job: one per stream (e.g. each `channels` pair) and,
 // where a stream runs parallel MSMEP branches, one per branch.
+// A calculation's charge and spin, and the job itself: its viewers show the orbitals of its own SCFs.
+// `live`: a running calculation's own view, whose orbitals follow its frames by default.
+const jobChem = (job, live = false) => ({ charge: job.charge, multiplicity: job.multiplicity, job: job.id,
+  live: live && ['running', 'queued'].includes(job.status) });
+
 function livePaths(progress, now) {
   const streams = { ...(progress?.streams || {}) };
   if (!Object.keys(streams).length && progress?.chain) streams.main = progress.chain;  // older jobs
@@ -124,7 +129,7 @@ function MinimizationLive({ job, fg }) {
           ${playing ? 'Pause' : 'Replay'}</button>`}
       </div>
       ${frames.length
-        ? html`<${Viewer3D} frames=${frames} frame=${Math.max(0, shown)} height=${280} orbitals=${job} />`
+        ? html`<${Viewer3D} frames=${frames} frame=${Math.max(0, shown)} height=${280} orbitals=${jobChem(job, true)} />`
         : html`<p class="small muted">The geometry appears with the first optimizer step.</p>`}
       ${!running && frames.length > 1 && html`<div class="frame-bar">
         <input type="range" min="0" max=${frames.length - 1} value=${Math.max(0, shown)}
@@ -197,7 +202,7 @@ function LivePanel({ job }) {
             <label class="small"><input type="checkbox" checked=${follow} onChange=${(e) => setFollow(e.target.checked)} /> follow TS guess</label>
           </div>
           ${frames
-            ? html`<${Viewer3D} frames=${frames} frame=${shown} height=${280} orbitals=${job} />`
+            ? html`<${Viewer3D} frames=${frames} frame=${shown} height=${280} orbitals=${jobChem(job, true)} />`
             : html`<p class="small muted">Geometry appears with the next optimization step (restart jobs started before this feature to see it).</p>`}
           <${EnergyPlot} xs=${fg.plot.x} ys=${fg.plot.y} height=${160} current=${frames ? shown : null} tsIndex=${tsIndex}
             onPick=${frames ? (i) => { setFollow(false); setFrame(i); } : null} />
@@ -526,7 +531,7 @@ function ResultPanel({ job }) {
               ${entry.barrier_kcal != null && html`<span class="badge accent">ΔE‡ ${fmtKcal(entry.barrier_kcal)} kcal/mol</span>`}
             </div>
             ${entry.note && html`<div class="small mono muted note">${entry.note}</div>`}
-            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels} labelBase=${1} height=${300} system=${job.qmmm} orbitals=${job} />
+            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels} labelBase=${1} height=${300} system=${job.qmmm} orbitals=${jobChem(job)} />
             ${multi && html`
               <div class="frame-bar">
                 <button class="btn-icon" onClick=${() => setPlaying(!playing)} title=${playing ? 'Pause' : 'Play'}>${playing ? '❚❚' : '▶'}</button>

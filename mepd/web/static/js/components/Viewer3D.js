@@ -225,7 +225,7 @@ export function useOrbitals(chem, source, index = 0) {
   const [which, setWhich] = useState('homo');
   const [pct, setPctState] = useState(() => prefs.get('orbitalPct', DENSITY_PCT));
   const setPct = (v) => { setPctState(v); prefs.set('orbitalPct', v); };
-  const [follow, setFollow] = useState(false);
+  const [follow, setFollow] = useState(!!chem?.live);   // a running calculation's view: follow it
   const [data, setData] = useState(null);        // {xyz, result}
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -241,7 +241,8 @@ export function useOrbitals(chem, source, index = 0) {
     const xyz = geom;
     inFlight.current = xyz;
     setBusy(true); setError(null);
-    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1 })
+    // (A job's own SCF at this geometry, when it ran one: no new calculation.)
+    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1, job: chem.job || undefined, follow: follow || undefined })
       .then((result) => setData({ xyz, result }))
       .catch((e) => { setError(String(e.message || e)); setOn(false); })
       .finally(() => { inFlight.current = null; setBusy(false); });
@@ -273,11 +274,11 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
         <input type="number" class="tiny" min="1" max="99.9" step="5" value=${mo.pct}
           onChange=${(e) => { const v = +e.target.value; if (v > 0 && v < 100) mo.setPct(v); }} /> % density</label>
       <span class="mo-numbers" title=${`${method} orbital energies (eV)${r.method === 'terachem' ? '' : ', from its minimal basis'}`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
-      <span class="mo-method muted" title="Where these orbitals come from: a single point at this level on the geometry shown">${method}</span>
+      <span class="mo-method muted" title=${r.source === 'run' ? 'From the calculation itself: the SCF it ran at this geometry' : 'From a single point at this level on the geometry shown (no calculation had run this geometry)'}>${method}${r.source === 'run' ? ' · this run' : ''}</span>
       ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
-      ${path && html`<label title="Recompute the orbitals for every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}
-        onChange=${(e) => mo.setFollow(e.target.checked)} /> follow</label>`}
       ${path && !mo.fresh && !mo.follow && !mo.busy && html`<span class="muted">for another frame · <button class="btn-link small" onClick=${mo.update}>this one</button></span>`}`}
+    ${mo.on && path && html`<label title="Show the orbitals of every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}
+      onChange=${(e) => mo.setFollow(e.target.checked)} /> follow</label>`}
     ${mo.error && html`<span class="warn-text" title=${mo.error}>no orbitals</span>`}
   </div>`;
 }
