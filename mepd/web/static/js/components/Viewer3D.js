@@ -231,31 +231,48 @@ export function useOrbitals(chem, source, index = 0) {
   const [which, setWhich] = useState('homo');
   const [pct, setPctState] = useState(() => prefs.get('orbitalPct', DENSITY_PCT));
   const setPct = (v) => { setPctState(v); prefs.set('orbitalPct', v); };
-  const [data, setData] = useState(null);        // {xyz, result}
+  const [data, setData] = useState(null);        // the newest {xyz, result}
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [tick, setTick] = useState(0);           // a frame's orbitals arrived
+  const cache = useRef(new Map());               // xyz -> result: a path's frames, for playing it back
+  const failed = useRef(new Set());
   const inFlight = useRef(null);
   const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
   const path = Array.isArray(source) && source.length > 1;
-  const fresh = !!data && data.xyz === geom;
-  // A single geometry: loaded with it (the session keeps every structure's orbitals ready). A path's
-  // frames: while orbitals are shown (each frame's, as it is shown; a running calculation's, as it moves).
-  const want = !!geom && !fresh && (!path || on) && error?.xyz !== geom;
+  // A single geometry: loaded with it (the session keeps every structure's orbitals ready). A path,
+  // while orbitals are shown: the frame on screen first, then every other frame in playing order, so
+  // playing it back draws each frame's own (a running calculation's: only the frame shown, as it moves).
+  let target = null;
+  if (geom && !cache.current.has(geom) && !failed.current.has(geom) && (!path || on)) target = geom;
+  else if (path && on && !chem?.live) {
+    for (let k = 1; k < source.length && !target; k += 1) {
+      const f = source[(index + k) % source.length];
+      if (!cache.current.has(f) && !failed.current.has(f)) target = f;
+    }
+  }
   useEffect(() => {
-    if (!chem || !want || inFlight.current) return;
-    const xyz = geom;
+    if (!chem || !target || inFlight.current) return;
+    const xyz = target;
     inFlight.current = xyz;
     setBusy(true);
     api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
-      job: chem.job || undefined, follow: chem.live || undefined })
-      .then((result) => { setData({ xyz, result }); setError(null); })
-      .catch((e) => setError({ xyz, message: String(e.message || e) }))
-      .finally(() => { inFlight.current = null; setBusy(false); });
-  }, [want, geom, busy]);
-  const result = data?.result || null;
+      job: chem.job || undefined, follow: (chem.live || path) || undefined })
+      .then((result) => {
+        cache.current.set(xyz, result);
+        if (cache.current.size > 400) cache.current.delete(cache.current.keys().next().value);
+        if (xyz === geom || !data) setData({ xyz, result });
+        setError(null);
+      })
+      .catch((e) => { failed.current.add(xyz); if (xyz === geom) setError({ xyz, message: String(e.message || e) }); })
+      .finally(() => { inFlight.current = null; setBusy(false); setTick((t) => t + 1); });
+  }, [target, geom, busy, tick]);
+  const own = geom ? cache.current.get(geom) : null;
+  const fresh = !!own;
+  const result = own || data?.result || null;
   // On a path that moves on while a frame's are fetched (a running chain), the newest stay drawn
   // until the next frame's arrive; a single geometry shows only its own.
-  const sameAtoms = !!data && !!geom && parseInt(data.xyz, 10) === parseInt(geom, 10);
+  const sameAtoms = !!result && !!geom && (fresh || parseInt(data?.xyz, 10) === parseInt(geom, 10));
   const shown = on && result && (fresh || (path && sameAtoms)) ? result.orbitals[which] || null : null;
   return { on, setOn, which, setWhich, pct, setPct, iso: isoFor(shown, pct), busy: busy && on, error: on ? error?.message : null,
     result: on ? result : null, fresh, current: shown,

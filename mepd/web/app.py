@@ -1578,7 +1578,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         extra = int(min(max(int(body.get("extra") or 0), 0), 2))
         # 1. The session's store (every structure's orbitals, built ahead): sent as stored.
         if not live and not extra:
-            hit = orbitals.find_run_orbitals([orbital_store.store_dir(ws)], symbols, coords, method)
+            hit = orbitals.find_run_orbitals([orbital_store.store_dir(ws)], symbols, coords, method, rigid=False)
             data = orbitals.built({**hit, "dir": str(orbital_store.store_dir(ws))}) if hit else None
             if data is not None:
                 if gz:

@@ -237,7 +237,7 @@ def cube_text(title: str, mol: dict, origin: np.ndarray, h: float, n: tuple, val
              f"{n[0]:5d} {h:12.6f} {0:12.6f} {0:12.6f}",
              f"{n[1]:5d} {0:12.6f} {h:12.6f} {0:12.6f}",
              f"{n[2]:5d} {0:12.6f} {0:12.6f} {h:12.6f}"]
-    for z, p in mol["atoms"]:
+    for z, p in mol.get("atoms_shown", mol["atoms"]):
         lines.append(f"{z:5d} {float(z):12.6f} {p[0]:12.6f} {p[1]:12.6f} {p[2]:12.6f}")
     # One format string per z-row (6 values a line, the cube convention): C-level formatting.
     nz = n[2]
@@ -360,12 +360,19 @@ def _cached(key: str, symbols: tuple, coords: tuple, charge: int, multiplicity: 
 
 
 def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: int = 1,
-                         max_points: int = MAX_POINTS) -> dict:
+                         max_points: int = MAX_POINTS, shown_A: Optional[np.ndarray] = None,
+                         align: Optional[dict] = None) -> dict:
     """The frontier orbitals of a molden file written by `method` (whose basis
-    conventions D_NORM / NORMALIZED_PRIMS say how to read it)."""
+    conventions D_NORM / NORMALIZED_PRIMS say how to read it). With
+    `shown_A` and `align` (find_run_orbitals): on a grid around the geometry
+    as shown, each point evaluated where it lies in the molden file's own
+    orientation, so a turned frame gets its orbitals turned with it."""
     mol = parse_molden(text)
     orbs, homo, lumo = _frontier(mol["mos"])
-    xyz = np.array([p for _, p in mol["atoms"]])
+    if shown_A is not None and align is not None:
+        shown = np.asarray(shown_A, dtype=float) / BOHR
+        mol = {**mol, "atoms_shown": [(z, p) for (z, _), p in zip(mol["atoms"], shown)]}
+    xyz = np.array([p for _, p in mol.get("atoms_shown", mol["atoms"])])
     origin, h, n = grid_for(xyz, max_points=max_points)
     axes = [origin[i] + h * np.arange(n[i]) for i in range(3)]
     pts = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
@@ -379,7 +386,11 @@ def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: i
         if lumo is not None and lumo + j < len(orbs):
             picks[f"lumo+{j}"] = lumo + j
     names = list(picks)
-    vals = evaluate(mol, [orbs[picks[k]]["coef"] for k in names], pts, D_NORM[method], NORMALIZED_PRIMS[method])
+    at = pts
+    if "atoms_shown" in mol:   # grid points of the shown frame -> where they are in the molden file's frame
+        R = np.asarray(align["R"])
+        at = (pts - np.asarray(align["from"]) / BOHR) @ R + np.asarray(align["to"]) / BOHR
+    vals = evaluate(mol, [orbs[picks[k]]["coef"] for k in names], at, D_NORM[method], NORMALIZED_PRIMS[method])
     # Where each orbital sits: |psi|^2 over the grid, each point for its nearest atom.
     nearest = np.argmin(((pts[:, None, :] - xyz[None, :, :]) ** 2).sum(-1), axis=1) if len(xyz) * len(pts) <= 6e7 else \
         np.concatenate([np.argmin(((c[:, None, :] - xyz[None]) ** 2).sum(-1), axis=1) for c in np.array_split(pts, 16)])
@@ -466,9 +477,22 @@ def _index(fp: Path) -> list:
     return entries
 
 
-def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = None) -> Optional[dict]:
-    """The newest kept SCF (index entry plus its folder) at this geometry
-    in any of `dirs` (and of `method`, if given), or None."""
+def _aligned(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray]:
+    """(RMSD after the best rotation and translation, R) with (a - a0) @ R ~ (b - b0) (Kabsch)."""
+    ac, bc = a - a.mean(axis=0), b - b.mean(axis=0)
+    u, _, vt = np.linalg.svd(ac.T @ bc)
+    d = np.sign(np.linalg.det(u @ vt)) or 1.0
+    R = u @ np.diag([1.0, 1.0, d]) @ vt
+    return float(np.sqrt(((ac @ R - bc) ** 2).sum(axis=1).mean())), R
+
+
+def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = None,
+                      rigid: bool = True) -> Optional[dict]:
+    """The newest kept SCF (index entry plus its folder) at this geometry in
+    any of `dirs` (and of `method`, if given), or None. With `rigid`, also
+    one at the same geometry turned and moved (an IRC's frames have their
+    rigid motion taken out): then `align` = {"R", "from", "to"} maps the asked
+    geometry onto the kept one, (x - from) @ R + to (Angstrom)."""
     xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
     best = None
     for d in dirs:
@@ -476,10 +500,21 @@ def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = Non
         for e in reversed(_index(d / "index.jsonl")):
             if e["symbols"] != list(symbols) or e["xyz"].shape != xyz.shape or (method and e.get("method") != method):
                 continue
-            if np.abs(e["xyz"] - xyz).max() <= MATCH_A and (d / e["file"]).is_file():
-                if best is None or e["file"] > best["file"]:
-                    best = {**e, "dir": str(d)}
-                break
+            if not (d / e["file"]).is_file():
+                continue
+            if np.abs(e["xyz"] - xyz).max() <= MATCH_A:
+                hit = {**e, "dir": str(d), "align": None}
+            elif rigid and len(xyz) > 2:
+                rmsd, R = _aligned(xyz, e["xyz"])
+                if rmsd > MATCH_A:
+                    continue
+                hit = {**e, "dir": str(d), "align": {"R": R, "from": xyz.mean(axis=0), "to": e["xyz"].mean(axis=0)}}
+            else:
+                continue
+            if best is None or (best["align"] is not None and hit["align"] is None) or \
+                    ((best["align"] is None) == (hit["align"] is None) and e["file"] > best["file"]):
+                best = hit
+            break
     return best
 
 
@@ -542,6 +577,22 @@ def _from_file(path: str, method: str, label: str, extra: int, multiplicity: int
     return out
 
 
+@lru_cache(maxsize=512)
+def _from_file_turned(path: str, method: str, label: str, extra: int, multiplicity: int, max_points: int,
+                      shown: tuple) -> dict:
+    """A kept SCF's orbitals for the same geometry turned and moved (e.g. an IRC frame)."""
+    shown_A = np.array(shown).reshape(-1, 3)
+    entry_xyz = None
+    for e in _index(Path(path).parent / "index.jsonl"):
+        if e["file"] == Path(path).name:
+            entry_xyz = e["xyz"]
+    _, R = _aligned(shown_A, entry_xyz)
+    align = {"R": R, "from": shown_A.mean(axis=0), "to": entry_xyz.mean(axis=0)}
+    out = orbitals_from_molden(Path(path).read_text(), method, extra, multiplicity, max_points, shown_A, align)
+    out.update(label=label, source="run")
+    return out
+
+
 def frontier_orbitals(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1,
                       method: str = "gxtb", extra: int = 0, engine_kwds: Optional[dict] = None,
                       run_dirs: Optional[list] = None, max_points: int = MAX_POINTS) -> dict:
@@ -557,8 +608,12 @@ def frontier_orbitals(symbols: list, coords_A, charge: int = 0, multiplicity: in
     if run_dirs:
         hit = find_run_orbitals(run_dirs, symbols, coords_A)
         if hit and hit["method"] in METHODS:
-            return _from_file(str(Path(hit["dir"]) / hit["file"]), hit["method"], hit["label"], int(extra),
-                              int(multiplicity), int(max_points))
+            if hit["align"] is None:
+                return _from_file(str(Path(hit["dir"]) / hit["file"]), hit["method"], hit["label"], int(extra),
+                                  int(multiplicity), int(max_points))
+            shown = tuple(round(float(x), 4) for x in np.asarray(coords_A, dtype=float).ravel())
+            return _from_file_turned(str(Path(hit["dir"]) / hit["file"]), hit["method"], hit["label"], int(extra),
+                                     int(multiplicity), int(max_points), shown)
     coords = tuple(round(float(x), 4) for x in np.asarray(coords_A, dtype=float).ravel())
     engine_json = json.dumps(engine_kwds or {}, sort_keys=True, default=str) if method == "terachem" else "{}"
     key = hashlib.sha1(repr((tuple(symbols), coords, charge, multiplicity, method, extra, engine_json)).encode()).hexdigest()

@@ -142,7 +142,9 @@ def test_a_calculation_keeps_its_orbitals_and_the_viewer_reads_them(tmp_path, mo
     last = (s.geometry + 0.06) * 0.529177210903
     out = orbitals.frontier_orbitals(list(s.symbols), last, 0, 1, "gxtb", run_dirs=[tmp_path / "orbitals"])
     assert out["source"] == "run" and out["label"] == "g-xTB" and out["orbitals"]["homo"]["norm"] == pytest.approx(1.0, abs=0.01)
-    assert orbitals.find_run_orbitals([tmp_path / "orbitals"], list(s.symbols), s.geometry * 0.529177210903) is None   # dropped
+    # The first was dropped (the others are it shifted, a rigid match: so ask for an exact one).
+    assert orbitals.find_run_orbitals([tmp_path / "orbitals"], list(s.symbols), s.geometry * 0.529177210903,
+                                      rigid=False) is None
 
 
 def test_no_orbitals_dir_means_nothing_is_kept(tmp_path, monkeypatch):
@@ -197,3 +199,31 @@ def test_a_cli_run_keeps_its_orbitals_under_its_output(tmp_path, monkeypatch):
     assert _keep_orbitals(["ts", "--output", str(tmp_path / "out")])
     assert os.environ[orbitals.ORBITALS_ENV] == str(tmp_path / "out" / "orbitals")
     assert not _keep_orbitals(["ts", "--output", str(tmp_path / "other")])   # the web job's choice stands
+
+
+def test_a_turned_frame_gets_its_kept_orbitals_turned_with_it(tmp_path, monkeypatch):
+    """IRC frames have their rigid motion taken out: the same geometry, turned and moved. It still
+    matches the kept SCF, and the orbitals come out as for that frame itself (same energies, same
+    share on each atom)."""
+    if not _has("gxtb"):
+        pytest.skip("g-xTB not available")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.web import chem
+
+    monkeypatch.setenv("MEPD_ORBITALS_DIR", str(tmp_path / "orbitals"))
+    s = chem.structure_from_smiles("C=CC=O")
+    GXTBCalculator().compute_gradients([StructureNode(structure=s)])
+    xyz = np.asarray(s.geometry) * 0.529177210903
+    a = 0.7
+    R = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+    turned = xyz @ R.T + [1.5, -2.0, 0.3]
+    hit = orbitals.find_run_orbitals([tmp_path / "orbitals"], list(s.symbols), turned, "gxtb")
+    assert hit is not None and hit["align"] is not None
+    assert orbitals.find_run_orbitals([tmp_path / "orbitals"], list(s.symbols), turned, "gxtb", rigid=False) is None
+    run = orbitals.frontier_orbitals(list(s.symbols), turned, 0, 1, "gxtb", run_dirs=[tmp_path / "orbitals"])
+    fresh = orbitals.frontier_orbitals(list(s.symbols), turned, 0, 1, "gxtb")
+    assert run["source"] == "run" and fresh["source"] == "single point"
+    for k in ("homo", "lumo"):
+        assert run["orbitals"][k]["energy_ev"] == pytest.approx(fresh["orbitals"][k]["energy_ev"], abs=1e-3)
+        assert run["orbitals"][k]["atoms"] == pytest.approx(fresh["orbitals"][k]["atoms"], abs=0.02)

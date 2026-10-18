@@ -54,9 +54,9 @@ def ensure(ws, xyz_text: str, charge: int, multiplicity: int, method: str, engin
     already there, copied from the job that computed it, or computed now."""
     symbols, coords = orbitals._parse_xyz(xyz_text)
     store = store_dir(ws)
-    hit = orbitals.find_run_orbitals([store], symbols, coords, method)
+    hit = orbitals.find_run_orbitals([store], symbols, coords, method, rigid=False)
     if hit is None:
-        run = orbitals.find_run_orbitals(run_dirs(ws), symbols, coords, method)
+        run = orbitals.find_run_orbitals(run_dirs(ws), symbols, coords, method, rigid=False)
         if run is not None:
             entry = orbitals.save_run_orbitals(Path(run["dir"]) / run["file"], xyz_text, method, run["label"],
                                                where=store, keep=None, source=run.get("source", "run"))
@@ -134,7 +134,7 @@ class OrbitalKeeper:
             try:
                 xyz = path.read_text()
                 symbols, coords = orbitals._parse_xyz(xyz)
-                have = orbitals.find_run_orbitals([store], symbols, coords, method)
+                have = orbitals.find_run_orbitals([store], symbols, coords, method, rigid=False)
                 if have is not None and orbitals.built({**have, "dir": str(store)}) is not None:
                     continue
                 ensure(self.ws, xyz, charge, mult, method, kwds)

@@ -412,6 +412,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Orbitals while playing an IRC.** IRC frames have their rigid motion taken out, so they never matched
+  the IRC's own SCFs and each frame waited for a single point (2 of 40 frames shown with their own
+  orbitals). Kept SCFs now match a frame turned and moved (Kabsch fit), and the orbitals are evaluated in
+  the frame's orientation (same energies and atom shares as a single point on it); with orbitals shown,
+  a path's frames load in the background, so playback draws each frame's own (40 of 40; 41 IRC frames
+  loaded in ~3 s).
 - **Live orbitals vanished with every chain update.** A live view reloads the geometry on each update,
   which cleared the orbital surface, and a result that arrived after the chain had moved on was never
   drawn. The surface is now redrawn after every reload, and while following, the newest orbitals stay
