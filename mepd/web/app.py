@@ -1538,6 +1538,50 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise HTTPException(404, "cannot depict")
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
 
+    # ------------------------------------------------------------ orbitals
+    @app.post("/api/orbitals")
+    def frontier_orbitals(body: dict, request: Request):
+        """HOMO and LUMO of one geometry {xyz, charge, multiplicity, extra (0-2 more each side)}:
+        energies (eV), each one's share on every atom, and cube files. g-xTB when the session's
+        level is g-xTB, else GFN2-xTB (or `method`)."""
+        import gzip
+        import json
+
+        import tomli
+
+        from mepd import orbitals
+
+        lines = [ln.split() for ln in str(body.get("xyz") or "").strip().splitlines()]
+        try:
+            n = int(lines[0][0])
+            atoms = lines[2:2 + n]
+            symbols = [a[0] for a in atoms]
+            coords = [[float(x) for x in a[1:4]] for a in atoms]
+        except (IndexError, ValueError):
+            raise WorkspaceError("orbitals need a geometry as xyz text") from None
+        if len(symbols) != n or not n:
+            raise WorkspaceError("orbitals need a geometry as xyz text")
+        if demo is not None and n > demo.max_atoms:
+            raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
+        method = body.get("method")
+        if method is None:
+            ws = W()
+            try:
+                engine = str(tomli.loads(ws.read_profile(ws.level_profile)).get("engine_name") or "gxtb")
+            except Exception:
+                engine = "gxtb"
+            method = "gxtb" if engine.lower() == "gxtb" else "gfn2"
+        try:
+            out = orbitals.frontier_orbitals(symbols, coords, int(body.get("charge") or 0),
+                                             int(body.get("multiplicity") or 1), str(method),
+                                             int(min(max(int(body.get("extra") or 0), 0), 2)))
+        except Exception as exc:   # (OrbitalError, or the program failing on this geometry)
+            raise WorkspaceError(f"no orbitals: {exc}") from None
+        data = json.dumps(out).encode()
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(gzip.compress(data, 5), media_type="application/json", headers={"Content-Encoding": "gzip"})
+        return Response(data, media_type="application/json")
+
     # ------------------------------------------------------------ edges
     @app.post("/api/edges")
     def add_edge(body: EdgeIn):

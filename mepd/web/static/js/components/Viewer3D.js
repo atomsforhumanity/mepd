@@ -12,7 +12,15 @@
 // the environment by how far it moved from the first frame.
 // `onAtomClick(index)` makes atoms clickable (the region editor);
 // `highlight` marks atoms.
+//
+// Orbitals: with `orbitals` ({charge, multiplicity}), an "Orbitals" button
+// computes the shown geometry's HOMO and LUMO (POST /api/orbitals) and draws
+// one as an isosurface, with their energies and the atoms each sits on. On a
+// path, "follow" recomputes them for every frame shown (e.g. a TS
+// optimization as it runs); otherwise they belong to the frame they were
+// computed for.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
+import { api } from '../api.js';
 import { drawLinks, ENV_MODES, parseXyz, styleRegion, useAutoSystem, useRegion } from '../qmmm.js';
 
 function themeBackground() {
@@ -29,7 +37,7 @@ function atomCount(xyz) {
 }
 
 export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, labels = false, style = 'stick',
-  system = null, region: regionIn = null, onAtomClick = null, highlight = null, labelBase = 0 }) {
+  system = null, region: regionIn = null, onAtomClick = null, highlight = null, labelBase = 0, orbitals = null }) {
   const host = useRef(null);
   const viewer = useRef(null);
   const lastAtoms = useRef(0);
@@ -47,6 +55,8 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   const coords = useMemo(() => (qmmm && motion && Array.isArray(source) ? source.map(parseXyz) : null), [qmmm, motion, source]);
   const clickRef = useRef(onAtomClick);
   clickRef.current = onAtomClick;
+  const mo = useOrbitals(orbitals && !qmmm ? orbitals : null, source, frames && frames.length ? Math.min(frame, frames.length - 1) : 0);
+  const surfaces = useRef([]);
 
   useEffect(() => {
     if (!window.$3Dmol || !host.current) return undefined;
@@ -147,6 +157,9 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
     v.render();
   }, [labels]);
 
+  // The chosen orbital, when it belongs to what is shown.
+  useEffect(() => { if (viewer.current) drawOrbital(viewer.current, surfaces, mo.current, mo.iso); }, [mo.current, mo.iso]);
+
   if (!window.$3Dmol) {
     return html`<div class="viewer viewer-missing" style=${{ height }}>3D viewer unavailable (3Dmol.js did not load)</div>`;
   }
@@ -161,5 +174,84 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
         <input type="checkbox" checked=${motion} onChange=${(e) => setMotion(e.target.checked)} /> motion</label>`}
       <span class="qmmm-legend"><i class="qm"></i>QM <i class="link"></i>cut bond <i class="act"></i>moving <i class="frz"></i>frozen</span>
     </div>`}
+    ${orbitals && !qmmm && source && html`<${OrbitalBar} mo=${mo} path=${Array.isArray(source) && source.length > 1} labelBase=${labelBase || 1} />`}
+  </div>`;
+}
+
+// ---- orbitals ---------------------------------------------------------------
+const ISO = { small: 0.08, medium: 0.05, large: 0.03 };   // |psi| of the drawn surface (bohr^-3/2)
+
+// An orbital as two isosurfaces (+ and − lobes) in viewer `v`, replacing the
+// ones in `surfaces` (a ref); none when `orb` is null.
+export function drawOrbital(v, surfaces, orb, iso) {
+  (surfaces.current || []).forEach((sh) => { try { v.removeShape(sh); } catch { /* gone with the model */ } });
+  surfaces.current = [];
+  if (orb?.cube) {
+    surfaces.current = [
+      v.addVolumetricData(orb.cube, 'cube', { isoval: iso, color: '#3868b8', opacity: 0.8, smoothness: 1 }),
+      v.addVolumetricData(orb.cube, 'cube', { isoval: -iso, color: '#d0583a', opacity: 0.8, smoothness: 1 }),
+    ];
+  }
+  v.render();
+}
+
+// The orbitals of the shown geometry: computed on request, then kept for that
+// geometry; `follow` recomputes as the shown geometry changes (one request at a time).
+export function useOrbitals(chem, source, index = 0) {
+  const [on, setOn] = useState(false);
+  const [which, setWhich] = useState('homo');
+  const [size, setSize] = useState('medium');
+  const [follow, setFollow] = useState(false);
+  const [data, setData] = useState(null);        // {xyz, result}
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [asked, setAsked] = useState(null);     // the geometry last asked for by hand (on a path)
+  const inFlight = useRef(null);
+  const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
+  const path = Array.isArray(source) && source.length > 1;
+  const fresh = !!data && data.xyz === geom;
+  // A single geometry: always its own orbitals. A path: the frame asked for, or every frame when following.
+  const want = on && !!geom && !fresh && (!path || follow || asked === geom);
+  useEffect(() => {
+    if (!chem || !want || inFlight.current) return;
+    const xyz = geom;
+    inFlight.current = xyz;
+    setBusy(true); setError(null);
+    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1 })
+      .then((result) => setData({ xyz, result }))
+      .catch((e) => { setError(String(e.message || e)); setOn(false); })
+      .finally(() => { inFlight.current = null; setBusy(false); });
+  }, [want, geom, busy]);
+  const result = data?.result || null;
+  const current = on && fresh && result ? result.orbitals[which] || null : null;
+  const turn = (v) => { setOn(v); if (v) setAsked(geom); };
+  return { on, setOn: turn, update: () => setAsked(geom), which, setWhich, size, setSize, iso: ISO[size], follow, setFollow, busy, error, result,
+    fresh, current, symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
+}
+
+export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
+  const r = mo.result;
+  const open = r?.open_shell;
+  const name = (k) => (k === 'homo' && open ? 'SOMO' : k.toUpperCase());
+  const ev = (k) => r?.orbitals[k]?.energy_ev;
+  const fmt = (x) => (x == null ? '–' : `${x > 0 ? '+' : ''}${x.toFixed(2)}`.replace('-', '−'));
+  // Where the shown orbital sits: atoms with at least a tenth of it, largest first.
+  const sites = mo.current ? mo.current.atoms.map((w, i) => [w, i]).filter(([w]) => w >= 0.1).sort((a, b) => b[0] - a[0]).slice(0, 4) : [];
+  const method = r?.method === 'gfn2' ? 'GFN2-xTB' : 'g-xTB';
+  return html`<div class="mo-bar small">
+    <button class=${`btn small ${mo.on ? 'on' : ''}`} onClick=${() => mo.setOn(!mo.on)} aria-pressed=${mo.on}
+      title="The highest occupied and lowest unoccupied molecular orbitals of this geometry: where it gives and takes electrons">
+      ${mo.busy ? html`<span class="spinner" aria-hidden="true"></span>` : ''}Orbitals</button>
+    ${mo.on && r && html`
+      <span class="segmented mini">${['homo', 'lumo'].filter((k) => r.orbitals[k]).map((k) => html`<button class=${mo.which === k ? 'on' : ''}
+        onClick=${() => mo.setWhich(k)} title=${`${name(k)}: ${fmt(ev(k))} eV`}>${name(k)}</button>`)}</span>
+      <span class="segmented mini" title="Surface size (the |ψ| it is drawn at)">${Object.keys(ISO).map((k) => html`<button class=${mo.size === k ? 'on' : ''}
+        onClick=${() => mo.setSize(k)}>${k[0].toUpperCase()}</button>`)}</span>
+      <span class="mo-numbers" title=${`${method} orbital energies (eV), from its minimal basis`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
+      ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
+      ${path && html`<label title="Recompute the orbitals for every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}
+        onChange=${(e) => mo.setFollow(e.target.checked)} /> follow</label>`}
+      ${path && !mo.fresh && !mo.follow && !mo.busy && html`<span class="muted">for another frame · <button class="btn-link small" onClick=${mo.update}>this one</button></span>`}`}
+    ${mo.error && html`<span class="warn-text" title=${mo.error}>no orbitals</span>`}
   </div>`;
 }

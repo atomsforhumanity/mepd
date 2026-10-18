@@ -1775,3 +1775,10 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .piston-fields { display: inline-flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .piston-fields label { display: inline-flex; align-items: center; gap: 4px; }
 .piston-fields input.tiny { width: 58px; }
+
+/* Orbitals under a 3D view: the switch, HOMO | LUMO, size, energies, where it sits */
+.mo-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0 2px; }
+.mo-bar .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.mo-bar .mo-numbers { color: var(--text); }
+.mo-bar .mo-sites { color: var(--muted); }
+.mo-bar label { display: inline-flex; align-items: center; gap: 4px; }

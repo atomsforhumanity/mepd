@@ -12,6 +12,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Frontier orbitals (HOMO / LUMO).** An "Orbitals" button under the 3D view of a structure (Explore's
+  inspector, a reaction's ends and TS), a calculation's paths and live optimizations, and in Design draws
+  the HOMO or LUMO as an isosurface (S/M/L size), with both energies, the gap, and the atoms the shown
+  orbital sits on. On a path, "follow" recomputes them for each frame shown, e.g. a TS optimization as it
+  runs; Design recomputes after each edit. They come from a g-xTB single point when the session's level is
+  g-xTB, else GFN2-xTB (`xtb --molden`), evaluated on a grid in `mepd.orbitals` (every orbital checked to
+  integrate to 1; the two programs scale Cartesian d functions differently). `POST /api/orbitals`.
 - **Interactive reactor: a piston.** A Piston switch squeezes the wall in and out again and again, as the
   nanoreactor does (by default every 1 ps: open 75 % of the cycle, then in to 70 % of the Wall radius over
   100 fs). "cycle" opens the period, how far in and how long open; the Wall slider stays the open radius.

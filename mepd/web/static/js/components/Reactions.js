@@ -386,7 +386,7 @@ export function ReactionCard({ r, event = null, compact = false }) {
       ${view === 'pc' && html`<${Viewer3D} xyz=${xyzP} height=${height} />`}
       ${view === 'ts' && (xyzTS === ''
         ? html`<p class="small muted">No geometry for this search's barrier (its output is gone or holds no path).</p>`
-        : html`<${Viewer3D} xyz=${xyzTS} height=${height} />
+        : html`<${Viewer3D} xyz=${xyzTS} height=${height} orbitals=${structures[rc] || null} />
           <p class="small muted">${verified ? 'The transition state (TS optimization, IRC-verified).'
             : 'The highest point of the path: no TS optimization or IRC has confirmed it, so the barrier is approximate.'}</p>`)}
     </div>`}

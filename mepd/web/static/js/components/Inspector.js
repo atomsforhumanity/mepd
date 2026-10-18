@@ -104,7 +104,7 @@ function ComplexDetail({ rec }) {
     ${built && rec.intact === false && html`<div class="warn-box small">On minimization these molecules reacted or
       fell apart: no minimum of this complex was found, so Explore does not show it.
       <button class="btn-link danger small" onClick=${() => attempt(() => api.post('/api/delete', { structures: [rec.id] }), 'Complex removed').then(() => clearSelection())}>Remove it</button></div>`}
-    <${Viewer3D} xyz=${xyz} labels=${labels} height=${240} />
+    <${Viewer3D} xyz=${xyz} labels=${labels} height=${240} labelBase=${1} orbitals=${rec} />
     <div class="viewer-tools">
       <label class="small"><input type="checkbox" checked=${labels} onChange=${(e) => setLabels(e.target.checked)} /> atom indices</label>
       <a class="small" href=${`/api/structures/${rec.id}/xyz`} download=${`complex-${rec.formula}.xyz`}>Download xyz</a>
@@ -153,7 +153,7 @@ function StructureDetail({ rec }) {
       </div>
       ${rec.qmmm
         ? html`<${QmmmStructure} rec=${rec} xyz=${xyz} labels=${labels} shownConformer=${shown} />`
-        : html`<${Viewer3D} xyz=${xyz} labels=${labels} height=${210} />`}
+        : html`<${Viewer3D} xyz=${xyz} labels=${labels} height=${210} labelBase=${1} orbitals=${rec} />`}
       <details class="id-details">
         <summary>Details</summary>
       ${rec.smiles && rec.smiles !== rec.name && html`<div class="smiles" title="Connectivity perceived from the geometry">${rec.smiles}</div>`}
@@ -205,7 +205,7 @@ function PairDetail({ a, b }) {
         <button class=${which === 0 ? 'on' : ''} onClick=${() => setWhich(0)}>Start</button>
         <button class=${which === 1 ? 'on' : ''} onClick=${() => setWhich(1)}>End</button>
       </div>
-      <${Viewer3D} xyz=${xyz} height=${220} />
+      <${Viewer3D} xyz=${xyz} height=${220} orbitals=${which === 0 ? a : b} />
       ${mismatch && html`<p class="warn-box">Different atom counts (${a.natoms} vs ${b.natoms}): these cannot be reaction endpoints.</p>`}
       ${!mismatch && (existing
         ? html`<button class="btn" onClick=${() => select({ edges: [existing.id] })}>Open existing edge</button>`
@@ -285,7 +285,7 @@ function EdgeDetail({ edge }) {
         <button class=${which === 0 ? 'on' : ''} onClick=${() => setWhich(0)}>${reaction ? 'Reactants' : 'Start'}</button>
         <button class=${which === 1 ? 'on' : ''} onClick=${() => setWhich(1)}>${reaction ? 'Products' : 'End'}</button>
       </div>
-      <${Viewer3D} xyz=${xyz} height=${200} />
+      <${Viewer3D} xyz=${xyz} height=${200} orbitals=${structures[shownId]} />
       ${reaction && html`<p class="small muted">Only the molecules this reaction needs, optimized together; calculations here run on them.</p>`}
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${edge.id}`), reaction ? 'Reaction removed' : 'Edge removed')}>${reaction ? 'Remove reaction' : 'Remove edge'}</button>
     </section>

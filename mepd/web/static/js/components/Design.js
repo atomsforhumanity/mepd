@@ -12,6 +12,7 @@ import { conformerRows, conformerLabel } from './Inspector.js';
 import { ApplyToNetwork } from './Variants.js';
 import { StepBar, reactorFor } from './Welcome.js';
 import { useMap } from '../quests.js';
+import { OrbitalBar, drawOrbital, useOrbitals } from './Viewer3D.js';
 
 const COMMON = ['H', 'C', 'N', 'O', 'F', 'P', 'S', 'Cl', 'Br', 'I', 'B', 'Si'];
 // The periodic table as [symbol, row, column] (lanthanides/actinides on rows 8-9).
@@ -84,7 +85,16 @@ function pointUnder(v, evt) {
   return [ref.x + off.x, ref.y + off.y, ref.z + off.z];
 }
 
-function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable, onBackground = null }) {
+// A V2000 molblock's atoms as xyz text (what the orbitals are computed for).
+function molblockXyz(mb) {
+  const lines = (mb || '').split('\n');
+  const n = parseInt((lines[3] || '').slice(0, 3), 10) || 0;
+  if (!n) return null;
+  const atoms = lines.slice(4, 4 + n).map((l) => { const p = l.trim().split(/\s+/); return `${p[3]} ${p[0]} ${p[1]} ${p[2]}`; });
+  return `${n}\ndesign\n${atoms.join('\n')}\n`;
+}
+
+function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable, onBackground = null, orbital = null, iso = 0.05 }) {
   const host = useRef(null);
   const viewer = useRef(null);
   const last = useRef({ n: 0 });
@@ -93,6 +103,7 @@ function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable,
   const bgRef = useRef(onBackground);
   bgRef.current = onBackground;
   const atomHit = useRef(0);
+  const surfaces = useRef([]);
 
   useEffect(() => {
     if (!window.$3Dmol || !host.current) return undefined;
@@ -171,6 +182,8 @@ function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable,
   }, [molblock, liveXyz, labels]);
 
   useEffect(() => { highlight.current(); }, [picked.join(','), changed.join(',')]);
+  // The orbital shown in the side panel (redrawn after the molecule is, which clears shapes).
+  useEffect(() => { if (viewer.current) drawOrbital(viewer.current, surfaces, liveXyz ? null : orbital, iso); }, [orbital, iso, molblock, liveXyz, labels]);
 
   return html`<div class=${`design-canvas ${clickable ? 'picking' : ''}`} ref=${host}></div>`;
 }
@@ -286,6 +299,9 @@ export function DesignView() {
   const [dropH, setDropH] = useState(() => prefs.get('designDropH', true));
   // A design started from scratch opens on Add atom, ready for the first click.
   const empty = design && !design.natoms;
+  // HOMO / LUMO of the design as it is now (a single molecule, not a reaction's two sides).
+  const mo = useOrbitals(design && !design.reaction && design.natoms ? { charge: design.charge, multiplicity: design.multiplicity } : null,
+    design && !design.reaction ? molblockXyz(design.molblock) : null);
   useEffect(() => { if (empty && !['add', 'element'].includes(tool)) setTool('add'); }, [empty]);
   const [order, setOrder] = useState(2);
   const [group, setGroup] = useState('methyl');
@@ -620,7 +636,7 @@ export function DesignView() {
             </div>`
           : html`<div class="design-single">
               <${Canvas} molblock=${design.molblock} liveXyz=${liveXyz} picked=${picked} changed=${changed} onAtom=${onAtom} labels=${labels}
-                clickable=${tool !== 'view' || empty} onBackground=${onBackground} />
+                clickable=${tool !== 'view' || empty} onBackground=${onBackground} orbital=${mo.current} iso=${mo.iso} />
               ${empty && (tool === 'place'
                 ? html`<div class="design-empty-hint"><b>Click anywhere to place ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}.</b>
                   <span>Choose another molecule on the left.</span></div>`
@@ -670,6 +686,7 @@ export function DesignView() {
               : html`<span class="small muted">not minimized since the last edit</span>`}</dd>
             ${design.source?.kind === 'graph' && html`<dt>From</dt><dd>${design.source.name}${design.source.ts ? ' (a TS: Clean/Minimize would move it off the saddle)' : ''}</dd>`}
           </dl>
+          ${!rx && design.natoms > 0 && html`<div class="design-orbitals"><${OrbitalBar} mo=${mo} /></div>`}
           ${design.last_ts && html`<div class=${`ts-status ${design.last_ts.ok ? 'ok' : 'failed'}`}>
             ${design.last_ts.ok ? html`
               <b>TS converged.</b> ${design.last_ts.barrier_kcal != null ? html`Barrier ${design.last_ts.barrier_kcal.toFixed(1)} kcal/mol from its IRC. ` : ''}
