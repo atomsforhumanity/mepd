@@ -412,6 +412,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **A flaky reactor test failed a deploy.** The interactive reactor packs its molecules from a clock-based
+  seed, and from 2 packings in 12 the H atoms of `test_reaction_events_are_found_as_the_nanoreactor_finds_them`
+  never met within its 15 s. `sandbox.start` takes a `seed`; the test uses a fixed one (1.8 s, 6 of 6).
 - **Orbitals while playing an IRC.** IRC frames have their rigid motion taken out, so they never matched
   the IRC's own SCFs and each frame waited for a single point (2 of 40 frames shown with their own
   orbitals). Kept SCFs now match a frame turned and moved (Kabsch fit), and the orbitals are evaluated in

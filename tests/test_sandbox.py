@@ -122,7 +122,8 @@ def test_the_demo_reactor_is_per_visitor_and_never_evicts_another(tmp_path):
 def test_reaction_events_are_found_as_the_nanoreactor_finds_them():
     """Hydrogen atoms make H2: the event list (nanoreactor detection on the
     evenly spaced trajectory) says so, in the nanoreactor's own labels."""
-    box = sandbox.start("t_ev", [chem.structure_from_smiles("[H]")] * 4, temperature=400)
+    # A fixed packing: from some random ones (2 in 12) the atoms do not meet within 15 s.
+    box = sandbox.start("t_ev", [chem.structure_from_smiles("[H]")] * 4, temperature=400, seed=0)
     try:
         t0 = time.time()
         while time.time() - t0 < 15 and not box.events_view()["events"]:

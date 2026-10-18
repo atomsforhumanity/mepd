@@ -412,12 +412,15 @@ def _make_room(owner: str, limits: Optional[dict]) -> dict:
 
 
 def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Optional[float] = None,
-          names: str = "", owner: str = "", sources: Optional[list] = None, limits: Optional[dict] = None) -> Sandbox:
+          names: str = "", owner: str = "", sources: Optional[list] = None, limits: Optional[dict] = None,
+          seed: Optional[int] = None) -> Sandbox:
     """A new sandbox from one structure per molecule (repeated for copies),
-    packed like the nanoreactor's. Room is made by _make_room."""
+    packed like the nanoreactor's (a different packing each time unless
+    `seed` is given). Room is made by _make_room."""
     from mepd.discovery.nanoreactor import pack_reactor
 
-    symbols, coords, radius, _ = pack_reactor(structures, radius, seed=int(time.time()) % 1000)
+    symbols, coords, radius, _ = pack_reactor(structures, radius,
+                                              seed=int(time.time()) % 1000 if seed is None else int(seed))
     charge = sum(int(s.charge) for s in structures)
     electrons = sum(_Z.get(x, 0) for x in symbols) - charge
     mult = 1 if electrons % 2 == 0 else 2
