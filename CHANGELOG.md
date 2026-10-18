@@ -403,6 +403,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Live orbitals vanished with every chain update.** A live view reloads the geometry on each update,
+  which cleared the orbital surface, and a result that arrived after the chain had moved on was never
+  drawn. The surface is now redrawn after every reload, and while following, the newest orbitals stay
+  drawn until the next frame's arrive (on screen in 60 of 60 samples over 30 s of a running TS search).
 - **Design: Add molecule on empty space.** With Add molecule picked (e.g. AlCl3), a click on an empty
   canvas dropped a carbon (methane) instead; it now puts the chosen molecule there, and a click on empty
   space next to an existing design adds it at that spot (`place` edit with `point` and no `atom`), as Add

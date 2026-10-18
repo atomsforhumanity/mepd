@@ -159,7 +159,12 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   }, [labels]);
 
   // The chosen orbital, when it belongs to what is shown.
-  useEffect(() => { if (viewer.current) drawOrbital(viewer.current, surfaces, mo.current, mo.iso); }, [mo.current, mo.iso]);
+  // (Also after every reload of the geometry -- a live chain update clears all shapes.)
+  useEffect(() => {
+    if (!viewer.current) return;
+    drawOrbital(viewer.current, surfaces, mo.current, mo.iso);
+    if (host.current) host.current._orbital = { surfaces: surfaces.current.length, fresh: mo.fresh };   // for tests
+  }, [mo.current, mo.iso, xyz, frames, frame]);
 
   if (!window.$3Dmol) {
     return html`<div class="viewer viewer-missing" style=${{ height }}>3D viewer unavailable (3Dmol.js did not load)</div>`;
@@ -248,7 +253,10 @@ export function useOrbitals(chem, source, index = 0) {
       .finally(() => { inFlight.current = null; setBusy(false); });
   }, [want, geom, busy]);
   const result = data?.result || null;
-  const current = on && fresh && result ? result.orbitals[which] || null : null;
+  // Following a moving calculation, its newest orbitals stay drawn until the next frame's arrive
+  // (a chain often moves on while one is fetched); otherwise only the frame they belong to.
+  const sameAtoms = !!data && !!geom && parseInt(data.xyz, 10) === parseInt(geom, 10);
+  const current = on && result && (fresh || (follow && sameAtoms)) ? result.orbitals[which] || null : null;
   const turn = (v) => { setOn(v); if (v) setAsked(geom); };
   return { on, setOn: turn, update: () => setAsked(geom), which, setWhich, pct, setPct, iso: isoFor(on && fresh && result ? result.orbitals[which] : null, pct), follow, setFollow, busy, error, result,
     fresh, current, symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
