@@ -43,7 +43,7 @@ MAX_POINTS = 56 ** 3        # grid points per orbital (a cube of ~2 MB of text, 
 LIVE_POINTS = 38 ** 3       # ...when following a running calculation: a third of the points, built ~3x faster
 MARGIN_BOHR = 5.0           # grid beyond the outermost atoms
 ORBITALS_ENV = "MEPD_ORBITALS_DIR"
-KEEP_RUNS = 400             # molden files kept per job (the newest)
+KEEP_RUNS = 1000            # molden files kept per job (the newest; ~25 kB each for 20 atoms)
 MATCH_A = 2e-3              # same geometry: every coordinate within this (Angstrom)
 SPACING_BOHR = 0.3          # finest grid spacing
 _L = {"s": 0, "p": 1, "d": 2, "f": 3, "g": 4}
@@ -410,13 +410,15 @@ def _parse_xyz(text: str) -> tuple[list, list]:
     return [r[0] for r in rows], [[float(x) for x in r[1:4]] for r in rows]
 
 
-def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str) -> None:
-    """Keep a finished SCF's molden file in $MEPD_ORBITALS_DIR (if set) with
-    its geometry, and drop the oldest beyond KEEP_RUNS. Never raises: a
+def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str, where: Optional[Path] = None,
+                      keep: Optional[int] = -1, source: str = "run") -> Optional[dict]:
+    """Keep a finished SCF's molden file in `where` (default $MEPD_ORBITALS_DIR;
+    nothing when neither is set) with its geometry, and drop the oldest beyond
+    `keep` (default KEEP_RUNS; None: keep all). Returns the index entry. Never raises: a
     calculation must not fail over a viewer's cache."""
-    where = os.environ.get(ORBITALS_ENV, "").strip()
+    where = where or os.environ.get(ORBITALS_ENV, "").strip()
     if not where or not molden.is_file():
-        return
+        return None
     try:
         import time
 
@@ -425,15 +427,19 @@ def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str) -> N
         symbols, coords = _parse_xyz(xyz_text)
         name = f"{time.time_ns()}-{os.getpid()}.molden"
         shutil.copyfile(molden, d / name)
-        line = json.dumps({"file": name, "method": method, "label": label, "symbols": symbols,
-                           "coords": [[round(x, 5) for x in c] for c in coords]})
+        entry = {"file": name, "method": method, "label": label, "source": source, "symbols": symbols,
+                 "coords": [[round(x, 5) for x in c] for c in coords]}
         with open(d / "index.jsonl", "a") as fh:
-            fh.write(line + "\n")
-        files = sorted(d.glob("*.molden"))
-        for old in files[:max(0, len(files) - KEEP_RUNS)]:
-            old.unlink(missing_ok=True)
+            fh.write(json.dumps(entry) + "\n")
+        keep = KEEP_RUNS if keep == -1 else keep
+        if keep is not None:
+            files = sorted(d.glob("*.molden"))
+            for old in files[:max(0, len(files) - keep)]:
+                old.unlink(missing_ok=True)
+                old.with_suffix(".json.gz").unlink(missing_ok=True)
+        return entry
     except Exception:
-        pass
+        return None
 
 
 _INDEX: dict = {}   # index.jsonl path -> ((mtime, size), entries)
@@ -460,15 +466,15 @@ def _index(fp: Path) -> list:
     return entries
 
 
-def find_run_orbitals(dirs, symbols: list, coords_A) -> Optional[dict]:
+def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = None) -> Optional[dict]:
     """The newest kept SCF (index entry plus its folder) at this geometry
-    in any of `dirs`, or None."""
+    in any of `dirs` (and of `method`, if given), or None."""
     xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
     best = None
     for d in dirs:
         d = Path(d)
         for e in reversed(_index(d / "index.jsonl")):
-            if e["symbols"] != list(symbols) or e["xyz"].shape != xyz.shape:
+            if e["symbols"] != list(symbols) or e["xyz"].shape != xyz.shape or (method and e.get("method") != method):
                 continue
             if np.abs(e["xyz"] - xyz).max() <= MATCH_A and (d / e["file"]).is_file():
                 if best is None or e["file"] > best["file"]:
@@ -499,6 +505,34 @@ def prefetch(run_dir, extra: int = 0, multiplicity: int = 1, newest: int = 2, ma
         finally:
             _PREFETCH.release()
     threading.Thread(target=work, daemon=True).start()
+
+
+def built(entry: dict) -> Optional[bytes]:
+    """The full-grid orbitals of a kept SCF as stored gzipped JSON (see
+    build_stored), or None when not built yet."""
+    fp = (Path(entry["dir"]) / entry["file"]).with_suffix(".json.gz")
+    try:
+        return fp.read_bytes()
+    except OSError:
+        return None
+
+
+def build_stored(entry: dict, multiplicity: int = 1) -> Optional[bytes]:
+    """Build a kept SCF's orbitals on the full grid once and store them next
+    to its molden file (gzipped JSON, what /api/orbitals sends as it is)."""
+    import gzip
+
+    done = built(entry)
+    if done is not None:
+        return done
+    out = dict(_from_file(str(Path(entry["dir"]) / entry["file"]), entry["method"], entry["label"], 0, int(multiplicity)))
+    out["source"] = entry.get("source", "run")
+    data = gzip.compress(json.dumps(out).encode(), 5)
+    fp = (Path(entry["dir"]) / entry["file"]).with_suffix(".json.gz")
+    tmp = fp.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(fp)
+    return data
 
 
 @lru_cache(maxsize=256)

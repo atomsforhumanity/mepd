@@ -10,6 +10,9 @@ def _private_web_state(tmp_path, monkeypatch):
     otherwise add its temporary workspace to the user's real list: every run
     of the suite left more "ws" entries in the Open-session dialog."""
     monkeypatch.setenv("MEPD_WEB_STATE_DIR", str(tmp_path / "_mepd_web_state"))
+    # No background orbital keeper (mepd.web.orbital_store) unless a test asks for one: it would run
+    # xtb single points on every test workspace's structures while the test runs.
+    monkeypatch.setenv("MEPD_ORBITAL_KEEPER", "0")
 
 
 @pytest.fixture(autouse=True)

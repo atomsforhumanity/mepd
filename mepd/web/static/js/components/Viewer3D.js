@@ -13,12 +13,12 @@
 // `onAtomClick(index)` makes atoms clickable (the region editor);
 // `highlight` marks atoms.
 //
-// Orbitals: with `orbitals` ({charge, multiplicity}), an "Orbitals" button
-// computes the shown geometry's HOMO and LUMO (POST /api/orbitals) and draws
-// one as an isosurface, with their energies and the atoms each sits on. On a
-// path, "follow" recomputes them for every frame shown (e.g. a TS
-// optimization as it runs); otherwise they belong to the frame they were
-// computed for.
+// Orbitals: with `orbitals` ({charge, multiplicity, job, live}), the shown
+// geometry's HOMO and LUMO come with it (POST /api/orbitals: the session keeps
+// every structure's ready; a calculation's frames come from its own SCFs), and
+// the "Orbitals" button only chooses to draw one, with their energies and the
+// atoms each sits on. A path shows the orbitals of the frame on screen,
+// a running calculation's as it moves.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
 import { prefs } from '../store.js';
@@ -223,43 +223,43 @@ export function drawOrbital(v, surfaces, orb, iso) {
   v.render();
 }
 
-// The orbitals of the shown geometry: computed on request, then kept for that
-// geometry; `follow` recomputes as the shown geometry changes (one request at a time).
+// The orbitals of the shown geometry, fetched as it changes (one request at a time).
 export function useOrbitals(chem, source, index = 0) {
-  const [on, setOn] = useState(false);
+  // Showing them is a choice of what to draw, remembered for every viewer; the data comes with the geometry.
+  const [on, setOnState] = useState(() => prefs.get('orbitalsOn', false));
+  const setOn = (v) => { setOnState(v); prefs.set('orbitalsOn', v); };
   const [which, setWhich] = useState('homo');
   const [pct, setPctState] = useState(() => prefs.get('orbitalPct', DENSITY_PCT));
   const setPct = (v) => { setPctState(v); prefs.set('orbitalPct', v); };
-  const [follow, setFollow] = useState(!!chem?.live);   // a running calculation's view: follow it
   const [data, setData] = useState(null);        // {xyz, result}
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [asked, setAsked] = useState(null);     // the geometry last asked for by hand (on a path)
   const inFlight = useRef(null);
   const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
   const path = Array.isArray(source) && source.length > 1;
   const fresh = !!data && data.xyz === geom;
-  // A single geometry: always its own orbitals. A path: the frame asked for, or every frame when following.
-  const want = on && !!geom && !fresh && (!path || follow || asked === geom);
+  // A single geometry: loaded with it (the session keeps every structure's orbitals ready). A path's
+  // frames: while orbitals are shown (each frame's, as it is shown; a running calculation's, as it moves).
+  const want = !!geom && !fresh && (!path || on) && error?.xyz !== geom;
   useEffect(() => {
     if (!chem || !want || inFlight.current) return;
     const xyz = geom;
     inFlight.current = xyz;
-    setBusy(true); setError(null);
-    // (A job's own SCF at this geometry, when it ran one: no new calculation.)
-    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1, job: chem.job || undefined, follow: follow || undefined })
-      .then((result) => setData({ xyz, result }))
-      .catch((e) => { setError(String(e.message || e)); setOn(false); })
+    setBusy(true);
+    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
+      job: chem.job || undefined, follow: chem.live || undefined })
+      .then((result) => { setData({ xyz, result }); setError(null); })
+      .catch((e) => setError({ xyz, message: String(e.message || e) }))
       .finally(() => { inFlight.current = null; setBusy(false); });
   }, [want, geom, busy]);
   const result = data?.result || null;
-  // Following a moving calculation, its newest orbitals stay drawn until the next frame's arrive
-  // (a chain often moves on while one is fetched); otherwise only the frame they belong to.
+  // On a path that moves on while a frame's are fetched (a running chain), the newest stay drawn
+  // until the next frame's arrive; a single geometry shows only its own.
   const sameAtoms = !!data && !!geom && parseInt(data.xyz, 10) === parseInt(geom, 10);
-  const current = on && result && (fresh || (follow && sameAtoms)) ? result.orbitals[which] || null : null;
-  const turn = (v) => { setOn(v); if (v) setAsked(geom); };
-  return { on, setOn: turn, update: () => setAsked(geom), which, setWhich, pct, setPct, iso: isoFor(on && fresh && result ? result.orbitals[which] : null, pct), follow, setFollow, busy, error, result,
-    fresh, current, symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
+  const shown = on && result && (fresh || (path && sameAtoms)) ? result.orbitals[which] || null : null;
+  return { on, setOn, which, setWhich, pct, setPct, iso: isoFor(shown, pct), busy: busy && on, error: on ? error?.message : null,
+    result: on ? result : null, fresh, current: shown,
+    symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
 }
 
 export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
@@ -273,7 +273,7 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
   const method = r?.label || (r?.method === 'gfn2' ? 'GFN2-xTB' : 'g-xTB');
   return html`<div class="mo-bar small">
     <button class=${`btn small ${mo.on ? 'on' : ''}`} onClick=${() => mo.setOn(!mo.on)} aria-pressed=${mo.on}
-      title="The highest occupied and lowest unoccupied molecular orbitals of this geometry: where it gives and takes electrons">
+      title="Show the highest occupied and lowest unoccupied molecular orbitals: where it gives and takes electrons (remembered for every view)">
       ${mo.busy ? html`<span class="spinner" aria-hidden="true"></span>` : ''}Orbitals</button>
     ${mo.on && r && html`
       <span class="segmented mini">${['homo', 'lumo'].filter((k) => r.orbitals[k]).map((k) => html`<button class=${mo.which === k ? 'on' : ''}
@@ -284,9 +284,7 @@ export function OrbitalBar({ mo, path = false, labelBase = 1 }) {
       <span class="mo-numbers" title=${`${method} orbital energies (eV)${r.method === 'terachem' ? '' : ', from its minimal basis'}`}>${name('homo')} ${fmt(ev('homo'))} · LUMO ${fmt(ev('lumo'))}${r.gap_ev != null ? html` · gap <b>${r.gap_ev.toFixed(2)}</b>` : ''} eV</span>
       <span class="mo-method muted" title=${r.source === 'run' ? 'From the calculation itself: the SCF it ran at this geometry' : 'From a single point at this level on the geometry shown (no calculation had run this geometry)'}>${method}${r.source === 'run' ? ' · this run' : ''}</span>
       ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
-      ${path && !mo.fresh && !mo.follow && !mo.busy && html`<span class="muted">for another frame · <button class="btn-link small" onClick=${mo.update}>this one</button></span>`}`}
-    ${mo.on && path && html`<label title="Show the orbitals of every frame shown (a running optimization: as it moves)"><input type="checkbox" checked=${mo.follow}
-      onChange=${(e) => mo.setFollow(e.target.checked)} /> follow</label>`}
+      `}
     ${mo.error && html`<span class="warn-text" title=${mo.error}>no orbitals</span>`}
   </div>`;
 }

@@ -156,3 +156,44 @@ def test_no_orbitals_dir_means_nothing_is_kept(tmp_path, monkeypatch):
     eng = GXTBCalculator()
     assert eng._orbitals_kind(["gxtb", "x.xyz"]) is None
     eng.compute_gradients([StructureNode(structure=chem.structure_from_smiles("O"))])
+
+
+def test_the_keeper_gives_every_structure_its_orbitals_ready(tmp_path, monkeypatch):
+    """The session's store: every structure gets orbitals built ahead, and /api/orbitals then sends
+    them as stored -- no calculation when they are shown."""
+    if not _has("gxtb"):
+        pytest.skip("g-xTB not available")
+    from fastapi.testclient import TestClient
+
+    from mepd.web import orbital_store
+    from mepd.web.app import create_app
+    from mepd.web.workspace import Workspace
+
+    ws_dir = tmp_path / "ws"
+    (ws_dir / "profiles").mkdir(parents=True)
+    (ws_dir / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
+    ws = Workspace(ws_dir)
+    from mepd.web import chem
+    s = chem.structure_from_smiles("C=CC=O")
+    rec = ws.add_or_merge(s, name="acrolein", smiles="C=CC=O", optimized=False, origin={"kind": "smiles"})["rec"]
+    monkeypatch.setattr(orbital_store, "SETTLE_S", 0.0)
+    keeper = orbital_store.OrbitalKeeper(ws)
+    assert keeper.sweep() == 1 and keeper.sweep() == 0                     # once, then it is there
+    stored = list((ws_dir / "orbitals").glob("*.json.gz"))
+    assert len(stored) == 1
+    monkeypatch.setattr(orbitals, "run_molden", lambda *a, **k: pytest.fail("ran a new single point"))
+    xyz = ws.structure_path(rec["id"]).read_text()
+    with TestClient(create_app(ws_dir, max_concurrent=1)) as c:
+        out = c.post("/api/orbitals", json={"xyz": xyz}).json()
+    assert out["label"] == "g-xTB" and out["source"] == "single point" and out["orbitals"]["homo"]["norm"] == pytest.approx(1, abs=0.01)
+
+
+def test_a_cli_run_keeps_its_orbitals_under_its_output(tmp_path, monkeypatch):
+    import os
+
+    from mepd.cli import _keep_orbitals
+
+    monkeypatch.delenv(orbitals.ORBITALS_ENV, raising=False)
+    assert _keep_orbitals(["ts", "--output", str(tmp_path / "out")])
+    assert os.environ[orbitals.ORBITALS_ENV] == str(tmp_path / "out" / "orbitals")
+    assert not _keep_orbitals(["ts", "--output", str(tmp_path / "other")])   # the web job's choice stands

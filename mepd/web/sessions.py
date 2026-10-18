@@ -69,8 +69,14 @@ class _SessionBus:
 
 
 class Session:
-    def __init__(self, ws: Workspace, jobs: JobManager):
+    def __init__(self, ws: Workspace, jobs: JobManager, keeper=None):
         self.ws, self.jobs = ws, jobs
+        self.keeper = keeper          # OrbitalKeeper: every structure's orbitals, ready (orbital_store)
+
+    async def stop(self) -> None:
+        if self.keeper is not None:
+            self.keeper.stop()
+        await self.jobs.stop()
 
     def describe(self) -> dict:
         snap = self.ws.snapshot()
@@ -94,6 +100,15 @@ class Sessions:
         self.demo = demo                        # DemoPolicy or None
         self.demo_root = Path(demo_root).resolve() if demo_root else None
         self._visitor_current: dict[str, str] = {}
+
+    def _keeper(self, ws: Workspace):
+        """The orbital keeper of a newly opened session ($MEPD_ORBITAL_KEEPER=0: none)."""
+        if os.environ.get("MEPD_ORBITAL_KEEPER", "1") == "0":
+            return None
+        from mepd.web.orbital_store import MAX_ATOMS, OrbitalKeeper
+
+        return OrbitalKeeper(ws, max_atoms=self.demo.max_atoms if self.demo else MAX_ATOMS,
+                             allow_terachem=self.demo is None).start()
 
     # ------------------------------------------------------------ lookup
     def session(self, key: Optional[str]) -> Session:
@@ -237,7 +252,7 @@ class Sessions:
         key = str(path)
         if key in self._open and not exists:
             # Its folder was removed on disk while loaded: forget the stale copy.
-            await self._open.pop(key).jobs.stop()
+            await self._open.pop(key).stop()
         if key not in self._open:
             ws = Workspace(path)
             if self.demo_root is not None and visitor is not None:
@@ -258,7 +273,7 @@ class Sessions:
             if visitor is None:
                 await asyncio.to_thread(ws.ensure_default_profile)
             await jobs.start()
-            self._open[key] = Session(ws, jobs)
+            self._open[key] = Session(ws, jobs, self._keeper(ws))
             if self._on_opened:
                 self._on_opened(jobs)
         if visitor is not None:
@@ -278,9 +293,9 @@ class Sessions:
         vdir = self._visitor_dir(visitor).resolve()
         self._visitor_current.pop(visitor, None)
         for key in [k for k in self._open if vdir in Path(k).parents]:
-            jobs = self._open.pop(key).jobs
-            jobs.closed = True       # a result still being parsed must not write the folder back
-            await jobs.stop()
+            sess = self._open.pop(key)
+            sess.jobs.closed = True  # a result still being parsed must not write the folder back
+            await sess.stop()
             for box in sandbox.running(key):
                 sandbox.stop(box["id"])
         self._wake_all()
@@ -300,4 +315,4 @@ class Sessions:
 
     async def stop_all(self) -> None:
         for s in self._open.values():
-            await s.jobs.stop()
+            await s.stop()

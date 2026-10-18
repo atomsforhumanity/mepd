@@ -69,6 +69,25 @@ def _teardown_live_display(*_args, **_kwargs) -> None:
     stop_status()
 
 
+def _keep_orbitals(argv) -> bool:
+    """A run with an --output folder keeps every SCF's orbitals in <output>/orbitals (mepd.orbitals),
+    unless something above it (the web app's job) already chose where. True when it set the folder
+    (the caller unsets it when the command ends)."""
+    import os
+
+    from mepd.orbitals import ORBITALS_ENV
+    from mepd.provenance import _flag_value
+
+    try:
+        out = _flag_value(list(argv), "--output", "-o")
+    except Exception:
+        out = None
+    if out and not os.environ.get(ORBITALS_ENV):
+        os.environ[ORBITALS_ENV] = str(Path(out) / "orbitals")
+        return True
+    return False
+
+
 class _MepdApp(typer.Typer):
     def __call__(self, *args, **kwargs):
         import datetime as _dt
@@ -77,6 +96,7 @@ class _MepdApp(typer.Typer):
         from mepd.provenance import record_cli_run
 
         started, code = _dt.datetime.now(_dt.timezone.utc), 1
+        set_orbitals = _keep_orbitals(kwargs.get("args") or (args[0] if args else sys.argv[1:]))
         try:
             result = super().__call__(*args, **kwargs)
             code = 0
@@ -89,6 +109,12 @@ class _MepdApp(typer.Typer):
             code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
             raise
         finally:
+            if set_orbitals:
+                import os
+
+                from mepd.orbitals import ORBITALS_ENV
+
+                os.environ.pop(ORBITALS_ENV, None)
             # provenance.json next to the outputs (see mepd.provenance)
             record_cli_run(kwargs.get("args") or (args[0] if args else sys.argv[1:]), started, code)
 

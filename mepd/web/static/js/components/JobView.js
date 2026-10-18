@@ -28,7 +28,7 @@ import { Why } from './Why.js';
 // Every live path of a job: one per stream (e.g. each `channels` pair) and,
 // where a stream runs parallel MSMEP branches, one per branch.
 // A calculation's charge and spin, and the job itself: its viewers show the orbitals of its own SCFs.
-// `live`: a running calculation's own view, whose orbitals follow its frames by default.
+// `live`: a running calculation's own view (its frames' orbitals on a quicker, coarser grid).
 const jobChem = (job, live = false) => ({ charge: job.charge, multiplicity: job.multiplicity, job: job.id,
   live: live && ['running', 'queued'].includes(job.status) });
 

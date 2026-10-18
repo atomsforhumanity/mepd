@@ -1544,11 +1544,10 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """HOMO and LUMO of one geometry {xyz, charge, multiplicity, extra (0-2 more each side)}:
         energies (eV), each one's share on every atom, and cube files. TeraChem's (the profile's
         method and basis) when the session's level is TeraChem, g-xTB's when it is g-xTB, else
-        GFN2-xTB's (or `method`)."""
+        GFN2-xTB's (or `method`). From the session's store when the keeper has them ready
+        (mepd.web.orbital_store), else a calculation's own SCF at this geometry, else a single point."""
         import gzip
         import json
-
-        import tomli
 
         from mepd import orbitals
 
@@ -1564,36 +1563,40 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("orbitals need a geometry as xyz text")
         if demo is not None and n > demo.max_atoms:
             raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
-        # The session's level: its own orbitals when it is TeraChem (its method and basis) or
-        # g-xTB; any other level, GFN2-xTB's.
+        from mepd.web import orbital_store
+
         ws = W()
-        try:
-            profile = tomli.loads(ws.read_profile(ws.level_profile))
-        except Exception:
-            profile = {}
-        engine = str(profile.get("engine_name") or "gxtb").lower()
-        method = body.get("method") or ("terachem" if engine == "terachem" else "gxtb" if engine == "gxtb" else "gfn2")
+        method, engine_kwds = orbital_store.session_method(ws)
+        method = body.get("method") or method
         if method == "terachem" and demo is not None:
             raise WorkspaceError("TeraChem orbitals are not available in the demo")
         if body.get("job") and not re.fullmatch(r"j_[0-9a-f]+", str(body["job"])):
             raise WorkspaceError("unknown calculation")
+        gz = "gzip" in request.headers.get("accept-encoding", "")
+        live = bool(body.get("follow"))
+        charge, mult = int(body.get("charge") or 0), int(body.get("multiplicity") or 1)
+        extra = int(min(max(int(body.get("extra") or 0), 0), 2))
+        # 1. The session's store (every structure's orbitals, built ahead): sent as stored.
+        if not live and not extra:
+            hit = orbitals.find_run_orbitals([orbital_store.store_dir(ws)], symbols, coords, method)
+            data = orbitals.built({**hit, "dir": str(orbital_store.store_dir(ws))}) if hit else None
+            if data is not None:
+                if gz:
+                    return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
+                return Response(gzip.decompress(data), media_type="application/json")
         try:
-            # A geometry a calculation already computed: its own orbitals (that job's first when given).
-            jobs_root = ws.jobs_dir
-            runs = [jobs_root / str(body["job"]) / "orbitals"] if body.get("job") else []
-            runs += [d for d in sorted(jobs_root.glob("*/orbitals"), key=lambda p: p.stat().st_mtime, reverse=True)
-                     if d not in runs]
-            out = orbitals.frontier_orbitals(symbols, coords, int(body.get("charge") or 0),
-                                             int(body.get("multiplicity") or 1), str(method),
-                                             int(min(max(int(body.get("extra") or 0), 0), 2)),
-                                             engine_kwds=profile.get("terachem_engine_kwds") or {}, run_dirs=runs,
-                                             max_points=orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS)
-            if body.get("job") and body.get("follow"):   # a running calculation: get its next frames ready
-                orbitals.prefetch(runs[0], int(min(max(int(body.get("extra") or 0), 0), 2)), int(body.get("multiplicity") or 1))
+            # 2. A geometry a calculation computed: its own SCF (that job's first). 3. Else a single point.
+            runs = [ws.jobs_dir / str(body["job"]) / "orbitals"] if body.get("job") else []
+            runs += [d for d in orbital_store.run_dirs(ws) if d not in runs]
+            out = orbitals.frontier_orbitals(symbols, coords, charge, mult, str(method), extra,
+                                             engine_kwds=engine_kwds, run_dirs=runs,
+                                             max_points=orbitals.LIVE_POINTS if live else orbitals.MAX_POINTS)
+            if body.get("job") and live:   # a running calculation: get its next frames ready
+                orbitals.prefetch(runs[0], extra, mult)
         except Exception as exc:   # (OrbitalError, or the program failing on this geometry)
             raise WorkspaceError(f"no orbitals: {exc}") from None
         data = json.dumps(out).encode()
-        if "gzip" in request.headers.get("accept-encoding", ""):
+        if gz:
             return Response(gzip.compress(data, 5), media_type="application/json", headers={"Content-Encoding": "gzip"})
         return Response(data, media_type="application/json")
 

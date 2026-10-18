@@ -197,6 +197,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Orbitals are data, the Orbitals button is a view choice.** Each open session keeps every structure's
+  (and conformer's) HOMO / LUMO ready in `<workspace>/orbitals/` at the session's level, built on the
+  full grid ahead of time: from the job that computed the geometry when there is one, else a single
+  point (`mepd.web.orbital_store`; a background keeper, up to 6 a sweep, never evicted). The viewer
+  loads them with the geometry (from the store in ~40-100 ms), and Orbitals only draws them; it is
+  remembered for every view (on in one, on everywhere), and HOMO/LUMO and % density only change the
+  drawing. Paths show the orbitals of the frame on screen; "follow" and "this one" are gone. CLI runs
+  with `--output` keep their SCFs' orbitals in `<output>/orbitals`. Switching the session's level
+  (e.g. to TeraChem) makes the keeper redo them at that level.
 - **Interactive reactor: Collide also pulls two atoms of one molecule together** (3 or more bonds apart:
   a ring closing, an H moving across), about a third of the time and always once everything is one
   molecule, where it used to do nothing.
