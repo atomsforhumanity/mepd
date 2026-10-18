@@ -593,6 +593,58 @@ def _from_file_turned(path: str, method: str, label: str, extra: int, multiplici
     return out
 
 
+def frame_build(run_dir, symbols: list, coords_A, multiplicity: int = 1, max_points: int = LIVE_POINTS) -> Optional[bytes]:
+    """A frame's orbitals from a job's kept SCFs, built once and kept on disk
+    (`<run_dir>/built/`, gzipped JSON as /api/orbitals sends it): every later
+    look is a file read. None when the job never computed this geometry."""
+    import gzip
+
+    xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
+    key = hashlib.sha1(repr((list(symbols), np.round(xyz, 4).tolist(), int(multiplicity), int(max_points))).encode()).hexdigest()
+    fp = Path(run_dir) / "built" / f"{key}.json.gz"
+    try:
+        return fp.read_bytes()
+    except OSError:
+        pass
+    hit = find_run_orbitals([run_dir], symbols, xyz)
+    if hit is None or hit["method"] not in METHODS:
+        return None
+    path = str(Path(hit["dir"]) / hit["file"])
+    if hit["align"] is None:
+        out = _from_file(path, hit["method"], hit["label"], 0, int(multiplicity), int(max_points))
+    else:
+        out = _from_file_turned(path, hit["method"], hit["label"], 0, int(multiplicity), int(max_points),
+                                tuple(round(float(x), 4) for x in xyz.ravel()))
+    data = gzip.compress(json.dumps(out).encode(), 5)
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fp.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(fp)
+    except OSError:
+        pass
+    return data
+
+
+def prebuild_frames(run_dir, frames_xyz: list, multiplicity: int = 1, workers: int = 2) -> None:
+    """In the background: build (frame_build) the orbitals of a finished
+    job's result frames -- its TS, IRC and path -- so viewing them later is
+    only reading files."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(text):
+        try:
+            sym, xyz = _parse_xyz(text)
+            frame_build(run_dir, sym, xyz, multiplicity)
+        except Exception:
+            pass
+
+    def work():
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(one, frames_xyz))
+    threading.Thread(target=work, name="mepd-orbital-frames", daemon=True).start()
+
+
 def frontier_orbitals(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1,
                       method: str = "gxtb", extra: int = 0, engine_kwds: Optional[dict] = None,
                       run_dirs: Optional[list] = None, max_points: int = MAX_POINTS) -> dict:

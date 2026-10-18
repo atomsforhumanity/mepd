@@ -227,3 +227,22 @@ def test_a_turned_frame_gets_its_kept_orbitals_turned_with_it(tmp_path, monkeypa
     for k in ("homo", "lumo"):
         assert run["orbitals"][k]["energy_ev"] == pytest.approx(fresh["orbitals"][k]["energy_ev"], abs=1e-3)
         assert run["orbitals"][k]["atoms"] == pytest.approx(fresh["orbitals"][k]["atoms"], abs=0.02)
+
+
+def test_a_jobs_frames_are_built_once_and_kept(tmp_path, monkeypatch):
+    if not _has("gxtb"):
+        pytest.skip("g-xTB not available")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.web import chem
+
+    monkeypatch.setenv("MEPD_ORBITALS_DIR", str(tmp_path / "orbitals"))
+    s = chem.structure_from_smiles("C=O")
+    GXTBCalculator().compute_gradients([StructureNode(structure=s)])
+    xyz = np.asarray(s.geometry) * 0.529177210903
+    first = orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz)
+    assert first is not None and len(list((tmp_path / "orbitals" / "built").glob("*.json.gz"))) == 1
+    monkeypatch.setattr(orbitals, "orbitals_from_molden", lambda *a, **k: pytest.fail("built again"))
+    orbitals._from_file.cache_clear()
+    assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz) == first      # a file read
+    assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz + [[0, 0, 1.0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]) is None

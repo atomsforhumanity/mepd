@@ -185,7 +185,8 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
 }
 
 // ---- orbitals ---------------------------------------------------------------
-const DENSITY_PCT = 85;   // the surface encloses this share of the orbital's density (|psi|^2), by default
+const DENSITY_PCT = 85;
+const LOADERS = 4;        // a path's frames: this many orbital requests at once   // the surface encloses this share of the orbital's density (|psi|^2), by default
 
 // The |psi| at which an orbital's surface encloses `pct` % of its density on
 // the grid: the largest |psi|^2 values, summed until they reach that share.
@@ -237,36 +238,38 @@ export function useOrbitals(chem, source, index = 0) {
   const [tick, setTick] = useState(0);           // a frame's orbitals arrived
   const cache = useRef(new Map());               // xyz -> result: a path's frames, for playing it back
   const failed = useRef(new Set());
-  const inFlight = useRef(null);
+  const inFlight = useRef(new Set());            // up to LOADERS frames load at once
   const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
   const path = Array.isArray(source) && source.length > 1;
   // A single geometry: loaded with it (the session keeps every structure's orbitals ready). A path,
   // while orbitals are shown: the frame on screen first, then every other frame in playing order, so
   // playing it back draws each frame's own (a running calculation's: only the frame shown, as it moves).
-  let target = null;
-  if (geom && !cache.current.has(geom) && !failed.current.has(geom) && (!path || on)) target = geom;
-  else if (path && on && !chem?.live) {
-    for (let k = 1; k < source.length && !target; k += 1) {
+  const needed = (f) => f && !cache.current.has(f) && !failed.current.has(f) && !inFlight.current.has(f);
+  const targets = [];
+  if (needed(geom) && (!path || on)) targets.push(geom);
+  if (path && on && !chem?.live) {
+    for (let k = 1; k < source.length && targets.length < LOADERS; k += 1) {
       const f = source[(index + k) % source.length];
-      if (!cache.current.has(f) && !failed.current.has(f)) target = f;
+      if (needed(f) && !targets.includes(f)) targets.push(f);
     }
   }
   useEffect(() => {
-    if (!chem || !target || inFlight.current) return;
-    const xyz = target;
-    inFlight.current = xyz;
-    setBusy(true);
-    api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
-      job: chem.job || undefined, follow: (chem.live || path) || undefined })
-      .then((result) => {
-        cache.current.set(xyz, result);
-        if (cache.current.size > 400) cache.current.delete(cache.current.keys().next().value);
-        if (xyz === geom || !data) setData({ xyz, result });
-        setError(null);
-      })
-      .catch((e) => { failed.current.add(xyz); if (xyz === geom) setError({ xyz, message: String(e.message || e) }); })
-      .finally(() => { inFlight.current = null; setBusy(false); setTick((t) => t + 1); });
-  }, [target, geom, busy, tick]);
+    if (!chem) return;
+    for (const xyz of targets.slice(0, Math.max(0, LOADERS - inFlight.current.size))) {
+      inFlight.current.add(xyz);
+      setBusy(true);
+      api.post('/api/orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
+        job: chem.job || undefined, follow: (chem.live || path) || undefined })
+        .then((result) => {
+          cache.current.set(xyz, result);
+          if (cache.current.size > 400) cache.current.delete(cache.current.keys().next().value);
+          setData((d) => (xyz === geom || !d ? { xyz, result } : d));
+          setError(null);
+        })
+        .catch((e) => { failed.current.add(xyz); if (xyz === geom) setError({ xyz, message: String(e.message || e) }); })
+        .finally(() => { inFlight.current.delete(xyz); setBusy(inFlight.current.size > 0); setTick((t) => t + 1); });
+    }
+  }, [targets.join('|'), tick]);
   const own = geom ? cache.current.get(geom) : null;
   const fresh = !!own;
   const result = own || data?.result || null;

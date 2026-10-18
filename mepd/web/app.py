@@ -441,6 +441,15 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 job["summary"] = {"headline": f"result not readable: {type(exc).__name__}: {exc}",
                                   "barrier_kcal": None, "counts": {}}
             manager._update(job)
+            orbital_dir = manager.job_dir(job["id"]) / "orbitals"
+            if result is not None and orbital_dir.is_dir():
+                # Its result frames' orbitals, built now from its own SCFs: viewing them is a file read.
+                from mepd import orbitals as _orbitals
+
+                frames = [f["xyz"] for g in result.get("groups", []) for e in g.get("entries", [])
+                          for f in e.get("frames", []) if isinstance(f, dict) and f.get("xyz")]
+                if frames:
+                    _orbitals.prebuild_frames(orbital_dir, frames, int(job.get("multiplicity") or 1))
             if job["op"] in ("variant-fast", "variant-reopt") and result is not None and not job.get("external"):
                 from mepd.web.variants import after_job
 
@@ -1584,8 +1593,15 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 if gz:
                     return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
                 return Response(gzip.decompress(data), media_type="application/json")
+        # 2. A calculation's frame (a path, a running optimization): built once from its own SCFs, kept on disk.
+        if body.get("job") and live and not extra:
+            data = orbitals.frame_build(ws.jobs_dir / str(body["job"]) / "orbitals", symbols, coords, mult)
+            if data is not None:
+                if gz:
+                    return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
+                return Response(gzip.decompress(data), media_type="application/json")
         try:
-            # 2. A geometry a calculation computed: its own SCF (that job's first). 3. Else a single point.
+            # 3. A geometry some calculation computed: its own SCF. 4. Else a single point.
             runs = [ws.jobs_dir / str(body["job"]) / "orbitals"] if body.get("job") else []
             runs += [d for d in orbital_store.run_dirs(ws) if d not in runs]
             out = orbitals.frontier_orbitals(symbols, coords, charge, mult, str(method), extra,
