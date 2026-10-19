@@ -1790,3 +1790,4 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .mo-bar .mo-help:hover { color: var(--accent); border-color: var(--accent); }
 .topbar .manual-link { color: var(--muted); text-decoration: none; margin-right: 12px; }
 .topbar .manual-link:hover { color: var(--accent); }
+.po-routes { margin: 0 0 8px; }

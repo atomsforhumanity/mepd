@@ -435,6 +435,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **A multi-step result was drawn as parallel channels from reactant to product**, although each IRC joins
+  only neighbours (start ⇌ intermediate, intermediate ⇌ end). The results overview now draws such a route as one
+  chain, start → TS 1 → intermediate 1 → TS 2 → … → end. Its table lists each step from the species before it,
+  with that step's own barrier and the route's hardest step. This covers TS searches whose IRC-verified route has
+  several steps, channel searches with only multi-step routes (a picker when there are several), and unverified
+  paths that split into pieces. An IRC that reaches an intermediate is no longer listed as a channel of a
+  one-step result either. The results carry the ordered route (`routes`), and cached results are rebuilt.
 - **Orbital phase flipped from frame to frame.** An orbital's sign is arbitrary and each SCF picks its own,
   so the blue and red lobes swapped along a path (16 of 40 neighbouring IRC frames for the HOMO). Each
   frame is now drawn with the sign that makes its overlap with the frame before it positive (sampled

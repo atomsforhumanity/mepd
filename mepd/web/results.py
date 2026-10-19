@@ -307,6 +307,8 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
         if irc is not None:
             irc_entries.append(_entry(f"{label}_irc", f"{label} IRC", irc.nodes, floor, note=info["note"],
                                       barrier=barrier))
+            # Whether this IRC joins the job's two ends (a channel), or only part of the way.
+            irc_entries[-1]["joins_ends"] = bool(info.get("joins_ends"))
     groups.append(_group("Transition states on the start → end route", "ts", ts_entries))
     groups.append(_group("Other saddle points (do not connect start → end)", "ts_other", off_route))
     # No IRC (it failed, or was not run): what these connect is not known.
@@ -366,6 +368,19 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
                and abs(i["barrier"] - route["barrier"]) < 1e-6]
         if top:
             result["route_ts"] = _route_ts(top[0]["label"], top[0]["ts"], top[0]["barrier"])
+    # A route of several steps (or a path split into several): one chain.
+    end_node = mep[-1] if mep is not None else None
+    if verified and route["n_steps"] > 1:
+        chain = _route_chain([(f"{it['label']}_irc", it["label"], it["irc"].nodes) for it in route["order"]],
+                             reactant, end_node, floor)
+        if chain:
+            result["routes"] = [{"label": "Route", "verified": True, "barrier_kcal": _clean(barrier), "steps": chain}]
+    elif not verified and len(leaves) > 1:
+        chains = _tree_leaf_chains(tree_dir, charge, multiplicity)
+        chain = _route_chain([(f"leaf_{idx}", f"Step {k + 1}", ch.nodes) for k, (idx, ch) in enumerate(chains)],
+                             reactant, end_node, floor)
+        if chain:
+            result["routes"] = [{"label": "Path", "verified": False, "barrier_kcal": _clean(barrier), "steps": chain}]
     return result
 
 
@@ -388,6 +403,40 @@ def _route_ts(label: str, ts_node, barrier: Optional[float]) -> dict:
     """The TS a result's edge barrier comes from (kept as geometry so a VRI
     search on that edge can start from it without re-reading the result)."""
     return {"label": label, "barrier_kcal": _clean(barrier), "xyz": ts_node.structure.to_xyz()}
+
+
+def _route_chain(steps: list, start, end, floor: Optional[float]) -> list[dict]:
+    """A multi-step route as one chain, start -> intermediates -> end, for
+    the results overview: each step's IRC (or path piece) joins the species
+    before it to the next one, not the reactant to the product. `steps`:
+    (entry id, label, nodes) in route order. Each step is turned to run from
+    the species the previous one ended on (matched by connectivity)."""
+    def kcal(node):
+        e = _node_energy(node)
+        return _clean((e - floor) * HARTREE_TO_KCAL) if e is not None and floor is not None else None
+
+    def name(node) -> str:
+        if start is not None and _same_connectivity(node, start):
+            return "start"
+        if end is not None and _same_connectivity(node, end):
+            return "end"
+        return _smiles(node) or "intermediate"
+
+    out, current = [], start
+    for eid, label, nodes in steps:
+        nodes = list(nodes or [])
+        if len(nodes) < 2:
+            return []          # a step without its two ends: no chain to draw
+        a, b = nodes[0], nodes[-1]
+        if current is not None and _same_connectivity(b, current) and not _same_connectivity(a, current):
+            nodes.reverse()
+            a, b = b, a
+        top = max(nodes, key=lambda n: _node_energy(n) if _node_energy(n) is not None else -1e9)
+        fa, ft, fb = kcal(a), kcal(top), kcal(b)
+        out.append({"id": eid, "label": label, "from": name(a), "to": name(b), "from_kcal": fa, "ts_kcal": ft,
+                    "to_kcal": fb, "barrier_kcal": _clean(ft - fa) if ft is not None and fa is not None else None})
+        current = b
+    return out
 
 
 def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Optional[dict] = None) -> dict:
@@ -414,7 +463,7 @@ def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Op
     if start is None or end is None:
         for it in items:
             it["note"] = _irc_note(it["irc"]) if it["irc"] is not None else no_irc(it["label"])
-        return {"barrier": None, "n_steps": 0, "direct": None, "items": items}
+        return {"barrier": None, "n_steps": 0, "direct": None, "items": items, "order": []}
 
     nodes = [start, end]
     for it in items:
@@ -442,6 +491,7 @@ def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Op
             it["note"] = f"conformer change of the {na} species (both IRC ends are the same molecule): not a reaction step"
         else:
             it["note"] = f"IRC connects {na} ⇌ {nb}"
+            it["joins_ends"] = s_cls != e_cls and {a, b} == {s_cls, e_cls}
             if it["barrier"] is not None:
                 steps.append((it["barrier"], a, b, it))
 
@@ -467,6 +517,7 @@ def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Op
     if s_cls == e_cls and bottleneck is None and steps:
         bottleneck = min(t[0] for t in steps)  # an edge between two conformers
     n_steps = 0
+    order = []   # the route's steps, start -> end
     if bottleneck is not None:
         # One concrete route using only steps up to the bottleneck (BFS).
         adj: dict[int, list] = {}
@@ -486,6 +537,7 @@ def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Op
         while prev.get(c):
             c, it = prev[c]
             it["on_route"] = True
+            order.insert(0, it)
             n_steps += 1
         if s_cls == e_cls:
             for _, _, _, it in steps:
@@ -498,7 +550,7 @@ def _verify_route(start, end, ts_items: list, floor: Optional[float], failed: Op
             it["note"] += " · on the start → end route"
         elif it["irc"] is not None and "conformer change" not in it["note"]:
             it["note"] += " · not on the start → end route"
-    return {"barrier": bottleneck, "n_steps": n_steps, "direct": direct, "items": items}
+    return {"barrier": bottleneck, "n_steps": n_steps, "direct": direct, "items": items, "order": order}
 
 
 def _network_group(fp: Path, floor: Optional[float]) -> Optional[dict]:
@@ -739,6 +791,16 @@ def collect_channels(out: Path, charge: int, multiplicity: int, floor_hint: Opti
               if b and all(x is not None for x in b)]
     if not channels and routes:
         result["barrier_kcal"], result["n_steps"] = _clean(min(routes)[0]), min(routes)[1]
+    # Each multi-step route as one chain (the overview draws them so, not as channels).
+    chains = []
+    for a_i, alt in enumerate(alternates):
+        chain = _route_chain([(f"alt_{a_i}_step_{k}", s["title"], s["irc"].nodes if s["irc"] is not None else [])
+                              for k, s in enumerate(alt["steps"])], ref_start, ref_end, floor)
+        if chain:
+            top = max((c["ts_kcal"] for c in chain if c["ts_kcal"] is not None), default=None)
+            chains.append({"label": alt["title"], "verified": True, "barrier_kcal": top, "steps": chain})
+    if chains:
+        result["routes"] = sorted(chains, key=lambda r: (r["barrier_kcal"] is None, r["barrier_kcal"] or 0))
     return result
 
 
@@ -1845,7 +1907,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 36
+RESULT_VERSION = 37   # 37: multi-step routes as chains ("routes"), IRC entries say if they join the ends
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:
