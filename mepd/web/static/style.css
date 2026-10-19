@@ -1781,5 +1781,12 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .mo-bar .btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .mo-bar .mo-numbers { color: var(--text); }
 .mo-bar .mo-sites { color: var(--muted); }
+.mo-bar .mo-spark { color: var(--muted); vertical-align: middle; }
+.mo-bar select.tiny { width: auto; display: inline-block; }
+.mo-bar .mo-frag { display: inline-flex; align-items: center; gap: 4px; }
 .mo-bar label { display: inline-flex; align-items: center; gap: 4px; }
 .mo-bar .mo-pct input { width: 56px; }
+.mo-bar .mo-help { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--muted); text-decoration: none; font-size: 12px; }
+.mo-bar .mo-help:hover { color: var(--accent); border-color: var(--accent); }
+.topbar .manual-link { color: var(--muted); text-decoration: none; margin-right: 12px; }
+.topbar .manual-link:hover { color: var(--accent); }

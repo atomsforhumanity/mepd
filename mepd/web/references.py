@@ -15,6 +15,23 @@ _DOI = re.compile(r"doi:\s*(10\.\S+?)[.,;)]*$")
 
 _OTHER = [
     {
+        "feature": "Fragment orbitals",
+        "where": "Orbitals › Fragments (in any 3D view with orbitals, and Design)",
+        "items": [
+            {"what": "Frontier orbitals: reactivity from one molecule's HOMO and another's LUMO",
+             "cite": ["K. Fukui, T. Yonezawa, H. Shingu, J. Chem. Phys. 20, 722 (1952), doi:10.1063/1.1700523"]},
+            {"what": "Interaction grows with orbital overlap and falls with the energy gap (second-order perturbation)",
+             "cite": ["G. Klopman, J. Am. Chem. Soc. 90, 223 (1968), doi:10.1021/ja01004a002",
+                      "L. Salem, J. Am. Chem. Soc. 90, 543 (1968), doi:10.1021/ja01005a001"]},
+            {"what": "Symmetry-forbidden overlap (zero HOMO-LUMO overlap, e.g. suprafacial [2+2])",
+             "cite": ["R. B. Woodward, R. Hoffmann, Angew. Chem. Int. Ed. 8, 781 (1969), doi:10.1002/anie.196907811"]},
+            {"what": "The whole system's orbitals as fragment orbitals (charge decomposition analysis)",
+             "cite": ["S. Dapprich, G. Frenking, J. Phys. Chem. 99, 9352 (1995), doi:10.1021/j100023a009"]},
+            {"what": "Overlap integrals over Cartesian Gaussians",
+             "cite": ["S. Obara, A. Saika, J. Chem. Phys. 84, 3963 (1986), doi:10.1063/1.450106"]},
+        ],
+    },
+    {
         "feature": "QM/MM",
         "where": "Put in explicit solvent (QM/MM), QM/MM systems",
         "items": [

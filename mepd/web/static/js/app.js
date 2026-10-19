@@ -64,6 +64,7 @@ function TopBar() {
         </button>`)}
       </nav>
       <span class="spacer"></span>
+      <a class="manual-link small" href="/manual" target="_blank" rel="noopener" title="How mepd's features work, the choices made and why">Manual</a>
       ${sandboxes.length > 0 && view.tab !== 'sandbox' && html`<button class="btn small sandbox-return"
         title=${`Back to the interactive reactor: ${sandboxes[0].names}${sandboxes.length > 1 ? ` (and ${sandboxes.length - 1} more)` : ''}`}
         onClick=${() => set({ view: { tab: 'sandbox', jobId: null, sandbox: sandboxes[0] } })}>◉ Interactive reactor</button>`}

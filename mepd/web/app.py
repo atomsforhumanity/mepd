@@ -1616,6 +1616,94 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             return Response(gzip.compress(data, 5), media_type="application/json", headers={"Content-Encoding": "gzip"})
         return Response(data, media_type="application/json")
 
+    def _orbital_geometry(text) -> tuple[list, list]:
+        lines = [ln.split() for ln in str(text or "").strip().splitlines()]
+        try:
+            n = int(lines[0][0])
+            atoms = lines[2:2 + n]
+            symbols = [a[0] for a in atoms]
+            coords = [[float(x) for x in a[1:4]] for a in atoms]
+        except (IndexError, ValueError):
+            raise WorkspaceError("orbitals need a geometry as xyz text") from None
+        if len(symbols) != n or not n:
+            raise WorkspaceError("orbitals need a geometry as xyz text")
+        if demo is not None and n > demo.max_atoms:
+            raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
+        return symbols, coords
+
+    def _fragment_method(ws, body: dict) -> tuple[str, dict]:
+        from mepd.web import orbital_store
+
+        method, engine_kwds = orbital_store.session_method(ws)
+        method = body.get("method") or method
+        if method == "terachem" and demo is not None:
+            raise WorkspaceError("TeraChem orbitals are not available in the demo")
+        if body.get("job") and not re.fullmatch(r"j_[0-9a-f]+", str(body["job"])):
+            raise WorkspaceError("unknown calculation")
+        return str(method), engine_kwds
+
+    def _fragment_args(ws, body: dict, symbols: list) -> dict:
+        """What a fragment-orbital result depends on, from a request (mepd.web.fragment_store.ensure)."""
+        from mepd import orbitals
+        from mepd.web import fragment_store
+
+        method, engine_kwds = _fragment_method(ws, body)
+        charge, mult = int(body.get("charge") or 0), int(body.get("multiplicity") or 1)
+        refs = body.get("reference") or []
+        refs = [_orbital_geometry(t) for t in ([refs] if isinstance(refs, str) else refs[:2])]
+        pick = body.get("pick") if isinstance(body.get("pick"), dict) else None
+        # A path's frames (`follow`): the coarser grid, as the whole system's orbitals of a path.
+        return {"charge": charge, "multiplicity": mult, "method": method, "engine_kwds": engine_kwds,
+                "reference": fragment_store.reference_for(symbols, refs, charge),
+                "fragments": body.get("fragments") or None, "pick": pick,
+                "max_points": orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS,
+                "job": str(body["job"]) if body.get("job") else None}
+
+    @app.post("/api/fragment-orbitals")
+    def fragment_orbitals(body: dict, request: Request):
+        """The frontier orbitals of each molecule of a geometry {xyz, charge, multiplicity,
+        reference (xyz, or a path's [first, last] frames: the first holding more than one molecule
+        cuts it into molecules), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
+        virt}: the two levels drawn, follow (a path's frame: coarser grid)}, each run alone where it
+        sits, and how they overlap: per donor -> acceptor pair, the overlaps and gaps of their
+        frontier levels (mepd.fragment_orbitals). With the whole system's own orbitals at hand (a
+        kept SCF at this geometry), its HOMO and LUMO as the molecules' orbitals. Kept on disk
+        (mepd.web.fragment_store): asking again is a file read."""
+        import gzip
+
+        from mepd.web import fragment_store
+
+        ws = W()
+        symbols, coords = _orbital_geometry(body.get("xyz"))
+        try:
+            data = fragment_store.build(ws, symbols, coords, **_fragment_args(ws, body, symbols))
+        except WorkspaceError:
+            raise
+        except Exception as exc:
+            raise WorkspaceError(f"no fragment orbitals: {exc}") from None
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
+        return Response(gzip.decompress(data), media_type="application/json")
+
+    @app.post("/api/fragment-orbitals/profile")
+    def fragment_orbitals_profile(body: dict):
+        """Along a path {frames: [xyz], and what /api/fragment-orbitals takes}: every frame built
+        and kept (so playing it back reads files), and per frame each donor -> acceptor pair's
+        level overlaps [[occ, virt, |S|]]."""
+        from mepd.web import fragment_store
+
+        ws = W()
+        frames = list(body.get("frames") or [])
+        if not frames:
+            raise WorkspaceError("a profile needs the path's frames")
+        if len(frames) > 400:
+            raise WorkspaceError(f"{len(frames)} frames: a profile takes up to 400")
+        geoms = [_orbital_geometry(f) for f in frames]
+        symbols = geoms[0][0]
+        if any(g[0] != symbols for g in geoms):
+            raise WorkspaceError("the frames must have the same atoms")
+        return {"pairs": fragment_store.profile(ws, geoms, **_fragment_args(ws, body, symbols))}
+
     # ------------------------------------------------------------ edges
     @app.post("/api/edges")
     def add_edge(body: EdgeIn):
@@ -1639,6 +1727,17 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def put_positions(positions: dict[str, dict]):
         W().set_positions(positions)
         return {"ok": True}  # not broadcast: layout is per-drag noise
+
+    @app.get("/manual", response_class=HTMLResponse)
+    @app.get("/manual/{page}", response_class=HTMLResponse)
+    def manual_page(page: Optional[str] = None):
+        """The manual (mepd/manual/*.md): how each feature works and why, linked from the UI."""
+        from mepd.web import manual
+
+        try:
+            return HTMLResponse(manual.render(page))
+        except manual.ManualError:
+            return HTMLResponse(manual.render(None), status_code=404)
 
     @app.get("/api/references")
     def get_references():

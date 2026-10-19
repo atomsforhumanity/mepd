@@ -52,6 +52,7 @@ server = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "python-multipart>=0.0.9",
+    "markdown>=3.5",          # the manual (docs/manual), served at /manual
 ]
 # ASEEngine (engine_name="ase") and its SELLA-based TS-opt/IRC support. Not
 # needed for the qc*/chemcloud-backed engines, which are the main workhorse.

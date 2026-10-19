@@ -12,6 +12,24 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Fragment orbitals** (`mepd/fragment_orbitals.py`, `POST /api/fragment-orbitals`, Orbitals › Fragments).
+  The geometry is cut into its molecules (bonding of a path's first frame, so a TS keeps its reactants;
+  charges and spins from Lewis structures). Each molecule gets its own single point where it sits. For every
+  donor → acceptor pair, the bar shows the overlap |⟨occupied|empty⟩| and the gap of their frontier levels,
+  the direction with the smaller HOMO→LUMO gap first (within it, the levels with the largest S²/ΔE), and draws both orbitals together (donor dark, acceptor pale, in phase). Overlaps
+  are analytic (Obara–Saika over the molden basis; every orbital checks orthonormal to 1e-10 for g-xTB,
+  GFN2-xTB and TeraChem). Degenerate levels count as one level, so hydroxide attacking CH₃Cl gives from
+  its σ lone pair (HOMO−2), not its π pair. A path shows |S| frame by frame
+  (`/api/fragment-orbitals/profile`). The tooltip gives the whole system's HOMO / LUMO as fragment
+  orbitals. Suprafacial [2+2] HOMO→LUMO overlap comes out exactly 0, and Diels–Alder's does not.
+  Paths behave like the whole system's orbitals. Each result is kept on disk
+  (`<workspace>/orbitals/fragments/`, newest 500 MB, `mepd/web/fragment_store.py`), and the profile request
+  builds every frame. The viewer loads frames ahead in playing order, with the same orbitals chosen at every
+  frame. A frame's surfaces stay until the next frame's arrive, and the phase is carried from frame to frame.
+  On a 65-frame IRC (GFN2), every frame was ready 4.5 s after opening, and playback always drew each frame's
+  own surfaces. The bar reads "Electrons from [molecule, filled level] into [molecule, empty level] ·
+  overlap · gap"; molecules go by formula and charge (Br⁻), degenerate levels say "3-fold", and any number
+  of molecules is offered.
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS
