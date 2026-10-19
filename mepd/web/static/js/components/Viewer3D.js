@@ -162,9 +162,9 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   // (Also after every reload of the geometry -- a live chain update clears all shapes.)
   useEffect(() => {
     if (!viewer.current) return;
-    drawOrbital(viewer.current, surfaces, mo.current, mo.iso);
-    if (host.current) host.current._orbital = { surfaces: surfaces.current.length, fresh: mo.fresh };   // for tests
-  }, [mo.current, mo.iso, xyz, frames, frame]);
+    drawOrbital(viewer.current, surfaces, mo.current, mo.iso, mo.sign);
+    if (host.current) host.current._orbital = { surfaces: surfaces.current.length, fresh: mo.fresh, sign: mo.sign, orb: mo.current };   // for tests
+  }, [mo.current, mo.iso, mo.sign, xyz, frames, frame]);
 
   if (!window.$3Dmol) {
     return html`<div class="viewer viewer-missing" style=${{ height }}>3D viewer unavailable (3Dmol.js did not load)</div>`;
@@ -211,17 +211,68 @@ export function isoFor(orb, pct) {
 
 // An orbital as two wireframe isosurfaces (+ lobe blue, − lobe red) in viewer
 // `v`, replacing the ones in `surfaces` (a ref); none when `orb` is null.
-export function drawOrbital(v, surfaces, orb, iso) {
+// `sign` -1: the orbital is drawn as -psi (its colours swapped), to keep a path's phase (orbitalSigns).
+export function drawOrbital(v, surfaces, orb, iso, sign = 1) {
   (surfaces.current || []).forEach((sh) => { try { v.removeShape(sh); } catch { /* gone with the model */ } });
   surfaces.current = [];
   if (orb?.cube) {
     const look = { wireframe: true, linewidth: 1, opacity: 0.9, smoothness: 1 };
+    const [pos, neg] = sign < 0 ? ['#d42a2a', '#1f4fd1'] : ['#1f4fd1', '#d42a2a'];
     surfaces.current = [
-      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: iso, color: '#1f4fd1' }),
-      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: -iso, color: '#d42a2a' }),
+      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: iso, color: pos }),
+      v.addVolumetricData(orb.cube, 'cube', { ...look, isoval: -iso, color: neg }),
     ];
   }
   v.render();
+}
+
+// ---- phase along a path ------------------------------------------------------
+// An orbital's sign is arbitrary: each SCF may give +psi or -psi, so the
+// lobes' colours could swap from frame to frame. Consecutive frames are made
+// to agree: the sign that makes their overlap positive, sampled around every
+// atom in both grids, carried along the path from its first frame.
+function gridOf(orb) {
+  if (!orb._grid) {
+    const lines = orb.cube.split('\n');
+    const natoms = Math.abs(parseInt(lines[2], 10));
+    const head = (i) => lines[i].trim().split(/\s+/).map(Number);
+    const o = head(2).slice(1, 4);
+    const n = [head(3)[0], head(4)[0], head(5)[0]];
+    const h = [head(3)[1], head(4)[2], head(5)[3]];
+    const atoms = lines.slice(6, 6 + natoms).map((l) => l.trim().split(/\s+/).slice(2, 5).map(Number));
+    const values = Float32Array.from(lines.slice(6 + natoms).join(' ').trim().split(/\s+/), Number);
+    orb._grid = { o, n, h, atoms, values };
+  }
+  return orb._grid;
+}
+
+// psi at point p (bohr), trilinear between grid points; 0 outside the grid.
+function sampleAt(g, p) {
+  const f = [0, 1, 2].map((i) => (p[i] - g.o[i]) / g.h[i]);
+  const i0 = f.map(Math.floor);
+  if (i0.some((x, i) => x < 0 || x >= g.n[i] - 1)) return 0;
+  const t = f.map((x, i) => x - i0[i]);
+  const at = (a, b, c) => g.values[((i0[0] + a) * g.n[1] + (i0[1] + b)) * g.n[2] + (i0[2] + c)];
+  let v = 0;
+  for (const a of [0, 1]) for (const b of [0, 1]) for (const c of [0, 1]) {
+    v += at(a, b, c) * (a ? t[0] : 1 - t[0]) * (b ? t[1] : 1 - t[1]) * (c ? t[2] : 1 - t[2]);
+  }
+  return v;
+}
+
+const PROBES = [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map((d) => d.map((x) => x * 0.8));
+
+// The overlap's sign of two frames' orbitals (+1 / -1), at points around each atom of the second.
+export function phaseBetween(a, b) {
+  const ga = gridOf(a), gb = gridOf(b);
+  let s = 0;
+  for (const atom of gb.atoms) {
+    for (const d of PROBES) {
+      const p = [atom[0] + d[0], atom[1] + d[1], atom[2] + d[2]];
+      s += sampleAt(ga, p) * sampleAt(gb, p);
+    }
+  }
+  return s < 0 ? -1 : 1;
 }
 
 // The orbitals of the shown geometry, fetched as it changes (one request at a time).
@@ -277,7 +328,29 @@ export function useOrbitals(chem, source, index = 0) {
   // until the next frame's arrive; a single geometry shows only its own.
   const sameAtoms = !!result && !!geom && (fresh || parseInt(data?.xyz, 10) === parseInt(geom, 10));
   const shown = on && result && (fresh || (path && sameAtoms)) ? result.orbitals[which] || null : null;
-  return { on, setOn, which, setWhich, pct, setPct, iso: isoFor(shown, pct), busy: busy && on, error: on ? error?.message : null,
+  // Its sign, so that a path's phase does not flip from frame to frame: a finished path's from its first
+  // frame on (each frame against the one before it that has orbitals); a running one's against the last drawn.
+  const last = useRef(null);
+  let sign = 1;
+  if (shown && path && !chem?.live) {
+    let prev = null;
+    for (let k = 0; k <= index; k += 1) {
+      const orb = cache.current.get(source[k])?.orbitals[which];
+      if (!orb) continue;
+      if (prev && parseInt(source[k], 10) === parseInt(prev.xyz, 10)) {
+        prev.orb._phase ||= new Map();
+        if (!prev.orb._phase.has(orb)) prev.orb._phase.set(orb, phaseBetween(prev.orb, orb));
+        sign *= prev.orb._phase.get(orb);
+      }
+      prev = { orb, xyz: source[k] };
+    }
+  } else if (shown && path) {
+    const ref = last.current;
+    if (ref && ref.orb === shown) sign = ref.sign;
+    else if (ref && ref.which === which && sameAtoms) sign = ref.sign * phaseBetween(ref.orb, shown);
+  }
+  if (shown) last.current = { orb: shown, sign, which };
+  return { on, setOn, which, setWhich, pct, setPct, iso: isoFor(shown, pct), sign, busy: busy && on, error: on ? error?.message : null,
     result: on ? result : null, fresh, current: shown,
     symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
 }

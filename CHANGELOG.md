@@ -412,6 +412,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Orbital phase flipped from frame to frame.** An orbital's sign is arbitrary and each SCF picks its own,
+  so the blue and red lobes swapped along a path (16 of 40 neighbouring IRC frames for the HOMO). Each
+  frame is now drawn with the sign that makes its overlap with the frame before it positive (sampled
+  around every atom in both grids), carried along the path from its first frame; a running calculation's
+  frames against the last one drawn. As drawn: 0 flips.
 - **A flaky reactor test failed a deploy.** The interactive reactor packs its molecules from a clock-based
   seed, and from 2 packings in 12 the H atoms of `test_reaction_events_are_found_as_the_nanoreactor_finds_them`
   never met within its 15 s. `sandbox.start` takes a `seed`; the test uses a fixed one (1.8 s, 6 of 6).
