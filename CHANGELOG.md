@@ -30,6 +30,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   own surfaces. The bar reads "Electrons from [molecule, filled level] into [molecule, empty level] ·
   overlap · gap"; molecules go by formula and charge (Br⁻), degenerate levels say "3-fold", and any number
   of molecules is offered.
+  Radicals' singly occupied levels (SOMOs) are offered on both sides, so two radicals' bond shows as
+  "Pairs X SOMO with Y SOMO". In ethanol → C₂H₅O• + H• the SOMO–SOMO overlap is 0.43 → 0.17 → 0.04 along
+  the IRC; before, only filled → empty pairs (≤ 0.016 at the IRC midpoint) were offered.
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS

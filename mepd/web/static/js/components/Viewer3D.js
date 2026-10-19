@@ -529,15 +529,17 @@ function FragmentBar({ fmo, index, path }) {
     r.whole[k].map((w) => `${Math.round(w.weight * 100)}% ${fragLabel(F[w.fragment])} ${w.level === 'other' ? '(other orbitals)' : w.level.toUpperCase().replace('-', '−')}`).join(' + ')}`).join('\n');
   const series = path && fmo.profile ? fmo.profile.map((fr) => fr?.find((p) => p.donor === pair.donor && p.acceptor === pair.acceptor)
     ?.table.find(([o, v]) => o === drawn.occ && v === drawn.virt)?.[2] ?? null) : null;
+  // Two radicals' singly occupied levels: one electron each, paired into a bond (not a donation).
+  const pairing = drawn.occ === 'somo' && drawn.virt === 'somo';
   return html`
     <span class="mo-frag">
-      <span class="muted">Electrons from</span>
+      <span class="muted" title=${pairing ? 'Two singly occupied orbitals (SOMOs), one electron each: overlapping, they pair into a bond' : ''}>${pairing ? 'Pairs' : 'Electrons from'}</span>
       <select class="tiny" value=${`${drawn.donor}|${drawn.occ}`} onChange=${(e) => pickFrom(e.target.value)}
         title="A filled orbital of one molecule, computed on its own (drawn dark)">
         ${F.map((f, i) => f.levels.filter((l) => l.occupied).map((l) => html`<option value=${`${i}|${l.name}`}>${fragLabel(f)} ${levelName(l)}</option>`))}</select>
-      <span class="muted">into</span>
+      <span class="muted">${pairing ? 'with' : 'into'}</span>
       <select class="tiny" value=${`${drawn.acceptor}|${drawn.virt}`} onChange=${(e) => pickInto(e.target.value)}
-        title="An empty orbital of another molecule, computed on its own (drawn pale)">
+        title="An empty (or half-filled: SOMO) orbital of another molecule, computed on its own (drawn pale)">
         ${F.map((f, i) => (i === drawn.donor || !ok(drawn.donor, i) ? [] : f.levels.filter((l) => !l.occupied)
           .map((l) => html`<option value=${`${i}|${l.name}`}>${fragLabel(f)} ${levelName(l)}</option>`)))}</select>
     </span>

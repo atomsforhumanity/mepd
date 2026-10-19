@@ -113,6 +113,15 @@ is then HOMO−3, because orbitals are still counted one by one (the three 4p
 orbitals are HOMO, HOMO−1 and HOMO−2). Three filled and three empty levels
 are kept for each molecule.
 
+**Radicals.** A molecule with an unpaired electron has a singly occupied
+level (**SOMO**). It can give its electron or take one, so it is offered on
+both sides. Two radicals bond by pairing their SOMOs, one electron from each
+("Pairs C₂H₅O• SOMO with H• SOMO"). In ethanol → C₂H₅O• + H•, that SOMO–SOMO
+overlap is 0.43 where the C–H bond is intact, 0.17 halfway along the IRC and
+0.04 apart, while no filled → empty pair exceeds 0.12. For a SOMO pair the
+"gap" is the difference of the two SOMO energies: a sign of how polar the
+bond will be, not an excitation.
+
 **Why levels:** any mix of degenerate orbitals is an equally valid choice, and
 one of them alone can have any overlap from zero to the maximum depending on
 that arbitrary choice. Hydroxide's HOMO is a degenerate π pair, which has
@@ -185,6 +194,34 @@ levels: the weight of each level is |⟨fragment orbital|whole orbital⟩|². Th
 molecules' orbitals are not orthogonal to each other, so the weights describe
 the mix rather than split it exactly (the idea of charge decomposition
 analysis).
+
+## When HOMO → LUMO is not the picture
+
+The frontier picture says the reacting pair is a filled orbital of one
+molecule and an empty one of the other, usually but not always the HOMO and
+LUMO. The cases where it is not:
+
+- **Symmetry.** The HOMO can have exactly zero overlap with the partner's
+  LUMO in the geometry of the reaction: hydroxide's π lone pairs against the
+  C–Cl σ\* (the attack uses HOMO−2), or a suprafacial [2+2]. Look at the
+  overlap first: a small gap with zero overlap does nothing.
+- **Radicals.** Two radicals pair their SOMOs (see above). A radical adding to
+  a closed-shell molecule uses its SOMO with the partner's HOMO or LUMO,
+  whichever is closer in energy.
+- **Charge control.** Between hard ions or very polar molecules, the
+  interaction is mostly electrostatic (Klopman's charge-controlled
+  reactions): the overlap stays small and the orbitals explain little.
+  Orbitals matter most between soft, polarizable partners.
+- **Several orbitals at once.** Metals use d orbitals and back-donation (a
+  filled d into the ligand's π\* while the ligand gives into an empty d), so
+  two directions matter together. Read both directions in the menu.
+- **Distance.** Overlap falls off exponentially with distance. Far apart
+  (a reactant complex) every value is small; compare values along the path,
+  not with a fixed threshold. The plot under a path shows where it grows.
+- **One molecule.** An intramolecular reaction has no fragments to compare.
+
+Also keep in mind that the orbitals are of isolated molecules: in a strongly
+polarizing environment (an ion pair, a solvent) the real orbitals shift.
 
 ## Limits and possible improvements
 

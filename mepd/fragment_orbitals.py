@@ -40,6 +40,7 @@ from mepd import orbitals as orb
 LEVELS = 3            # occupied and empty energy levels on each side in the overlap tables
 DEGENERATE_EV = 0.02  # orbitals this close in energy are one level (any mix of them is as good)
 MIN_S = 1e-3         # pairs overlapping less than this at every level are listed last
+SINGLY = 1.95          # a frontier level holding less than this per orbital is partly empty (a SOMO)
 MIN_GAP_EV = 1.0      # ranking by S^2 / gap: gaps below this (or negative, an anion's) count as this
 MAX_FRAGMENTS = 6
 
@@ -169,6 +170,12 @@ class _Side:
                 group.append(i)
             self.virt.append(("lumo" if group[0] == self.lumo else f"lumo+{group[0] - self.lumo}", group))
             i += 1
+        # A radical's singly occupied level (xtb writes open shells spin-averaged: 1.0, or 1.5 each in a
+        # degenerate pair) can give an electron and take one: it is on both sides, as "somo". Two radicals
+        # bond by pairing their SOMOs, which a HOMO -> LUMO picture would miss entirely.
+        if self.occ and min(self.orbs[k]["occ"] for k in self.occ[0][1]) < SINGLY:
+            self.occ[0] = ("somo", self.occ[0][1])
+            self.virt.insert(0, ("somo", self.occ[0][1]))
         self.levels = dict(self.occ + self.virt)
 
     def energy_ev(self, name: str) -> float:
@@ -331,7 +338,7 @@ def _composition(w: _Side, sides: list) -> dict:
         for fi, s in enumerate(sides):
             proj = s.C @ overlap(s.basis, w.basis) @ w.C[i]     # <phi_m|psi> for every orbital m of the fragment
             mine = 0.0
-            for name, idx in s.occ + s.virt:
+            for name, idx in dict(s.occ + s.virt).items():
                 wt = float((proj[idx] ** 2).sum())
                 mine += wt
                 if wt >= 0.02:

@@ -137,3 +137,19 @@ def test_the_endpoints(tmp_path):
         # A path stored product-first: its last frame cuts it (here a bonded-looking 1.5 A frame first).
         r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(1.5), "reference": [xyz_text(1.5), xyz_text(3.5)]})
         assert r.status_code == 200 and len(r.json()["fragments"]) == 2
+
+
+def test_two_radicals_pair_their_somos():
+    """CH3* + H* (a C-H bond forming): the bond is SOMO + SOMO, offered first, and it is the big overlap."""
+    if not _has("gfn2"):
+        pytest.skip("xtb not available")
+    syms = ["C", "H", "H", "H", "H"]
+    xyz = np.array([[0, 0, 0], [1.08, 0, 0], [-0.54, 0.935, 0], [-0.54, -0.935, 0], [0, 0, 1.6]])
+    r = fo.analyze(syms, xyz, 0, 1, "gfn2", cubes=False)
+    assert sorted(f["multiplicity"] for f in r["fragments"]) == [2, 2]
+    first = r["pairs"][0]
+    assert (first["occ"], first["virt"]) == ("somo", "somo") and first["s"] > 0.2
+    others = [t["s"] for p in r["pairs"] for t in p["table"] if (t["occ"], t["virt"]) != ("somo", "somo")]
+    assert first["s"] > max(others)
+    h = next(f for f in r["fragments"] if f["formula"] == "H")
+    assert [lv["name"] for lv in h["levels"]] [:2] == ["somo", "somo"]   # one level, on both sides
