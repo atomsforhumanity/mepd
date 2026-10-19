@@ -1,5 +1,5 @@
 # mepd web in demo mode on afh-c04: one FastAPI process (it holds state, so
-# exactly one replica), the GPU, and its state on the node's data disk.
+# one replica), the GPU, and its state on the node's data disk.
 #
 # Before the first apply (see deploy/k8s/README.md):
 #   on afh-c04:   sudo mkdir -p /nvme1/mepd/data /nvme1/mepd/tmp && sudo chown -R 1000:1000 /nvme1/mepd
@@ -16,10 +16,15 @@ metadata:
   labels: {app: mepd}
 spec:
   replicas: 1
-  # Never two servers at once: a rolling update would start the new pod before
-  # the old one stops, and both would manage the same workspaces and jobs.
+  # A new version starts beside the old one, which stops only once the new one
+  # is ready: no downtime. For that minute both servers see the same workspaces;
+  # the new one shows the old one's running jobs as interrupted (resumable),
+  # which they become anyway when the old pod stops.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels: {app: mepd}
   template:
@@ -35,8 +40,7 @@ spec:
       # overrides the image's MEPD_PORT (the server's port) and stops it.
       enableServiceLinks: false
       # The NVIDIA container runtime injects the GPU devices and driver; the
-      # device plugin only assigns the GPU (NVIDIA_VISIBLE_DEVICES), which the
-      # default runtime ignores.
+      # default runtime ignores NVIDIA_VISIBLE_DEVICES (set below).
       runtimeClassName: nvidia
       # Jobs stop with the pod; the next server marks them interrupted, and
       # they resume where they left off. A minute lets requests finish.
@@ -50,6 +54,11 @@ spec:
           image: ghcr.io/atomsforhumanity/mepd       # tag: kustomization.yaml (set by CI)
           args: ["serve"]
           env:
+            # The GPU, without reserving it (no nvidia.com/gpu request): the
+            # device plugin would hand the node's one GPU to one pod, and the new
+            # pod of a rolling update would wait for it forever.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
             - name: MEPD_MODE
               value: demo
             # Job limits (mepd/web/demo.py, DemoPolicy; any of its numbers can be
@@ -95,15 +104,15 @@ spec:
             - name: shm                        # PyTorch worker processes share memory here
               mountPath: /dev/shm
           resources:
-            # The node is mepd's: most of its 64 cores and 256 GB, leaving room
-            # for the OS and Kubernetes' own processes.
+            # Reserve little, use what's free: mepd is mostly idle, and the node
+            # is for other work too. No CPU limit, so it can use all 64 cores;
+            # memory up to 224 of 256 GB, leaving room for the OS and Kubernetes.
+            # The node may be oversubscribed; we accept that over idle reservations.
             requests:
-              cpu: "56"
-              memory: 64Gi
-              nvidia.com/gpu: 1
+              cpu: "2"
+              memory: 8Gi
             limits:
               memory: 224Gi
-              nvidia.com/gpu: 1
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
