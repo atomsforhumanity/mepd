@@ -124,7 +124,8 @@ jobs:
           sed -i -E "s|^(\s*newTag:).*|\1 $TAG|" deploy/k8s/kustomization.yaml
           kubectl kustomize deploy/k8s | grep -q "image: $IMAGE:$TAG" || { echo "tag not applied"; exit 1; }
           kubectl apply -k deploy/k8s
-          # Jobs running at this moment become "interrupted" (resumable).
+          # The old pod serves until the new one is ready, then stops; its running
+          # jobs become "interrupted" (resumable).
           if ! kubectl -n mepd rollout status deploy/mepd --timeout=20m; then
             echo "::error::the new version did not become ready; rolling back"
             kubectl -n mepd describe pods -l app=mepd | tail -40 || true

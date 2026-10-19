@@ -168,7 +168,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the PaRoutes InChIKeys, which mepd would otherwise build on first use after every container restart. The
   ZINC stock now loads in 0.1 s.
 - **Kubernetes manifest for the beta** (`deploy/k8s/mepd-demo.yaml`, `deploy/k8s/README.md`). It runs demo
-  mode on afh-c04 as a single replica that is never rolled over (`Recreate`), with the GPU. State and scratch
+  mode on afh-c04 as a single replica. A new version rolls out without downtime: the old pod serves until
+  the new one is ready. The pod reserves little (2 cores, 8 GB, and the GPU seen through
+  `NVIDIA_VISIBLE_DEVICES=all` rather than requested), yet can use the whole node. State and scratch
   live on the node's data disk (`/nvme1/mepd`), and an Ingress serves `mepd.atomsforhumanity.org`. The pod
   sets two things the first deploy needed:
   - `runtimeClassName: nvidia`: without it the GPU was assigned but never reached the container.

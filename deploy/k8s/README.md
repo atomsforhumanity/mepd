@@ -2,8 +2,8 @@
 
 `mepd-demo.yaml` runs the image (`ghcr.io/atomsforhumanity/mepd`) in demo
 mode on **afh-c04**. It is open: anyone who opens the page gets private
-workspaces at once, no password, with the limits in `mepd/web/demo.py`. It runs as one pod with
-the node's GPU, and keeps its state on the node's data disk (`/nvme1`).
+workspaces at once, no password, with the limits in `mepd/web/demo.py`. It runs as one pod that
+uses the node's GPU, and keeps its state on the node's data disk (`/nvme1`).
 
 ## One-time setup
 
@@ -35,8 +35,10 @@ kubectl -n mepd get deploy mepd -o jsonpath='{..image}'     # which image is liv
 kubectl -n mepd port-forward deploy/mepd 8765:8765          # http://localhost:8765, no Ingress needed
 ```
 
-A new version stops the old pod before starting the new one (`strategy: Recreate`), so jobs running at that
-moment become **interrupted**; testers can resume them.
+A new version starts beside the old one, and the old pod stops only once the new one is ready
+(`strategy: RollingUpdate`), so the site stays up. Jobs running in the old pod become **interrupted**;
+testers can resume them. For the minute both pods run, the new server already shows those jobs as
+interrupted, and a job that finishes in that minute still shows as interrupted until the next restart.
 
 ## Where things are
 
@@ -52,10 +54,15 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
 
 ## Notes
 
-- **One replica, always.** The server holds the job queue in memory and
-  manages each workspace's jobs. Two servers would both manage them.
-- **The GPU.** The pod takes the node's one GPU (`nvidia.com/gpu: 1`) for
-  the machine-learned potentials. g-xTB, xtb, CREST and Psi4 run on CPU.
+- **One replica.** The server holds the job queue in memory and manages
+  each workspace's jobs. Two servers run together only during a deploy.
+- **Resources are barely reserved.** The pod requests 2 cores and 8 GB but
+  can use all 64 cores and up to 224 GB, so the node stays open to other work
+  and may be oversubscribed.
+- **The GPU.** The pod sees the node's GPU (`NVIDIA_VISIBLE_DEVICES=all`)
+  without reserving it (no `nvidia.com/gpu`), so the new pod of a deploy can
+  start beside the old one, and other pods can use it too. It's for the
+  machine-learned potentials; g-xTB, xtb, CREST and Psi4 run on CPU.
 - **Demo limits.** The defaults in `mepd/web/demo.py` (`DemoPolicy`) suit a
   small shared demo. The manifest sizes them for this node with
   `MEPD_DEMO_<FIELD>` variables:
