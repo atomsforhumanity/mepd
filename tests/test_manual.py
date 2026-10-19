@@ -3,9 +3,10 @@ UI makes into it lands on a section that exists."""
 import re
 from pathlib import Path
 
+import mepd.web
 from mepd.web import manual
 
-JS = Path(__file__).resolve().parent.parent / "mepd" / "web" / "static" / "js"
+JS = Path(mepd.web.__file__).resolve().parent / "static" / "js"   # (the installed package's, as in the image)
 
 
 def test_every_page_renders_with_a_way_to_suggest_changes():
@@ -17,6 +18,7 @@ def test_every_page_renders_with_a_way_to_suggest_changes():
 
 def test_ui_links_point_at_existing_sections():
     links = set()
+    assert any(JS.rglob("*.js")), JS
     for js in JS.rglob("*.js"):
         links |= set(re.findall(r"/manual/([a-z0-9-]+)#([a-z0-9-]+)", js.read_text()))
         # (links built from a choice: /manual/orbitals#${x ? 'a' : 'b'})
