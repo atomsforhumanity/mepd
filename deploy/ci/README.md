@@ -14,8 +14,9 @@ GHCR and deploys it to the beta cluster:
 - **A build** runs the image check (`mepd-entrypoint check`), then the test suite inside the image.
   A failed test is rerun once, alone, because two tests are known to be flaky under parallel load. Only an
   image whose tests pass is pushed.
-- **A deploy** applies `deploy/k8s` with that tag, then waits for the new server to be ready. If it isn't
-  ready within 20 minutes, the deploy is rolled back to the previous version and the run fails. It then
+- **A deploy** applies `deploy/k8s` with that tag, then waits for the new server to be ready. The old server
+  keeps serving until then, so the site stays up. If the new one isn't ready within 20 minutes, the deploy is
+  rolled back to the previous version and the run fails. It then
   checks that https://mepd.atomsforhumanity.org/login answers. Calculations running at the moment of a
   deploy become *interrupted*, and testers can resume them.
 
