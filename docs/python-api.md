@@ -76,12 +76,24 @@ qcdata's comment line stores charge and multiplicity, so `write_xyz` then
 |---|---|
 | `energies(structures, engine)` | Hartree, one per structure (also cached on each) |
 | `optimize(structures, engine, **keywords)` | the minimized structure(s); batched when the engine can |
-| `find_ts(guess, engine, **keywords)` | the transition state (a first-order saddle) |
-| `irc(ts, engine, **keywords)` | an `IRCResult`: `.path` (a Chain), `.ends`, `.nodes` |
+| `minimize(structure, engine, *, check_frequencies=True, escape_saddles=3, **keywords)` | a true minimum: converged, frequency-checked, pushed off a saddle along its imaginary mode if it stopped on one (`.frequencies`, `.saddle_escapes`) |
+| `frequencies(structure, engine)` | a `Frequencies`: `.wavenumbers_cm` (imaginary negative), `.modes`, `.n_imaginary(cutoff_cm=10)` |
+| `find_ts(guess, engine, *, check_frequencies=True, continue_unconverged=1, **keywords)` | the transition state: converged, with exactly one imaginary mode (`.frequencies`) |
+| `irc(ts, engine, *, minimize_ends=True, **keywords)` | an `IRCResult`: `.path` (a Chain, minimum to minimum), `.irc_path` (the IRC alone), `.ends`, `.nodes` |
 | `interpolate(start, end, *, nimages=15, **options)` | a geodesic path (a Chain); start and end in the same atom order |
 | `barrier_kcal(ts, reactants, engine=None)` | TS energy minus the lowest of `reactants`, kcal/mol |
 
-`keywords`/`options` go to the engine's optimizer or the geodesic smoother.
+`keywords`/`options` go to the engine's optimizer or the geodesic smoother
+(e.g. `fmax` in eV/Å, default 0.001; `maxiter`). Nothing returns an
+unconverged structure: an optimization that runs out of steps raises
+`ConvergenceError` (its `.structure` is where it stopped), and `find_ts`
+first goes on from there `continue_unconverged` times. A converged TS without
+exactly one imaginary mode, or a minimum still on a saddle, raises
+`WrongStationaryPointError`. With g-xTB, TS searches start from g-xTB's own
+Hessian (`exact_hessian=True`, `hessian_every=n` to renew it) and
+minimizations use Sella with that Hessian (`optimizer="geometric"`, `"lbfgs"`;
+`GXTBCalculator(minimizer="xtb")` for xtb's own optimizer). `irc` minimizes
+both ends by default, since an IRC stops short of the minimum.
 `barrier_kcal` takes every reactant structure you have, e.g. all conformers
 found, and measures from the lowest, so barriers from different searches
 share a floor.
@@ -126,10 +138,16 @@ the same folder again. It logs progress on the `mepd.channel_search` logger
 | Function | Returns |
 |---|---|
 | `same_molecule(a, b, *, stereo=True)` | same bond graph (atom order and conformation ignored) and, with `stereo`, the same stereochemistry |
-| `connects(path, start, end, *, stereo=True)` | a `Match`: `.start`, `.end`, `.both`, `.any`, `.none`, `.reversed`; `bool(match)` is `.both` |
+| `compare_structures(a, b)` | a `Comparison`: `.graph`, `.stereo` (True, False, or None when it cannot be decided), `.smiles`, `.reason`, `.method` |
+| `connects(path, start, end, *, stereo=True)` | a `Match`: `.start`, `.end`, `.both`, `.any`, `.none`, `.reversed`, `.undetermined`, `.comparisons`; `bool(match)` is `.both` |
 
 `same_molecule` is mepd's one definition of "the same species"; every
-command uses it. `connects` takes an `IRCResult`, a Chain, or any sequence of
+command uses it. Stereochemistry is compared on stereo SMILES built from the
+full bond graph (hydrogens included, so a tautomer differs), with bond orders
+and stereo from 3D. When that cannot be decided (bond orders RDKit cannot
+assign, so E/Z would be invisible), OpenBabel's stereo SMILES are a second
+opinion that can only confirm "same"; otherwise the structures are not the
+same molecule, and `Match.undetermined` says that side failed on this. `connects` takes an `IRCResult`, a Chain, or any sequence of
 structures, and tries both directions.
 
 ## Contributing

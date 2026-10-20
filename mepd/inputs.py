@@ -413,6 +413,39 @@ class GIInputs:
         return GIInputs(**self.__dict__)
 
 
+@dataclass
+class TSInputs:
+    """How transition states are optimized (`mepd.find_ts`) by the commands
+    that do so (`channels`, `ts`, `run --use-tsopt`).
+
+    `fmax`: converged when the largest atomic force is below this (eV/Angstrom).
+    `maxiter`: optimizer steps per round. `continue_unconverged`: rounds that
+    go on from where an unconverged optimization stopped (0 = give up).
+    `check_frequencies`: accept only a structure with exactly one imaginary
+    mode below -`imaginary_cutoff_cm` cm^-1. `exact_hessian` (g-xTB): start
+    Sella from g-xTB's Hessian, renewed every `hessian_every` steps (0 = only
+    at the start).
+    """
+
+    fmax: float = 0.001
+    maxiter: int = 1000
+    continue_unconverged: int = 1
+    check_frequencies: bool = True
+    imaginary_cutoff_cm: float = 10.0
+    exact_hessian: bool = True
+    hessian_every: int = 0
+
+    def find_ts_keywords(self, engine=None) -> dict:
+        """The keywords for `mepd.find_ts` (Hessian ones only for the g-xTB engine)."""
+        kw = {"fmax": self.fmax, "maxiter": self.maxiter, "continue_unconverged": self.continue_unconverged,
+              "check_frequencies": self.check_frequencies, "imaginary_cutoff_cm": self.imaginary_cutoff_cm}
+        if type(engine).__name__ == "GXTBCalculator":
+            kw["exact_hessian"] = self.exact_hessian
+            if self.hessian_every:
+                kw["hessian_every"] = self.hessian_every
+        return kw
+
+
 # How many of SLAPMapper's equal-minimal-cost candidate mappings (and
 # relabelings of their symmetric atoms) are kept and considered: ties, not
 # ranked among themselves.
@@ -565,6 +598,7 @@ class RunInputs:
 
     chain_inputs: dict = None
     gi_inputs: dict = None
+    ts_inputs: dict = None
     atom_mapping_inputs: dict = None
 
     program_kwds: ProgramArgs = None
@@ -742,6 +776,11 @@ class RunInputs:
             self.gi_inputs = GIInputs()
         else:
             self.gi_inputs = GIInputs(**self.gi_inputs)
+
+        if self.ts_inputs is None:
+            self.ts_inputs = TSInputs()
+        elif not isinstance(self.ts_inputs, TSInputs):
+            self.ts_inputs = TSInputs(**self.ts_inputs)
 
         if self.atom_mapping_inputs is None:
             self.atom_mapping_inputs = AtomMappingInputs()

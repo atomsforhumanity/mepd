@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, List, Union
+from typing import ClassVar, Any, Callable, List, Union
 
 import numpy as np
 from ase import Atoms
@@ -251,6 +251,13 @@ class GXTBCalculator(Engine):
     # element ... is not symmetric"); 0.001 matches central differences of
     # g-xTB gradients to ~1e-4 for ~20% more time.
     hessian_acc: float = 0.001
+    # Minimizations: "sella" (Sella with g-xTB's exact Hessian, to `min_fmax`;
+    # the default since 2026-10-19: 100% converged and 99.4% true minima on
+    # 1000 IRC ends, vs. xtb's own optimizer whose "normal" threshold is
+    # ~0.05 eV/Angstrom), "geometric", "lbfgs", or "xtb" (xtb's ANCopt).
+    minimizer: str | None = None          # None: DEFAULT_MINIMIZER
+    min_fmax: float = 0.001
+    DEFAULT_MINIMIZER: ClassVar[str] = "sella"
     # Independent calculations (a chain's images, a batch of geometry
     # optimizations) run as up to this many concurrent g-xTB processes.
     # 0 = as many as the machine has cores for at n_threads each.
@@ -575,7 +582,16 @@ class GXTBCalculator(Engine):
         node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> list[StructureNode]:
+        """Minimize to a largest atomic force of `fmax` (eV/Angstrom; default
+        `min_fmax`) with `optimizer` (default `minimizer`): "sella" (Sella's
+        minimizer with g-xTB's exact Hessian, renewed every `hessian_every`
+        steps), "geometric" (geomeTRIC, TRIC coordinates) or "lbfgs"
+        (LBFGSLineSearch). With `minimizer="xtb"` and no `fmax`/`optimizer`,
+        g-xTB's own optimizer (ANCopt, "normal" thresholds). Either way an
+        unconverged run raises."""
         kwds = dict(keywords or {})
+        if "fmax" in kwds or "optimizer" in kwds or (self.minimizer or self.DEFAULT_MINIMIZER) != "xtb":
+            return self._minimize_to_fmax(node, kwds)
         extra_args = list(self.extra_args)
         maxiter = kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", None)))
         if maxiter is not None:
@@ -661,6 +677,30 @@ class GXTBCalculator(Engine):
 
         return self._map(_optimize, list(nodes))
 
+    def _minimize_to_fmax(self, node: StructureNode, kwds: dict[str, Any]) -> list[StructureNode]:
+        fmax = float(kwds.pop("fmax", self.min_fmax))
+        steps = int(kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", 3000))))
+        optimizer = str(kwds.pop("optimizer", self.minimizer or self.DEFAULT_MINIMIZER)).lower()
+        if optimizer == "xtb":
+            raise ValueError("optimizer='xtb' has no force threshold: leave out `fmax` to use xtb's own optimizer.")
+        every = kwds.pop("hessian_every", None)
+        if optimizer == "geometric":
+            from mepd.irc_geometric import minimize_with_geometric
+
+            return minimize_with_geometric(self, node, fmax=fmax, maxiter=steps)
+        ase_engine = self._as_ase_engine_for_node(node)
+        if optimizer == "sella":
+            from sella import Sella
+
+            optimizer_kwds = {"order": 0, "hessian_function": self._ase_hessian_function(node)}
+            if every:
+                optimizer_kwds["diag_every_n"] = int(every)
+            return ase_engine._run_ase_optimization(
+                node=node, optimizer_cls=Sella, keywords={"fmax": fmax, "steps": steps, "optimizer_kwds": optimizer_kwds})
+        if optimizer != "lbfgs":
+            raise ValueError(f"Unknown optimizer '{optimizer}': lbfgs, sella or geometric.")
+        return ase_engine.compute_geometry_optimization(node, {"fmax": fmax, "steps": steps})
+
     def _map(self, fn, items: list) -> list:
         """`[fn(x) for x in items]`, with up to `n_parallel` running at once."""
         width = int(self.n_parallel) or max(1, (os.cpu_count() or 1) // max(1, int(self.n_threads)))
@@ -685,11 +725,39 @@ class GXTBCalculator(Engine):
         node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> StructureNode:
-        """Optimize a TS guess through ASE/Sella using local g-xTB energies/gradients."""
+        """Optimize a TS guess through ASE/Sella using local g-xTB energies/gradients.
+
+        Sella starts from g-xTB's own Hessian (`xtb --hess`) instead of
+        estimating the curvature from gradients, and recomputes it every
+        `hessian_every` steps (default: only at the start; 1 = every step).
+        `exact_hessian=False` restores Sella's gradient-based estimate."""
+        kwds = dict(keywords or {})
+        exact = kwds.pop("exact_hessian", True)
+        every = kwds.pop("hessian_every", None)
+        if exact:
+            optimizer_kwds = dict(kwds.pop("optimizer_kwds", kwds.pop("optimizer_kwargs", {})) or {})
+            optimizer_kwds.setdefault("hessian_function", self._ase_hessian_function(node))
+            if every:
+                optimizer_kwds.setdefault("diag_every_n", int(every))
+            kwds["optimizer_kwds"] = optimizer_kwds
         return self._as_ase_engine_for_node(node).compute_transition_state(
             node=node,
-            keywords=keywords,
+            keywords=kwds,
         )
+
+    def _ase_hessian_function(self, node: StructureNode):
+        """Sella's `hessian_function`: g-xTB's Hessian at an ASE geometry, in eV/Angstrom^2."""
+        from ase.units import Bohr, Hartree
+
+        from mepd.qcdata_structure_helpers import ase_atoms_to_structure
+
+        charge, multiplicity = int(node.structure.charge), int(node.structure.multiplicity)
+
+        def hessian(atoms) -> NDArray:
+            here = StructureNode(structure=ase_atoms_to_structure(atoms=atoms, charge=charge, multiplicity=multiplicity))
+            return np.asarray(self.compute_hessian(here), dtype=float) * Hartree / Bohr**2
+
+        return hessian
 
     def compute_irc_chain(
         self,

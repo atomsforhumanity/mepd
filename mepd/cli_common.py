@@ -1056,8 +1056,12 @@ def _optimize_ts_and_irc(
     _say(f"Optimizing transition state ({label})...")
     try:
         # A QM/MM search climbs along the given direction (a path's tangent).
-        ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo) if frozen \
-            else find_ts(ts_guess_node, engine)
+        # QM/MM (frozen atoms): no frequency check, the whole system's Hessian
+        # is out of reach.
+        ts_kwds = run_inputs.ts_inputs.find_ts_keywords(engine) if getattr(run_inputs, "ts_inputs", None) else {}
+        ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo,
+                          **{**ts_kwds, "check_frequencies": False}) if frozen \
+            else find_ts(ts_guess_node, engine, **ts_kwds)
     except Exception as exc:
         cause = exc.__cause__ or exc
         _warn(f"Transition-state optimization failed ({label}): {type(cause).__name__}: {cause}")
@@ -1075,7 +1079,8 @@ def _optimize_ts_and_irc(
     # than "no IRC was run").
     failed_fp = output / ("irc_failed.txt" if label == "ts" else f"{label}_irc_failed.txt")
     try:
-        irc_chain = (irc(ts_node, engine, echo=typer.echo) if frozen else irc(ts_node, engine)).path
+        irc_chain = (irc(ts_node, engine, echo=typer.echo, minimize_ends=False) if frozen
+                     else irc(ts_node, engine)).path
     except Exception as exc:
         cause = exc.__cause__ or exc
         _warn(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")

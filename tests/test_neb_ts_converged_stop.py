@@ -45,6 +45,9 @@ def test_a_barrier_drifting_slowly_over_the_window_is_not_converged():
 
 
 def test_gxtb_concurrent_optimizations_do_not_share_extra_args(monkeypatch):
+    from mepd.engines.gxtb import GXTBCalculator
+
+    monkeypatch.setattr(GXTBCalculator, "DEFAULT_MINIMIZER", "xtb")   # this test is about xtb's own optimizer's arguments
     """Geometry optimizations used to pass --cycles by temporarily swapping the
     engine's shared extra_args, which raced once calls ran concurrently: the
     options piled up and leaked into gradient calls."""

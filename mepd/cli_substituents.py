@@ -10,6 +10,7 @@ insights, including groups that change which channel wins.
 """
 from __future__ import annotations
 
+import mepd
 import json
 import math
 import os
@@ -171,8 +172,8 @@ def _variant(c, site, group, symbols, engine, run_inputs, mode, parent, output, 
     r, ts, p = built["r"], built["ts"], built["p"]
     if mode == "reoptimize":
         r = engine.compute_geometry_optimization(r, keywords=_geometry_optimizer_keywords(run_inputs))[-1]
-        ts = engine.compute_transition_state(node=ts)
-        irc = engine.compute_irc_chain(ts)
+        ts = mepd.find_ts(ts, engine)
+        irc = mepd.irc(ts, engine).path
         engine.compute_energies(irc.nodes)
         irc = R._oriented(irc, built["r"], built["p"])
         if not (R._same_connectivity(irc[0], built["r"]) and R._same_connectivity(irc[-1], built["p"])):
