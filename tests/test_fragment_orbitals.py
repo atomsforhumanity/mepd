@@ -93,6 +93,52 @@ def test_fragments_follow_the_reference_and_charges_sum():
         fo.analyze(syms[:5], xyz[:5], 0, 1, "gfn2")      # one molecule
 
 
+def test_the_endpoints(tmp_path):
+    if not _has("gfn2"):
+        pytest.skip("xtb not available")
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    ws = tmp_path / "ws"
+    (ws / "profiles").mkdir(parents=True)
+    (ws / "profiles" / "default.toml").write_text('engine_name = "xtb"\n')
+    b_syms, b_xyz = BUTADIENE
+    e_syms, e_xyz = ETHYLENE
+
+    def xyz_text(d):
+        rows = [f"{s} {x:.4f} {y:.4f} {z:.4f}" for s, (x, y, z) in zip(b_syms + e_syms, np.vstack([b_xyz + [0, 0, d], e_xyz]))]
+        return f"{len(rows)}\n\n" + "\n".join(rows) + "\n"
+
+    with TestClient(create_app(ws, max_concurrent=1)) as c:
+        r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5)})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["label"] == "GFN2-xTB" and len(out["pairs"]) == 2 and "whole" in out and "drawn" in out
+        other = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5), "pick": {
+            "donor": 1, "acceptor": 0, "occ": "homo", "virt": "lumo"}}).json()["drawn"]
+        assert (other["donor"], other["acceptor"], other["occ"]) == (1, 0, "homo")
+        frags = [f["atoms"] for f in out["fragments"]]
+        prof = c.post("/api/fragment-orbitals/profile", json={"frames": [xyz_text(d) for d in (3.5, 3.0, 2.5)],
+                                                              "fragments": frags}).json()["pairs"]
+        s = [next(t[2] for p in fr if p["donor"] == 0 for t in p["table"] if t[:2] == ["homo", "lumo"]) for fr in prof]
+        assert s[0] < s[1] < s[2]
+        # Kept on disk: every frame of the profile, read back without building again.
+        kept = list((ws / "orbitals" / "fragments").glob("*.json.gz"))
+        assert len(kept) >= 4
+        from mepd.web import fragment_store
+
+        before = {p: p.stat().st_mtime_ns for p in kept}
+        prof2 = c.post("/api/fragment-orbitals/profile", json={"frames": [xyz_text(d) for d in (3.5, 3.0, 2.5)],
+                                                               "fragments": frags}).json()["pairs"]
+        assert prof2 == prof and all(p.stat().st_mtime_ns == t for p, t in before.items())
+        assert fragment_store.WORKERS >= 1
+        assert c.post("/api/fragment-orbitals", json={"xyz": "3\n\nO 0 0 0\nH 0 0.76 0.5\nH 0 -0.76 0.5\n"}).status_code == 400
+        # A path stored product-first: its last frame cuts it (here a bonded-looking 1.5 A frame first).
+        r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(1.5), "reference": [xyz_text(1.5), xyz_text(3.5)]})
+        assert r.status_code == 200 and len(r.json()["fragments"]) == 2
+
+
 def test_two_radicals_pair_their_somos():
     """CH3* + H* (a C-H bond forming): the bond is SOMO + SOMO, offered first, and it is the big overlap."""
     if not _has("gfn2"):
