@@ -53,6 +53,33 @@ _HARTREE_TO_EV = 27.2114
 _KCAL_PER_HARTREE = 627.5
 
 
+def _graphless_copy(node, coords_bohr):
+    """`node` at new coordinates, without a molecular graph. The live strings GSM's
+    history keeps are snapshots for display and the written history; building a
+    bond graph for each (every gradient batch, ~20 nodes, for the whole run) held
+    hundreds of MiB per search for nothing."""
+    out = node.copy()
+    out.structure = node.structure.model_copy(update={"geometry": coords_bohr})
+    out.graph = None
+    out.has_molecular_graph = False
+    out._cached_result = out._cached_gradient = out._cached_energy = None
+    return out
+
+
+def _with_graphs(chain, reactant):
+    """`chain` with every node rebuilt from `reactant` (graphs included), keeping
+    energies and gradients: for a live string that will be analyzed as a path."""
+    nodes = []
+    for n in chain.nodes:
+        if n.has_molecular_graph or not reactant.has_molecular_graph:
+            nodes.append(n)
+            continue
+        m = reactant.update_coords(np.asarray(n.coords))
+        m._cached_energy, m._cached_gradient = n._cached_energy, n._cached_gradient
+        nodes.append(m)
+    return Chain.model_validate({"nodes": nodes, "parameters": chain.parameters})
+
+
 # `./grad.py <endstr> <ncpu> <charge>` is what the compiled `gsm` binary
 # (built with -DGSM_ENABLE_ASE=1) actually shells out to, once per node
 # gradient/energy request -- hundreds of times per run. Naively unpickling
@@ -589,8 +616,10 @@ class GSM(PathMinimizer):
                     allow_early_stop=allow_early_stop,
                     seed_nodes=seed_nodes,
                 )
-            except search_control.SearchStopped:   # Stop & analyze: end the binary, keep its last string
+            except search_control.SearchStopped as stop:   # Stop & analyze: end the binary, keep its last string
                 self._end_gsm_process()
+                if isinstance(stop.chain, Chain):     # the live string becomes a path to analyze: give it graphs
+                    stop.chain = _with_graphs(stop.chain, reactant)
                 raise
 
             n_calls = counter_fp.read_text().count("\n")
@@ -1348,7 +1377,7 @@ class GSM(PathMinimizer):
         nodes = []
         for k, (v_kcal, coords) in enumerate(blocks):
             coords_bohr = np.asarray(coords, dtype=float) * ANGSTROM_TO_BOHR
-            node = reactant.update_coords(coords_bohr)
+            node = _graphless_copy(reactant, coords_bohr)
             node._cached_energy = e_reactant + v_kcal / _KCAL_PER_HARTREE
             if grads is not None and grads[k] is not None:
                 node._cached_gradient = np.asarray(grads[k], dtype=float).reshape(-1, 3)

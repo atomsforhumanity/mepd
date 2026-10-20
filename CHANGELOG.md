@@ -461,6 +461,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Memory of a g-xTB search** (`mepd/engines/_sella.py`, `mepd/pathminimizers/gsm.py`). Sella imported torch
+  (~400 MiB) only to look for a CUDA GPU; with no GPU visible (no `/dev/nvidia*`, or `SELLA_DISABLE_GPU=1`)
+  Sella is now imported without it, and torch stays importable for anything else. GSM's history kept a
+  molecular graph for every node of every live string (each gradient batch, the whole run: ~600 MiB on a
+  20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
+  back. Results are unchanged.
+
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and
   `mepd discovery`'s geomeTRIC IRC; g-xTB, ASE, MLIP and FAIR-Chem engines use Sella's IRC and were not affected.

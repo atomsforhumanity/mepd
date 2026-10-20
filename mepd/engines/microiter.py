@@ -208,8 +208,9 @@ class MicroIterations:
         return calc.trajectory
 
     def transition_state(self, node: StructureNode, keywords: dict | None = None) -> StructureNode:
-        from sella import Sella
+        from mepd.engines._sella import sella
 
+        Sella = sella().Sella
         fmax, steps, kw = self._run_kwargs(keywords, 0.01, 500)
         opt_kw = dict(kw.pop("optimizer_kwds", kw.pop("optimizer_kwargs", {})) or {})
         opt_kw.setdefault("order", 1)
@@ -297,8 +298,9 @@ class MicroIterations:
         return (V * w) @ V.T
 
     def irc(self, ts_node: StructureNode, keywords: dict | None = None) -> Chain:
-        from sella import IRC
+        from mepd.engines._sella import sella
 
+        IRC = sella().IRC
         fmax, steps, kw = self._run_kwargs(keywords, 0.1, 1000)
         echo = kw.pop("echo", None) or (lambda *_: None)
         opt_kw = dict(kw.pop("optimizer_kwds", kw.pop("optimizer_kwargs", {})) or {})

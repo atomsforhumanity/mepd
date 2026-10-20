@@ -34,7 +34,10 @@ from ase.optimize.bfgs import BFGS
 from ase.optimize.fire import FIRE
 from ase.optimize.mdmin import MDMin
 try:
-    from sella import Sella as SellaOptimizer, IRC as SellaIRC
+    from mepd.engines._sella import sella as _sella
+
+    _sella_module = _sella()          # without torch on a machine with no GPU
+    SellaOptimizer, SellaIRC = _sella_module.Sella, _sella_module.IRC
 except Exception:
     SellaOptimizer = None
     SellaIRC = None
