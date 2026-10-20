@@ -43,7 +43,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   that frame. When both ends of a path hold more than one molecule (A + B → C + D), the note is a menu:
   "cut at path end" follows the products' molecules instead of the reactants'. With three or more
   molecules, **group molecules** assigns each a letter: molecules with the same letter are computed together
-  as one fragment (ammonia | a water dimer), with any two groups compared in the menus.
+  as one fragment (ammonia | a water dimer), with any two groups compared in the menus. In Design the
+  molecules are as drawn (its bonds and formal charges), so a placed ion is its own fragment however close it
+  sits: Mg²⁺, Li⁺ or Na⁺ next to water were merged with it ("H₂MgO") by the distance rule and never got orbitals
+  of their own. A bare cation (no electrons left) is an acceptor only, and the default levels are now the
+  frontier-most pair that overlaps at least half as well as the best one (water's σ lone pair → Mg²⁺ 3s, not its
+  3p set).
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS

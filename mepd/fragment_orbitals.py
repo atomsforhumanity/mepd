@@ -39,6 +39,7 @@ from mepd import orbitals as orb
 
 LEVELS = 3            # occupied and empty energy levels on each side in the overlap tables
 DEGENERATE_EV = 0.02  # orbitals this close in energy are one level (any mix of them is as good)
+FRONTIER_SHARE = 0.5   # the default levels overlap at least this share of the best pair's overlap
 MIN_S = 1e-3         # pairs overlapping less than this at every level are listed last
 SINGLY = 1.95          # a frontier level holding less than this per orbital is partly empty (a SOMO)
 MIN_GAP_EV = 1.0      # ranking by S^2 / gap: gaps below this (or negative, an anion's) count as this
@@ -149,7 +150,11 @@ class _Side:
 
     def __init__(self, text: str, method: str):
         self.mol = orb.parse_molden(text)
-        self.orbs, self.homo, self.lumo = orb._frontier(self.mol["mos"])
+        try:
+            self.orbs, self.homo, self.lumo = orb._frontier(self.mol["mos"])
+        except orb.OrbitalError:   # no electrons left (a bare cation: Mg2+, Li+, H+): empty orbitals only
+            alpha = [m for m in self.mol["mos"] if m["spin"].startswith("a")] or self.mol["mos"]
+            self.orbs, self.homo, self.lumo = sorted(alpha, key=lambda m: m["energy"]), -1, 0
         self.basis = basis(self.mol, method)
         self.C = np.array([m["coef"] for m in self.orbs])   # (n_mo, n_bf)
         e = np.array([m["energy"] for m in self.orbs]) * orb.EV
@@ -213,8 +218,10 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
             pick: Optional[dict] = None, max_points: int = orb.MAX_POINTS) -> dict:
     """Frontier-orbital interactions between the molecules of one geometry.
 
-    `fragments`: atom index lists (else perceived on `reference_A`, or on the
-    geometry itself). `groups`: lists of those molecules' indices, each list
+    `fragments`: atom index lists, or {atoms, charge[, multiplicity]} (a
+    drawn molecule, e.g. Design's: its charge as given, however close it sits
+    to the others); else perceived on `reference_A`, or on the geometry
+    itself. `groups`: lists of those molecules' indices, each list
     one fragment (several molecules computed together, e.g. a water dimer as
     one side). Returns
       fragments: [{atoms, formula, charge, multiplicity,
@@ -234,9 +241,18 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
         raise orb.OrbitalError(f"orbitals come from one of {', '.join(orb.METHODS)}, not {method!r}")
     xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
     if fragments:
-        frags = [{"atoms": sorted(int(a) for a in f)} for f in fragments]
+        frags = [{"atoms": sorted(int(a) for a in (f["atoms"] if isinstance(f, dict) else f))} for f in fragments]
         labelled = {tuple(f["atoms"]): f for f in fragments_of(symbols, xyz, charge)}
-        for f in frags:   # a given cut: charge and spin from a Lewis structure of each piece on its own
+        for f, given in zip(frags, fragments):   # a given cut: its charge as given, else from a Lewis structure
+            if isinstance(given, dict) and given.get("charge") is not None:
+                from mepd.discovery.nanoreactor import _formula
+
+                Z = {s: i for i, s in enumerate(orb._SYMBOLS)}
+                q = int(given["charge"])
+                electrons = sum(Z.get(symbols[a], 0) for a in f["atoms"]) - q
+                f.update(charge=q, formula=_formula([symbols[a] for a in f["atoms"]]),
+                         multiplicity=int(given.get("multiplicity") or (1 if electrons % 2 == 0 else 2)))
+                continue
             hit = labelled.get(tuple(f["atoms"]))
             if hit is None:
                 from mepd.discovery.nanoreactor import Labeler, perceive_bonds
@@ -288,7 +304,7 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
     pairs = []
     for d in range(len(frags)):
         for a in range(len(frags)):
-            if a == d or not sides[a].virt:
+            if a == d or not sides[a].virt or not sides[d].occ:   # (a bare cation only takes)
                 continue
             sd, sa = sides[d], sides[a]
             table = []
@@ -297,7 +313,15 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
                     s = float(np.linalg.norm(_block(sd, sa, S_of(d, a), oi, vi)))
                     table.append({"occ": on, "virt": vn, "s": round(s, 4),
                                   "gap_ev": round(sa.energy_ev(vn) - sd.energy_ev(on), 3)})
-            best = max(table, key=lambda t: score(t["s"], t["gap_ev"]))
+            # The default levels: the frontier-most pair that really overlaps -- the lowest empty level, then
+            # the highest filled one, with at least FRONTIER_SHARE of the best overlap in the table. (Not by
+            # overlap^2 / gap: a bare cation's levels sit far below a molecule's, every gap is negative, and
+            # a minimal basis' many-fold p or d sets then win on overlap alone.)
+            top = max(t["s"] for t in table)
+            vrank = {n: k for k, (n, _) in enumerate(sa.virt)}
+            orank = {n: k for k, (n, _) in enumerate(sd.occ)}
+            ranked = sorted(table, key=lambda t: (vrank[t["virt"]], orank[t["occ"]]))
+            best = next((t for t in ranked if t["s"] > 0 and t["s"] >= FRONTIER_SHARE * top), table[0])
             pairs.append({"donor": d, "acceptor": a, "occ": best["occ"], "virt": best["virt"], "s": best["s"],
                           "gap_ev": best["gap_ev"], "frontier_gap_ev": table[0]["gap_ev"], "table": table})
     # Which way electrons go: the direction with the smaller HOMO -> LUMO gap (frontier control). Not by

@@ -5,7 +5,7 @@
 // so RDKit checks valences, re-adds hydrogens and places new atoms (see
 // mepd/web/design.py). This view is the 3Dmol canvas plus tools: click atoms
 // to change them. Undo/redo keep the molblocks seen in this browser tab.
-import { html, useEffect, useRef, useState } from '../lib.js';
+import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, openTab, prefs, select, toast, useStore } from '../store.js';
 import { conformerRows, conformerLabel } from './Inspector.js';
@@ -83,6 +83,39 @@ function pointUnder(v, evt) {
   const at = v.modelToScreen(ref);   // page coordinates
   const off = v.screenOffsetToModel(evt.pageX - at.x, evt.pageY - at.y);
   return [ref.x + off.x, ref.y + off.y, ref.z + off.z];
+}
+
+// The molecules of a V2000 molblock as drawn (its own bonds, not distances): [{atoms, charge}], each
+// molecule's charge from its atoms' formal charges ("M  CHG", else the atom block), with whatever the
+// design's total adds (`total` minus their sum) on the largest molecule. Fragment orbitals use these,
+// so a placed ion or molecule is its own fragment however close it sits.
+function molblockFragments(mb, total) {
+  const lines = (mb || '').split('\n');
+  const n = parseInt((lines[3] || '').slice(0, 3), 10) || 0;
+  const nb = parseInt((lines[3] || '').slice(3, 6), 10) || 0;
+  if (!n) return null;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  for (const l of lines.slice(4 + n, 4 + n + nb)) {
+    const a = parseInt(l.slice(0, 3), 10) - 1, b = parseInt(l.slice(3, 6), 10) - 1;
+    if (a >= 0 && b >= 0 && a < n && b < n) parent[find(a)] = find(b);
+  }
+  const CODE = { 1: 3, 2: 2, 3: 1, 5: -1, 6: -2, 7: -3 };
+  const q = lines.slice(4, 4 + n).map((l) => CODE[parseInt(l.slice(36, 39), 10)] || 0);
+  const chg = lines.filter((l) => l.startsWith('M  CHG'));
+  if (chg.length) {
+    q.fill(0);
+    for (const l of chg) {
+      const f = l.slice(6).trim().split(/\s+/).map(Number);
+      for (let k = 1; k + 1 < f.length; k += 2) if (f[k] >= 1 && f[k] <= n) q[f[k] - 1] = f[k + 1];
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < n; i += 1) { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); }
+  const frags = [...groups.values()].map((atoms) => ({ atoms, charge: atoms.reduce((s, i) => s + q[i], 0) }));
+  const extra = (total ?? 0) - frags.reduce((s, f) => s + f.charge, 0);
+  if (extra) frags.reduce((big, f) => (f.atoms.length > big.atoms.length ? f : big)).charge += extra;
+  return frags;
 }
 
 // A V2000 molblock's atoms as xyz text (what the orbitals are computed for).
@@ -306,7 +339,9 @@ export function DesignView() {
   // A design started from scratch opens on Add atom, ready for the first click.
   const empty = design && !design.natoms;
   // HOMO / LUMO of the design as it is now (a single molecule, not a reaction's two sides).
-  const moChem = design && !design.reaction && design.natoms ? { charge: design.charge, multiplicity: design.multiplicity } : null;
+  const moChem = useMemo(() => (design && !design.reaction && design.natoms
+    ? { charge: design.charge, multiplicity: design.multiplicity, fragments: molblockFragments(design.molblock, design.charge) }
+    : null), [design?.molblock, design?.charge, design?.multiplicity, !!design?.reaction]);
   const moXyz = design && !design.reaction ? molblockXyz(design.molblock) : null;
   const mo = useOrbitals(moChem, moXyz);
   const fmo = useFragmentOrbitals(moChem, moXyz, 0, mo.on && mo.frag);

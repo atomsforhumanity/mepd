@@ -211,3 +211,19 @@ def test_groups_through_the_endpoint(tmp_path):
         assert [x["formula"] for x in r.json()["fragments"]] == ["H3N", "H2O + H2O"]
         assert c.post("/api/fragment-orbitals", json={"xyz": text, "groups": [[0, 1, 2]]}).status_code == 400
         assert c.post("/api/fragment-orbitals", json={"xyz": text, "groups": [["x"]]}).status_code == 400
+
+
+def test_a_bare_cation_as_drawn_is_an_acceptor():
+    """Mg2+ next to water: kept apart (given, as Design draws it), no filled orbitals, and the default
+    donation is water's sigma lone pair into Mg's 3s (its LUMO), not its 3p or 3d sets."""
+    if not _has("gfn2"):
+        pytest.skip("xtb not available")
+    syms = ["O", "H", "H", "Mg"]
+    xyz = np.array([[0, 0, 0], [0.76, 0.59, 0], [-0.76, 0.59, 0], [0, -2.05, 0]])
+    assert len(fo.fragments_of(syms, xyz, 2)) == 1                       # by distance: one "molecule"
+    r = fo.analyze(syms, xyz, 2, 1, "gfn2", fragments=[{"atoms": [0, 1, 2], "charge": 0}, {"atoms": [3], "charge": 2}],
+                   cubes=False)
+    mg = next(f for f in r["fragments"] if f["formula"] == "Mg")
+    assert mg["charge"] == 2 and not any(lv["occupied"] for lv in mg["levels"])
+    assert len(r["pairs"]) == 1 and r["fragments"][r["pairs"][0]["acceptor"]]["formula"] == "Mg"
+    assert (r["pairs"][0]["occ"], r["pairs"][0]["virt"]) == ("homo-1", "lumo") and r["cut"]["groups"] is None
