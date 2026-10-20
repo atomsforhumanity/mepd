@@ -1791,3 +1791,4 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .topbar .manual-link { color: var(--muted); text-decoration: none; margin-right: 12px; }
 .topbar .manual-link:hover { color: var(--accent); }
 .po-routes { margin: 0 0 8px; }
+.mo-bar select.mo-cut { color: var(--muted); }

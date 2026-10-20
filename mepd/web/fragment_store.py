@@ -42,16 +42,24 @@ def _lock(key: str) -> threading.Lock:
         return _LOCKS.setdefault(key, threading.Lock())
 
 
-def reference_for(symbols: list, refs: list, charge: int) -> tuple[Optional[np.ndarray], str]:
-    """(coordinates, "start" / "end") of the first of `refs` ([(symbols,
-    coords)]: a path's first and last frame) whose bonding holds more than one
-    molecule; (None, "shown") if none does: the shown geometry is cut."""
-    from mepd import fragment_orbitals as fo
+def reference_for(symbols: list, refs: list, charge: int,
+                  prefer: Optional[str] = None) -> tuple[Optional[np.ndarray], str, list]:
+    """(coordinates, "start" / "end", the ends that could be cut) for a path
+    (`refs`: [(symbols, coords)] of its first and last frame): `prefer`'s
+    end if its bonding holds more than one molecule, else the first end that
+    does; (None, "shown", []) if neither does: the shown geometry is cut."""
+    from mepd.discovery.nanoreactor import components, perceive_bonds
 
+    ends = {}
     for (rsym, rxyz), end in zip(refs[:2], ("start", "end")):
-        if list(rsym) == list(symbols) and len(fo.fragments_of(symbols, rxyz, charge)) > 1:
-            return np.asarray(rxyz, dtype=float), end
-    return None, "shown"
+        if list(rsym) == list(symbols):
+            xyz = np.asarray(rxyz, dtype=float)
+            if len(components(len(symbols), perceive_bonds(list(symbols), xyz))) > 1:
+                ends[end] = xyz
+    if not ends:
+        return None, "shown", []
+    end = prefer if prefer in ends else next(iter(ends))
+    return ends[end], end, list(ends)
 
 
 def build(ws, symbols: list, coords, **kw) -> bytes:
@@ -61,7 +69,7 @@ def build(ws, symbols: list, coords, **kw) -> bytes:
 
 
 def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method: str, engine_kwds: dict,
-           reference=None, cut_from: str = "shown", fragments=None, pick=None, max_points: int,
+           reference=None, cut_from: str = "shown", cut_options=(), fragments=None, pick=None, max_points: int,
            job: Optional[str] = None) -> Path:
     """The kept result's file, built first if need be."""
     from mepd import fragment_orbitals as fo
@@ -70,7 +78,8 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
 
     rnd = lambda a, d: None if a is None else [[round(float(x), d) for x in row] for row in np.asarray(a).reshape(-1, 3)]  # noqa: E731
     key = hashlib.sha1(json.dumps([list(symbols), rnd(coords, 4), int(charge), int(multiplicity), method, engine_kwds,
-                                   rnd(reference, 3), cut_from, fragments, pick, int(max_points), "cut-v2"],
+                                   rnd(reference, 3), cut_from, list(cut_options), fragments, pick, int(max_points),
+                                   "cut-v2"],
                                   default=str, sort_keys=True).encode()).hexdigest()
     fp = folder(ws) / f"{key}.json.gz"
     if fp.is_file():
@@ -92,7 +101,8 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
         out = fo.analyze(symbols, coords, charge, multiplicity, method, engine_kwds, fragments=fragments,
                          reference_A=reference, whole_molden=whole, pick=pick, max_points=max_points)
         # Which geometry the molecules were cut from (the analysis says whether the shown one splits the same way).
-        out["cut"] = {**out.get("cut", {}), "from": "given" if fragments else cut_from}
+        out["cut"] = {**out.get("cut", {}), "from": "given" if fragments else cut_from,
+                      "options": [] if fragments else list(cut_options)}
         out["label"] = orbitals.terachem_label(engine_kwds) if method == "terachem" else \
             "g-xTB" if method == "gxtb" else "GFN2-xTB"
         data = gzip.compress(json.dumps(out).encode(), 5)
