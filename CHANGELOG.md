@@ -37,7 +37,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   here"), and warns "⚠ bonded at this frame" where the frame shown does not split into the same molecules:
   there the orbitals are of pieces with broken bonds, each computed alone, not of molecules that exist at
   that frame. When both ends of a path hold more than one molecule (A + B → C + D), the note is a menu:
-  "cut at path end" follows the products' molecules instead of the reactants'.
+  "cut at path end" follows the products' molecules instead of the reactants'. With three or more
+  molecules, **group molecules** assigns each a letter: molecules with the same letter are computed together
+  as one fragment (ammonia | a water dimer), with any two groups compared in the menus.
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS

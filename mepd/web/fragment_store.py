@@ -69,7 +69,8 @@ def build(ws, symbols: list, coords, **kw) -> bytes:
 
 
 def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method: str, engine_kwds: dict,
-           reference=None, cut_from: str = "shown", cut_options=(), fragments=None, pick=None, max_points: int,
+           reference=None, cut_from: str = "shown", cut_options=(), fragments=None, groups=None, pick=None,
+           max_points: int,
            job: Optional[str] = None) -> Path:
     """The kept result's file, built first if need be."""
     from mepd import fragment_orbitals as fo
@@ -78,7 +79,8 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
 
     rnd = lambda a, d: None if a is None else [[round(float(x), d) for x in row] for row in np.asarray(a).reshape(-1, 3)]  # noqa: E731
     key = hashlib.sha1(json.dumps([list(symbols), rnd(coords, 4), int(charge), int(multiplicity), method, engine_kwds,
-                                   rnd(reference, 3), cut_from, list(cut_options), fragments, pick, int(max_points),
+                                   rnd(reference, 3), cut_from, list(cut_options), fragments, groups, pick,
+                                   int(max_points),
                                    "cut-v2"],
                                   default=str, sort_keys=True).encode()).hexdigest()
     fp = folder(ws) / f"{key}.json.gz"
@@ -99,6 +101,7 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
         except Exception:
             whole = None
         out = fo.analyze(symbols, coords, charge, multiplicity, method, engine_kwds, fragments=fragments,
+                         groups=groups,
                          reference_A=reference, whole_molden=whole, pick=pick, max_points=max_points)
         # Which geometry the molecules were cut from (the analysis says whether the shown one splits the same way).
         out["cut"] = {**out.get("cut", {}), "from": "given" if fragments else cut_from,

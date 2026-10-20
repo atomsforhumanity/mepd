@@ -1792,3 +1792,9 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .topbar .manual-link:hover { color: var(--accent); }
 .po-routes { margin: 0 0 8px; }
 .mo-bar select.mo-cut { color: var(--muted); }
+.mo-bar .mo-groups { position: relative; display: inline-block; }
+.mo-bar .mo-groups summary { cursor: pointer; color: var(--muted); list-style: none; }
+.mo-bar .mo-groups summary::-webkit-details-marker { display: none; }
+.mo-bar .mo-groups summary::after { content: " ▾"; }
+.mo-bar .mo-groups-pop { position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 4px; padding: 8px 10px; background: var(--panel, var(--bg)); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 4px 14px rgba(0,0,0,0.12); display: grid; gap: 6px; min-width: 220px; }
+.mo-bar .mo-groups-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; white-space: nowrap; }

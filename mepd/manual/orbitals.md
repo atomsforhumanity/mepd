@@ -95,6 +95,16 @@ cut at its end. When both ends of a path hold more than one molecule (A + B
 → C + D), the note is a menu: choose **cut at path end** to follow the
 products' molecules instead of the reactants'.
 
+**Grouping molecules.** With three or more molecules, **group molecules**
+assigns each a letter (A, B, C, …). Molecules with the same letter are one
+fragment, computed together at their positions in the frame: for example
+ammonia as A and a water dimer as B in a proton relay, where a single water
+is not the acceptor. A group's charge is the sum of its molecules' charges;
+it is a singlet with an even number of electrons, else a doublet. With three
+or more groups, the two menus pick any two of them, e.g. donor → bridge and
+then bridge → acceptor. **Each molecule separately** goes back to one
+fragment per molecule.
+
 ### 2. Charge and spin of each molecule
 
 These come from Lewis structures. Of the charge assignments that add up to
