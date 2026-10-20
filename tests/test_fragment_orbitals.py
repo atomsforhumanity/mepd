@@ -140,9 +140,14 @@ def test_the_endpoints(tmp_path):
         # A path stored product-first: its last frame cuts it (here a bonded-looking 1.5 A frame first).
         r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(1.5), "reference": [xyz_text(1.5), xyz_text(3.5)]})
         assert r.status_code == 200 and len(r.json()["fragments"]) == 2
-        assert r.json()["cut"] == {"same": False, "here": 1, "from": "end"}     # cut at the end; bonded here
+        assert r.json()["cut"] == {"same": False, "here": 1, "from": "end", "options": ["end"]}   # bonded here
         start = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5), "reference": [xyz_text(3.5), xyz_text(1.5)]})
-        assert start.json()["cut"] == {"same": True, "here": 2, "from": "start"}
+        assert start.json()["cut"] == {"same": True, "here": 2, "from": "start", "options": ["start"]}
+        # Both ends two molecules: the start by default, the end when asked.
+        both = [xyz_text(3.5), xyz_text(3.0)]
+        assert c.post("/api/fragment-orbitals", json={"xyz": xyz_text(3.2), "reference": both}).json()["cut"]["from"] == "start"
+        end = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(3.2), "reference": both, "cut": "end"}).json()["cut"]
+        assert end["from"] == "end" and end["options"] == ["start", "end"]
 
 
 def test_two_radicals_pair_their_somos():

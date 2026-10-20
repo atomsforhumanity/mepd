@@ -382,6 +382,7 @@ export function useOrbitals(chem, source, index = 0) {
 export function useFragmentOrbitals(chem, source, index, enabled) {
   const [tick, setTick] = useState(0);
   const [choice, setChoice] = useState(null);     // {donor, acceptor, occ, virt}, or null: the strongest
+  const [cutEnd, setCutEnd] = useState(null);     // a path cut at 'start' / 'end' (null: the start, if it can be)
   const [profile, setProfile] = useState(null);   // {key, pairs: per frame [{donor, acceptor, table: [[occ, virt, s]]}]}
   const cache = useRef(new Map());                // `${pick}|${xyz}` -> result
   const inFlight = useRef(new Set());
@@ -391,10 +392,12 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
   const reference = path ? [source[0], source[source.length - 1]] : null;   // cut into the molecules of an end
   // A new path or geometry family: start from the server's best again.
-  useEffect(() => { setChoice(null); last.current = null; }, [path ? source[0] : null]);
-  const pickKey = JSON.stringify(choice);
+  useEffect(() => { setChoice(null); setCutEnd(null); last.current = null; }, [path ? source[0] : null]);
+  // Cut at the other end: other molecules, so the levels are chosen afresh.
+  const setCut = (end) => { setCutEnd(end); setChoice(null); last.current = null; };
+  const pickKey = `${cutEnd}|${JSON.stringify(choice)}`;
   const keyOf = (xyz) => `${pickKey}|${xyz}`;
-  const body = (xyz) => ({ xyz, reference: reference || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
+  const body = (xyz) => ({ xyz, reference: reference || undefined, cut: (path && cutEnd) || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
     job: chem.job || undefined, pick: choice || undefined, follow: path || live || undefined });
   const needed = (xyz) => xyz && !cache.current.has(keyOf(xyz)) && !inFlight.current.has(keyOf(xyz));
   const targets = [];
@@ -438,7 +441,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   useEffect(() => {
     if (!enabled || !path || choice || !fresh || !own.drawn) return;
     const c = { donor: own.drawn.donor, acceptor: own.drawn.acceptor, occ: own.drawn.occ, virt: own.drawn.virt };
-    cache.current.set(`${JSON.stringify(c)}|${geom}`, own);
+    cache.current.set(`${cutEnd}|${JSON.stringify(c)}|${geom}`, own);
     setChoice(c);
   }, [enabled, path, choice, fresh && own]);
   let r = fresh ? own : null;
@@ -477,7 +480,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   const pair = drawn ? r.pairs.find((p) => p.donor === drawn.donor && p.acceptor === drawn.acceptor) : null;
   const choose = (c) => setChoice({ donor: drawn?.donor, acceptor: drawn?.acceptor, occ: drawn?.occ, virt: drawn?.virt, ...c });
   return { result: enabled ? r : null, error: enabled && own?.error ? own.error : null,
-    busy: enabled && !!geom && !own, pair, drawn, choose, fresh,
+    busy: enabled && !!geom && !own, pair, drawn, choose, fresh, setCut,
     occ: drawn?._occ || null, virt: drawn?._virt || null, sign, virtSign: sign,
     profile: profile?.key === profKey ? profile.pairs : null };
 }
@@ -516,7 +519,7 @@ function cutNote(cut, nframes) {
     ? 'The molecules are the separate pieces of the geometry shown (bonds perceived from distances).'
     : `The molecules are the separate pieces of ${where} (bonds perceived from distances), and every frame is split the same way, `
       + 'so the same molecules are followed through the whole path. For A + B → C cut at the start, a frame where A and B have '
-      + `bonded is still split into A's and B's atoms.${cut.from === 'end' ? ' (The start is one molecule, so the end is used.)' : ''}`;
+      + `bonded is still split into A's and B's atoms.${cut.from === 'end' && !(cut.options || []).includes('start') ? ' (The start is one molecule, so the end is used.)' : ''}`;
   return { label, tip };
 }
 
@@ -564,7 +567,11 @@ function FragmentBar({ fmo, index, path, nframes = 1 }) {
     </span>
     ${series && html`<${Sparkline} values=${series} index=${index} />`}
     ${path && fmo.profile === null && html`<span class="spinner" title="Computing every frame" aria-hidden="true"></span>`}
-    ${note && html`<span class="mo-sites" title=${note.tip}>${note.label}</span>`}
+    ${note && (path && r.cut?.options?.length > 1
+      ? html`<select class="tiny mo-cut" value=${r.cut.from} onChange=${(e) => fmo.setCut(e.target.value)}
+          title=${`${note.tip}\n\nBoth ends of this path hold more than one molecule: choose which end's molecules to use.`}>
+          <option value="start">cut at path start</option><option value="end">cut at path end</option></select>`
+      : html`<span class="mo-sites" title=${note.tip}>${note.label}</span>`)}
     ${r.cut && r.cut.same === false && html`<span class="warn-text" title=${`At this frame the atoms do not split into the same molecules (bonds perceived from distances give ${r.cut.here === 1 ? 'one molecule' : `${r.cut.here} pieces`} here). The orbitals are still those of the molecules of the cut, each computed alone at this frame's geometry: where they have bonded, those are pieces with broken bonds, not molecules that exist here. Read overlap and gap here as how far the separate molecules' orbitals have merged.`}>⚠ bonded at this frame</span>`}
     ${whole && html`<span class="mo-sites" title=${whole}>whole-system mix</span>`}`;
 }

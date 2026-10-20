@@ -1652,10 +1652,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         refs = body.get("reference") or []
         refs = [_orbital_geometry(t) for t in ([refs] if isinstance(refs, str) else refs[:2])]
         pick = body.get("pick") if isinstance(body.get("pick"), dict) else None
-        reference, cut_from = fragment_store.reference_for(symbols, refs, charge)
+        prefer = body.get("cut") if body.get("cut") in ("start", "end") else None
+        reference, cut_from, cut_options = fragment_store.reference_for(symbols, refs, charge, prefer)
         # A path's frames (`follow`): the coarser grid, as the whole system's orbitals of a path.
         return {"charge": charge, "multiplicity": mult, "method": method, "engine_kwds": engine_kwds,
-                "reference": reference, "cut_from": cut_from,
+                "reference": reference, "cut_from": cut_from, "cut_options": cut_options,
                 "fragments": body.get("fragments") or None, "pick": pick,
                 "max_points": orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS,
                 "job": str(body["job"]) if body.get("job") else None}
@@ -1664,7 +1665,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def fragment_orbitals(body: dict, request: Request):
         """The frontier orbitals of each molecule of a geometry {xyz, charge, multiplicity,
         reference (xyz, or a path's [first, last] frames: the first holding more than one molecule
-        cuts it into molecules), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
+        cuts it into molecules), cut ("start" / "end": that end instead, when it holds more than one), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
         virt}: the two levels drawn, follow (a path's frame: coarser grid)}, each run alone where it
         sits, and how they overlap: per donor -> acceptor pair, the overlaps and gaps of their
         frontier levels (mepd.fragment_orbitals). With the whole system's own orbitals at hand (a

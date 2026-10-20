@@ -91,7 +91,9 @@ that frame. Their overlap and gap say how far the separate molecules'
 orbitals have merged, which is useful along the path, but they are not two
 molecules interacting. The choice of geometry decides what "the molecules"
 are, so keep it in mind when comparing paths: a path stored product-first is
-cut at its end.
+cut at its end. When both ends of a path hold more than one molecule (A + B
+→ C + D), the note is a menu: choose **cut at path end** to follow the
+products' molecules instead of the reactants'.
 
 ### 2. Charge and spin of each molecule
 
