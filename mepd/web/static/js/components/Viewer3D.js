@@ -383,6 +383,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   const [tick, setTick] = useState(0);
   const [choice, setChoice] = useState(null);     // {donor, acceptor, occ, virt}, or null: the strongest
   const [cutEnd, setCutEnd] = useState(null);     // a path cut at 'start' / 'end' (null: the start, if it can be)
+  const [groups, setGroupsState] = useState(null); // molecules grouped into fragments ([[molecule numbers]]), or each its own
   const [profile, setProfile] = useState(null);   // {key, pairs: per frame [{donor, acceptor, table: [[occ, virt, s]]}]}
   const cache = useRef(new Map());                // `${pick}|${xyz}` -> result
   const inFlight = useRef(new Set());
@@ -392,12 +393,13 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
   const reference = path ? [source[0], source[source.length - 1]] : null;   // cut into the molecules of an end
   // A new path or geometry family: start from the server's best again.
-  useEffect(() => { setChoice(null); setCutEnd(null); last.current = null; }, [path ? source[0] : null]);
-  // Cut at the other end: other molecules, so the levels are chosen afresh.
-  const setCut = (end) => { setCutEnd(end); setChoice(null); last.current = null; };
-  const pickKey = `${cutEnd}|${JSON.stringify(choice)}`;
+  useEffect(() => { setChoice(null); setCutEnd(null); setGroupsState(null); last.current = null; }, [path ? source[0] : null]);
+  // Cut at the other end, or grouped otherwise: other fragments, so the levels are chosen afresh.
+  const setCut = (end) => { setCutEnd(end); setGroupsState(null); setChoice(null); last.current = null; };
+  const setGroups = (g) => { setGroupsState(g); setChoice(null); last.current = null; };
+  const pickKey = `${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(choice)}`;
   const keyOf = (xyz) => `${pickKey}|${xyz}`;
-  const body = (xyz) => ({ xyz, reference: reference || undefined, cut: (path && cutEnd) || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
+  const body = (xyz) => ({ xyz, reference: reference || undefined, cut: (path && cutEnd) || undefined, groups: groups || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
     job: chem.job || undefined, pick: choice || undefined, follow: path || live || undefined });
   const needed = (xyz) => xyz && !cache.current.has(keyOf(xyz)) && !inFlight.current.has(keyOf(xyz));
   const targets = [];
@@ -441,7 +443,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   useEffect(() => {
     if (!enabled || !path || choice || !fresh || !own.drawn) return;
     const c = { donor: own.drawn.donor, acceptor: own.drawn.acceptor, occ: own.drawn.occ, virt: own.drawn.virt };
-    cache.current.set(`${cutEnd}|${JSON.stringify(c)}|${geom}`, own);
+    cache.current.set(`${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(c)}|${geom}`, own);
     setChoice(c);
   }, [enabled, path, choice, fresh && own]);
   let r = fresh ? own : null;
@@ -480,7 +482,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   const pair = drawn ? r.pairs.find((p) => p.donor === drawn.donor && p.acceptor === drawn.acceptor) : null;
   const choose = (c) => setChoice({ donor: drawn?.donor, acceptor: drawn?.acceptor, occ: drawn?.occ, virt: drawn?.virt, ...c });
   return { result: enabled ? r : null, error: enabled && own?.error ? own.error : null,
-    busy: enabled && !!geom && !own, pair, drawn, choose, fresh, setCut,
+    busy: enabled && !!geom && !own, pair, drawn, choose, fresh, setCut, setGroups,
     occ: drawn?._occ || null, virt: drawn?._virt || null, sign, virtSign: sign,
     profile: profile?.key === profKey ? profile.pairs : null };
 }
@@ -506,7 +508,8 @@ const SUB = '₀₁₂₃₄₅₆₇₈₉';
 function fragLabel(f) {
   const q = f.charge;
   const charge = !q ? '' : `${Math.abs(q) > 1 ? Math.abs(q) : ''}${q > 0 ? '⁺' : '⁻'}`.replace(/\d/g, (d) => '⁰¹²³⁴⁵⁶⁷⁸⁹'[d]);
-  return `${f.formula.replace(/\d/g, (d) => SUB[d])}${charge}${f.multiplicity > 1 ? ' •' : ''}`;
+  const formula = f.formula.replace(/\d/g, (d) => SUB[d]);
+  return `${f.members?.length > 1 ? `(${formula})` : formula}${charge}${f.multiplicity > 1 ? ' •' : ''}`;
 }
 const levelName = (l) => `${l.name.toUpperCase().replace('-', '−')}${l.degeneracy > 1 ? ` (${l.degeneracy}-fold)` : ''}`;
 
@@ -521,6 +524,37 @@ function cutNote(cut, nframes) {
       + 'so the same molecules are followed through the whole path. For A + B → C cut at the start, a frame where A and B have '
       + `bonded is still split into A's and B's atoms.${cut.from === 'end' && !(cut.options || []).includes('start') ? ' (The start is one molecule, so the end is used.)' : ''}`;
   return { label, tip };
+}
+
+// Advanced: which molecules make up each fragment (shown only when there are three or more). Each
+// molecule gets a letter; molecules with the same letter are computed together as one fragment.
+const LETTERS = 'ABCDEF';
+function GroupPicker({ cut, onApply }) {
+  const mols = cut.molecules;
+  const current = () => {
+    const letter = mols.map((_, i) => i);
+    (cut.groups || mols.map((_, i) => [i])).forEach((g, gi) => g.forEach((i) => { letter[i] = gi; }));
+    return letter;
+  };
+  const [draft, setDraft] = useState(current);
+  const used = new Set(draft);
+  const apply = () => {
+    const groups = [...new Set(draft)].sort((a, b) => a - b).map((gi) => draft.map((g, i) => (g === gi ? i : -1)).filter((i) => i >= 0));
+    if (groups.length >= 2) onApply(groups.length === mols.length ? null : groups);
+  };
+  return html`<details class="mo-groups">
+    <summary title="Choose which molecules make up each fragment: molecules with the same letter are computed together, as one (e.g. a water dimer as the acceptor)">${cut.groups ? `${cut.groups.length} groups` : 'group molecules'}</summary>
+    <div class="mo-groups-pop">
+      ${mols.map((m, i) => html`<div class="mo-groups-row"><span>${fragLabel(m)}</span>
+        <span class="segmented mini">${LETTERS.slice(0, mols.length).split('').map((L, gi) => html`<button
+          class=${draft[i] === gi ? 'on' : ''} onClick=${() => setDraft(draft.map((g, j) => (j === i ? gi : g)))}>${L}</button>`)}</span></div>`)}
+      <div class="mo-groups-row">
+        <button class="btn small" disabled=${used.size < 2} onClick=${apply}
+          title=${used.size < 2 ? 'Use at least two letters' : 'Compute each group as one fragment'}>Use these groups</button>
+        <button class="btn small" onClick=${() => { setDraft(mols.map((_, i) => i)); onApply(null); }}>Each molecule separately</button>
+      </div>
+    </div>
+  </details>`;
 }
 
 function FragmentBar({ fmo, index, path, nframes = 1 }) {
@@ -572,6 +606,7 @@ function FragmentBar({ fmo, index, path, nframes = 1 }) {
           title=${`${note.tip}\n\nBoth ends of this path hold more than one molecule: choose which end's molecules to use.`}>
           <option value="start">cut at path start</option><option value="end">cut at path end</option></select>`
       : html`<span class="mo-sites" title=${note.tip}>${note.label}</span>`)}
+    ${r.cut?.molecules?.length >= 3 && html`<${GroupPicker} key=${JSON.stringify(r.cut.groups)} cut=${r.cut} onApply=${fmo.setGroups} />`}
     ${r.cut && r.cut.same === false && html`<span class="warn-text" title=${`At this frame the atoms do not split into the same molecules (bonds perceived from distances give ${r.cut.here === 1 ? 'one molecule' : `${r.cut.here} pieces`} here). The orbitals are still those of the molecules of the cut, each computed alone at this frame's geometry: where they have bonded, those are pieces with broken bonds, not molecules that exist here. Read overlap and gap here as how far the separate molecules' orbitals have merged.`}>⚠ bonded at this frame</span>`}
     ${whole && html`<span class="mo-sites" title=${whole}>whole-system mix</span>`}`;
 }

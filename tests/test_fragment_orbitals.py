@@ -89,7 +89,7 @@ def test_fragments_follow_the_reference_and_charges_sum():
     close[5:] += [0.9, 0, 0]
     r2 = fo.analyze(syms, close, -1, 1, "gfn2", reference_A=xyz, cubes=False)
     assert len(r2["fragments"]) == 2
-    assert r["cut"] == {"same": True, "here": 2}
+    assert {k: r["cut"][k] for k in ("same", "here")} == {"same": True, "here": 2}
     assert r2["cut"]["same"] is False and r2["cut"]["here"] == 1      # bonded here: the bar warns
     with pytest.raises(orbitals.OrbitalError):
         fo.analyze(syms[:5], xyz[:5], 0, 1, "gfn2")      # one molecule
@@ -140,9 +140,13 @@ def test_the_endpoints(tmp_path):
         # A path stored product-first: its last frame cuts it (here a bonded-looking 1.5 A frame first).
         r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(1.5), "reference": [xyz_text(1.5), xyz_text(3.5)]})
         assert r.status_code == 200 and len(r.json()["fragments"]) == 2
-        assert r.json()["cut"] == {"same": False, "here": 1, "from": "end", "options": ["end"]}   # bonded here
+        cut = r.json()["cut"]
+        assert {k: cut[k] for k in ("same", "here", "from", "options")} == {"same": False, "here": 1, "from": "end",
+                                                                             "options": ["end"]}   # bonded here
         start = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5), "reference": [xyz_text(3.5), xyz_text(1.5)]})
-        assert start.json()["cut"] == {"same": True, "here": 2, "from": "start", "options": ["start"]}
+        cut = start.json()["cut"]
+        assert {k: cut[k] for k in ("same", "here", "from", "options")} == {"same": True, "here": 2, "from": "start",
+                                                                             "options": ["start"]}
         # Both ends two molecules: the start by default, the end when asked.
         both = [xyz_text(3.5), xyz_text(3.0)]
         assert c.post("/api/fragment-orbitals", json={"xyz": xyz_text(3.2), "reference": both}).json()["cut"]["from"] == "start"
@@ -164,3 +168,46 @@ def test_two_radicals_pair_their_somos():
     assert first["s"] > max(others)
     h = next(f for f in r["fragments"] if f["formula"] == "H")
     assert [lv["name"] for lv in h["levels"]] [:2] == ["somo", "somo"]   # one level, on both sides
+
+
+# Ammonia with two waters (a proton-relay-like arrangement), molecules 2-3 A apart.
+NH3_2H2O = (["N", "H", "H", "H", "O", "H", "H", "O", "H", "H"],
+            np.array([[0, 0, 0], [-0.38, 0.94, 0.0], [-0.38, -0.47, 0.81], [-0.38, -0.47, -0.81],
+                      [2.9, 0, 0], [1.95, 0, 0], [3.2, 0.9, 0],
+                      [4.6, 2.2, 0], [3.9, 1.6, 0], [5.4, 1.7, 0]]))
+
+
+def test_molecules_grouped_into_fragments():
+    if not _has("gfn2"):
+        pytest.skip("xtb not available")
+    syms, xyz = NH3_2H2O
+    alone = fo.analyze(syms, xyz, 0, 1, "gfn2", cubes=False)
+    assert [m["formula"] for m in alone["cut"]["molecules"]] == ["H3N", "H2O", "H2O"] and len(alone["fragments"]) == 3
+    grouped = fo.analyze(syms, xyz, 0, 1, "gfn2", groups=[[0], [1, 2]], cubes=False)
+    f = grouped["fragments"]
+    assert [x["formula"] for x in f] == ["H3N", "H2O + H2O"] and f[1]["members"] == [1, 2]
+    assert f[1]["atoms"] == [4, 5, 6, 7, 8, 9] and f[1]["charge"] == 0 and f[1]["multiplicity"] == 1
+    assert grouped["cut"]["groups"] == [[0], [1, 2]] and len(grouped["pairs"]) == 2
+    for bad in ([[0], [1]], [[0, 1], [1, 2]], [[0, 1, 2]]):
+        with pytest.raises(orbitals.OrbitalError):
+            fo.analyze(syms, xyz, 0, 1, "gfn2", groups=bad, cubes=False)
+
+
+def test_groups_through_the_endpoint(tmp_path):
+    if not _has("gfn2"):
+        pytest.skip("xtb not available")
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    ws = tmp_path / "ws"
+    (ws / "profiles").mkdir(parents=True)
+    (ws / "profiles" / "default.toml").write_text('engine_name = "xtb"\n')
+    syms, xyz = NH3_2H2O
+    text = f"{len(syms)}\n\n" + "\n".join(f"{s} {x:.4f} {y:.4f} {z:.4f}" for s, (x, y, z) in zip(syms, xyz)) + "\n"
+    with TestClient(create_app(ws, max_concurrent=1)) as c:
+        r = c.post("/api/fragment-orbitals", json={"xyz": text, "groups": [[0], [1, 2]]})
+        assert r.status_code == 200, r.text
+        assert [x["formula"] for x in r.json()["fragments"]] == ["H3N", "H2O + H2O"]
+        assert c.post("/api/fragment-orbitals", json={"xyz": text, "groups": [[0, 1, 2]]}).status_code == 400
+        assert c.post("/api/fragment-orbitals", json={"xyz": text, "groups": [["x"]]}).status_code == 400

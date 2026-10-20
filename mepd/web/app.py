@@ -1624,6 +1624,18 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("unknown calculation")
         return str(method), engine_kwds
 
+    def _groups(raw) -> Optional[list]:
+        """Molecules grouped into fragments: a list of lists of molecule indices (None: each its own)."""
+        if not raw:
+            return None
+        try:
+            groups = [[int(i) for i in g] for g in raw]
+        except (TypeError, ValueError):
+            raise WorkspaceError("groups are lists of molecule numbers") from None
+        if len(groups) < 2 or len(groups) > 6:
+            raise WorkspaceError("group the molecules into 2 to 6 fragments")
+        return groups
+
     def _fragment_args(ws, body: dict, symbols: list) -> dict:
         """What a fragment-orbital result depends on, from a request (mepd.web.fragment_store.ensure)."""
         from mepd import orbitals
@@ -1639,7 +1651,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         # A path's frames (`follow`): the coarser grid, as the whole system's orbitals of a path.
         return {"charge": charge, "multiplicity": mult, "method": method, "engine_kwds": engine_kwds,
                 "reference": reference, "cut_from": cut_from, "cut_options": cut_options,
-                "fragments": body.get("fragments") or None, "pick": pick,
+                "fragments": body.get("fragments") or None, "groups": _groups(body.get("groups")), "pick": pick,
                 "max_points": orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS,
                 "job": str(body["job"]) if body.get("job") else None}
 
@@ -1647,7 +1659,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def fragment_orbitals(body: dict, request: Request):
         """The frontier orbitals of each molecule of a geometry {xyz, charge, multiplicity,
         reference (xyz, or a path's [first, last] frames: the first holding more than one molecule
-        cuts it into molecules), cut ("start" / "end": that end instead, when it holds more than one), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
+        cuts it into molecules), cut ("start" / "end": that end instead, when it holds more than one), groups
+        (lists of those molecules' numbers, each list one fragment), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
         virt}: the two levels drawn, follow (a path's frame: coarser grid)}, each run alone where it
         sits, and how they overlap: per donor -> acceptor pair, the overlaps and gaps of their
         frontier levels (mepd.fragment_orbitals). With the whole system's own orbitals at hand (a

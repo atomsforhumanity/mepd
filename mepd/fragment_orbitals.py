@@ -182,6 +182,26 @@ class _Side:
         return self.orbs[self.levels[name][0]]["energy"] * orb.EV
 
 
+def _grouped(molecules: list, groups: list, symbols: list) -> list:
+    """Molecules merged into fragments: `groups` lists their indices, each
+    list one fragment, every molecule in exactly one. A group's charge is its
+    molecules' sum; it is a singlet with an even number of electrons, else a
+    doublet (low spin: two radicals in one group pair up)."""
+    flat = sorted(i for g in groups for i in g)
+    if flat != list(range(len(molecules))) or any(not g for g in groups):
+        raise orb.OrbitalError("the groups must hold every molecule exactly once")
+    Z = {s: i for i, s in enumerate(orb._SYMBOLS)}
+    out = []
+    for g in groups:
+        members = [molecules[int(i)] for i in g]
+        atoms = sorted(a for m in members for a in m["atoms"])
+        q = sum(m["charge"] for m in members)
+        electrons = sum(Z.get(symbols[a], 0) for a in atoms) - q
+        out.append({"atoms": atoms, "charge": q, "multiplicity": 1 if electrons % 2 == 0 else 2,
+                    "formula": " + ".join(m["formula"] for m in members), "members": [int(i) for i in g]})
+    return out
+
+
 def _block(sd: _Side, sa: _Side, S: np.ndarray, occ: list, virt: list) -> np.ndarray:
     return sd.C[occ] @ S @ sa.C[virt].T
 
@@ -189,11 +209,14 @@ def _block(sd: _Side, sa: _Side, S: np.ndarray, occ: list, virt: list) -> np.nda
 def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, method: str = "gxtb",
             engine_kwds: Optional[dict] = None, fragments: Optional[list] = None,
             reference_A=None, whole_molden: Optional[str] = None, cubes: bool = True,
+            groups: Optional[list] = None,
             pick: Optional[dict] = None, max_points: int = orb.MAX_POINTS) -> dict:
     """Frontier-orbital interactions between the molecules of one geometry.
 
     `fragments`: atom index lists (else perceived on `reference_A`, or on the
-    geometry itself). Returns
+    geometry itself). `groups`: lists of those molecules' indices, each list
+    one fragment (several molecules computed together, e.g. a water dimer as
+    one side). Returns
       fragments: [{atoms, formula, charge, multiplicity,
                    levels: [{name, energy_ev, degeneracy, occupied}]}],
       pairs: [{donor, acceptor, occ, virt (the level names of the best
@@ -224,6 +247,9 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
     else:
         ref = xyz if reference_A is None else np.asarray(reference_A, dtype=float).reshape(-1, 3)
         frags = fragments_of(symbols, ref, charge)
+    molecules = [{k: f[k] for k in ("atoms", "formula", "charge", "multiplicity")} for f in frags]
+    if groups and not fragments:
+        frags = _grouped(frags, groups, symbols)
     covered = sorted(a for f in frags for a in f["atoms"])
     if covered != list(range(len(symbols))):
         raise orb.OrbitalError("the fragments must split the atoms: each atom in exactly one")
@@ -285,7 +311,8 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
 
     here = [tuple(m) for m in components(len(symbols), perceive_bonds(list(symbols), xyz))]
     result = {"method": method, "fragments": out_frags, "pairs": pairs,
-              "cut": {"same": sorted(here) == sorted(tuple(f["atoms"]) for f in frags), "here": len(here)}}
+              "cut": {"same": sorted(here) == sorted(tuple(m["atoms"]) for m in molecules), "here": len(here),
+                      "molecules": molecules, "groups": [list(g) for g in groups] if groups and not fragments else None}}
     if whole_molden is not None:
         try:
             result["whole"] = _composition(_Side(whole_molden, method), sides)
