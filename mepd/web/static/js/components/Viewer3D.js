@@ -193,7 +193,8 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
         <input type="checkbox" checked=${motion} onChange=${(e) => setMotion(e.target.checked)} /> motion</label>`}
       <span class="qmmm-legend"><i class="qm"></i>QM <i class="link"></i>cut bond <i class="act"></i>moving <i class="frz"></i>frozen</span>
     </div>`}
-    ${orbitals && !qmmm && source && html`<${OrbitalBar} mo=${mo} fmo=${fmo} index=${moIndex} path=${Array.isArray(source) && source.length > 1} labelBase=${labelBase || 1} />`}
+    ${orbitals && !qmmm && source && html`<${OrbitalBar} mo=${mo} fmo=${fmo} index=${moIndex} path=${Array.isArray(source) && source.length > 1}
+      nframes=${Array.isArray(source) ? source.length : 1} labelBase=${labelBase || 1} />`}
   </div>`;
 }
 
@@ -506,7 +507,20 @@ function fragLabel(f) {
 }
 const levelName = (l) => `${l.name.toUpperCase().replace('-', '−')}${l.degeneracy > 1 ? ` (${l.degeneracy}-fold)` : ''}`;
 
-function FragmentBar({ fmo, index, path }) {
+// Which geometry the molecules were cut from, said in the bar: it decides what "the molecules" are.
+function cutNote(cut, nframes) {
+  if (!cut?.from) return null;
+  const where = { start: `the path's start (frame 1)`, end: `the path's end (frame ${nframes})`, shown: 'this geometry', given: 'a hand-made cut' }[cut.from];
+  const label = { start: 'cut at path start', end: 'cut at path end', shown: 'cut here', given: 'cut by hand' }[cut.from];
+  const tip = cut.from === 'shown'
+    ? 'The molecules are the separate pieces of the geometry shown (bonds perceived from distances).'
+    : `The molecules are the separate pieces of ${where} (bonds perceived from distances), and every frame is split the same way, `
+      + 'so the same molecules are followed through the whole path. For A + B → C cut at the start, a frame where A and B have '
+      + `bonded is still split into A's and B's atoms.${cut.from === 'end' ? ' (The start is one molecule, so the end is used.)' : ''}`;
+  return { label, tip };
+}
+
+function FragmentBar({ fmo, index, path, nframes = 1 }) {
   const r = fmo.result;
   if (fmo.error) return html`<span class="warn-text" title=${fmo.error}>${/one molecule/.test(fmo.error) ? 'one molecule: nothing to split' : 'no fragment orbitals'}</span>`;
   const { pair, drawn } = fmo;
@@ -529,6 +543,7 @@ function FragmentBar({ fmo, index, path }) {
     r.whole[k].map((w) => `${Math.round(w.weight * 100)}% ${fragLabel(F[w.fragment])} ${w.level === 'other' ? '(other orbitals)' : w.level.toUpperCase().replace('-', '−')}`).join(' + ')}`).join('\n');
   const series = path && fmo.profile ? fmo.profile.map((fr) => fr?.find((p) => p.donor === pair.donor && p.acceptor === pair.acceptor)
     ?.table.find(([o, v]) => o === drawn.occ && v === drawn.virt)?.[2] ?? null) : null;
+  const note = cutNote(r.cut, nframes);
   // Two radicals' singly occupied levels: one electron each, paired into a bond (not a donation).
   const pairing = drawn.occ === 'somo' && drawn.virt === 'somo';
   return html`
@@ -549,10 +564,12 @@ function FragmentBar({ fmo, index, path }) {
     </span>
     ${series && html`<${Sparkline} values=${series} index=${index} />`}
     ${path && fmo.profile === null && html`<span class="spinner" title="Computing every frame" aria-hidden="true"></span>`}
+    ${note && html`<span class="mo-sites" title=${note.tip}>${note.label}</span>`}
+    ${r.cut && r.cut.same === false && html`<span class="warn-text" title=${`At this frame the atoms do not split into the same molecules (bonds perceived from distances give ${r.cut.here === 1 ? 'one molecule' : `${r.cut.here} pieces`} here). The orbitals are still those of the molecules of the cut, each computed alone at this frame's geometry: where they have bonded, those are pieces with broken bonds, not molecules that exist here. Read overlap and gap here as how far the separate molecules' orbitals have merged.`}>⚠ bonded at this frame</span>`}
     ${whole && html`<span class="mo-sites" title=${whole}>whole-system mix</span>`}`;
 }
 
-export function OrbitalBar({ mo, fmo = null, index = 0, path = false, labelBase = 1 }) {
+export function OrbitalBar({ mo, fmo = null, index = 0, path = false, nframes = 1, labelBase = 1 }) {
   const r = mo.result;
   const open = r?.open_shell;
   const name = (k) => (k === 'homo' && open ? 'SOMO' : k.toUpperCase());
@@ -569,7 +586,7 @@ export function OrbitalBar({ mo, fmo = null, index = 0, path = false, labelBase 
       <button class=${mo.frag ? '' : 'on'} onClick=${() => mo.setFrag(false)} title="The orbitals of the whole system">Whole</button>
       <button class=${mo.frag ? 'on' : ''} onClick=${() => mo.setFrag(true)}
         title="Each molecule's own orbitals, computed on its own where it sits: a filled orbital of one and an empty orbital of another, and how much they overlap (the frontier-orbital picture of why molecules bond)">Fragments</button></span>`}
-    ${mo.on && mo.frag && fmo && html`<${FragmentBar} fmo=${fmo} index=${index} path=${path} />`}
+    ${mo.on && mo.frag && fmo && html`<${FragmentBar} fmo=${fmo} index=${index} path=${path} nframes=${nframes} />`}
     ${mo.on && mo.frag && fmo && html`<label class="mo-pct" title="The surfaces enclose this share of each orbital's density (|ψ|²). Smaller: tighter lobes.">
         <input type="number" class="tiny" min="1" max="99.9" step="5" value=${mo.pct}
           onChange=${(e) => { const v = +e.target.value; if (v > 0 && v < 100) mo.setPct(v); }} /> % density</label>`}

@@ -37,6 +37,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   Radicals' singly occupied levels (SOMOs) are offered on both sides, so two radicals' bond shows as
   "Pairs X SOMO with Y SOMO". In ethanol → C₂H₅O• + H• the SOMO–SOMO overlap is 0.43 → 0.17 → 0.04 along
   the IRC; before, only filled → empty pairs (≤ 0.016 at the IRC midpoint) were offered.
+  The bar says which geometry the molecules were cut from ("cut at path start", "cut at path end", "cut
+  here"), and warns "⚠ bonded at this frame" where the frame shown does not split into the same molecules:
+  there the orbitals are of pieces with broken bonds, each computed alone, not of molecules that exist at
+  that frame.
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS

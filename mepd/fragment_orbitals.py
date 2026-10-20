@@ -279,7 +279,13 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
     # outscore the real donation. Pairs that barely touch (|S| < MIN_S at every level) go last.
     pairs.sort(key=lambda p: (p["s"] < MIN_S, p["frontier_gap_ev"], -score(p["s"], p["gap_ev"])))
 
-    result = {"method": method, "fragments": out_frags, "pairs": pairs}
+    # Does the shown geometry split into the same molecules on its own? Not where they have bonded (a
+    # path's frames near the other end): the "molecules" are then pieces of one, cut apart.
+    from mepd.discovery.nanoreactor import components, perceive_bonds
+
+    here = [tuple(m) for m in components(len(symbols), perceive_bonds(list(symbols), xyz))]
+    result = {"method": method, "fragments": out_frags, "pairs": pairs,
+              "cut": {"same": sorted(here) == sorted(tuple(f["atoms"]) for f in frags), "here": len(here)}}
     if whole_molden is not None:
         try:
             result["whole"] = _composition(_Side(whole_molden, method), sides)
