@@ -30,7 +30,7 @@ import { Why } from './Why.js';
 // A calculation's charge and spin, and the job itself: its viewers show the orbitals of its own SCFs.
 // `live`: a running calculation's own view (its frames' orbitals on a quicker, coarser grid).
 const jobChem = (job, live = false) => ({ charge: job.charge, multiplicity: job.multiplicity, job: job.id,
-  live: live && ['running', 'queued'].includes(job.status) });
+  live: live && ['running', 'queued'].includes(job.status), name: job.title });
 
 function livePaths(progress, now) {
   const streams = { ...(progress?.streams || {}) };
