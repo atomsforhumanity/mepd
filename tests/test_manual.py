@@ -24,7 +24,7 @@ def test_ui_links_point_at_existing_sections():
         # (links built from a choice: /manual/orbitals#${x ? 'a' : 'b'})
         for page, rest in re.findall(r"/manual/([a-z0-9-]+)#\$\{([^}]*)\}", js.read_text()):
             links |= {(page, a) for a in re.findall(r"'([a-z0-9-]+)'", rest)}
-    assert ("orbitals", "orbital-explorer") in links and ("orbitals", "whole-orbitals") in links
+    assert ("orbitals", "fragment-orbitals") in links and ("orbitals", "whole-orbitals") in links
     for page, anchor in links:
         assert f'id="{anchor}"' in manual.render(page), (page, anchor)
 
@@ -45,5 +45,5 @@ def test_the_route(tmp_path):
     with TestClient(create_app(tmp_path / "ws", max_concurrent=1)) as c:
         assert c.get("/manual").status_code == 200
         r = c.get("/manual/orbitals")
-        assert r.status_code == 200 and "Orbital explorer" in r.text
+        assert r.status_code == 200 and "Fragment orbitals" in r.text
         assert c.get("/manual/missing").status_code == 404

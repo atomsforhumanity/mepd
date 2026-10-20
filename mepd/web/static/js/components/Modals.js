@@ -5,7 +5,6 @@ import { api, attempt } from '../api.js';
 import { openJob, prefs, set, state, useStore } from '../store.js';
 import { fmtAgo, readFileText } from '../util.js';
 import { clampToSchema, defaultsFor, rememberedValues } from './ParamForm.js';
-import { OrbitalExplorer } from './OrbitalExplorer.js';
 import { defaultProfile } from './Actions.js';
 
 function Modal({ title, children, onClose }) {
@@ -234,7 +233,6 @@ export function Modals() {
   if (!modal) return null;
   if (modal.kind === 'quick') return html`<${QuickStart} onClose=${close} />`;
   if (modal.kind === 'import') return html`<${ImportResult} onClose=${close} />`;
-  if (modal.kind === 'orbitals') return html`<${OrbitalExplorer} frames=${modal.frames} frame=${modal.frame} chem=${modal.chem} title=${modal.title} onClose=${close} />`;
   if (modal.kind === 'sessions') return html`<${Sessions} onClose=${close} startWith=${modal.startWith} />`;
   return null;
 }

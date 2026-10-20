@@ -12,24 +12,27 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
-- **Orbital explorer** (`mepd/orbital_levels.py`, `mepd/web/orbital_explorer.py`, `OrbitalExplorer.js`,
-  `POST /api/orbital-explorer`). The orbital bar under every viewer now shows only HOMO | LUMO, its energy,
-  **Explore…** and a link to the manual. Explore… opens a full-window view with three parts:
-  - **At this frame:** an MO interaction diagram. Each molecule's own orbitals (computed alone,
-    `mepd/fragment_orbitals.py`) sit beside the whole system's, on one energy scale. Lines show how much of
-    each whole orbital each molecule's orbital makes up.
-  - **Along the path:** a correlation diagram of every orbital's energy, frame by frame. Each line is one
-    orbital, followed by its exact overlap with the previous frame (translation taken out), so it keeps its
-    character through level crossings and carries its sign.
-  - **The 3D view:** draws what is clicked. Shift-click adds a second orbital, pale and in phase, with
-    their overlap and gap; **Start ↔ end** shows them at both ends of the path.
-
-  Molecules are cut at a path end that holds more than one, with charges and spins from Lewis structures.
-  Radicals' SOMOs pair: in ethanol → C₂H₅O• + H•, the two SOMOs form the whole HOMO and σ\*, and the σ\*
-  falls from about +3 to −7 eV along the IRC. Overlaps are analytic (Obara–Saika over each molden basis;
-  orthonormal to 1e-10 for g-xTB / GFN2-xTB, 1e-4 for TeraChem). Results are kept in
-  `<workspace>/orbitals/explorer/`, and surfaces are built only for what is drawn. A 65-frame IRC with two
-  molecules took 3–4 s.
+- **Fragment orbitals** (`mepd/fragment_orbitals.py`, `POST /api/fragment-orbitals`, Orbitals › Fragments).
+  The geometry is cut into its molecules (bonding of a path's first frame, so a TS keeps its reactants;
+  charges and spins from Lewis structures). Each molecule gets its own single point where it sits. For every
+  donor → acceptor pair, the bar shows the overlap |⟨occupied|empty⟩| and the gap of their frontier levels,
+  the direction with the smaller HOMO→LUMO gap first (within it, the levels with the largest S²/ΔE), and draws both orbitals together (donor dark, acceptor pale, in phase). Overlaps
+  are analytic (Obara–Saika over the molden basis; every orbital checks orthonormal to 1e-10 for g-xTB,
+  GFN2-xTB and TeraChem). Degenerate levels count as one level, so hydroxide attacking CH₃Cl gives from
+  its σ lone pair (HOMO−2), not its π pair. A path shows |S| frame by frame
+  (`/api/fragment-orbitals/profile`). The tooltip gives the whole system's HOMO / LUMO as fragment
+  orbitals. Suprafacial [2+2] HOMO→LUMO overlap comes out exactly 0, and Diels–Alder's does not.
+  Paths behave like the whole system's orbitals. Each result is kept on disk
+  (`<workspace>/orbitals/fragments/`, newest 500 MB, `mepd/web/fragment_store.py`), and the profile request
+  builds every frame. The viewer loads frames ahead in playing order, with the same orbitals chosen at every
+  frame. A frame's surfaces stay until the next frame's arrive, and the phase is carried from frame to frame.
+  On a 65-frame IRC (GFN2), every frame was ready 4.5 s after opening, and playback always drew each frame's
+  own surfaces. The bar reads "Electrons from [molecule, filled level] into [molecule, empty level] ·
+  overlap · gap"; molecules go by formula and charge (Br⁻), degenerate levels say "3-fold", and any number
+  of molecules is offered.
+  Radicals' singly occupied levels (SOMOs) are offered on both sides, so two radicals' bond shows as
+  "Pairs X SOMO with Y SOMO". In ethanol → C₂H₅O• + H• the SOMO–SOMO overlap is 0.43 → 0.17 → 0.04 along
+  the IRC; before, only filled → empty pairs (≤ 0.016 at the IRC midpoint) were offered.
 - **Orbitals come from the calculation itself.** Every SCF a calculation runs with g-xTB / GFN2-xTB or
   TeraChem keeps its orbitals (molden) in the job's `orbitals/` folder (the newest 400; `--molden` costs
   g-xTB ~2 ms a call). The viewer reads the orbitals of the geometry it shows from there, so a TS
