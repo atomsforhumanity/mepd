@@ -1631,7 +1631,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
         return symbols, coords
 
-    def _fragment_method(ws, body: dict) -> tuple[str, dict]:
+    def _orbital_method(ws, body: dict) -> tuple[str, dict]:
         from mepd.web import orbital_store
 
         method, engine_kwds = orbital_store.session_method(ws)
@@ -1642,67 +1642,70 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("unknown calculation")
         return str(method), engine_kwds
 
-    def _fragment_args(ws, body: dict, symbols: list) -> dict:
-        """What a fragment-orbital result depends on, from a request (mepd.web.fragment_store.ensure)."""
-        from mepd import orbitals
-        from mepd.web import fragment_store
-
-        method, engine_kwds = _fragment_method(ws, body)
-        charge, mult = int(body.get("charge") or 0), int(body.get("multiplicity") or 1)
-        refs = body.get("reference") or []
-        refs = [_orbital_geometry(t) for t in ([refs] if isinstance(refs, str) else refs[:2])]
-        pick = body.get("pick") if isinstance(body.get("pick"), dict) else None
-        # A path's frames (`follow`): the coarser grid, as the whole system's orbitals of a path.
-        return {"charge": charge, "multiplicity": mult, "method": method, "engine_kwds": engine_kwds,
-                "reference": fragment_store.reference_for(symbols, refs, charge),
-                "fragments": body.get("fragments") or None, "pick": pick,
-                "max_points": orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS,
-                "job": str(body["job"]) if body.get("job") else None}
-
-    @app.post("/api/fragment-orbitals")
-    def fragment_orbitals(body: dict, request: Request):
-        """The frontier orbitals of each molecule of a geometry {xyz, charge, multiplicity,
-        reference (xyz, or a path's [first, last] frames: the first holding more than one molecule
-        cuts it into molecules), fragments (atom lists, instead), job, pick {donor, acceptor, occ,
-        virt}: the two levels drawn, follow (a path's frame: coarser grid)}, each run alone where it
-        sits, and how they overlap: per donor -> acceptor pair, the overlaps and gaps of their
-        frontier levels (mepd.fragment_orbitals). With the whole system's own orbitals at hand (a
-        kept SCF at this geometry), its HOMO and LUMO as the molecules' orbitals. Kept on disk
-        (mepd.web.fragment_store): asking again is a file read."""
+    def _gz(data: bytes, request: Request) -> Response:
         import gzip
 
-        from mepd.web import fragment_store
-
-        ws = W()
-        symbols, coords = _orbital_geometry(body.get("xyz"))
-        try:
-            data = fragment_store.build(ws, symbols, coords, **_fragment_args(ws, body, symbols))
-        except WorkspaceError:
-            raise
-        except Exception as exc:
-            raise WorkspaceError(f"no fragment orbitals: {exc}") from None
         if "gzip" in request.headers.get("accept-encoding", ""):
             return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
         return Response(gzip.decompress(data), media_type="application/json")
 
-    @app.post("/api/fragment-orbitals/profile")
-    def fragment_orbitals_profile(body: dict):
-        """Along a path {frames: [xyz], and what /api/fragment-orbitals takes}: every frame built
-        and kept (so playing it back reads files), and per frame each donor -> acceptor pair's
-        level overlaps [[occ, virt, |S|]]."""
-        from mepd.web import fragment_store
+    @app.post("/api/orbital-explorer")
+    def orbital_explorer(body: dict, request: Request):
+        """The orbital explorer's numbers for a geometry {xyz} or a path {frames: [xyz]} (with
+        charge, multiplicity, job): per frame the whole system's orbitals around its frontier and
+        each molecule's computed alone, how the whole orbitals are made of the molecules', the
+        molecules' overlaps, and each system's orbitals followed through the path by overlap
+        (mepd.orbital_levels). Kept per session (mepd.web.orbital_explorer): `key` names it for
+        /api/orbital-explorer/{key}/cube."""
+        from mepd.web import orbital_explorer
 
         ws = W()
-        frames = list(body.get("frames") or [])
-        if not frames:
-            raise WorkspaceError("a profile needs the path's frames")
-        if len(frames) > 400:
-            raise WorkspaceError(f"{len(frames)} frames: a profile takes up to 400")
-        geoms = [_orbital_geometry(f) for f in frames]
+        texts = list(body.get("frames") or ([body["xyz"]] if body.get("xyz") else []))
+        if not texts:
+            raise WorkspaceError("the orbital explorer needs a geometry or a path")
+        if len(texts) > 400:
+            raise WorkspaceError(f"{len(texts)} frames: the orbital explorer takes up to 400")
+        geoms = [_orbital_geometry(t) for t in texts]
         symbols = geoms[0][0]
         if any(g[0] != symbols for g in geoms):
             raise WorkspaceError("the frames must have the same atoms")
-        return {"pairs": fragment_store.profile(ws, geoms, **_fragment_args(ws, body, symbols))}
+        method, engine_kwds = _orbital_method(ws, body)
+        try:
+            _, data = orbital_explorer.levels(ws, symbols, [g[1] for g in geoms], charge=int(body.get("charge") or 0),
+                                              multiplicity=int(body.get("multiplicity") or 1), method=method,
+                                              engine_kwds=engine_kwds, job=str(body["job"]) if body.get("job") else None)
+        except Exception as exc:
+            raise WorkspaceError(f"no orbitals: {exc}") from None
+        return _gz(data, request)
+
+    @app.get("/api/orbital-explorer/{key}/cube")
+    def orbital_explorer_cube(key: str, frame: int, system: str, i: int, request: Request, sign: int = 1,
+                              coarse: bool = False):
+        """One orbital of a kept analysis as a cube file: `system` "whole" or a fragment's number,
+        `i` its orbital (sorted alpha orbitals), `sign` +1 / -1 (a path's carried phase)."""
+        from mepd import orbitals
+        from mepd.web import orbital_explorer
+
+        if not re.fullmatch(r"[0-9a-f]{24}", key) or not (system == "whole" or system.isdigit()):
+            raise WorkspaceError("unknown orbital")
+        ws = W()
+        method, _ = _orbital_method(ws, {})
+        levels = orbital_explorer.folder(ws) / key / "levels.json.gz"
+        if levels.is_file():
+            import gzip
+            import json
+
+            method = json.loads(gzip.decompress(levels.read_bytes())).get("method", method)
+        try:
+            data = orbital_explorer.cube(ws, key, frame, system, i, sign,
+                                         orbitals.LIVE_POINTS if coarse else orbitals.MAX_POINTS, method)
+        except FileNotFoundError:
+            raise WorkspaceError("this orbital is not kept: open the explorer again") from None
+        except Exception as exc:
+            raise WorkspaceError(f"no orbital: {exc}") from None
+        resp = _gz(data, request)
+        resp.headers["Cache-Control"] = "private, max-age=86400"
+        return resp
 
     # ------------------------------------------------------------ edges
     @app.post("/api/edges")

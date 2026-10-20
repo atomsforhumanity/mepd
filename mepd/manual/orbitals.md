@@ -1,15 +1,18 @@
 # Orbitals
 
-Any 3D view of a structure or a path can show frontier orbitals: switch on
-**Orbitals** under the viewer. There are two kinds:
+Any 3D view of a structure or a path can show orbitals: switch on
+**Orbitals** under the viewer to draw the HOMO or LUMO of what is shown.
+**Explore…** opens the [orbital explorer](#orbital-explorer) for everything
+else:
 
-- **Whole**: the orbitals of the complete system shown (a molecule, a
-  complex, a TS).
-- **Fragments**: each molecule's own orbitals, computed separately, and how
-  a filled orbital of one overlaps an empty orbital of another. This is the
-  frontier-orbital picture of why two molecules react.
+- **Whole orbitals**: the orbitals of the complete system shown (a molecule,
+  a complex, a TS).
+- **Fragment orbitals**: each molecule's own orbitals, computed separately,
+  and how a filled orbital of one overlaps an empty orbital of another. This
+  is the frontier-orbital picture of why two molecules react.
+- How both change along a path, frame by frame.
 
-Both come from the same kind of calculation: a single point that writes the
+Both kinds come from the same calculation: a single point that writes the
 orbitals to a molden file, at the session's level of theory. What differs is
 which system that calculation is run on and what is done with the result.
 
@@ -54,9 +57,9 @@ shows as **SOMO**).
   ones, and g-xTB and GFN2-xTB scale Cartesian d functions differently. Each
   is read its own way. The check is that every orbital integrates to 1.
 - The surface is drawn where it encloses the chosen share of the orbital's
-  density (**% density**, 85 % by default): blue for the + lobe, red for the −
-  lobe.
-- "on C4 29 %, …" is where the orbital sits: |ψ|² summed over the grid, each
+  density (**% density** in the explorer, 85 % by default, used in every
+  view): blue for the + lobe, red for the − lobe.
+- Where the orbital sits (in the tooltip of its energy, "C4 29 %, …"): |ψ|² summed over the grid, each
   point counted for its nearest atom.
 
 ### Along a path
@@ -67,6 +70,63 @@ the frame before it (sampled around every atom) and flipped where needed, so
 the colours stay consistent from the first frame on. When a calculation
 finishes, the orbitals of its result frames are built ahead, and the viewer
 loads four frames at a time in playing order.
+
+## Orbital explorer
+
+**Explore…** in the orbital bar opens the orbital explorer over the whole
+window (Esc closes it). It has three parts that work together:
+
+- **The 3D view** draws what you click in either diagram. Shift-click adds a
+  second orbital: the first is drawn dark, the second pale, and the readout
+  gives their **overlap** and **gap**. The second is drawn with its sign
+  chosen so that the overlap is positive: **where the same colours meet, the
+  two overlap in phase** (bonding).
+- **At this frame** is an MO interaction diagram. The first molecule's own
+  orbitals are on the left, the whole system's in the middle, and the other
+  molecules' on the right, all on one energy scale (eV). Solid lines are
+  filled orbitals, dashed lines are empty, and a dot marks a singly occupied
+  one. The lines between columns show how much of each whole orbital each
+  molecule's orbital makes up; the thicker the line, the larger the share.
+  Hovering over an orbital gives its energy, occupation, and for a whole
+  orbital what it is made of. **More levels** shows HOMO−4 … LUMO+4 instead
+  of HOMO−1 … LUMO+1.
+- **Along the path** is a correlation diagram: each orbital's energy at every
+  frame. Each line is *one orbital followed through the path*, not "the
+  HOMO" at each frame, so a line keeps its character where two levels cross.
+  A line that changes from solid to dashed is a filled orbital becoming an
+  empty one, an orbital-symmetry crossing. The buttons above the diagram show
+  or hide each system. Click a line to draw that orbital, or click anywhere
+  else to go to that frame.
+
+**Start ↔ end** shows the drawn orbitals at the first and last frame side by
+side: what each one looks like before and after the reaction.
+
+When it opens on two or more molecules, the explorer draws the likeliest
+donation first: the filled frontier orbital of one molecule and the empty
+(or half-filled) frontier orbital of another with the smallest gap between
+them. With one molecule, it draws the whole system's HOMO.
+
+### How orbitals are followed along a path
+
+Consecutive frames' orbitals are matched by their overlap, calculated
+exactly from the two frames' basis functions after taking out the system's
+translation. An orbital continues its line into the next frame's orbital it
+overlaps most (an assignment over the orbitals near the frontier), as long as
+that overlap is at least 0.5. The sign of each SCF's orbitals is arbitrary,
+so where the match comes out negative the line's sign flips: its lobes keep
+their colours from frame to frame.
+
+### What is computed, and where it is kept
+
+When the explorer opens, every frame of the path gets the whole system's
+orbitals (the calculation's own SCF where it kept one, else a single point)
+and each molecule's orbitals on its own. These are numbers only: energies,
+occupations, contributions and overlaps. Surfaces are built only for the
+orbitals drawn, and then for the frames ahead in playing order.
+
+Everything is kept in `<workspace>/orbitals/explorer/` (newest 1 GB), so
+opening the explorer again, playing the path or comparing its ends reads
+files. A 65-frame IRC with two molecules took 3–4 s with GFN2-xTB.
 
 ## Fragment orbitals
 
@@ -79,7 +139,8 @@ molecule.
 On a path, the cut is made at an end of the path that holds more than one
 molecule (the first frame, else the last), and every frame keeps that cut.
 This way a transition state, or a frame near the products, is still split
-into the reactants.
+into the reactants. When both ends are one molecule, only the whole system
+is shown.
 
 ### 2. Charge and spin of each molecule
 
@@ -93,7 +154,8 @@ number of electrons is a doublet (shown with •).
 
 Each molecule gets its own single point, at exactly its coordinates in the
 shown frame, with the session's method. The other molecules are not present:
-there is no polarization by them, no charge transfer, and no solvent.
+there is no polarization by them, no charge transfer, and no solvent. See
+[What "computed alone" means](#what-computed-alone-means).
 
 **Why:** frontier-orbital theory explains bonding from the orbitals of the
 separate, unperturbed molecules. One gives electrons from a filled orbital
@@ -101,41 +163,33 @@ into another's empty orbital, and how strongly depends on how much the two
 orbitals overlap and how close they are in energy. The whole system's
 orbitals have already mixed, so they cannot show this directly.
 
-These are always new single points: no calculation in the workspace ran an
-isolated molecule. They are cached per geometry.
+### 4. Radicals
 
-### 4. Energy levels
+A molecule with an unpaired electron has a singly occupied orbital
+(**SOMO**). It can give its electron or take one. Two radicals bond by
+pairing their SOMOs, one electron from each; the readout then says "pair
+overlap". In ethanol → C₂H₅O• + H•, that SOMO–SOMO overlap is 0.43 where the
+C–H bond is intact, 0.17 halfway along the IRC and 0.04 apart. In the
+interaction diagram the two SOMOs combine into the whole system's HOMO (the
+C–H bond) and LUMO (σ\*). For a SOMO pair the gap is the difference of the
+two SOMO energies: a sign of how polar the bond will be, not an excitation.
 
-Each molecule's orbitals are sorted by energy as for the whole system.
-Orbitals within 0.02 eV of each other are one **level**. Bromide's three 4p
-lone pairs, for example, are one level: "HOMO (3-fold)". The next level down
-is then HOMO−3, because orbitals are still counted one by one (the three 4p
-orbitals are HOMO, HOMO−1 and HOMO−2). Three filled and three empty levels
-are kept for each molecule.
+### 5. Degenerate orbitals
 
-**Radicals.** A molecule with an unpaired electron has a singly occupied
-level (**SOMO**). It can give its electron or take one, so it is offered on
-both sides. Two radicals bond by pairing their SOMOs, one electron from each
-("Pairs C₂H₅O• SOMO with H• SOMO"). In ethanol → C₂H₅O• + H•, that SOMO–SOMO
-overlap is 0.43 where the C–H bond is intact, 0.17 halfway along the IRC and
-0.04 apart, while no filled → empty pair exceeds 0.12. For a SOMO pair the
-"gap" is the difference of the two SOMO energies: a sign of how polar the
-bond will be, not an excitation.
+Orbitals of the same energy (bromide's three 4p lone pairs, hydroxide's π
+pair) are drawn side by side at one height. Any mix of them is an equally
+valid choice, so one of them alone can have any overlap from zero to the
+maximum. Look at all of them: the overlap of the whole set with a partner
+orbital is √(sum of their squares). Hydroxide's π pair has exactly zero
+overlap with CH₃Cl's σ\* in a backside approach; the attack comes from its σ
+lone pair (HOMO−2).
 
-**Why levels:** any mix of degenerate orbitals is an equally valid choice, and
-one of them alone can have any overlap from zero to the maximum depending on
-that arbitrary choice. Hydroxide's HOMO is a degenerate π pair, which has
-exactly zero overlap with CH₃Cl's σ\* in a backside approach. The attack comes
-from its σ lone pair (HOMO−2). Treating the pair as one level makes the
-number independent of the arbitrary mix.
-
-### 5. Overlap
+### 6. Overlap
 
 The **overlap** is how much two orbitals share the same space: 0 means not at
 all, and 1 means identical. It is calculated exactly from the two molecules'
-basis functions (Gaussian overlap integrals, Obara–Saika), not on a grid. For
-two levels, it is the square root of the sum of squares over their orbitals,
-which does not depend on how a degenerate set is mixed.
+basis functions (Gaussian overlap integrals, Obara–Saika), not on a grid.
+Overlaps below 0.005 are shown as "< 0.005".
 
 An overlap of 0 means the two orbitals cannot mix, however close they are in
 energy. Two ethylenes face to face (a suprafacial [2+2]) have exactly zero
@@ -146,54 +200,73 @@ The check that each program's files are read correctly: every molecule's
 orbitals come out orthonormal through these integrals to 1e-10 (g-xTB,
 GFN2-xTB; 1e-4 for TeraChem's 6-31G\*).
 
-### 6. Gap
+### 7. Gap
 
-The **gap** is the energy of the empty level minus that of the filled level,
-each from its own molecule's calculation. For an anion it can be small or
-negative: gas-phase anion orbitals sit high (hydroxide's HOMO is at −0.2 eV
-with GFN2-xTB, above CH₃Cl's LUMO at −4.5 eV).
+The **gap** is the energy difference of the two drawn orbitals, each from its
+own molecule's calculation. For an anion it can be small or even negative:
+gas-phase anion orbitals sit high (hydroxide's HOMO is at −0.2 eV with
+GFN2-xTB, above CH₃Cl's LUMO at −4.5 eV).
 
-### 7. What is shown first
+## Why the whole and fragment gaps differ
 
-- **Which way electrons go.** Of the possible directions (molecule X's filled
-  orbitals into molecule Y's empty ones), the one with the smallest HOMO →
-  LUMO gap comes first, the frontier-control rule. Directions whose overlap is
-  below 0.001 at every level go last.
-- **Which levels.** Within a direction, the default is the pair of levels with
-  the largest overlap² / gap, with gaps below 1 eV counted as 1 eV. Both menus
-  in the bar can pick any other.
+They measure different things. The **whole gap** is the LUMO minus the HOMO
+of one calculation on the whole system: the lowest empty level minus the
+highest filled level, wherever they are. A **fragment gap** is one molecule's
+empty orbital minus another molecule's filled orbital, from two separate
+calculations: how far apart the two orbitals are that would mix in a
+donation.
 
-**Why not rank everything by overlap² / gap:** in a minimal basis, an anion's
-empty levels include many-fold d sets 20+ eV up. Summed over their orbitals,
-they outscored the real donation (bromide's HOMO → the C–Cl σ\*).
+Butadiene above ethylene (GFN2-xTB, eV):
 
-### 8. What is drawn
+| Separation | Whole HOMO | Whole LUMO | Whole gap | Butadiene HOMO → ethylene LUMO |
+|---|---|---|---|---|
+| 6.0 Å | −10.34 (butadiene) | −6.85 (butadiene) | 3.49 | 4.59 |
+| 2.6 Å | −10.39 (butadiene) | −6.83 (butadiene) | 3.55 | 4.59 |
+| 2.2 Å | −9.94 (mixed) | −6.74 (butadiene) | 3.20 | 4.59 |
 
-The donor's filled level is drawn in dark blue/red and the acceptor's empty
-level in pale blue/red, both in place. Within degenerate levels, the mix of
-each that overlaps the other best is drawn. Signs are chosen so that the
-overlap is positive: **where the same colours meet, the two overlap in
-phase** (bonding).
+- **Far apart**, the whole orbitals are the molecules' own: the whole HOMO is
+  the higher of the two molecules' HOMOs and the whole LUMO the lower of their
+  LUMOs. At 6 Å both sit on butadiene, so the whole gap is butadiene's own
+  (3.49 eV), not the donation's (4.59 eV).
+- **Close up, filled and empty orbitals mix**: the filled one is pushed down
+  and the empty one up, by about (βS)²/ΔE (β the interaction strength, S the
+  overlap, ΔE the fragment gap). That stabilization is the driving force
+  frontier-orbital theory counts, and the fragment gap is its ΔE.
+- **Close up, filled orbitals also repel**: two filled orbitals split into
+  an in-phase and an out-of-phase combination, and the out-of-phase one rises
+  (Pauli repulsion). At 2.2 Å the whole HOMO (−9.94 eV) sits above both
+  molecules' HOMOs (−10.36 and −11.24 eV), which is why the whole gap shrinks.
+- **Electrostatics** shift each molecule's levels in the other's field. This
+  is large for ions; see the anion example above.
 
-On a path:
+Use the fragment gap with the overlap to judge whether and which way two
+molecules' orbitals mix. Use the whole gap as a property of the system as it
+is, already mixed. Both are orbital energies, not excitation energies, and
+with g-xTB or GFN2-xTB they come from a minimal basis: compare trends rather
+than absolute values.
 
-- The same levels are drawn at every frame (the first frame's choice, until
-  changed).
-- Every frame is built on the server when the path is opened, and kept on
-  disk (`<workspace>/orbitals/fragments/`, newest 500 MB).
-- Frames load ahead in playing order, and a frame's surfaces stay on screen
-  until the next frame's arrive.
-- The phase is carried from frame to frame as for the whole orbitals.
-- A small plot shows the overlap at every frame, with a dot for the frame on
-  screen.
+## What "computed alone" means
 
-### 9. "Whole-system mix"
+A molecule's orbitals in the explorer are those of the molecule at its exact
+shape and position in that frame, with the other molecules removed. They
+include the **distortion** along the path: a C–Cl σ\* falling as the bond
+stretches is real. The **overlap** is computed with both molecules in place,
+so it is their true overlap. What they leave out:
 
-The tooltip gives the whole system's HOMO and LUMO in terms of the molecules'
-levels: the weight of each level is |⟨fragment orbital|whole orbital⟩|². The
-molecules' orbitals are not orthogonal to each other, so the weights describe
-the mix rather than split it exactly (the idea of charge decomposition
-analysis).
+1. **Polarization**: the other molecules' charges shift and distort the
+   orbitals (large for ions).
+2. **Pauli repulsion**: each molecule's filled orbitals must stay orthogonal
+   to the partner's filled orbitals, which squeezes and raises them up close.
+3. **Charge transfer**: the donation itself. Including it fully gives the
+   whole system's orbitals.
+
+Far from the transition state these are small, and the separate molecules'
+orbitals are the right starting point for frontier-orbital arguments. Near
+the transition state they are large: a molecule's orbital there describes
+the distorted molecule, not the electronic structure that is actually
+present. The trend of overlap and gap along the path still shows where the
+interaction switches on. The whole system's orbitals, and how they are made
+of the molecules' (the diagram's lines), show what the mixing produced.
 
 ## When HOMO → LUMO is not the picture
 
@@ -214,7 +287,8 @@ LUMO. The cases where it is not:
   Orbitals matter most between soft, polarizable partners.
 - **Several orbitals at once.** Metals use d orbitals and back-donation (a
   filled d into the ligand's π\* while the ligand gives into an empty d), so
-  two directions matter together. Read both directions in the menu.
+  two directions matter together. Draw both: each molecule's filled orbital
+  with the other's empty one.
 - **Distance.** Overlap falls off exponentially with distance. Far apart
   (a reactant complex) every value is small; compare values along the path,
   not with a fixed threshold. The plot under a path shows where it grows.
@@ -229,20 +303,15 @@ polarizing environment (an ion pair, a solvent) the real orbitals shift.
 
 - xtb's orbitals are those of a minimal basis: right in shape and ordering,
   not converged with basis set size.
-- Degenerate whole-system levels are not grouped as fragment levels are, so
-  one member of a degenerate set is shown.
 - Not covered yet: QM/MM systems, TeraChem through ChemCloud/QCCompute (falls
   back to GFN2-xTB), and the intermediate steps of xtb's internal
   optimizations.
 
 **Fragment orbitals**
 
-- **Isolated molecules.** No polarization by the partner and no charge
-  transfer. Orbitals optimized in the presence of the partner but kept on
-  their own molecule would show how each molecule's orbitals respond, and
-  give charge-transfer energies per direction. Extremely localized molecular
-  orbitals (ELMOs) and block-localized wavefunctions do this, but they need
-  an SCF program with access to the Fock matrix (e.g. PySCF), not xtb.
+- **Isolated molecules.** No polarization by the partner, no Pauli
+  repulsion, no charge transfer (see [What "computed alone"
+  means](#what-computed-alone-means)).
 - **No solvent.** Anion orbital energies are gas-phase and can give negative
   gaps. Implicit solvent for the fragment single points would make gaps
   between ions meaningful.
@@ -251,11 +320,19 @@ polarizing environment (an ion pair, a solvent) the real orbitals shift.
   no way to pick one yet.
 - **Charges from Lewis structures.** Ion pairs could be assigned the wrong way
   round. The whole system's partial charges could steer the assignment.
-- **Ranking constants** (0.02 eV degeneracy, overlap 0.001, 1 eV gap floor)
-  were chosen on a handful of cases (Diels–Alder, SN2 with halides and
-  hydroxide), not validated broadly.
-- **Cost on a path.** Every frame is two or more extra single points. Cheap
-  with xtb (about 0.5 s per frame for 16 atoms), slow with TeraChem.
+- **Following orbitals.** A line ends where no orbital of the next frame
+  overlaps it by 0.5 (after taking out translation, not rotation): large
+  steps or a turning molecule can break lines. Near-degenerate orbitals that
+  mix along the path can swap lines.
+- **Cost on a path.** Every frame is one whole-system and one or more fragment
+  single points: cheap with xtb (3–4 s for 65 frames of 16 atoms), slow with
+  TeraChem.
+- **Ways to include the partner, in increasing cost:** fragments embedded in
+  the partner's point charges (polarization only; xtb supports point-charge
+  embedding); block-localized orbitals (ALMO, BLW, ELMO), optimized in the
+  full system but kept on their own molecule (polarization and Pauli), which
+  also give a charge-transfer energy per direction; these need an SCF program
+  with access to the Fock matrix (e.g. PySCF), not xtb.
 
 ## References
 
