@@ -397,9 +397,13 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   // Cut at the other end, or grouped otherwise: other fragments, so the levels are chosen afresh.
   const setCut = (end) => { setCutEnd(end); setGroupsState(null); setChoice(null); last.current = null; };
   const setGroups = (g) => { setGroupsState(g); setChoice(null); last.current = null; };
-  const pickKey = `${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(choice)}`;
+  // Molecules given by the caller (Design: as drawn); a change (one added or removed) starts the choice afresh.
+  const fragKey = chem?.fragments ? JSON.stringify(chem.fragments) : '';
+  useEffect(() => { setChoice(null); setGroupsState(null); }, [fragKey]);
+  const pickKey = `${fragKey}|${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(choice)}`;
   const keyOf = (xyz) => `${pickKey}|${xyz}`;
-  const body = (xyz) => ({ xyz, reference: reference || undefined, cut: (path && cutEnd) || undefined, groups: groups || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
+  const body = (xyz) => ({ xyz, reference: reference || undefined, cut: (path && cutEnd) || undefined, groups: groups || undefined,
+    fragments: chem.fragments || undefined, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1,
     job: chem.job || undefined, pick: choice || undefined, follow: path || live || undefined });
   const needed = (xyz) => xyz && !cache.current.has(keyOf(xyz)) && !inFlight.current.has(keyOf(xyz));
   const targets = [];
@@ -443,7 +447,7 @@ export function useFragmentOrbitals(chem, source, index, enabled) {
   useEffect(() => {
     if (!enabled || !path || choice || !fresh || !own.drawn) return;
     const c = { donor: own.drawn.donor, acceptor: own.drawn.acceptor, occ: own.drawn.occ, virt: own.drawn.virt };
-    cache.current.set(`${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(c)}|${geom}`, own);
+    cache.current.set(`${fragKey}|${cutEnd}|${JSON.stringify(groups)}|${JSON.stringify(c)}|${geom}`, own);
     setChoice(c);
   }, [enabled, path, choice, fresh && own]);
   let r = fresh ? own : null;
@@ -517,8 +521,10 @@ const levelName = (l) => `${l.name.toUpperCase().replace('-', '−')}${l.degener
 function cutNote(cut, nframes) {
   if (!cut?.from) return null;
   const where = { start: `the path's start (frame 1)`, end: `the path's end (frame ${nframes})`, shown: 'this geometry', given: 'a hand-made cut' }[cut.from];
-  const label = { start: 'cut at path start', end: 'cut at path end', shown: 'cut here', given: 'cut by hand' }[cut.from];
-  const tip = cut.from === 'shown'
+  const label = { start: 'cut at path start', end: 'cut at path end', shown: 'cut here', given: 'molecules as drawn' }[cut.from];
+  const tip = cut.from === 'given'
+    ? 'The molecules as drawn here (their own bonds and formal charges), however close they sit to each other.'
+    : cut.from === 'shown'
     ? 'The molecules are the separate pieces of the geometry shown (bonds perceived from distances).'
     : `The molecules are the separate pieces of ${where} (bonds perceived from distances), and every frame is split the same way, `
       + 'so the same molecules are followed through the whole path. For A + B → C cut at the start, a frame where A and B have '
@@ -607,7 +613,7 @@ function FragmentBar({ fmo, index, path, nframes = 1 }) {
           <option value="start">cut at path start</option><option value="end">cut at path end</option></select>`
       : html`<span class="mo-sites" title=${note.tip}>${note.label}</span>`)}
     ${r.cut?.molecules?.length >= 3 && html`<${GroupPicker} key=${JSON.stringify(r.cut.groups)} cut=${r.cut} onApply=${fmo.setGroups} />`}
-    ${r.cut && r.cut.same === false && html`<span class="warn-text" title=${`At this frame the atoms do not split into the same molecules (bonds perceived from distances give ${r.cut.here === 1 ? 'one molecule' : `${r.cut.here} pieces`} here). The orbitals are still those of the molecules of the cut, each computed alone at this frame's geometry: where they have bonded, those are pieces with broken bonds, not molecules that exist here. Read overlap and gap here as how far the separate molecules' orbitals have merged.`}>⚠ bonded at this frame</span>`}
+    ${r.cut && r.cut.same === false && r.cut.from !== 'given' && html`<span class="warn-text" title=${`At this frame the atoms do not split into the same molecules (bonds perceived from distances give ${r.cut.here === 1 ? 'one molecule' : `${r.cut.here} pieces`} here). The orbitals are still those of the molecules of the cut, each computed alone at this frame's geometry: where they have bonded, those are pieces with broken bonds, not molecules that exist here. Read overlap and gap here as how far the separate molecules' orbitals have merged.`}>⚠ bonded at this frame</span>`}
     ${whole && html`<span class="mo-sites" title=${whole}>whole-system mix</span>`}`;
 }
 

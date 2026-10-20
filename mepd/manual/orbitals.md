@@ -95,6 +95,11 @@ cut at its end. When both ends of a path hold more than one molecule (A + B
 → C + D), the note is a menu: choose **cut at path end** to follow the
 products' molecules instead of the reactants'.
 
+**In Design**, the molecules are as drawn: Design's own bonds and formal
+charges decide them, however close they sit, so a placed ion or molecule is
+its own fragment (the bar says "molecules as drawn"). A bare cation (Mg²⁺,
+Li⁺, H⁺) has only empty orbitals, so it is offered only as an acceptor.
+
 **Grouping molecules.** With three or more molecules, **group molecules**
 assigns each a letter (A, B, C, …). Molecules with the same letter are one
 fragment, computed together at their positions in the frame: for example
@@ -186,13 +191,16 @@ differ](#why-the-whole-and-fragment-gaps-differ).
   orbitals into molecule Y's empty ones), the one with the smallest HOMO →
   LUMO gap comes first, the frontier-control rule. Directions whose overlap is
   below 0.001 at every level go last.
-- **Which levels.** Within a direction, the default is the pair of levels with
-  the largest overlap² / gap, with gaps below 1 eV counted as 1 eV. Both menus
-  in the bar can pick any other.
+- **Which levels.** Within a direction, the default is the frontier-most pair
+  that really overlaps: the lowest empty level, then the highest filled one,
+  whose overlap is at least half the best overlap of any pair. Both menus in
+  the bar can pick any other.
 
 **Why not rank everything by overlap² / gap:** in a minimal basis, an anion's
-empty levels include many-fold d sets 20+ eV up. Summed over their orbitals,
-they outscored the real donation (bromide's HOMO → the C–Cl σ\*).
+empty levels include many-fold d sets 20+ eV up, and a bare cation's levels
+sit far below a molecule's (every gap negative). Either way, many-fold p or d
+sets won on overlap alone over the real donation (bromide's HOMO → the C–Cl
+σ\*; water's σ lone pair → Mg²⁺ 3s).
 
 ### 8. What is drawn
 
