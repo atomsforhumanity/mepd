@@ -89,6 +89,8 @@ def test_fragments_follow_the_reference_and_charges_sum():
     close[5:] += [0.9, 0, 0]
     r2 = fo.analyze(syms, close, -1, 1, "gfn2", reference_A=xyz, cubes=False)
     assert len(r2["fragments"]) == 2
+    assert r["cut"] == {"same": True, "here": 2}
+    assert r2["cut"]["same"] is False and r2["cut"]["here"] == 1      # bonded here: the bar warns
     with pytest.raises(orbitals.OrbitalError):
         fo.analyze(syms[:5], xyz[:5], 0, 1, "gfn2")      # one molecule
 
@@ -115,6 +117,7 @@ def test_the_endpoints(tmp_path):
         assert r.status_code == 200, r.text
         out = r.json()
         assert out["label"] == "GFN2-xTB" and len(out["pairs"]) == 2 and "whole" in out and "drawn" in out
+        assert out["cut"]["from"] == "shown"
         other = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5), "pick": {
             "donor": 1, "acceptor": 0, "occ": "homo", "virt": "lumo"}}).json()["drawn"]
         assert (other["donor"], other["acceptor"], other["occ"]) == (1, 0, "homo")
@@ -137,6 +140,9 @@ def test_the_endpoints(tmp_path):
         # A path stored product-first: its last frame cuts it (here a bonded-looking 1.5 A frame first).
         r = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(1.5), "reference": [xyz_text(1.5), xyz_text(3.5)]})
         assert r.status_code == 200 and len(r.json()["fragments"]) == 2
+        assert r.json()["cut"] == {"same": False, "here": 1, "from": "end"}     # cut at the end; bonded here
+        start = c.post("/api/fragment-orbitals", json={"xyz": xyz_text(2.5), "reference": [xyz_text(3.5), xyz_text(1.5)]})
+        assert start.json()["cut"] == {"same": True, "here": 2, "from": "start"}
 
 
 def test_two_radicals_pair_their_somos():

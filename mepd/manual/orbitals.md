@@ -81,6 +81,18 @@ molecule (the first frame, else the last), and every frame keeps that cut.
 This way a transition state, or a frame near the products, is still split
 into the reactants.
 
+The bar says which geometry was cut: **cut at path start**, **cut at path
+end** (when the start is one molecule) or **cut here** (a single structure).
+Where the frame on screen does not split into the same molecules on its own,
+because they have bonded, it warns **⚠ bonded at this frame**. The orbitals
+shown there are still those of the cut's molecules, each computed alone at
+that frame's geometry: pieces with broken bonds, not molecules that exist at
+that frame. Their overlap and gap say how far the separate molecules'
+orbitals have merged, which is useful along the path, but they are not two
+molecules interacting. The choice of geometry decides what "the molecules"
+are, so keep it in mind when comparing paths: a path stored product-first is
+cut at its end.
+
 ### 2. Charge and spin of each molecule
 
 These come from Lewis structures. Of the charge assignments that add up to
