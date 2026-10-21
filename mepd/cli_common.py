@@ -1130,8 +1130,9 @@ def _pair_ts_guess_tasks(pair_dir: Path, charge: int, multiplicity: int) -> list
     if not (tree_dir / "node_0.xyz").exists():
         return []   # root search failed or was not run (--direct-only): already reported
     try:
-        pair_tree = TreeNode.read_from_disk(
+        pair_tree = TreeNode.read_from_disk(   # only each leaf's final path is used
             tree_dir, chain_parameters=ChainInputs(), charge=charge, multiplicity=multiplicity,
+            ends_only=True,
         )
     except Exception as exc:
         _warn(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
@@ -1184,7 +1185,7 @@ def _collect_ts_guess_tasks(
         if (input_path / "adj_matrix.txt").exists():
             tree = TreeNode.read_from_disk(
                 input_path, chain_parameters=ChainInputs(),
-                charge=tree_charge, multiplicity=tree_multiplicity,
+                charge=tree_charge, multiplicity=tree_multiplicity, ends_only=True,
             )
             return _ts_guess_tasks_from_tree(tree, "ts_")
 

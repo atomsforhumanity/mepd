@@ -62,7 +62,7 @@ def _ts_connector(run_inputs, output: Path, workers: int):
                 continue
             try:
                 tree = TreeNode.read_from_disk(tree_dir, chain_parameters=ChainInputs(), charge=charge,
-                                               multiplicity=mult)
+                                               multiplicity=mult, ends_only=True)
             except Exception as exc:
                 typer.echo(f"Could not read the path search for {i} -> {j}: {type(exc).__name__}: {exc}")
                 continue

@@ -461,6 +461,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Memory of reading a finished search back** (`mepd/neb.py`, `mepd/TreeNode.py`, `mepd/cli_common.py`,
+  `mepd/discovery/cli_expand.py`). Collecting TS guesses after the path searches reloaded every pair tree with
+  its whole written history, building a bond graph for every node of every string: 5.8 GiB for one long
+  22-atom search (9,621 strings), only to use each leaf's last string. `TreeNode.read_from_disk(ends_only=True)`
+  and `NEB.read_from_disk(ends_only=True)` read just each search's first and last string; the TS-guess
+  readers use it (same guesses, 0.3 GiB, under a second instead of 82 s).
 - **Memory of a g-xTB search** (`mepd/engines/_sella.py`, `mepd/pathminimizers/gsm.py`). Sella imported torch
   (~400 MiB) only to look for a CUDA GPU; with no GPU visible (no `/dev/nvidia*`, or `SELLA_DISABLE_GPU=1`)
   Sella is now imported without it, and torch stays importable for anything else. GSM's history kept a
