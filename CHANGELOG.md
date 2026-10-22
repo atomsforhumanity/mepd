@@ -473,6 +473,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **A `gxtb` symlink to the g-xTB 2.0.1 build ran GFN2-xTB** (mepd#4). mepd left out `--gxtb` for any
+  binary named `gxtb`, but the 2.0.1 release is an xtb 6.7.1 build that runs GFN2 without it (exit 0, no
+  warning). The flag is now decided from the program (`mepd.programs.standalone_gxtb`, which reads
+  `--version` once per binary), in the engine, orbitals, nanoreactor and solvation. A run meant as g-xTB
+  whose output reports a GFN Hamiltonian now raises instead of returning a GFN2 energy. `find_gxtb` also
+  finds `~/.local/opt/xtb-gxtb-*/bin/xtb`. mepd's image passes `/opt/gxtb/bin/xtb` and was not affected.
+
 - **QCCompute TS optimizations ignored their keywords** (mepd#5). `QCComputeEngine.compute_transition_state`
   never passed `keywords` on, so FSM-TS's `ts_fmax`/`ts_maxiter` and `mepd.find_ts(..., **keywords)` with
   ORCA, Psi4 or TeraChem ran geomeTRIC's default convergence. Keywords now reach geomeTRIC: `maxiter`

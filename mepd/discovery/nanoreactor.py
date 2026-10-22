@@ -244,7 +244,7 @@ def _xtb_command(method: str, executable: Optional[str] = None, download: bool =
         exe = executable or programs.gxtb_executable(download)
         if not exe:
             raise RuntimeError("g-xTB MD needs the g-xTB xtb build: set GXTB_EXECUTABLE.")
-        return [exe] + (["--gxtb"] if Path(exe).name != "gxtb" else [])
+        return [exe] + ([] if programs.standalone_gxtb(exe) else ["--gxtb"])
     exe = executable or programs.xtb_executable(download)
     if not exe:
         raise RuntimeError("The nanoreactor MD needs xtb (conda install -c conda-forge xtb), or g-xTB.")
