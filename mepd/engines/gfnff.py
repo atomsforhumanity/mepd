@@ -18,6 +18,7 @@ doi:10.1002/anie.202004239.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -37,6 +38,8 @@ from mepd.engines.engine import Engine
 from mepd.errors import ElectronicStructureError
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.nodehelpers import update_node_cache
+
+log = logging.getLogger(__name__)
 
 _TOPO_LOCKS: dict[str, threading.Lock] = {}
 _TOPO_GUARD = threading.Lock()
@@ -112,6 +115,10 @@ class GFNFFEngine(Engine):
         if self.method not in ("gfnff", "gfn2", "gfn1"):
             raise ValueError(f"xtb method must be gfnff, gfn2 or gfn1, got {self.method!r}")
 
+    @property
+    def _label(self) -> str:
+        return {"gfnff": "GFN-FF", "gfn2": "GFN2-xTB", "gfn1": "GFN1-xTB"}[self.method]
+
     # ------------------------------------------------------------ program
     def _run(self, workdir: Path, symbols, coords_bohr, charge: int, grad: bool = True,
              uhf: int = 0, point_charges=None) -> tuple[float, np.ndarray]:
@@ -129,18 +136,36 @@ class GFNFFEngine(Engine):
         if grad:
             argv.append("--grad")
         env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OMP_STACKSIZE": "256M"}
-        proc = subprocess.run(argv, cwd=workdir, capture_output=True, text=True, env=env, timeout=self.timeout,
-                              preexec_fn=_raise_stack_limit)
+
+        def run(extra=()):
+            return subprocess.run([*argv, *extra], cwd=workdir, capture_output=True, text=True, env=env,
+                                  timeout=self.timeout, preexec_fn=_raise_stack_limit)
+
+        proc = run()
         engrad = workdir / "in.engrad"
+        if proc.returncode != 0 and self.method != "gfnff":
+            # GFN1/GFN2 SCC that never settles (a bond breaking in hot MD, a
+            # stretched path image): retry with Fermi smearing, as the g-xTB
+            # engine does. One geometry's retry costs little; failing it would
+            # end the whole run.
+            from mepd.engines.gxtb import SCF_FALLBACKS, _scf_not_converged
+
+            for retry in SCF_FALLBACKS:
+                if proc.returncode == 0 or not _scf_not_converged(proc.stdout + proc.stderr):
+                    break
+                (workdir / "xtbrestart").unlink(missing_ok=True)   # the failed run's charges
+                proc = run(retry)
+                if proc.returncode == 0:
+                    log.warning("%s SCC did not converge; converged with %s", self._label, " ".join(retry))
         if proc.returncode != 0 or (grad and not engrad.exists()):
             tail = "\n".join((proc.stdout + proc.stderr).strip().splitlines()[-15:])
-            raise ElectronicStructureError(msg=f"GFN-FF (xtb) failed:\n{tail}")
+            raise ElectronicStructureError(msg=f"{self._label} (xtb) failed:\n{tail}")
         if grad:
             return parse_engrad(engrad.read_text())
         for line in proc.stdout.splitlines():
             if "TOTAL ENERGY" in line:
                 return float(line.split()[3]), np.zeros((len(symbols), 3))
-        raise ElectronicStructureError(msg="GFN-FF (xtb): no energy in the output")
+        raise ElectronicStructureError(msg=f"{self._label} (xtb): no energy in the output")
 
     def topology(self, symbols, charge: int, reference_xyz: Optional[str] = None) -> Optional[Path]:
         """The cached gfnff_topo for these atoms (built from the reference)."""
