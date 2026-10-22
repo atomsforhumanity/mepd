@@ -473,6 +473,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **QCCompute TS optimizations ignored their keywords** (mepd#5). `QCComputeEngine.compute_transition_state`
+  never passed `keywords` on, so FSM-TS's `ts_fmax`/`ts_maxiter` and `mepd.find_ts(..., **keywords)` with
+  ORCA, Psi4 or TeraChem ran geomeTRIC's default convergence. Keywords now reach geomeTRIC: `maxiter`
+  (or `steps`), and ASE's `fmax` in eV/Å as `convergence_gmax` in Hartree/bohr (0.001 eV/Å → 1.94e-5);
+  an explicit `convergence_gmax` wins. The default is still 1000 steps.
+
 - **TeraChem frozen-atom optimizations froze nothing** (mepd#3). With `new_minimizer yes`, which mepd always
   sets, TeraChem ignores a `$constraints / atom N` group without an error; geomeTRIC reads
   `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with

@@ -309,3 +309,35 @@ def test_terachem_frozen_atoms_follow_the_optimizer():
     assert "$constraint" not in engine._build_terachem_geomopt_file_input(
         _node_at_x(1.0), tc_keywords={"new_minimizer": "yes"}, optimizer_keywords={},
         frozen_atom_indices=[]).files["tc.in"]
+
+
+def _captured_ts_keywords(keywords):
+    engine = QCComputeEngine(program="xtb", compute_program="qccompute",
+                             program_args=ProgramArgs(model={"method": "gfn2"}, keywords={}))
+    captured = {}
+
+    def _fake_compute_func(inp_obj, **kwargs):
+        captured["input"] = inp_obj
+        return SimpleNamespace(success=False)
+
+    engine.compute_func = _fake_compute_func
+    engine.compute_transition_state(_node_at_x(1.0), keywords=keywords)
+    return captured["input"].keywords
+
+
+def test_ts_keywords_reach_geometric():
+    """compute_transition_state passes its keywords on (mepd#5): FSM-TS's maxiter and fmax."""
+    kw = _captured_ts_keywords({"maxiter": 37, "fmax": 0.001})
+    assert kw["maxiter"] == 37 and "fmax" not in kw
+    # 0.001 eV/Å as a gradient in Hartree/bohr
+    assert kw["convergence_gmax"] == pytest.approx(0.001 * 0.529177210903 / 27.211386245988)
+    assert kw["convergence_gmax"] == pytest.approx(1.9447e-5, rel=1e-4)
+
+
+def test_ts_keywords_defaults_and_pass_through():
+    assert _captured_ts_keywords(None) == {"maxiter": 1000}
+    assert _captured_ts_keywords({"steps": 5, "convergence_set": "GAU_TIGHT"}) == {
+        "maxiter": 5, "convergence_set": "GAU_TIGHT"}
+    given = {"fmax": 0.05, "convergence_gmax": 1e-6}
+    assert _captured_ts_keywords(given)["convergence_gmax"] == 1e-6      # an explicit geomeTRIC value wins
+    assert given == {"fmax": 0.05, "convergence_gmax": 1e-6}             # the caller's dict is not changed

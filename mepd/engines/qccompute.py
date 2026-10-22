@@ -40,6 +40,8 @@ import copy
 _OPTIM_XYZ_ENERGY_RE = re.compile(r"(?:[Ee]nergy[:=]?\s*|^\s*)(-?\d+\.\d+(?:[Ee][+-]?\d+)?)")
 
 AVAIL_PROGRAMS = ["qccompute", "chemcloud"]
+_BOHR_TO_ANGSTROM = 0.529177210903
+_HARTREE_TO_EV = 27.211386245988
 
 DEFAULT_GEOMETRY_OPTIMIZER_KWDS: dict[str, Any] = {
     "coordsys": "cart",
@@ -855,8 +857,9 @@ class QCComputeEngine(Engine):
             output = _run_standard_hessian_call()
         return output
 
-    def _compute_ts_result(self, node: StructureNode, keywords={'maxiter': 1000}, use_bigchem=False,
+    def _compute_ts_result(self, node: StructureNode, keywords=None, use_bigchem=False,
                            hessres: ProgramOutput = None):
+        keywords = self._geometric_ts_keywords(keywords)
         if hessres is not None:
             np.savetxt("/tmp/hess.txt", hessres.results.hessian)
             kwds = keywords.copy()
@@ -929,8 +932,21 @@ class QCComputeEngine(Engine):
         output = self._compute_hessian_result(node)
         return output.return_result
 
-    def compute_transition_state(self, node: StructureNode, keywords={'maxiter': 500}):
-        output = self._compute_ts_result(node=node)
+    @staticmethod
+    def _geometric_ts_keywords(keywords: dict[str, Any] | None) -> dict[str, Any]:
+        """geomeTRIC keywords from mepd's TS keywords: `maxiter`/`steps` as geomeTRIC's
+        `maxiter` (1000 when not given), and ASE's `fmax` (eV/Å, largest atomic force) as
+        `convergence_gmax` (Hartree/bohr, largest atomic gradient). Others pass through."""
+        kwds = dict(keywords or {})
+        steps = kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", 1000)))
+        kwds["maxiter"] = int(steps)
+        fmax = kwds.pop("fmax", None)
+        if fmax is not None and "convergence_gmax" not in kwds:
+            kwds["convergence_gmax"] = float(fmax) * _BOHR_TO_ANGSTROM / _HARTREE_TO_EV
+        return kwds
+
+    def compute_transition_state(self, node: StructureNode, keywords=None):
+        output = self._compute_ts_result(node=node, keywords=keywords)
         if output.success:
             return StructureNode(structure=output.return_result)
         else:
