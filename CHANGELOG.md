@@ -473,6 +473,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
+  not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
+  engine already did. Before, one such geometry (e.g. a bond breaking in a 3000 K QM/MM nanoreactor) ended the
+  whole run. Its errors now name the method that ran (they said "GFN-FF" for GFN2 runs too).
+
 - **`mepd.find_ts` without `fmax`/`maxiter` used the engine's optimizer default** (0.01 eV/Å for the
   ASE engines; mepd#6), looser than `mepd ts` (`TSInputs`: 0.001 eV/Å, 1000 steps), at which soft modes read
   as extra imaginary frequencies. It now defaults to `mepd ts`'s values, which `mepd force`, the substituent
