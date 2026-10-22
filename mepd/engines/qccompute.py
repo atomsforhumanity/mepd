@@ -24,6 +24,7 @@ from qcdata import CalcType, ProgramOutput, Structure
 from mepd.chain import Chain
 from mepd.engines.engine import Engine
 from mepd.program_args import ProgramArgs
+from mepd.units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 from mepd.errors import (
     GradientsNotComputedError,
     ElectronicStructureError,
@@ -40,8 +41,6 @@ import copy
 _OPTIM_XYZ_ENERGY_RE = re.compile(r"(?:[Ee]nergy[:=]?\s*|^\s*)(-?\d+\.\d+(?:[Ee][+-]?\d+)?)")
 
 AVAIL_PROGRAMS = ["qccompute", "chemcloud"]
-_BOHR_TO_ANGSTROM = 0.529177210903
-_HARTREE_TO_EV = 27.211386245988
 
 DEFAULT_GEOMETRY_OPTIMIZER_KWDS: dict[str, Any] = {
     "coordsys": "cart",
@@ -942,7 +941,7 @@ class QCComputeEngine(Engine):
         kwds["maxiter"] = int(steps)
         fmax = kwds.pop("fmax", None)
         if fmax is not None and "convergence_gmax" not in kwds:
-            kwds["convergence_gmax"] = float(fmax) * _BOHR_TO_ANGSTROM / _HARTREE_TO_EV
+            kwds["convergence_gmax"] = float(fmax) * BOHR_TO_ANGSTROM / HARTREE_TO_EV
         return kwds
 
     def compute_transition_state(self, node: StructureNode, keywords=None):
