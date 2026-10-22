@@ -75,9 +75,9 @@ def find_gxtb() -> Optional[str]:
 def _is_xtb_build(executable: str) -> bool:
     try:
         out = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
+    except Exception:   # not runnable: unknown, so treated as before (by its name)
         return False
-    return "xtb version" in out.stdout + out.stderr
+    return "xtb version" in f"{out.stdout}{out.stderr}"
 
 
 def standalone_gxtb(executable: str) -> bool:
