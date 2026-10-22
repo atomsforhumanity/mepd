@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union, ClassVar
+from typing import Any, ClassVar, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -127,6 +127,10 @@ class StructureNode(Node):
     graph_atom_indices_source: str | None = None
     graph_subset_atom_count: int | None = None
     graph_total_atom_count: int | None = None
+    # Set by mepd.frequencies / mepd.minimize: the frequencies this structure
+    # was checked with, and how many saddle escapes its minimization took.
+    frequencies: Any = None
+    saddle_escapes: int | None = None
 
     _cached_result: Union[ProgramOutput, FakeQCIOOutput] = None
     graph: Molecule = None

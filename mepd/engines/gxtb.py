@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, List, Union
+from typing import ClassVar, Any, Callable, List, Union
 
 import numpy as np
 from ase import Atoms
@@ -37,6 +37,7 @@ from mepd.errors import (
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import update_node_cache
+from mepd.programs import standalone_gxtb
 from mepd.qcdata_structure_helpers import ase_atoms_to_structure
 
 
@@ -170,6 +171,8 @@ log = logging.getLogger(__name__)
 
 # Retries for an SCF that does not converge (tried in order): Fermi smearing
 # at a raised electronic temperature damps the charge oscillation.
+# xtb prints this for GFN0/1/2-xTB runs (also with --silent), never for g-xTB
+_GFN_HAMILTONIAN = re.compile(r":\s*Hamiltonian\s+(GFN\d?-xTB)")
 SCF_FALLBACKS = (("--etemp", "1000", "--iterations", "1000"), ("--etemp", "3000", "--iterations", "1000"))
 
 
@@ -251,6 +254,13 @@ class GXTBCalculator(Engine):
     # element ... is not symmetric"); 0.001 matches central differences of
     # g-xTB gradients to ~1e-4 for ~20% more time.
     hessian_acc: float = 0.001
+    # Minimizations: "sella" (Sella with g-xTB's exact Hessian, to `min_fmax`;
+    # the default since 2026-10-19: 100% converged and 99.4% true minima on
+    # 1000 IRC ends, vs. xtb's own optimizer whose "normal" threshold is
+    # ~0.05 eV/Angstrom), "geometric", "lbfgs", or "xtb" (xtb's ANCopt).
+    minimizer: str | None = None          # None: DEFAULT_MINIMIZER
+    min_fmax: float = 0.001
+    DEFAULT_MINIMIZER: ClassVar[str] = "sella"
     # Independent calculations (a chain's images, a batch of geometry
     # optimizations) run as up to this many concurrent g-xTB processes.
     # 0 = as many as the machine has cores for at n_threads each.
@@ -386,7 +396,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args if extra_args is None else extra_args)
         # A job's viewer can show this SCF's orbitals (mepd.orbitals): write them as molden.
@@ -414,6 +424,8 @@ class GXTBCalculator(Engine):
             completed = _run_gxtb_process(cmd + list(retry), cwd=cwd, env=env, timeout_s=self.timeout_s, watch=watch)
             if completed.returncode == 0:
                 log.warning("g-xTB SCF did not converge for %s; converged with %s", xyz_path.name, " ".join(retry))
+        if completed.returncode == 0:
+            self._check_ran_gxtb(completed)
         if completed.returncode != 0:
             tried = "" if not (own_retries and _scf_not_converged(completed.stdout + completed.stderr)) else \
                 f" (SCF not converged, also with {'; '.join(' '.join(r) for r in SCF_FALLBACKS)})"
@@ -434,7 +446,7 @@ class GXTBCalculator(Engine):
         mepd.orbitals reads that program's molden files; else None (e.g. GFN1-xTB)."""
         if not os.environ.get("MEPD_ORBITALS_DIR", "").strip():
             return None
-        if self.add_gxtb_flag or Path(self.executable).name == "gxtb":
+        if self.add_gxtb_flag or standalone_gxtb(self.executable):
             return "gxtb"
         gfn = cmd[cmd.index("--gfn") + 1] if "--gfn" in cmd and cmd.index("--gfn") + 1 < len(cmd) else "2"
         return "gfn2" if str(gfn) == "2" else None
@@ -555,7 +567,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args)
 
@@ -568,14 +580,37 @@ class GXTBCalculator(Engine):
                 msg=f"g-xTB Hessian calculation failed with exit code {completed.returncode}.",
                 obj=completed.stdout + completed.stderr,
             )
+        self._check_ran_gxtb(completed)
         return completed
+
+    def _check_ran_gxtb(self, completed: subprocess.CompletedProcess[str]) -> None:
+        """A run meant as g-xTB whose xtb reports a GFN Hamiltonian ran the wrong
+        method (e.g. an xtb build not given `--gxtb`, mepd#4): stop, don't return it."""
+        if not self.add_gxtb_flag:
+            return
+        found = _GFN_HAMILTONIAN.search(completed.stdout)
+        if found:
+            raise ElectronicStructureError(
+                msg=f"{self.executable} ran {found.group(1)}, not g-xTB: give it the g-xTB build of xtb, "
+                    "or set add_gxtb_flag = false for GFN-xTB.",
+                obj=completed.stdout + completed.stderr,
+            )
 
     def compute_geometry_optimization(
         self,
         node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> list[StructureNode]:
+        """Minimize to a largest atomic force of `fmax` (eV/Angstrom; default
+        `min_fmax`) with `optimizer` (default `minimizer`): "sella" (Sella's
+        minimizer with g-xTB's exact Hessian, renewed every `hessian_every`
+        steps), "geometric" (geomeTRIC, TRIC coordinates) or "lbfgs"
+        (LBFGSLineSearch). With `minimizer="xtb"` and no `fmax`/`optimizer`,
+        g-xTB's own optimizer (ANCopt, "normal" thresholds). Either way an
+        unconverged run raises."""
         kwds = dict(keywords or {})
+        if "fmax" in kwds or "optimizer" in kwds or (self.minimizer or self.DEFAULT_MINIMIZER) != "xtb":
+            return self._minimize_to_fmax(node, kwds)
         extra_args = list(self.extra_args)
         maxiter = kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", None)))
         if maxiter is not None:
@@ -661,6 +696,30 @@ class GXTBCalculator(Engine):
 
         return self._map(_optimize, list(nodes))
 
+    def _minimize_to_fmax(self, node: StructureNode, kwds: dict[str, Any]) -> list[StructureNode]:
+        fmax = float(kwds.pop("fmax", self.min_fmax))
+        steps = int(kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", 3000))))
+        optimizer = str(kwds.pop("optimizer", self.minimizer or self.DEFAULT_MINIMIZER)).lower()
+        if optimizer == "xtb":
+            raise ValueError("optimizer='xtb' has no force threshold: leave out `fmax` to use xtb's own optimizer.")
+        every = kwds.pop("hessian_every", None)
+        if optimizer == "geometric":
+            from mepd.irc_geometric import minimize_with_geometric
+
+            return minimize_with_geometric(self, node, fmax=fmax, maxiter=steps)
+        ase_engine = self._as_ase_engine_for_node(node)
+        if optimizer == "sella":
+            from sella import Sella
+
+            optimizer_kwds = {"order": 0, "hessian_function": self._ase_hessian_function(node)}
+            if every:
+                optimizer_kwds["diag_every_n"] = int(every)
+            return ase_engine._run_ase_optimization(
+                node=node, optimizer_cls=Sella, keywords={"fmax": fmax, "steps": steps, "optimizer_kwds": optimizer_kwds})
+        if optimizer != "lbfgs":
+            raise ValueError(f"Unknown optimizer '{optimizer}': lbfgs, sella or geometric.")
+        return ase_engine.compute_geometry_optimization(node, {"fmax": fmax, "steps": steps})
+
     def _map(self, fn, items: list) -> list:
         """`[fn(x) for x in items]`, with up to `n_parallel` running at once."""
         width = int(self.n_parallel) or max(1, (os.cpu_count() or 1) // max(1, int(self.n_threads)))
@@ -685,11 +744,39 @@ class GXTBCalculator(Engine):
         node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> StructureNode:
-        """Optimize a TS guess through ASE/Sella using local g-xTB energies/gradients."""
+        """Optimize a TS guess through ASE/Sella using local g-xTB energies/gradients.
+
+        Sella starts from g-xTB's own Hessian (`xtb --hess`) instead of
+        estimating the curvature from gradients, and recomputes it every
+        `hessian_every` steps (default: only at the start; 1 = every step).
+        `exact_hessian=False` restores Sella's gradient-based estimate."""
+        kwds = dict(keywords or {})
+        exact = kwds.pop("exact_hessian", True)
+        every = kwds.pop("hessian_every", None)
+        if exact:
+            optimizer_kwds = dict(kwds.pop("optimizer_kwds", kwds.pop("optimizer_kwargs", {})) or {})
+            optimizer_kwds.setdefault("hessian_function", self._ase_hessian_function(node))
+            if every:
+                optimizer_kwds.setdefault("diag_every_n", int(every))
+            kwds["optimizer_kwds"] = optimizer_kwds
         return self._as_ase_engine_for_node(node).compute_transition_state(
             node=node,
-            keywords=keywords,
+            keywords=kwds,
         )
+
+    def _ase_hessian_function(self, node: StructureNode):
+        """Sella's `hessian_function`: g-xTB's Hessian at an ASE geometry, in eV/Angstrom^2."""
+        from ase.units import Bohr, Hartree
+
+        from mepd.qcdata_structure_helpers import ase_atoms_to_structure
+
+        charge, multiplicity = int(node.structure.charge), int(node.structure.multiplicity)
+
+        def hessian(atoms) -> NDArray:
+            here = StructureNode(structure=ase_atoms_to_structure(atoms=atoms, charge=charge, multiplicity=multiplicity))
+            return np.asarray(self.compute_hessian(here), dtype=float) * Hartree / Bohr**2
+
+        return hessian
 
     def compute_irc_chain(
         self,

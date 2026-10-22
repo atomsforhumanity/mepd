@@ -107,6 +107,20 @@ FAIRCHEM_DEFAULTS = {"model": "uma-s-1p2p1", "task": "omol", "device": "", "chec
                      "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGSLineSearch"}
 GEOMOPT_DEFAULTS = {"coordsys": "cart", "maxit": 500, "convergence_set": "GAU_TIGHT"}
 GI_DEFAULTS = {"nimages": 10, "friction": 0.001, "nudge": 0.1, "random_seed": 0, "align": True}
+# TS optimization (mepd.inputs.TSInputs) of channels / ts / run --use-tsopt
+TS_FIELDS = [
+    ("fmax", 0.001, "Converged when the largest force on an atom is below this (eV/Å). At 0.01, TSs could keep a "
+                    "spurious second imaginary mode or sit off their saddle."),
+    ("maxiter", 1000, "Optimizer steps per round."),
+    ("continue_unconverged", 1, "Rounds that go on from where an optimization ran out of steps (0: give up "
+                                "there). Each starts the optimizer afresh at the last structure, not the search."),
+    ("check_frequencies", True, "Keep a TS only if it has exactly one imaginary mode (a Hessian per TS)."),
+    ("imaginary_cutoff_cm", 10.0, "Modes below minus this (cm⁻¹) count as imaginary; smaller ones are numerical "
+                                  "noise along very soft modes."),
+    ("exact_hessian", True, "g-xTB: start Sella from g-xTB's Hessian instead of estimating the curvature from "
+                            "gradients (the estimate found a higher saddle in 4 of 500 benchmark TSs)."),
+    ("hessian_every", 0, "g-xTB: recompute that Hessian every this many steps (0: only at the start)."),
+]
 CHAIN_DEFAULTS = {"k": 0.1, "delta_k": 0.09, "do_parallel": True, "node_freezing": True, "fraction_freeze": 0.1,
                   "node_rms_thre": 5.0, "node_ene_thre": 5.0, "frozen_atom_indices": ""}
 MAPPING_DEFAULTS = {"n_candidates": 3, "metric": "snap-gi-xtb", "rmsd_window": 1.0, "gi_variant_cap": 20,
@@ -563,7 +577,7 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
     data = _parse(text)
     issues, notes = [], []
     path_issues = []   # the subset only a path search is affected by
-    for section in ("path_min_inputs", "chain_inputs", "gi_inputs", "optimizer_kwds", "atom_mapping_inputs",
+    for section in ("path_min_inputs", "chain_inputs", "gi_inputs", "ts_inputs", "optimizer_kwds", "atom_mapping_inputs",
                     "gxtb_engine_kwds", "fairchem_engine_kwds", "ase_engine_kwds", "mlip_engine_kwds",
                     "geometry_optimizer_kwds"):
         if section in data and not isinstance(data[section], dict):
@@ -731,6 +745,9 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
         groups.append({"id": "optimizer", "title": f"{dict(OPTIMIZERS).get(opt, opt)} optimizer",
                        "fields": [_field(data, f"optimizer_kwds.{k}", v) for k, v in OPTIMIZER_DEFAULTS.get(opt, {}).items()]})
     groups.append({"id": "chain", "title": "Chain", "fields": [_field(data, f"chain_inputs.{k}", v) for k, v in CHAIN_DEFAULTS.items()]})
+    groups.append({"id": "ts", "title": "TS optimization",
+                   "fields": [_field(data, f"ts_inputs.{k}", v, help=h) for k, v, h in TS_FIELDS],
+                   "note": "Used wherever a TS is optimized: channels, the TS step of a path search, ts."})
     groups.append({"id": "mapping", "title": "Atom mapping",
                    "fields": [_field(data, f"atom_mapping_inputs.{k}", v) for k, v in MAPPING_DEFAULTS.items()]})
     from mepd.engines.mean_force import DEFAULTS as MEAN_FORCE_DEFAULTS

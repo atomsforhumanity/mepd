@@ -10,7 +10,10 @@ from test_route_edges import A, I  # noqa: E402  (tests/ is on sys.path)
 from test_web import _write_chain  # noqa: E402
 
 
-def test_the_cli_leaves_a_note_when_an_irc_fails_and_clears_it_when_one_runs(tmp_path):
+def test_the_cli_leaves_a_note_when_an_irc_fails_and_clears_it_when_one_runs(tmp_path, monkeypatch):
+    import mepd.compute as compute
+
+    monkeypatch.setattr(compute, "minimize", lambda node, engine, **kw: node)   # IRC ends: not the point here
     from mepd.cli_common import _optimize_ts_and_irc
     from mepd.cli_common import _load_structure_from_smiles_or_xyz as load
     from mepd.nodes.node import StructureNode
@@ -21,7 +24,12 @@ def test_the_cli_leaves_a_note_when_an_irc_fails_and_clears_it_when_one_runs(tmp
     def broken_irc(ts):
         raise RuntimeError("Sella gave up")
 
-    engine = SimpleNamespace(compute_transition_state=lambda node: node, compute_irc_chain=broken_irc)
+    # A TS is only accepted after its frequency check: this engine's Hessian
+    # gives the one imaginary mode a first-order saddle has.
+    one_imaginary = SimpleNamespace(results=SimpleNamespace(freqs_wavenumber=[-500.0, 100.0, 200.0],
+                                                            normal_modes_cartesian=None))
+    engine = SimpleNamespace(compute_transition_state=lambda node: node, compute_irc_chain=broken_irc,
+                             _compute_hessian_result=lambda node: one_imaginary)
     out = tmp_path / "out"
     r = _optimize_ts_and_irc(node, SimpleNamespace(engine=engine), out, run_irc=True, label="ts_leaf_0")
     assert r.irc_chain is None

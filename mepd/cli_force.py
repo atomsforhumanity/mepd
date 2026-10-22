@@ -16,6 +16,7 @@ fastest channel and for the leading selectivity switch.
 """
 from __future__ import annotations
 
+import mepd
 import json
 import math
 from pathlib import Path
@@ -182,9 +183,9 @@ def _reoptimize(symbols, channels, result, run_inputs, forces, output: Path, cha
                                                            keywords=_geometry_optimizer_keywords(run_inputs))
                 r_f = r_traj[-1]
                 e_r = float(eng.compute_energies([r_f])[0])
-                ts_f = eng.compute_transition_state(node=zero_ts.update_coords(zero_ts.coords))
+                ts_f = mepd.find_ts(zero_ts.update_coords(zero_ts.coords), eng)
                 e_ts = float(eng.compute_energies([ts_f])[0])
-                irc = eng.compute_irc_chain(ts_f)
+                irc = mepd.irc(ts_f, eng).path
                 eng.compute_energies(irc.nodes)
                 irc = R._oriented(irc, zero_r, node(c.product) if c.product is not None else None)
                 same = R._same_connectivity(irc[0], zero_r) and (

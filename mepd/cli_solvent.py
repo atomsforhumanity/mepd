@@ -21,6 +21,7 @@ for a 1 h half-life, and plain-language insights (mepd/conditions.py).
 """
 from __future__ import annotations
 
+import mepd
 import json
 import math
 import shutil
@@ -375,9 +376,9 @@ def _reoptimize(solvent_key: str, model: str, run_inputs, loaded: dict, sp: dict
         found = False
         for how, guess in guesses:
             try:
-                ts = engine.compute_transition_state(node=guess.update_coords(guess.coords))
+                ts = mepd.find_ts(guess.update_coords(guess.coords), engine)
                 engine.compute_energies([ts])
-                irc = engine.compute_irc_chain(ts)
+                irc = mepd.irc(ts, engine).path
                 engine.compute_energies(irc.nodes)
             except Exception as exc:
                 notes.append(f"{label}: TS search from the {how} failed ({type(exc).__name__}: {exc})")

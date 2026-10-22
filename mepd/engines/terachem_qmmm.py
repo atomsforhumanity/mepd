@@ -119,7 +119,8 @@ def n_link_atoms(text: str) -> int:
 
 def parse_tcin(text: str) -> dict:
     """method/basis/charge/spinmult/run/prmtop/coordinates/qmindices, other
-    keywords, and frozen atoms (0-based) from a TeraChem input's $constraints."""
+    keywords, and frozen atoms (0-based) from a TeraChem input's $constraints (`atom N`, the
+    old optimizer's form) or $constraint_freeze (`xyz N,M`, new_minimizer's form)."""
     parsed = {"keywords": {}, "frozen_atom_indices": []}
     in_c = False
     for raw in text.splitlines():
@@ -127,7 +128,7 @@ def parse_tcin(text: str) -> dict:
         low = line.lower()
         if not line or line.startswith("#"):
             continue
-        if low.startswith("$constraints"):
+        if low.startswith(("$constraints", "$constraint_freeze")):
             in_c = True
             continue
         if in_c and low.startswith("$"):
@@ -135,8 +136,11 @@ def parse_tcin(text: str) -> dict:
             continue
         if in_c:
             tok = line.split()
-            if tok and tok[0].lower() == "atom" and len(tok) > 1:
-                parsed["frozen_atom_indices"].extend(i - 1 for i in parse_indices(tok[1]))
+            if tok and tok[0].lower() in ("atom", "xyz") and len(tok) > 1:
+                parsed["frozen_atom_indices"].extend(i - 1 for i in parse_indices(" ".join(tok[1:])))
+            elif tok:
+                raise ValueError(f"TeraChem constraint {line!r} is not supported: mepd freezes whole atoms "
+                                 "(`atom N` in $constraints, `xyz N` in $constraint_freeze) and nothing else.")
             continue
         parts = line.split(None, 1)
         if len(parts) < 2:
@@ -162,7 +166,7 @@ def without_constraints(text: str) -> str:
     out, skip = [], False
     for line in text.splitlines():
         low = line.strip().lower()
-        if low.startswith("$constraints"):
+        if low.startswith(("$constraints", "$constraint_freeze")):
             skip = True
             continue
         if skip and low.startswith("$end"):

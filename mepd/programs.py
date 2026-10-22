@@ -15,10 +15,12 @@ then (if allowed) the download. Set MEPD_NO_DOWNLOAD=1 to never download.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import os
 import platform
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -61,11 +63,32 @@ def find_gxtb() -> Optional[str]:
     for name in ("gxtb", "gxtb-xtb"):
         if shutil.which(name):
             return shutil.which(name)
-    for manual in sorted((Path.home() / ".local" / "opt").glob("gxtb-*/bin/xtb"), reverse=True):
+    opt = Path.home() / ".local" / "opt"
+    for manual in sorted([*opt.glob("gxtb-*/bin/xtb"), *opt.glob("xtb-gxtb-*/bin/xtb")], reverse=True):
         if os.access(manual, os.X_OK):
             return str(manual)
     own = _own_gxtb()
     return str(own) if own.exists() else None
+
+
+@functools.lru_cache(maxsize=None)
+def _is_xtb_build(executable: str) -> bool:
+    try:
+        out = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=60)
+    except Exception:   # not runnable: unknown, so treated as before (by its name)
+        return False
+    return "xtb version" in f"{out.stdout}{out.stderr}"
+
+
+def standalone_gxtb(executable: str) -> bool:
+    """True for the standalone g-xTB program, which always runs g-xTB and takes no
+    `--gxtb`. Decided from the program, not only its name: the g-xTB 2.0.1 release is
+    an xtb 6.7.1 build that runs GFN2-xTB unless given `--gxtb`, so a `gxtb` symlink
+    to it still needs the flag (mepd#4)."""
+    if Path(executable).name != "gxtb":
+        return False
+    resolved = Path(shutil.which(executable) or executable).resolve()
+    return not _is_xtb_build(str(resolved))
 
 
 def gxtb_executable(download: bool = True) -> Optional[str]:

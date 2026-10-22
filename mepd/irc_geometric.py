@@ -120,9 +120,12 @@ def compute_irc_chain_with_geometric(
             updated.graph = None
             energy = float(self.base_engine.compute_energies([updated])[0])
             gradient = np.asarray(self.base_engine.compute_gradients([updated])[0], dtype=float)
+            # geomeTRIC passes Bohr and wants Hartree/Bohr, mepd's own units: no
+            # conversion (an extra * BOHR_TO_ANGSTROM here used to halve every
+            # gradient geomeTRIC saw, inconsistent with its energies).
             return {
                 "energy": energy,
-                "gradient": gradient.reshape(-1) * BOHR_TO_ANGSTROM,
+                "gradient": gradient.reshape(-1),
             }
 
     irc_keywords: dict[str, Any] = {"irc": True, "coordsys": "dlc", "maxiter": 500}
@@ -203,3 +206,55 @@ def compute_irc_chain_with_geometric(
         node.graph = None
         irc_nodes.append(node)
     return Chain.model_validate({"nodes": irc_nodes})
+
+
+def minimize_with_geometric(engine: Any, node: StructureNode, *, fmax: float = 0.001,
+                            maxiter: int = 3000) -> list[StructureNode]:
+    """Minimize `node` with geomeTRIC (TRIC coordinates) on `engine`'s energies
+    and gradients until the largest atomic force is below `fmax` (eV/Angstrom).
+    Returns the trajectory; raises GeometryOptimizationNotConvergedError when
+    geomeTRIC runs out of iterations or ends above `fmax`."""
+    import geometric.engine  # type: ignore
+    import geometric.molecule  # type: ignore
+    import geometric.optimize  # type: ignore
+    from ase.units import Bohr, Hartree
+
+    from mepd.errors import GeometryOptimizationNotConvergedError
+
+    template = node.copy()
+    template.has_molecular_graph = False
+    template.graph = None
+
+    class _Engine(geometric.engine.Engine):  # type: ignore[name-defined]
+        def calc_new(self, coords, dirname):   # Bohr in, Hartree and Hartree/Bohr out
+            here = template.copy().update_coords(np.asarray(coords, dtype=float).reshape(-1, 3))
+            return {"energy": float(engine.compute_energies([here])[0]),
+                    "gradient": np.asarray(engine.compute_gradients([here])[0], dtype=float).reshape(-1)}
+
+        def copy_scratch(self, src, dest):
+            return None
+
+    molecule = geometric.molecule.Molecule()  # type: ignore[name-defined]
+    molecule.elem = list(node.structure.symbols)
+    molecule.xyzs = [np.asarray(node.structure.geometry, dtype=float) * BOHR_TO_ANGSTROM]
+    gmax = fmax / (Hartree / Bohr)              # eV/Angstrom -> Hartree/Bohr
+    options = dict(coordsys="tric", maxiter=int(maxiter), convergence_gmax=gmax, convergence_grms=gmax,
+                   convergence_energy=1e-8, convergence_dmax=1.0, convergence_drms=1.0)
+    try:
+        with tempfile.TemporaryDirectory(prefix="geometric-") as tmp:
+            output = geometric.optimize.run_optimizer(customengine=_Engine(molecule), input=str(Path(tmp) / "opt"),
+                                                      **options)
+    except Exception as exc:
+        raise GeometryOptimizationNotConvergedError(
+            msg=f"geomeTRIC minimization failed: {type(exc).__name__}: {exc}"[:400]) from exc
+    traj = []
+    for xyz in output.xyzs:
+        n = node.copy().update_coords(np.asarray(xyz, dtype=float) * ANGSTROM_TO_BOHR)
+        traj.append(n)
+    last = traj[-1]
+    largest = float(np.linalg.norm(np.asarray(engine.compute_gradients([last.copy()])[0]).reshape(-1, 3),
+                                   axis=1).max() * Hartree / Bohr)
+    if largest > fmax * 1.0001:
+        raise GeometryOptimizationNotConvergedError(
+            msg=f"geomeTRIC stopped with largest force {largest:.2e} eV/Angstrom, above {fmax:.2e}.")
+    return traj

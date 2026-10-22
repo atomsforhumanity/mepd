@@ -55,12 +55,13 @@ if TYPE_CHECKING:
     from mepd.TreeNode import TreeNode
     from mepd.pot import Pot
     from mepd.NetworkBuilder import NetworkBuilder
-    from mepd.compare import Match, connects, same_molecule
+    from mepd.compare import Comparison, Match, compare_structures, connects, same_molecule
     from mepd.channel_search import (Channel, ChannelsOptions, ChannelsResult, ChannelSearchError, Step,
                                      channels, read_channels)
-    from mepd.compute import IRCResult, barrier_kcal, energies, find_ts, interpolate, irc, optimize
+    from mepd.compute import (IMAGINARY_CUTOFF_CM, Frequencies, IRCResult, barrier_kcal, energies, find_ts,
+                              frequencies, interpolate, irc, minimize, optimize)
     from mepd.engines.factory import engine, engine_from_profile, set_threads
-    from mepd.errors import ConvergenceError, UnsupportedOperation
+    from mepd.errors import ConvergenceError, UnsupportedOperation, WrongStationaryPointError
     from mepd.structures import from_smiles, load, read_frames, write_xyz
 
 _CORE_EXPORTS = {
@@ -94,6 +95,10 @@ _API_EXPORTS = {
     # calculations
     "energies": ("mepd.compute", "energies"),
     "optimize": ("mepd.compute", "optimize"),
+    "minimize": ("mepd.compute", "minimize"),
+    "frequencies": ("mepd.compute", "frequencies"),
+    "Frequencies": ("mepd.compute", "Frequencies"),
+    "IMAGINARY_CUTOFF_CM": ("mepd.compute", "IMAGINARY_CUTOFF_CM"),
     "find_ts": ("mepd.compute", "find_ts"),
     "irc": ("mepd.compute", "irc"),
     "IRCResult": ("mepd.compute", "IRCResult"),
@@ -110,10 +115,13 @@ _API_EXPORTS = {
     # comparing structures
     "same_molecule": ("mepd.compare", "same_molecule"),
     "connects": ("mepd.compare", "connects"),
+    "compare_structures": ("mepd.compare", "compare_structures"),
+    "Comparison": ("mepd.compare", "Comparison"),
     "Match": ("mepd.compare", "Match"),
     # errors
     "UnsupportedOperation": ("mepd.errors", "UnsupportedOperation"),
     "ConvergenceError": ("mepd.errors", "ConvergenceError"),
+    "WrongStationaryPointError": ("mepd.errors", "WrongStationaryPointError"),
 }
 _CORE_EXPORTS.update(_API_EXPORTS)
 # `TreeNode` and `NetworkBuilder` (the classes) are intentionally not

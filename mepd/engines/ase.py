@@ -22,6 +22,7 @@ from mepd.errors import (
     EnergiesNotComputedError,
     GradientsNotComputedError,
     ElectronicStructureError,
+    GeometryOptimizationNotConvergedError,
 )
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.node import StructureNode
@@ -95,6 +96,13 @@ def _align_frames(frames: list[NDArray], gradients: list[NDArray], reference: ND
         out_grads.append(np.asarray(grad, dtype=float) @ rot)
     return out_frames, out_grads
 import tempfile
+
+#: Largest atomic force (eV/Angstrom) at which minimizations and TS
+#: optimizations count as converged unless told otherwise. 0.001: at the
+#: former 0.01, g-xTB TSs could carry a spurious second imaginary mode and
+#: lie up to 34 kcal/mol off the saddle they belong to (KAIST 500 benchmark,
+#: 2026-10-19; CHANGELOG).
+DEFAULT_FMAX = 0.001
 
 AVAIL_OPTS = {
     "LBFGS": LBFGS,
@@ -201,7 +209,7 @@ class ASEEngine(Engine):
         default_steps: int = 500,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         kwds = dict(keywords or {})
-        fmax = float(kwds.pop("fmax", 0.01))
+        fmax = float(kwds.pop("fmax", DEFAULT_FMAX))
         maxiter = kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", default_steps)))
         run_kwds = {"fmax": fmax, "steps": int(maxiter)}
 
@@ -249,9 +257,23 @@ class ASEEngine(Engine):
 
                 optimizer.attach(_report_step, interval=1)
             try:
-                optimizer.run(**run_kwds)
+                converged = optimizer.run(**run_kwds)
             except Exception as exc:
                 raise ElectronicStructureError(msg="Electronic structure failed.", obj=exc)
+            # ASE returns the last frame whether or not it converged; a run that
+            # used up its steps is not a minimum (or a TS) and must not pass as one.
+            if not converged:
+                largest = float(np.linalg.norm(atoms.get_forces(), axis=1).max())
+                Path(tmp.name).unlink(missing_ok=True)
+                err = GeometryOptimizationNotConvergedError(
+                    msg=(f"{optimizer_cls.__name__} did not converge in {run_kwds['steps']} steps: largest "
+                         f"force {largest:.2e} eV/Angstrom, target {run_kwds['fmax']:.2e}. Refusing to "
+                         "return an unconverged structure."))
+                # where it stopped, so a caller can continue from there instead of from the start
+                err.structure = StructureNode(structure=ase_atoms_to_structure(
+                    atoms=atoms, charge=node.structure.charge, multiplicity=node.structure.multiplicity))
+                err.steps = int(run_kwds["steps"])
+                raise err
 
         charge = node.structure.charge
         multiplicity = node.structure.multiplicity

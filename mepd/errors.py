@@ -12,6 +12,18 @@ class ConvergenceError(RuntimeError):
     that did not converge, or a TS search that ended on no saddle."""
 
 
+class WrongStationaryPointError(ConvergenceError):
+    """An optimization converged, but its frequencies say it is not the kind
+    of stationary point asked for: a TS search that did not end with exactly
+    one imaginary mode, or a minimization that ended on a saddle. The
+    frequencies (`mepd.Frequencies`) are on the exception and on `structure`."""
+
+    def __init__(self, message: str, *, structure=None, frequencies=None):
+        super().__init__(message)
+        self.structure = structure
+        self.frequencies = frequencies
+
+
 class InputsError(ValueError):
     """Inputs that cannot work together, found before anything runs. The
     command line prints the message (which says how to fix it) on one line,

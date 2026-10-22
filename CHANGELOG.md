@@ -12,6 +12,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
+  that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
+  says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
+
 - **Fragment orbitals** (`mepd/fragment_orbitals.py`, `POST /api/fragment-orbitals`, Orbitals › Fragments).
   The geometry is cut into its molecules (bonding of a path's first frame, so a TS keeps its reactants;
   charges and spins from Lewis structures). Each molecule gets its own single point where it sits. For every
@@ -232,6 +236,28 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
+  Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
+  substituent commands and the web app:
+  - Optimizations converge to a largest force of **0.001 eV/Å** (was 0.01). At 0.01, 14 of 500 g-xTB TSs had a
+    spurious second imaginary mode, and 13 sat 1–34 kcal/mol above the saddle they belong to.
+  - g-xTB TS searches start Sella from **g-xTB's own Hessian** instead of a gradient-based estimate (the estimate
+    reached a different, 3–6 kcal/mol higher saddle in 4 of 500; exact: 500/500 first-order, 4.5 s median).
+  - A converged TS must have **exactly one imaginary mode** (below −10 cm⁻¹, `mepd.IMAGINARY_CUTOFF_CM`), else
+    `WrongStationaryPointError`. An optimization that runs out of steps **raises** (it used to return its last
+    frame); `find_ts` first goes on from where it stopped (`continue_unconverged`, default 1).
+  - **IRC ends are minimized** (`mepd.irc(..., minimize_ends=True)`): IRC ends sat ~1.9 kcal/mol (median) above
+    their minima, and ~6% became another species when minimized. The path now runs minimum → TS → minimum.
+  - g-xTB **minimizations** use Sella with the exact Hessian to 0.001 eV/Å (`GXTBCalculator.minimizer`;
+    100% converged and 99.4% true minima on 1000 IRC ends; xtb's own optimizer, `minimizer="xtb"`, stops at
+    ~0.05 eV/Å). Conformer minimizations are slower (seconds each, not under a second).
+  - **Stereochemistry that cannot be compared is not a match**: `same_molecule`/`connects` used to pass when the
+    stereo SMILES failed. RDKit decides; when it cannot assign bond orders, OpenBabel's stereo SMILES can confirm
+    "same" (30 of 33 such cases); otherwise the side is reported as undetermined (`Match.undetermined`).
+  - QM/MM (frozen atoms) TS searches and IRCs are unchanged: no frequency check, no end minimization.
+  - Profiles get `[ts_inputs]` (`mepd.inputs.TSInputs`: fmax, maxiter, continue_unconverged, check_frequencies,
+    imaginary_cutoff_cm, exact_hessian, hessian_every), also in the web profile form ("TS optimization").
+
 - **Orbitals are data, the Orbitals button is a view choice.** Each open session keeps every structure's
   (and conformer's) HOMO / LUMO ready in `<workspace>/orbitals/` at the session's level, built on the
   full grid ahead of time: from the job that computed the geometry when there is one, else a single
@@ -447,6 +473,42 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
+  not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
+  engine already did. Before, one such geometry (e.g. a bond breaking in a 3000 K QM/MM nanoreactor) ended the
+  whole run. Its errors now name the method that ran (they said "GFN-FF" for GFN2 runs too).
+
+- **`mepd.find_ts` without `fmax`/`maxiter` used the engine's optimizer default** (0.01 eV/Å for the
+  ASE engines; mepd#6), looser than `mepd ts` (`TSInputs`: 0.001 eV/Å, 1000 steps), at which soft modes read
+  as extra imaginary frequencies. It now defaults to `mepd ts`'s values, which `mepd force`, the substituent
+  screen and the solvent tools inherit. Through QCCompute this means geomeTRIC's `convergence_gmax`
+  1.94e-5 Hartree/bohr, tighter (and slower) than geomeTRIC's own default. A given value wins; an engine
+  whose `compute_transition_state` takes no `keywords` is called as before. (`mepd ts` itself, the frequency
+  check and minimized IRC ends were already on `develop` from the checked-TS work.)
+
+- **A `gxtb` symlink to the g-xTB 2.0.1 build ran GFN2-xTB** (mepd#4). mepd left out `--gxtb` for any
+  binary named `gxtb`, but the 2.0.1 release is an xtb 6.7.1 build that runs GFN2 without it (exit 0, no
+  warning). The flag is now decided from the program (`mepd.programs.standalone_gxtb`, which reads
+  `--version` once per binary), in the engine, orbitals, nanoreactor and solvation. A run meant as g-xTB
+  whose output reports a GFN Hamiltonian now raises instead of returning a GFN2 energy. `find_gxtb` also
+  finds `~/.local/opt/xtb-gxtb-*/bin/xtb`. mepd's image passes `/opt/gxtb/bin/xtb` and was not affected.
+
+- **QCCompute TS optimizations ignored their keywords** (mepd#5). `QCComputeEngine.compute_transition_state`
+  never passed `keywords` on, so FSM-TS's `ts_fmax`/`ts_maxiter` and `mepd.find_ts(..., **keywords)` with
+  ORCA, Psi4 or TeraChem ran geomeTRIC's default convergence. Keywords now reach geomeTRIC: `maxiter`
+  (or `steps`), and ASE's `fmax` in eV/Å as `convergence_gmax` in Hartree/bohr (0.001 eV/Å → 1.94e-5);
+  an explicit `convergence_gmax` wins. The default is still 1000 steps.
+
+- **TeraChem frozen-atom optimizations froze nothing** (mepd#3). With `new_minimizer yes`, which mepd always
+  sets, TeraChem ignores a `$constraints / atom N` group without an error; geomeTRIC reads
+  `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with
+  `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
+  may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
+
+- **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
+  Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and
+  `mepd discovery`'s geomeTRIC IRC; g-xTB, ASE, MLIP and FAIR-Chem engines use Sella's IRC and were not affected.
+
 - **A multi-step result was drawn as parallel channels from reactant to product**, although each IRC joins
   only neighbours (start ⇌ intermediate, intermediate ⇌ end). The results overview now draws such a route as one
   chain, start → TS 1 → intermediate 1 → TS 2 → … → end. Its table lists each step from the species before it,
@@ -486,6 +548,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   An edge added from a search's page (Add to graph) now reports that IRC or path, and every TS search channel
   carries the path it searched. The export is also on a TS search's or channel search's result page, next to
   All files (.zip); a search on no edge exports on its own.
+- **An interactive reactor outlived its server**: a web server that was killed (SIGKILL, `fuser -k`) left its
+  reactors' GFN2-xTB dynamics running at a full CPU each, with no one to stop them, for days. A reactor now
+  exits with its server, as the result-parsing workers already did.
 - **Reactor reaction ends were read as ions**: "H + OH" was stored and drawn as `[H+].[OH-]`, because the complex
   was read as one geometry. A complex now takes its molecules' SMILES. **A lone H atom was read as H2** (`[HH]`);
   one-atom structures are now perceived as a bare atom or ion. Existing workspaces are repaired when loaded.

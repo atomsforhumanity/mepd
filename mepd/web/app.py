@@ -16,7 +16,6 @@ import multiprocessing
 import os
 import re
 import secrets
-import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -37,6 +36,7 @@ from mepd.web import chem
 from mepd.web.jobs import Broadcaster, JobManager, _reduce_chain_payload
 from mepd.web.sessions import Sessions
 from mepd.web.operations import OPERATIONS
+from mepd.web.procs import die_with_parent
 from mepd.web.results import MINIMA_KINDS, collect_cached, entry_reverse_barrier, entry_ts_energy, find_entry, summarize
 from mepd.web.workspace import HARTREE_TO_KCAL, Workspace, WorkspaceError, is_species, is_ts, validate_profile_text
 from mepd.web.workspace import find_duplicate as _find_duplicate
@@ -258,24 +258,6 @@ class SessionIn(BaseModel):
     name: Optional[str] = None
 
 
-def _die_with_parent(parent_pid: int) -> None:
-    """Pool-worker initializer: exit when the server does. A server killed
-    outright (SIGKILL, `fuser -k`) never shuts its pool down, and spawned
-    workers would otherwise linger, idle, holding memory."""
-    import signal
-
-    if sys.platform.startswith("linux"):
-        try:
-            import ctypes
-
-            PR_SET_PDEATHSIG = 1
-            ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
-        except Exception:
-            pass
-    if os.getppid() != parent_pid:  # the server died before we got here
-        os._exit(0)
-
-
 class ResultParser:
     """Parses job outputs in worker processes, not the server's threads.
 
@@ -291,7 +273,7 @@ class ResultParser:
     def _get(self) -> ProcessPoolExecutor:
         if self._pool is None:
             self._pool = ProcessPoolExecutor(self.workers, mp_context=multiprocessing.get_context("spawn"),
-                                             initializer=_die_with_parent, initargs=(os.getpid(),))
+                                             initializer=die_with_parent, initargs=(os.getpid(),))
         return self._pool
 
     async def __call__(self, job: dict, job_dir: Path) -> dict:

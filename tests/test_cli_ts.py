@@ -17,6 +17,23 @@ from mepd.pot import Pot
 from mepd.TreeNode import TreeNode
 
 
+@pytest.fixture(autouse=True)
+def _ts_frequency_check_passes(monkeypatch):
+    """These tests stub the TS optimizer; mepd.find_ts then checks the TS's
+    frequencies, which here report the one imaginary mode of a saddle."""
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(results=SimpleNamespace(freqs_wavenumber=[-500.0, 100.0, 200.0],
+                                                     normal_modes_cartesian=None))
+    monkeypatch.setattr(GXTBCalculator, "_compute_hessian_result", lambda self, node, **kw: result)
+    # The fake g-xTB plays xtb's own optimizer (xtbopt.log), and these tests are
+    # about the commands' files, not the IRC ends' minimization.
+    monkeypatch.setattr(GXTBCalculator, "DEFAULT_MINIMIZER", "xtb")
+    import mepd.compute as compute
+
+    monkeypatch.setattr(compute, "minimize", lambda node, engine, **kw: node)
+
+
 def _water(x_offset: float = 0.0) -> Structure:
     return Structure(
         symbols=["O", "H", "H"],
