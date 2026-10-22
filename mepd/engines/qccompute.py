@@ -279,14 +279,14 @@ class QCComputeEngine(Engine):
                 lines.append(f"min_coordinates {self._tc_value(min_coordinates)}")
                 continue
             lines.append(f"{key} {self._tc_value(optimizer_keywords[key])}")
-        if frozen_atom_indices:
-            lines.append("")
-            lines.append("$constraints")
-            lines.extend(
-                f"atom {idx + 1}"
-                for idx in sorted({int(idx) for idx in frozen_atom_indices if int(idx) >= 0})
-            )
-            lines.append("$end")
+        frozen = sorted({int(idx) for idx in frozen_atom_indices if int(idx) >= 0})
+        if frozen and self._tc_value(tc_keywords.get("new_minimizer", "yes")).lower() in ("no", "false", "0"):
+            # TeraChem's old DL-FIND optimizer reads $constraints / atom N
+            lines += ["", "$constraints", *(f"atom {idx + 1}" for idx in frozen), "$end"]
+        elif frozen:
+            # new_minimizer (geomeTRIC) ignores $constraints without an error; it reads
+            # $constraint_freeze / xyz N,M after an `end` line (TeraChem manual, mepd#3)
+            lines += ["end", "", "$constraint_freeze", "xyz " + ",".join(str(idx + 1) for idx in frozen), "$end"]
         return FileInput(
             program="terachem",
             files={

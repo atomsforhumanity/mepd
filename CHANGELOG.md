@@ -473,6 +473,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **TeraChem frozen-atom optimizations froze nothing** (mepd#3). With `new_minimizer yes`, which mepd always
+  sets, TeraChem ignores a `$constraints / atom N` group without an error; geomeTRIC reads
+  `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with
+  `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
+  may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
+
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and
   `mepd discovery`'s geomeTRIC IRC; g-xTB, ASE, MLIP and FAIR-Chem engines use Sella's IRC and were not affected.

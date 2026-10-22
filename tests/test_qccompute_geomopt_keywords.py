@@ -111,9 +111,10 @@ def test_terachem_single_geomopt_with_frozen_atoms_uses_constraints_file_input()
     assert "run minimize" in tcin
     assert "threads 7" in tcin
     assert "maxit 10" in tcin
-    assert "$constraints" in tcin
-    assert "atom 1" in tcin
-    assert "$end" in tcin
+    # new_minimizer (mepd's default) reads $constraint_freeze, not $constraints (mepd#3)
+    assert "new_minimizer yes" in tcin
+    assert "$constraints" not in tcin
+    assert tcin.rstrip().endswith("end\n\n$constraint_freeze\nxyz 1\n$end")
     assert "frozen_atom_indices" not in tcin
 
 
@@ -155,9 +156,8 @@ def test_terachem_batch_geomopt_with_frozen_atoms_uses_constraints_file_inputs()
     for inp in captured["inputs"]:
         assert isinstance(inp, FileInput)
         tcin = inp.files["tc.in"]
-        assert "$constraints" in tcin
-        assert "atom 2" in tcin
-        assert "$end" in tcin
+        assert "$constraints" not in tcin
+        assert "$constraint_freeze\nxyz 2\n$end" in tcin
 
 
 def test_qccompute_prepare_node_for_comparison_uses_non_frozen_atoms():
@@ -293,3 +293,19 @@ def test_hessian_uses_bigchem_only_on_chemcloud(compute_program, expected, monke
                         lambda prog, inp, **kw: seen.append(prog) or SimpleNamespace(results=None))
     engine._compute_hessian_result(_node_at_x(1.4))
     assert seen[0] == expected
+
+
+def test_terachem_frozen_atoms_follow_the_optimizer():
+    """$constraint_freeze/xyz for new_minimizer, $constraints/atom for the old optimizer."""
+    engine = QCComputeEngine(program="terachem", compute_program="chemcloud",
+                             program_args=ProgramArgs(model={"method": "hf", "basis": "sto-3g"}, keywords={}))
+    build = lambda tc: engine._build_terachem_geomopt_file_input(
+        _node_at_x(1.0), tc_keywords=tc, optimizer_keywords={}, frozen_atom_indices=[2, 0, 0, -1]).files["tc.in"]
+    new = build({"new_minimizer": "yes"})
+    assert "$constraint_freeze\nxyz 1,3\n$end" in new and "$constraints" not in new
+    assert new.index("\nend\n") < new.index("$constraint_freeze")
+    old = build({"new_minimizer": False})
+    assert "$constraints\natom 1\natom 3\n$end" in old and "$constraint_freeze" not in old
+    assert "$constraint" not in engine._build_terachem_geomopt_file_input(
+        _node_at_x(1.0), tc_keywords={"new_minimizer": "yes"}, optimizer_keywords={},
+        frozen_atom_indices=[]).files["tc.in"]
