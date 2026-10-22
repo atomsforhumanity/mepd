@@ -473,6 +473,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **`mepd.find_ts` without `fmax`/`maxiter` used the engine's optimizer default** (0.01 eV/Å for the
+  ASE engines; mepd#6), looser than `mepd ts` (`TSInputs`: 0.001 eV/Å, 1000 steps), at which soft modes read
+  as extra imaginary frequencies. It now defaults to `mepd ts`'s values, which `mepd force`, the substituent
+  screen and the solvent tools inherit. Through QCCompute this means geomeTRIC's `convergence_gmax`
+  1.94e-5 Hartree/bohr, tighter (and slower) than geomeTRIC's own default. A given value wins; an engine
+  whose `compute_transition_state` takes no `keywords` is called as before. (`mepd ts` itself, the frequency
+  check and minimized IRC ends were already on `develop` from the checked-TS work.)
+
 - **A `gxtb` symlink to the g-xTB 2.0.1 build ran GFN2-xTB** (mepd#4). mepd left out `--gxtb` for any
   binary named `gxtb`, but the 2.0.1 release is an xtb 6.7.1 build that runs GFN2 without it (exit 0, no
   warning). The flag is now decided from the program (`mepd.programs.standalone_gxtb`, which reads
