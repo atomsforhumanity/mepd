@@ -558,3 +558,14 @@ def test_qm_hessian_is_exact_and_climbs_the_reaction_mode():
     H = micro.qm_hessian(s, s.geometry, tangent)
     ev = np.linalg.eigvalsh(H) / to_ev
     assert np.allclose(np.sort(ev), np.sort([0.2, -0.05, 0.3, 0.4, 0.5, 0.6]), atol=1e-6)
+
+
+def test_tcin_constraint_freeze_is_read_and_stripped():
+    """new_minimizer's $constraint_freeze / xyz freezes atoms like $constraints / atom (mepd#3)."""
+    from mepd.engines.terachem_qmmm import parse_tcin, without_constraints
+
+    text = "method hf\nbasis sto-3g\nrun gradient\nend\n\n$constraint_freeze\nxyz 13-14, 15\nxyz 1\n$end\n"
+    assert parse_tcin(text)["frozen_atom_indices"] == [0, 12, 13, 14]
+    assert "$constraint_freeze" not in without_constraints(text) and "xyz" not in without_constraints(text)
+    with pytest.raises(ValueError, match="not supported"):
+        parse_tcin("run gradient\n$constraint_freeze\ndistance 1_2\n$end\n")

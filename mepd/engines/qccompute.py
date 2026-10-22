@@ -24,6 +24,7 @@ from qcdata import CalcType, ProgramOutput, Structure
 from mepd.chain import Chain
 from mepd.engines.engine import Engine
 from mepd.program_args import ProgramArgs
+from mepd.units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 from mepd.errors import (
     GradientsNotComputedError,
     ElectronicStructureError,
@@ -279,14 +280,14 @@ class QCComputeEngine(Engine):
                 lines.append(f"min_coordinates {self._tc_value(min_coordinates)}")
                 continue
             lines.append(f"{key} {self._tc_value(optimizer_keywords[key])}")
-        if frozen_atom_indices:
-            lines.append("")
-            lines.append("$constraints")
-            lines.extend(
-                f"atom {idx + 1}"
-                for idx in sorted({int(idx) for idx in frozen_atom_indices if int(idx) >= 0})
-            )
-            lines.append("$end")
+        frozen = sorted({int(idx) for idx in frozen_atom_indices if int(idx) >= 0})
+        if frozen and self._tc_value(tc_keywords.get("new_minimizer", "yes")).lower() in ("no", "false", "0"):
+            # TeraChem's old DL-FIND optimizer reads $constraints / atom N
+            lines += ["", "$constraints", *(f"atom {idx + 1}" for idx in frozen), "$end"]
+        elif frozen:
+            # new_minimizer (geomeTRIC) ignores $constraints without an error; it reads
+            # $constraint_freeze / xyz N,M after an `end` line (TeraChem manual, mepd#3)
+            lines += ["end", "", "$constraint_freeze", "xyz " + ",".join(str(idx + 1) for idx in frozen), "$end"]
         return FileInput(
             program="terachem",
             files={
@@ -855,8 +856,9 @@ class QCComputeEngine(Engine):
             output = _run_standard_hessian_call()
         return output
 
-    def _compute_ts_result(self, node: StructureNode, keywords={'maxiter': 1000}, use_bigchem=False,
+    def _compute_ts_result(self, node: StructureNode, keywords=None, use_bigchem=False,
                            hessres: ProgramOutput = None):
+        keywords = self._geometric_ts_keywords(keywords)
         if hessres is not None:
             np.savetxt("/tmp/hess.txt", hessres.results.hessian)
             kwds = keywords.copy()
@@ -929,8 +931,21 @@ class QCComputeEngine(Engine):
         output = self._compute_hessian_result(node)
         return output.return_result
 
-    def compute_transition_state(self, node: StructureNode, keywords={'maxiter': 500}):
-        output = self._compute_ts_result(node=node)
+    @staticmethod
+    def _geometric_ts_keywords(keywords: dict[str, Any] | None) -> dict[str, Any]:
+        """geomeTRIC keywords from mepd's TS keywords: `maxiter`/`steps` as geomeTRIC's
+        `maxiter` (1000 when not given), and ASE's `fmax` (eV/Å, largest atomic force) as
+        `convergence_gmax` (Hartree/bohr, largest atomic gradient). Others pass through."""
+        kwds = dict(keywords or {})
+        steps = kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", 1000)))
+        kwds["maxiter"] = int(steps)
+        fmax = kwds.pop("fmax", None)
+        if fmax is not None and "convergence_gmax" not in kwds:
+            kwds["convergence_gmax"] = float(fmax) * BOHR_TO_ANGSTROM / HARTREE_TO_EV
+        return kwds
+
+    def compute_transition_state(self, node: StructureNode, keywords=None):
+        output = self._compute_ts_result(node=node, keywords=keywords)
         if output.success:
             return StructureNode(structure=output.return_result)
         else:

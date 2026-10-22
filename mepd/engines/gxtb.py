@@ -37,6 +37,7 @@ from mepd.errors import (
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import update_node_cache
+from mepd.programs import standalone_gxtb
 from mepd.qcdata_structure_helpers import ase_atoms_to_structure
 
 
@@ -170,6 +171,8 @@ log = logging.getLogger(__name__)
 
 # Retries for an SCF that does not converge (tried in order): Fermi smearing
 # at a raised electronic temperature damps the charge oscillation.
+# xtb prints this for GFN0/1/2-xTB runs (also with --silent), never for g-xTB
+_GFN_HAMILTONIAN = re.compile(r":\s*Hamiltonian\s+(GFN\d?-xTB)")
 SCF_FALLBACKS = (("--etemp", "1000", "--iterations", "1000"), ("--etemp", "3000", "--iterations", "1000"))
 
 
@@ -393,7 +396,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args if extra_args is None else extra_args)
         # A job's viewer can show this SCF's orbitals (mepd.orbitals): write them as molden.
@@ -421,6 +424,8 @@ class GXTBCalculator(Engine):
             completed = _run_gxtb_process(cmd + list(retry), cwd=cwd, env=env, timeout_s=self.timeout_s, watch=watch)
             if completed.returncode == 0:
                 log.warning("g-xTB SCF did not converge for %s; converged with %s", xyz_path.name, " ".join(retry))
+        if completed.returncode == 0:
+            self._check_ran_gxtb(completed)
         if completed.returncode != 0:
             tried = "" if not (own_retries and _scf_not_converged(completed.stdout + completed.stderr)) else \
                 f" (SCF not converged, also with {'; '.join(' '.join(r) for r in SCF_FALLBACKS)})"
@@ -441,7 +446,7 @@ class GXTBCalculator(Engine):
         mepd.orbitals reads that program's molden files; else None (e.g. GFN1-xTB)."""
         if not os.environ.get("MEPD_ORBITALS_DIR", "").strip():
             return None
-        if self.add_gxtb_flag or Path(self.executable).name == "gxtb":
+        if self.add_gxtb_flag or standalone_gxtb(self.executable):
             return "gxtb"
         gfn = cmd[cmd.index("--gfn") + 1] if "--gfn" in cmd and cmd.index("--gfn") + 1 < len(cmd) else "2"
         return "gfn2" if str(gfn) == "2" else None
@@ -562,7 +567,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args)
 
@@ -575,7 +580,21 @@ class GXTBCalculator(Engine):
                 msg=f"g-xTB Hessian calculation failed with exit code {completed.returncode}.",
                 obj=completed.stdout + completed.stderr,
             )
+        self._check_ran_gxtb(completed)
         return completed
+
+    def _check_ran_gxtb(self, completed: subprocess.CompletedProcess[str]) -> None:
+        """A run meant as g-xTB whose xtb reports a GFN Hamiltonian ran the wrong
+        method (e.g. an xtb build not given `--gxtb`, mepd#4): stop, don't return it."""
+        if not self.add_gxtb_flag:
+            return
+        found = _GFN_HAMILTONIAN.search(completed.stdout)
+        if found:
+            raise ElectronicStructureError(
+                msg=f"{self.executable} ran {found.group(1)}, not g-xTB: give it the g-xTB build of xtb, "
+                    "or set add_gxtb_flag = false for GFN-xTB.",
+                obj=completed.stdout + completed.stderr,
+            )
 
     def compute_geometry_optimization(
         self,

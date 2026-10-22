@@ -473,6 +473,33 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **`mepd.find_ts` without `fmax`/`maxiter` used the engine's optimizer default** (0.01 eV/Å for the
+  ASE engines; mepd#6), looser than `mepd ts` (`TSInputs`: 0.001 eV/Å, 1000 steps), at which soft modes read
+  as extra imaginary frequencies. It now defaults to `mepd ts`'s values, which `mepd force`, the substituent
+  screen and the solvent tools inherit. Through QCCompute this means geomeTRIC's `convergence_gmax`
+  1.94e-5 Hartree/bohr, tighter (and slower) than geomeTRIC's own default. A given value wins; an engine
+  whose `compute_transition_state` takes no `keywords` is called as before. (`mepd ts` itself, the frequency
+  check and minimized IRC ends were already on `develop` from the checked-TS work.)
+
+- **A `gxtb` symlink to the g-xTB 2.0.1 build ran GFN2-xTB** (mepd#4). mepd left out `--gxtb` for any
+  binary named `gxtb`, but the 2.0.1 release is an xtb 6.7.1 build that runs GFN2 without it (exit 0, no
+  warning). The flag is now decided from the program (`mepd.programs.standalone_gxtb`, which reads
+  `--version` once per binary), in the engine, orbitals, nanoreactor and solvation. A run meant as g-xTB
+  whose output reports a GFN Hamiltonian now raises instead of returning a GFN2 energy. `find_gxtb` also
+  finds `~/.local/opt/xtb-gxtb-*/bin/xtb`. mepd's image passes `/opt/gxtb/bin/xtb` and was not affected.
+
+- **QCCompute TS optimizations ignored their keywords** (mepd#5). `QCComputeEngine.compute_transition_state`
+  never passed `keywords` on, so FSM-TS's `ts_fmax`/`ts_maxiter` and `mepd.find_ts(..., **keywords)` with
+  ORCA, Psi4 or TeraChem ran geomeTRIC's default convergence. Keywords now reach geomeTRIC: `maxiter`
+  (or `steps`), and ASE's `fmax` in eV/Å as `convergence_gmax` in Hartree/bohr (0.001 eV/Å → 1.94e-5);
+  an explicit `convergence_gmax` wins. The default is still 1000 steps.
+
+- **TeraChem frozen-atom optimizations froze nothing** (mepd#3). With `new_minimizer yes`, which mepd always
+  sets, TeraChem ignores a `$constraints / atom N` group without an error; geomeTRIC reads
+  `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with
+  `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
+  may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
+
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and
   `mepd discovery`'s geomeTRIC IRC; g-xTB, ASE, MLIP and FAIR-Chem engines use Sella's IRC and were not affected.

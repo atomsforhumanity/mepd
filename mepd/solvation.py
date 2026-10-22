@@ -106,15 +106,15 @@ def _xtb_executable(explicit: Optional[str] = None) -> str:
     `explicit`, else mepd.programs.xtb_executable() ($XTB_EXECUTABLE, `xtb`
     on PATH, else the g-xTB build, downloaded on first use; it runs GFN2 +
     ALPB unless given --gxtb)."""
-    from mepd.programs import xtb_executable
+    from mepd.programs import standalone_gxtb, xtb_executable
 
-    if explicit and Path(explicit).name != "gxtb" and (Path(explicit).exists() or shutil.which(explicit)):
+    if explicit and not standalone_gxtb(explicit) and (Path(explicit).exists() or shutil.which(explicit)):
         return str(explicit)
     try:
         cand = xtb_executable()
     except Exception:
         cand = None
-    if cand and Path(cand).name != "gxtb":
+    if cand and not standalone_gxtb(cand):
         return str(cand)
     raise ElectronicStructureError(
         msg="Implicit solvent needs an xtb executable that runs GFN2-xTB (set XTB_EXECUTABLE, or put `xtb` "
@@ -257,8 +257,9 @@ class SolvatedEngine(ModifiedEngine):
 def _native_capable(engine: Engine) -> bool:
     """GFN2-xTB run through the local xtb engine: its own ALPB/GBSA/CPCM-X."""
     from mepd.engines.gxtb import GXTBCalculator
+    from mepd.programs import standalone_gxtb
 
-    return isinstance(engine, GXTBCalculator) and not engine.add_gxtb_flag and Path(engine.executable).name != "gxtb"
+    return isinstance(engine, GXTBCalculator) and not engine.add_gxtb_flag and not standalone_gxtb(engine.executable)
 
 
 def solvate_engine(engine: Engine, solvation: dict) -> Engine:

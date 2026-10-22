@@ -16,6 +16,7 @@ of its own gets geomeTRIC's.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Sequence, overload
 
@@ -40,6 +41,15 @@ def _kw(keywords: dict) -> dict:
     """Engine keywords, passed only when there are some: an engine method may
     take just the structure."""
     return {"keywords": dict(keywords)} if keywords else {}
+
+
+def _takes_keywords(fn) -> bool:
+    """Whether an engine method takes a `keywords` argument (a user's engine may not)."""
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "keywords" in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
 
 
 def energies(structures: StructureNode | Sequence[StructureNode], engine) -> np.ndarray:
@@ -199,7 +209,9 @@ def find_ts(guess: StructureNode, engine, *, check_frequencies: bool = True,
 
     `keywords` go to the engine's TS optimizer (for the ASE-based engines, Sella:
     e.g. `fmax` in eV/Angstrom, `maxiter`; the g-xTB engine also takes
-    `exact_hessian` and `hessian_every`). Raises ConvergenceError when the
+    `exact_hessian` and `hessian_every`). `fmax` and `maxiter` default to
+    `mepd ts`'s (`TSInputs`: 0.001 eV/Angstrom, 1000 steps), not the engine's
+    looser optimizer default, at which soft modes read as extra imaginary ones. Raises ConvergenceError when the
     optimizer does not converge, and (`check_frequencies`, the default)
     WrongStationaryPointError when the converged structure does not have exactly
     one imaginary mode below -`imaginary_cutoff_cm` cm^-1. The checked
@@ -212,6 +224,10 @@ def find_ts(guess: StructureNode, engine, *, check_frequencies: bool = True,
     from mepd.errors import WrongStationaryPointError
 
     fn = _method(engine, "compute_transition_state", "transition-state optimization")
+    if _takes_keywords(fn):
+        from mepd.inputs import TSInputs
+
+        keywords = {"fmax": TSInputs.fmax, "maxiter": TSInputs.maxiter, **keywords}
     current = guess
     for round_ in range(max(0, int(continue_unconverged)) + 1):
         try:
