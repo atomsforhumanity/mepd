@@ -59,3 +59,41 @@ def test_cis_and_trans_at_a_metal_stay_different():
     cis, trans = _square_planar(True), _square_planar(False)
     assert mepd.compare_structures(cis, cis).same
     assert not mepd.compare_structures(cis, trans).same
+
+
+# --- metal-ligand contacts left out (metal_ligand_contacts=False) -----------------------------------
+# A ligand that binds the metal through another atom, or comes off it, is another species by default.
+# Without metal-ligand contacts only covalent bonds and stereochemistry count, as YARP's organometallic
+# extension treats dative contacts as zero-order bonds (Li, Hsu, Savoie, ChemRxiv 2026,
+# doi:10.26434/chemrxiv.15006374/v1).
+
+DATA = Path(__file__).parent / "data"
+
+
+def test_a_coordination_change_alone_is_the_same_species_without_metal_ligand_contacts():
+    import mepd
+
+    reactant, irc_end = _frames(DATA / "metal_ligand_contact_only.xyz", 0, 1)    # Pt-N 2.62 vs 1.93 A
+    strict = mepd.compare_structures(reactant, irc_end)
+    assert not strict.graph and strict.metal_ligand_changed is None
+    loose = mepd.compare_structures(reactant, irc_end, metal_ligand_contacts=False)
+    assert loose.same, loose.reason
+    assert loose.metal_ligand_changed is True
+    assert mepd.same_molecule(reactant, irc_end, metal_ligand_contacts=False)
+    assert mepd.connects([irc_end, irc_end], reactant, reactant, metal_ligand_contacts=False).both
+
+
+def test_a_covalent_change_stays_different_without_metal_ligand_contacts():
+    import mepd
+
+    product, irc_end = _frames(DATA / "metal_complex_covalent_change.xyz", 0, 1)   # a C-C bond differs
+    c = mepd.compare_structures(product, irc_end, metal_ligand_contacts=False)
+    assert not c.graph and "covalent" in c.reason
+
+
+def test_metal_free_structures_are_unaffected():
+    import mepd
+
+    cis, trans = _square_planar(True), _square_planar(False)
+    for a, b in ((cis, cis), (cis, trans)):
+        assert mepd.compare_structures(a, b).same == mepd.compare_structures(a, b, metal_ligand_contacts=True).same
