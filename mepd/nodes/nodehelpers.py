@@ -530,6 +530,33 @@ def _canonical_atom_order(node: Node) -> list[int]:
     return [int(i) for i in pynauty.canon_label(pynauty.Graph(n, adjacency_dict=adj, vertex_coloring=colors))]
 
 
+#: transition metals, lanthanides and actinides: the centres whose stereo tags
+#: RDKit perceives from 3D as a coordination polytope (@SP, @TB, @OH, or @/@@)
+_METAL_NUMBERS = frozenset([*range(21, 31), *range(39, 49), *range(57, 81), *range(89, 113)])
+
+
+def _clear_unresolvable_metal_stereo(mol) -> None:
+    """Drop the stereo tag of a metal centre whose ligands are all alike but at
+    most one (MA_n or MA_nB, ligands told apart by canonical rank): such a
+    centre has no stereoisomers in any polytope, so its tag only records which
+    polytope RDKit fitted to the geometry (@TB6 vs @OH7 for one fluxional MCl4L)
+    and would make two geometries of one molecule compare as different. Centres
+    with real cis/trans or fac/mer isomers (MA2B2, MA3B3, ...) keep theirs."""
+    from collections import Counter
+
+    from rdkit import Chem
+
+    metals = [a for a in mol.GetAtoms() if a.GetAtomicNum() in _METAL_NUMBERS
+              and a.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED]
+    if not metals:
+        return
+    ranks = list(Chem.CanonicalRankAtoms(mol, breakTies=False))
+    for a in metals:
+        counts = sorted(Counter(ranks[n.GetIdx()] for n in a.GetNeighbors()).values())
+        if len(counts) <= 1 or (len(counts) == 2 and counts[0] == 1):
+            a.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+
+
 def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
     """Isomeric SMILES of `node` from its own bond graph (the one the
     connectivity check compares), not one RDKit perceives from 3D: that can
@@ -578,6 +605,7 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
             atom.SetNoImplicit(True)
         Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
     Chem.AssignStereochemistryFrom3D(mol)
+    _clear_unresolvable_metal_stereo(mol)
     out = (Chem.MolToSmiles(mol), with_orders)
     if len(_STEREO_SMILES) >= _STEREO_SMILES_MAX:
         _STEREO_SMILES.clear()
