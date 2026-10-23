@@ -10,7 +10,10 @@ included, so a ligand that binds, comes off, or binds through another atom
 makes another species. With `metal_ligand_contacts=False` they are left out:
 two structures are the same species when their covalent bonds and
 stereochemistry are, whatever the coordination at the metal, and
-`Comparison.metal_ligand_changed` records whether the contacts differ. This
+`Comparison.metal_ligand_changed` records whether the contacts differ. When
+they do, the configuration at atoms bonded to the metal is not compared (it
+is defined by the metal-ligand bonds); when they don't, the full comparison
+is used. This
 follows the treatment of dative metal-ligand contacts as zero-order bonds,
 kept apart from covalent bond changes, in YARP's organometallic extension
 (Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the Roads Less Calculated in
@@ -107,16 +110,29 @@ def compare_structures(a: StructureNode, b: StructureNode, *, metal_ligand_conta
     comparison that cannot be decided says so (`stereo is None`) instead of
     passing. When RDKit cannot decide, OpenBabel's stereo SMILES give a second
     opinion, which can only confirm "same" (`Comparison.method`). With
-    `metal_ligand_contacts=False`, bonds to metal atoms are left out of both
-    the graphs and the stereochemistry (see the module docstring).
+    `metal_ligand_contacts=False`, two structures whose metal-ligand contacts
+    differ are compared with bonds to metal atoms left out of both the graphs
+    and the stereochemistry (see the module docstring); with the same contacts
+    the full comparison is used, which also sees the configuration at atoms
+    bonded to the metal.
 
     >>> c = mepd.compare_structures(irc_end, reactant); c.same, c.stereo, c.smiles
     """
+    c = _compare(a, b, True)
+    if metal_ligand_contacts or not (_has_metal(a) or _has_metal(b)):
+        return c
+    if c.graph:
+        # Same contacts: the full comparison stands. It also sees the configuration at
+        # atoms bonded to the metal, which the covalent-only one cannot.
+        return replace(c, metal_ligand_changed=False)
+    c = _compare(a, b, False)
+    return replace(c, metal_ligand_changed=True) if c.graph else c
+
+
+def _compare(a: StructureNode, b: StructureNode, metal_ligand_contacts: bool) -> Comparison:
     c = _compare_rdkit(a, b, metal_ligand_contacts)
     if c.graph and c.stereo is None and max(len(a.coords), len(b.coords)) < 100:
         c = _second_opinion(c, a, b, metal_ligand_contacts)
-    if not metal_ligand_contacts and c.graph and _has_metal(a):
-        c = replace(c, metal_ligand_changed=not a.graph.remove_Hs().is_bond_isomorphic_to(b.graph.remove_Hs()))
     return c
 
 
