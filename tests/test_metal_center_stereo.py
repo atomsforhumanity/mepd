@@ -97,3 +97,15 @@ def test_metal_free_structures_are_unaffected():
     cis, trans = _square_planar(True), _square_planar(False)
     for a, b in ((cis, cis), (cis, trans)):
         assert mepd.compare_structures(a, b).same == mepd.compare_structures(a, b, metal_ligand_contacts=True).same
+
+
+def test_without_metal_ligand_contacts_the_same_contacts_keep_the_full_comparison():
+    """TMC_14992_Pd: the same Pd contacts, but the carbon bonded to Pd is inverted. Leaving the metal's
+    bonds out would hide that centre; with the same contacts the full comparison decides."""
+    import mepd
+
+    a, b = _frames(DATA / "metal_bound_carbon_inverted.xyz", 0, 1)
+    strict = mepd.compare_structures(a, b)
+    loose = mepd.compare_structures(a, b, metal_ligand_contacts=False)
+    assert strict.graph and not strict.same
+    assert not loose.same and loose.metal_ligand_changed is False
