@@ -533,6 +533,14 @@ def _canonical_atom_order(node: Node) -> list[int]:
 #: transition metals, lanthanides and actinides: the centres whose stereo tags
 #: RDKit perceives from 3D as a coordination polytope (@SP, @TB, @OH, or @/@@)
 _METAL_NUMBERS = frozenset([*range(21, 31), *range(39, 49), *range(57, 81), *range(89, 113)])
+#: the same elements by symbol
+_METAL_SYMBOLS = frozenset([
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh",
+    "Pd", "Ag", "Cd", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm",
+    "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Ac", "Th", "Pa", "U", "Np", "Pu",
+    "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds",
+    "Rg", "Cn"
+])
 
 
 def _clear_unresolvable_metal_stereo(mol) -> None:
@@ -557,7 +565,7 @@ def _clear_unresolvable_metal_stereo(mol) -> None:
             a.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
 
 
-def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
+def _stereo_smiles(node: Node, bond_orders: bool = True, *, metal_ligand_contacts: bool = True) -> tuple[str, bool]:
     """Isomeric SMILES of `node` from its own bond graph (the one the
     connectivity check compares), not one RDKit perceives from 3D: that can
     join close fragments (a P...P contact in a complex read as P=P), and
@@ -567,7 +575,8 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
     `_canonical_atom_order` so ties in the bond orders can't depend on the
     numbering either. Returns (SMILES, whether bond orders were assigned);
     without them (assignment failed, or `bond_orders=False`) only
-    tetrahedral stereo is seen. Cached per structure: a large comparison
+    tetrahedral stereo is seen. Without `metal_ligand_contacts`, bonds to metal
+    atoms are left out (`mepd.compare` module docstring). Cached per structure: a large comparison
     checks one reference against many candidates."""
     from qcref.constants import BOHR_TO_ANGSTROM
     from rdkit import Chem
@@ -576,7 +585,8 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
 
     st = node.structure
     geometry = np.asarray(st.geometry, dtype=float)
-    key = (tuple(st.symbols), geometry.round(6).tobytes(), st.charge, st.multiplicity, bond_orders)
+    key = (tuple(st.symbols), geometry.round(6).tobytes(), st.charge, st.multiplicity, bond_orders,
+           metal_ligand_contacts)
     hit = _STEREO_SMILES.get(key)
     if hit is not None:
         return hit
@@ -586,6 +596,8 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
     for i in order:
         mol.AddAtom(Chem.Atom(str(st.symbols[i])))
     for u, v in node.graph.edges():
+        if not metal_ligand_contacts and (st.symbols[int(u)] in _METAL_SYMBOLS or st.symbols[int(v)] in _METAL_SYMBOLS):
+            continue
         mol.AddBond(where[int(u)], where[int(v)], Chem.BondType.SINGLE)
     conformer = Chem.Conformer(len(order))
     for k, (x, y, z) in enumerate(geometry[order] * BOHR_TO_ANGSTROM):
