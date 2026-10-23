@@ -473,6 +473,26 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Nanoreactor (xtb/g-xTB MD): a reactor no longer falls apart into atoms when xtb's SCC breaks down.**
+  xtb's MD goes on after a failed SCC with zero energy and zero forces (every later step fails too, and so
+  does every later segment, from the broken charges in `xtbrestart`), so the atoms fly off in straight lines;
+  an SCC that lands on a wrong solution gives a jump of tens of Eh, a kick to ~10^4 K, "MD is unstable", and
+  every later segment restarts from those velocities. Seen with a ketosteroid isomerase active site (1OH0,
+  QM: the steroid + Tyr16/Asp40/Tyr57/Asp103, charge -2) at 3000 K: atoms after 0.3 ps, no products. Now
+  such a run is cut at its last good frame (zero energy, a jump of more than 1 Eh between frames, or an
+  unstable stop) and the segment goes on from there with a fresh SCC guess and new velocities at the
+  temperature; a segment that breaks down 6 times keeps its good frames and the next starts from the last
+  of them (a warning says so); only 3 such segments in a row without progress stop the MD, with an error
+  that says what to change.
+
+- **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
+  perceived over the whole system (protein and water included), re-reading every segment so far: hours per
+  segment for a protein. They are now found among the QM atoms only (indices still the system's), each
+  segment read once. The products step reads the QM atoms, and whole frames only for products. The MD's
+  xtb SCC is smeared at the reactor's electronic temperature (3000 K) from the start and starts from the
+  previous step's charges (0.26 → 0.17 s per step on 1OH0, and no 300 K SCC that fails first); a step whose
+  energy jumps is redone from scratch.
+
 - **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
   not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
   engine already did. Before, one such geometry (e.g. a bond breaking in a 3000 K QM/MM nanoreactor) ended the

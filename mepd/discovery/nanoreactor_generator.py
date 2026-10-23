@@ -59,16 +59,29 @@ def run_dir(workdir: str) -> Optional[Path]:
     return d
 
 
-def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float) -> None:
-    """The reactor's events so far, for the Reactor view (never fails the run)."""
+def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float, atoms=None) -> None:
+    """The reactor's events so far, for the Reactor view (never fails the
+    run). `atoms`: only these react (a QM/MM reactor's QM atoms): the
+    events are found among them, with their indices into the whole system,
+    instead of perceiving bonds and species over the whole protein."""
     if run is None:
         return
     import json
 
-    from mepd.discovery.nanoreactor import DetectSettings, live_events
+    from mepd.discovery.nanoreactor import DetectSettings, events_in_frames, read_segments
 
     try:
-        data = live_events(run / "md", total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
+        if atoms is None:
+            symbols, frames = read_segments(run / "md")
+        else:
+            atoms = [int(a) for a in atoms]
+            symbols, frames = _subset_segments(run / "md", atoms)
+        data = events_in_frames(symbols, frames, total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
+        if atoms is not None:
+            for rec in data["events"]:
+                rec["atoms"] = [atoms[a] for a in rec["atoms"]]
+                for c in rec.get("bond_changes") or []:
+                    c["atoms"] = [atoms[a] for a in c["atoms"]]
         tmp = run / "live_events.json.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(run / "live_events.json")
@@ -76,11 +89,32 @@ def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float) -
         pass
 
 
-def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=None):
+_SUBSET_CACHE: dict = {}
+
+
+def _subset_segments(md_dir: Path, atoms: list) -> tuple[list, np.ndarray]:
+    """read_segments for these atoms only; each finished segment file is
+    parsed once (a QM/MM reactor's segments hold the whole system)."""
+    from mepd.discovery.nanoreactor import read_xyz_frames
+
+    symbols, parts = [], []
+    for fp in sorted(Path(md_dir).glob("segment_*.xyz")):
+        key = (str(fp), fp.stat().st_mtime_ns, tuple(atoms))
+        if key not in _SUBSET_CACHE:
+            syms, xyz, _ = read_xyz_frames(fp)
+            _SUBSET_CACHE[key] = ([syms[a] for a in atoms] if syms else [], xyz[:, atoms] if len(xyz) else None)
+        syms, xyz = _SUBSET_CACHE[key]
+        symbols = syms or symbols
+        if xyz is not None:
+            parts.append(xyz)
+    return symbols, (np.concatenate(parts) if parts else np.zeros((0, len(atoms), 3)))
+
+
+def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=None, atoms=None):
     """on_event for the MD: after each segment, the events so far."""
     def hook(event, payload):
         if event == "md_segment":
-            write_live_events(run, total_charge=total_charge, dt_fs=dt_fs)
+            write_live_events(run, total_charge=total_charge, dt_fs=dt_fs, atoms=atoms)
         if on_event is not None:
             on_event(event, payload)
     return hook
@@ -105,11 +139,11 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
                                radius=max(auto_radius(len(symbols)), extent + 1.5))
     detect = DetectSettings()
     run = run_dir(workdir)
-    unstable = []
+    broke = []
 
     def hook(event, payload):
-        if event == "warning" and "MD is unstable" in str(payload.get("message", "")):
-            unstable.append(payload)
+        if event == "warning" and "MD broke down" in str(payload.get("message", "")):
+            broke.append(payload)
         segment_hook(run, int(structure.charge), settings.dump_fs, on_event)(event, payload)
 
     with tempfile.TemporaryDirectory(prefix="mepd_reactor_gen_") as tmp:
@@ -118,9 +152,9 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
                               settings=settings, workdir=d, executable=exe, on_event=hook)
         _, frames, _ = read_xyz_frames(traj)
     write_live_events(run, total_charge=int(structure.charge), dt_fs=settings.dump_fs)
-    if unstable:
-        warn(f"xtb stopped {len(unstable)} of {len(piston_segments(settings))} MD segments early (\"MD is unstable\"): "
-             f"{settings.temperature:g} K is too hot; the trajectory has gaps. Lower the temperature.")
+    if broke:
+        warn(f"xtb's MD broke down {len(broke)} time(s) in {len(piston_segments(settings))} segments (an SCC that "
+             f"failed or jumped, at {settings.temperature:g} K); each time it went on from the last good frame.")
     hist = bond_history(symbols, frames, detect, settings.dump_fs)
     events = detect_events(len(symbols), hist, detect, settings.dump_fs)
     out, torn, states = select_states(structure, frames, hist, events, max_products)

@@ -43,6 +43,7 @@ import itertools
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -356,7 +357,7 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
                 f"   temp={wall_t:.1f}\n   beta={beta:.3f}\n"
                 f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, all\n$end\n")
 
-    def run(argv, what, stoppable=False):
+    def run(argv, what, stoppable=False, check=True):
         """The finished xtb run; None if a stop was requested while it ran
         (`stoppable`: it is killed, what it wrote is kept)."""
         proc = subprocess.Popen(argv, cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -377,7 +378,7 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
         done = subprocess.CompletedProcess(argv, proc.returncode, out, err)
         with (workdir / "md.log").open("a") as log:
             log.write(done.stdout[-20000:])
-        if done.returncode != 0:
+        if done.returncode != 0 and check:
             raise RuntimeError(f"xtb {what} failed (exit {done.returncode}): {(done.stderr or done.stdout)[-800:]}")
         return done
 
@@ -392,36 +393,108 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
         shutil.move(workdir / "xtbopt.xyz", workdir / "reactor.xyz")
         (workdir / "xtbrestart").unlink(missing_ok=True)
     t_done = 0.0
+    carry: Optional[str] = None    # start the next segment here, with fresh velocities (None: from mdrestart)
+    stuck = 0                      # segments in a row given up without a single good frame
     for k, (dur, r) in enumerate(schedule):
         seg = workdir / f"segment_{k:03d}.xyz"
         restart_fp = workdir / f"segment_{k:03d}.mdrestart"
-        if seg.exists() and restart_fp.exists():
-            shutil.copy(restart_fp, workdir / "mdrestart")
+        cut_fp = workdir / f"segment_{k:03d}.cut.xyz"
+        if seg.exists() and (restart_fp.exists() or cut_fp.exists()):
+            if cut_fp.exists():
+                carry = cut_fp.name
+            else:
+                shutil.copy(restart_fp, workdir / "mdrestart")
+                carry = None
             t_done += dur
             continue
         if search_control.stop_requested():
             return _stopped_trajectory(workdir, k, len(symbols), None, t_done, settings, on_event)
-        (workdir / "md.inp").write_text(
-            "$md\n"
-            f"   temp={settings.temperature:.2f}\n   time={dur:.6f}\n   dump={settings.dump_fs:.4f}\n"
-            f"   step={settings.step_fs:.4f}\n   hmass=1\n   shake=0\n   nvt=true\n"
-            f"   restart={'true' if k else 'false'}\n$end\n" + wall(r))
-        (workdir / "xtb.trj").unlink(missing_ok=True)
-        done = run(_xtb_argv(cmd, "reactor.xyz", "--md", "--input", "md.inp", *common), f"MD (segment {k})",
-                   stoppable=True)
-        if done is None:
-            return _stopped_trajectory(workdir, k, len(symbols), workdir / "xtb.trj", t_done, settings, on_event)
-        if not (workdir / "xtb.trj").exists():
-            raise RuntimeError(f"xtb MD wrote no trajectory in segment {k}: {done.stdout[-800:]}")
-        if "did not converge" in done.stdout:
-            _emit(on_event, "warning", message=f"SCC did not converge somewhere in MD segment {k}")
-        if "MD is unstable" in done.stdout:
-            # xtb stopped the segment early (atoms too fast): the next segment
-            # restarts from wherever it stopped, so the trajectory has a gap.
-            _emit(on_event, "warning", message=f"xtb stopped MD segment {k} early (\"MD is unstable\"): "
-                                               "the temperature is too high for this time step")
+        # xtb's MD can break down without stopping: a failed SCC gives zero
+        # energy and zero gradient (every later step fails too, and so does
+        # the next segment, from the broken charges in xtbrestart), so the
+        # atoms fly apart in straight lines; an SCC that lands on a wrong
+        # solution gives a jump of tens of Eh and a kick that heats the
+        # reactor to 10^4 K, after which xtb stops ("MD is unstable") and
+        # every later segment restarts from those velocities. Such a run is
+        # cut at its last good frame and the rest of the segment run again
+        # from there, with a fresh SCC guess and velocities drawn at the
+        # temperature. A segment that keeps breaking down (a hot, squeezed
+        # reactor xtb cannot converge) keeps its good frames, and the next
+        # segment starts from the last of them.
+        kept, left, failures = "", dur, 0
+        start, restart = (carry, False) if carry else ("reactor.xyz", bool(k))
+        cut = False
+        while True:
+            if restart:     # a broken run left its own mdrestart
+                shutil.copy(workdir / f"segment_{k - 1:03d}.mdrestart", workdir / "mdrestart")
+            (workdir / "md.inp").write_text(
+                "$md\n"
+                f"   temp={settings.temperature:.2f}\n   time={left:.6f}\n   dump={settings.dump_fs:.4f}\n"
+                f"   step={settings.step_fs:.4f}\n   hmass=1\n   shake=0\n   nvt=true\n"
+                f"   restart={'true' if restart else 'false'}\n$end\n" + wall(r))
+            (workdir / "xtb.trj").unlink(missing_ok=True)
+            done = run(_xtb_argv(cmd, start, "--md", "--input", "md.inp", *common), f"MD (segment {k})",
+                       stoppable=True, check=False)
+            crashed = done is not None and done.returncode != 0
+            if crashed and k == 0 and not failures:     # from the relaxed reactor: not the hot MD's doing
+                raise RuntimeError(f"xtb MD (segment 0) failed (exit {done.returncode}): "
+                                   f"{(done.stderr or done.stdout)[-800:]}")
+            if done is not None and not (workdir / "xtb.trj").exists():
+                if not crashed:
+                    raise RuntimeError(f"xtb MD wrote no trajectory in segment {k}: {done.stdout[-800:]}")
+                (workdir / "xtb.trj").write_text("")
+            if kept and (workdir / "xtb.trj").exists():
+                (workdir / "xtb.trj").write_text(kept + (workdir / "xtb.trj").read_text())
+            if done is None:
+                return _stopped_trajectory(workdir, k, len(symbols), workdir / "xtb.trj", t_done, settings, on_event)
+            n_kept = _n_frames(kept, len(symbols))
+            good, n_good, why = _until_broken((workdir / "xtb.trj").read_text(), len(symbols),
+                                              unstable="MD is unstable" in done.stdout or crashed, keep=n_kept)
+            if crashed and why is not None:     # xtb gave up (e.g. an SCC failure it treats as fatal)
+                said = [ln.strip() for ln in ((done.stdout or "") + (done.stderr or "")).splitlines()
+                        if any(c.isalpha() for c in ln)]
+                last = next((ln for ln in reversed(said) if "[ERROR]" in ln or ln.startswith("-1-")),
+                            said[-1] if said else f"exit {done.returncode}")
+                why = f"xtb stopped with an error: {last[:120]}"
+            if why is None:
+                break
+            failures += 1
+            (workdir / "xtbrestart").unlink(missing_ok=True)
+            if n_good:
+                last = good.splitlines()[-(len(symbols) + 2):]
+                (workdir / "resume.xyz").write_text("\n".join(last) + "\n")
+                start, restart = "resume.xyz", False
+            if failures > _MD_RETRIES:
+                stuck = stuck + 1 if n_good == 0 else 0
+                if stuck >= 3:
+                    raise RuntimeError(
+                        f"xtb's MD broke down {_MD_RETRIES + 1} times in each of 3 segments in a row without "
+                        f"getting anywhere (last: {why}). The electronic structure of this system cannot be "
+                        f"converged at {settings.temperature:g} K with this compression: lower the temperature "
+                        f"(2000-2500 K) or the compression (compress closer to 1), or check the charge "
+                        f"({int(charge)}) and multiplicity ({int(multiplicity)}).")
+                if restart:     # not one good frame here: where the segment before ended
+                    prev = (workdir / f"segment_{k - 1:03d}.xyz").read_text().splitlines()[-(len(symbols) + 2):]
+                    cut_fp.write_text("\n".join(prev) + "\n")
+                else:
+                    shutil.copy(workdir / start, cut_fp)
+                (workdir / "xtb.trj").write_text(good)
+                cut = True
+                _emit(on_event, "warning", message=f"xtb's MD broke down {failures} times in segment {k} "
+                                                   f"(last: {why}); the rest of that segment is skipped")
+                break
+            # At least one more frame: the run that ends the segment must
+            # leave a good mdrestart for the next one.
+            ran = n_good - n_kept
+            kept, left = good, max(left - ran * settings.dump_fs / 1000.0, settings.dump_fs / 1000.0)
+            _emit(on_event, "warning", message=f"xtb's MD broke down in segment {k} ({why}); continued from "
+                                               "the last good frame")
         shutil.move(workdir / "xtb.trj", seg)
-        shutil.copy(workdir / "mdrestart", restart_fp)
+        if cut:
+            carry = cut_fp.name
+        else:
+            shutil.copy(workdir / "mdrestart", restart_fp)
+            carry, stuck = None, 0
         t_done += dur
         if on_event is not None:
             on_event("md_segment", {"segment": k + 1, "segments": len(schedule), "time_ps": t_done,
@@ -530,6 +603,44 @@ def _clear_stopped(workdir: Path) -> None:
     (workdir / "stopped.json").unlink(missing_ok=True)
     for fp in workdir.glob("segment_*.partial.xyz"):
         fp.unlink()
+
+
+_MD_RETRIES = 5        # breakdowns of xtb's MD in one segment before the run gives up
+_ENERGY_JUMP_EH = 1.0  # between frames a few fs apart: no reaction, a wrong SCC solution
+
+
+def _n_frames(text: str, natoms: int) -> int:
+    return len(text.splitlines()) // (natoms + 2)
+
+
+def _until_broken(text: str, natoms: int, *, unstable: bool = False, keep: int = 0
+                  ) -> tuple[str, int, Optional[str]]:
+    """An xtb MD trajectory up to where it broke down: the first frame whose
+    SCC failed (xtb writes energy 0 there and keeps going without forces),
+    or whose energy jumped by more than _ENERGY_JUMP_EH from the frame
+    before; when xtb stopped it as unstable, also without its last few
+    frames (they were already running away), but never into the first
+    `keep` frames. Returns (the good frames' text, how many, why it broke
+    down or None). A half-written last frame is dropped."""
+    lines = text.splitlines(keepends=True)
+    n = len(lines) // (natoms + 2)
+    cut, why, e_prev = n, None, None
+    for f in range(n):
+        m = re.search(r"energy:\s*(\S+)", lines[f * (natoms + 2) + 1])
+        try:
+            e = float(m.group(1)) if m else None
+        except ValueError:
+            e = None
+        if e == 0.0:
+            cut, why = f, "SCC failed: zero energy and forces"
+            break
+        if e is not None and e_prev is not None and abs(e - e_prev) > _ENERGY_JUMP_EH:
+            cut, why = f, f"energy jumped by {e - e_prev:+.1f} Eh in one frame"
+            break
+        e_prev = e if e is not None else e_prev
+    if unstable and why is None:
+        cut, why = max(keep, n - 5), "xtb stopped it as unstable"
+    return "".join(lines[:cut * (natoms + 2)]), cut, why
 
 
 def _stopped_trajectory(workdir: Path, k: int, natoms: int, running: Optional[Path], t_done: float,

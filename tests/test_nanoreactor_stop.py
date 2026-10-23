@@ -172,3 +172,127 @@ def test_refinement_runs_species_and_reactions_at_once_and_records_them_here(mon
     with tempfile.TemporaryDirectory() as out:
         nr.refine(["H"], np.zeros((1, 1, 3)), None, species, reactions, NS(), Path(out), workers=7)
     assert threads == {main.name}
+
+
+_FAILING_XTB = r'''#!{python}
+import os, pathlib, sys
+args = sys.argv[1:]
+src = pathlib.Path(args[0]).read_text()
+if "--opt" in args:
+    pathlib.Path("xtbopt.xyz").write_text(src)
+    sys.exit(0)
+calls = pathlib.Path("calls")
+k = int(calls.read_text()) if calls.exists() else 0
+calls.write_text(str(k + 1))
+inp = pathlib.Path(args[args.index("--input") + 1]).read_text()
+with open("runs.log", "a") as log:
+    log.write(f"{{args[0]}} {{inp.split('restart=')[1].split()[0]}} {{pathlib.Path('xtbrestart').exists()}}\n")
+n = int(src.split()[0])
+body = "".join(src.splitlines(keepends=True)[2:2 + n])
+t = float(inp.split("time=")[1].split()[0]) * 1000.0
+dump = float(inp.split("dump=")[1].split()[0])
+fail = {{int(c) for c in os.environ.get("FAKE_XTB_FAIL", "").split(",") if c}}
+mode = os.environ.get("FAKE_XTB_MODE", "zero")
+with open("xtb.trj", "w") as trj:
+    for f in range(int(round(t / dump))):
+        # 10 frames in (-1: at once, every time) the SCC fails (energy 0, gnorm 0, and xtb goes on),
+        # or lands on a wrong solution (tens of Eh up, and xtb stops: "MD is unstable").
+        bad = (k in fail and f >= (0 if mode == "at_once" else 10)) or -1 in fail
+        if bad and mode == "crash":
+            print("abnormal termination of xtb", file=sys.stderr)
+            sys.exit(128)
+        if bad and mode == "jump":
+            trj.write(f"{{n}}\n energy: -60.0 gnorm: 20.0\n{{body}}")
+            print("MD is unstable, emergency exit")
+            break
+        e = 0.0 if bad else -100.0 - 0.01 * f
+        trj.write(f"{{n}}\n energy: {{e:.12f}} gnorm: {{abs(e):.12f}}\n{{body}}")
+pathlib.Path("xtbrestart").write_text("charges\n")
+pathlib.Path("mdrestart").write_text("restart\n")
+'''
+
+
+def _failing_xtb(tmp_path):
+    exe = tmp_path / "xtb"
+    exe.write_text(_FAILING_XTB.format(python=sys.executable))
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_an_scc_failure_in_the_xtb_md_is_cut_off_and_the_segment_continues_from_its_last_good_frame(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_XTB_FAIL", "1,2")      # segment 1 fails, and so does its first retry
+    symbols, coords = _h2s()
+    seen = []
+    md = tmp_path / "md"
+    traj = nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                             workdir=md, executable=_failing_xtb(tmp_path), on_event=lambda e, p: seen.append((e, p)))
+    _, frames, comments = nr.read_xyz_frames(traj)
+    assert len(frames) == 100                       # 4 segments of 25 frames: none lost, none of zero force
+    assert not any("energy: 0.0" in c for c in comments)
+    assert len(nr.read_xyz_frames(md / "segment_001.xyz")[1]) == 25
+    runs = (md / "runs.log").read_text().split("\n")
+    # Segment 1 ran from the restart, then twice more from its last good frame
+    # with fresh velocities and no stale charges; segment 2 from segment 1's end.
+    assert runs[1:5] == ["reactor.xyz true True", "resume.xyz false False", "resume.xyz false False",
+                         "reactor.xyz true True"]
+    assert sum("broke down" in p.get("message", "") for e, p in seen if e == "warning") == 2
+
+
+def test_an_energy_jump_and_unstable_stop_in_the_xtb_md_is_cut_off_and_continued(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_XTB_FAIL", "2")
+    monkeypatch.setenv("FAKE_XTB_MODE", "jump")
+    symbols, coords = _h2s()
+    seen = []
+    md = tmp_path / "md"
+    traj = nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                             workdir=md, executable=_failing_xtb(tmp_path), on_event=lambda e, p: seen.append((e, p)))
+    _, frames, comments = nr.read_xyz_frames(traj)
+    assert len(frames) == 100 and not any("-60.0" in c for c in comments)
+    assert (md / "runs.log").read_text().split("\n")[2:5] == ["reactor.xyz true True", "resume.xyz false False",
+                                                               "reactor.xyz true True"]
+    assert [p["message"] for e, p in seen if e == "warning" and "broke down" in p["message"]] == [
+        "xtb's MD broke down in segment 2 (energy jumped by +40.1 Eh in one frame); continued from the last good "
+        "frame"]
+
+
+def test_an_xtb_md_whose_scc_keeps_failing_stops_with_an_error_not_a_reactor_of_atoms(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("FAKE_XTB_FAIL", "-1")
+    symbols, coords = _h2s()
+    with pytest.raises(RuntimeError, match="3 segments in a row"):
+        nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                          workdir=tmp_path / "md", executable=_failing_xtb(tmp_path))
+
+
+def test_a_segment_that_keeps_breaking_down_is_skipped_and_the_next_starts_where_it_got_to(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_XTB_FAIL", "1,2,3,4,5,6")    # segment 1: every try fails at once
+    monkeypatch.setenv("FAKE_XTB_MODE", "at_once")
+    symbols, coords = _h2s()
+    seen = []
+    md = tmp_path / "md"
+    traj = nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                             workdir=md, executable=_failing_xtb(tmp_path), on_event=lambda e, p: seen.append((e, p)))
+    _, frames, comments = nr.read_xyz_frames(traj)
+    assert len(frames) == 75 and not any("energy: 0.0" in c for c in comments)     # segment 1 skipped
+    assert (md / "segment_001.cut.xyz").exists() and not (md / "segment_001.mdrestart").exists()
+    assert (md / "runs.log").read_text().split("\n")[7] == "segment_001.cut.xyz false False"
+    assert any("the rest of that segment is skipped" in p["message"] for e, p in seen if e == "warning")
+    # A rerun into the folder (resume) keeps the skip and runs nothing again.
+    n_runs = len((md / "runs.log").read_text().split("\n"))
+    nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                      workdir=md, executable=_failing_xtb(tmp_path))
+    assert len((md / "runs.log").read_text().split("\n")) == n_runs
+
+
+def test_an_xtb_md_run_that_aborts_mid_segment_is_a_breakdown_too(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_XTB_FAIL", "2")
+    monkeypatch.setenv("FAKE_XTB_MODE", "crash")
+    symbols, coords = _h2s()
+    seen = []
+    traj = nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                             workdir=tmp_path / "md", executable=_failing_xtb(tmp_path),
+                             on_event=lambda e, p: seen.append((e, p)))
+    assert len(nr.read_xyz_frames(traj)[1]) == 100
+    assert any("abnormal termination" in p["message"] for e, p in seen if e == "warning")
