@@ -139,11 +139,16 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
                                radius=max(auto_radius(len(symbols)), extent + 1.5))
     detect = DetectSettings()
     run = run_dir(workdir)
-    broke = []
+    broke, ran = [], []
 
     def hook(event, payload):
-        if event == "warning" and "MD broke down" in str(payload.get("message", "")):
+        if event == "md_segment":
+            ran.append(payload)
+        message = str(payload.get("message", "")) if event == "warning" else ""
+        if "MD broke down" in message:
             broke.append(payload)
+        elif "piston now closes" in message or "ended early" in message:
+            warn(message)
         segment_hook(run, int(structure.charge), settings.dump_fs, on_event)(event, payload)
 
     with tempfile.TemporaryDirectory(prefix="mepd_reactor_gen_") as tmp:
@@ -153,7 +158,7 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         _, frames, _ = read_xyz_frames(traj)
     write_live_events(run, total_charge=int(structure.charge), dt_fs=settings.dump_fs)
     if broke:
-        warn(f"xtb's MD broke down {len(broke)} time(s) in {len(piston_segments(settings))} segments (an SCC that "
+        warn(f"xtb's MD broke down {len(broke)} time(s) in {len(ran) or len(piston_segments(settings))} segments (an SCC that "
              f"failed or jumped, at {settings.temperature:g} K); each time it went on from the last good frame.")
     hist = bond_history(symbols, frames, detect, settings.dump_fs)
     events = detect_events(len(symbols), hist, detect, settings.dump_fs)

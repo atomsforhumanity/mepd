@@ -395,6 +395,11 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
     t_done = 0.0
     carry: Optional[str] = None    # start the next segment here, with fresh velocities (None: from mdrestart)
     stuck = 0                      # segments in a row given up without a single good frame
+    # The narrowest the piston closes to from here on (Angstrom): raised
+    # each time a segment has to be given up, so a reactor squeezed past
+    # what xtb can converge is squeezed less instead of failing the run.
+    piston_fp = workdir / "piston.json"
+    floor = float(json.loads(piston_fp.read_text()).get("floor", 0.0)) if piston_fp.exists() else 0.0
     for k, (dur, r) in enumerate(schedule):
         seg = workdir / f"segment_{k:03d}.xyz"
         restart_fp = workdir / f"segment_{k:03d}.mdrestart"
@@ -421,6 +426,7 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
         # temperature. A segment that keeps breaking down (a hot, squeezed
         # reactor xtb cannot converge) keeps its good frames, and the next
         # segment starts from the last of them.
+        r = max(r, floor)
         kept, left, failures = "", dur, 0
         start, restart = (carry, False) if carry else ("reactor.xyz", bool(k))
         cut = False
@@ -466,13 +472,6 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
                 start, restart = "resume.xyz", False
             if failures > _MD_RETRIES:
                 stuck = stuck + 1 if n_good == 0 else 0
-                if stuck >= 3:
-                    raise RuntimeError(
-                        f"xtb's MD broke down {_MD_RETRIES + 1} times in each of 3 segments in a row without "
-                        f"getting anywhere (last: {why}). The electronic structure of this system cannot be "
-                        f"converged at {settings.temperature:g} K with this compression: lower the temperature "
-                        f"(2000-2500 K) or the compression (compress closer to 1), or check the charge "
-                        f"({int(charge)}) and multiplicity ({int(multiplicity)}).")
                 if restart:     # not one good frame here: where the segment before ended
                     prev = (workdir / f"segment_{k - 1:03d}.xyz").read_text().splitlines()[-(len(symbols) + 2):]
                     cut_fp.write_text("\n".join(prev) + "\n")
@@ -482,6 +481,12 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
                 cut = True
                 _emit(on_event, "warning", message=f"xtb's MD broke down {failures} times in segment {k} "
                                                    f"(last: {why}); the rest of that segment is skipped")
+                if r < settings.radius - 1e-6:
+                    floor = min(float(settings.radius), r * 1.15)
+                    piston_fp.write_text(json.dumps({"floor": floor}))
+                    _emit(on_event, "warning", message=f"xtb could not converge the reactor squeezed to {r:.2f} Å "
+                                                       f"at {settings.temperature:g} K: the piston now closes only "
+                                                       f"to {floor:.2f} Å")
                 break
             # At least one more frame: the run that ends the segment must
             # leave a good mdrestart for the next one.
@@ -499,6 +504,15 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
         if on_event is not None:
             on_event("md_segment", {"segment": k + 1, "segments": len(schedule), "time_ps": t_done,
                                     "radius": r, "total_ps": settings.time_ps})
+        if stuck >= 3:
+            # Not one good frame in 3 segments, even with the piston opened:
+            # the MD ends here and what it ran so far is analyzed.
+            _emit(on_event, "warning", message=f"xtb's MD could not go on past {t_done:.2f} ps at "
+                                               f"{settings.temperature:g} K (the SCC fails from every restart); "
+                                               f"the MD ended early and the trajectory so far is analyzed. A lower "
+                                               f"temperature or compress closer to 1 runs further.")
+            schedule = schedule[:k + 1]
+            break
     traj = workdir / "trajectory.xyz"
     with traj.open("w") as out:
         for k in range(len(schedule)):

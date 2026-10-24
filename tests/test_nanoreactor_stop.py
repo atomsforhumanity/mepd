@@ -256,14 +256,17 @@ def test_an_energy_jump_and_unstable_stop_in_the_xtb_md_is_cut_off_and_continued
         "frame"]
 
 
-def test_an_xtb_md_whose_scc_keeps_failing_stops_with_an_error_not_a_reactor_of_atoms(tmp_path, monkeypatch):
-    import pytest
-
+def test_an_xtb_md_whose_scc_keeps_failing_ends_early_instead_of_failing_or_falling_apart(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_XTB_FAIL", "-1")
     symbols, coords = _h2s()
-    with pytest.raises(RuntimeError, match="3 segments in a row"):
-        nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
-                          workdir=tmp_path / "md", executable=_failing_xtb(tmp_path))
+    seen = []
+    traj = nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                             workdir=tmp_path / "md", executable=_failing_xtb(tmp_path),
+                             on_event=lambda e, p: seen.append((e, p)))
+    assert len(nr.read_xyz_frames(traj)[1]) == 0                  # no frame of zero forces handed on
+    warnings = [p["message"] for e, p in seen if e == "warning"]
+    assert any("ended early" in w for w in warnings)
+    assert [e for e, _ in seen].count("md_segment") == 3            # 3 segments without progress, then it ends
 
 
 def test_a_segment_that_keeps_breaking_down_is_skipped_and_the_next_starts_where_it_got_to(tmp_path, monkeypatch):
@@ -296,3 +299,18 @@ def test_an_xtb_md_run_that_aborts_mid_segment_is_a_breakdown_too(tmp_path, monk
                              on_event=lambda e, p: seen.append((e, p)))
     assert len(nr.read_xyz_frames(traj)[1]) == 100
     assert any("abnormal termination" in p["message"] for e, p in seen if e == "warning")
+
+
+
+def test_a_squeeze_xtb_cannot_converge_opens_the_piston_for_the_rest_of_the_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_XTB_FAIL", "1,2,3,4,5,6")    # segment 1 (the narrow wall) fails at once, every try
+    monkeypatch.setenv("FAKE_XTB_MODE", "at_once")
+    symbols, coords = _h2s()
+    seen = []
+    md = tmp_path / "md"
+    nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                      workdir=md, executable=_failing_xtb(tmp_path), on_event=lambda e, p: seen.append((e, p)))
+    radii = [p["radius"] for e, p in seen if e == "md_segment"]
+    assert radii[:2] == [5.0, 3.5] and abs(radii[3] - 3.5 * 1.15) < 1e-9      # the next squeeze is gentler
+    assert abs(json.loads((md / "piston.json").read_text())["floor"] - 3.5 * 1.15) < 1e-9
+    assert any("piston now closes only to 4.02" in p["message"] for e, p in seen if e == "warning")

@@ -482,8 +482,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   such a run is cut at its last good frame (zero energy, a jump of more than 1 Eh between frames, or an
   unstable stop) and the segment goes on from there with a fresh SCC guess and new velocities at the
   temperature; a segment that breaks down 6 times keeps its good frames and the next starts from the last
-  of them (a warning says so); only 3 such segments in a row without progress stop the MD, with an error
-  that says what to change.
+  of them, and the piston closes 15% less far from then on (each time: a reactor squeezed past what xtb can
+  converge is squeezed less rather than failing the expansion; 1OH0 at compress = 0.5 failed with "xtb's MD
+  broke down 6 times in each of 3 segments in a row"). If 3 segments in a row still get nowhere, the MD ends
+  early and the trajectory so far is analyzed. The job log says each of these.
 
 - **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
   perceived over the whole system (protein and water included), re-reading every segment so far: hours per
