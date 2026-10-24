@@ -314,3 +314,16 @@ def test_a_squeeze_xtb_cannot_converge_opens_the_piston_for_the_rest_of_the_run(
     assert radii[:2] == [5.0, 3.5] and abs(radii[3] - 3.5 * 1.15) < 1e-9      # the next squeeze is gentler
     assert abs(json.loads((md / "piston.json").read_text())["floor"] - 3.5 * 1.15) < 1e-9
     assert any("piston now closes only to 4.02" in p["message"] for e, p in seen if e == "warning")
+
+
+def test_anchors_are_held_together_and_the_piston_pushes_only_the_molecules_without_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("FAKE_XTB_FAIL", raising=False)
+    symbols, coords = _h2s()                 # 4 H2: atoms 0-1, 2-3, 4-5, 6-7
+    md = tmp_path / "md"
+    nr.run_reactor_md(symbols, coords, charge=0, multiplicity=1, settings=_settings(method="gfn2"),
+                      workdir=md, executable=_failing_xtb(tmp_path), anchors=[2, 0])
+    for name in ("opt.inp", "md.inp"):
+        inp = (md / name).read_text()
+        assert inp.split("sphere: ")[1].split("\n")[0].split(", ")[1] == "5,6,7,8"    # the piston
+        assert inp.split("sphere: ")[2].split("\n")[0] == f"{5.0 * nr.ANGSTROM_TO_BOHR:.6f}, 2,4"  # wide, always
+        assert "$constrain" in inp and "atoms: 1,3\n" in inp

@@ -500,6 +500,17 @@ class _View:
         return _structure_with(node.structure, x)
 
 
+def nanoreactor_anchors(region) -> list[int]:
+    """Atoms of a QM/MM system's QM model (`region.model_structure`) the
+    nanoreactor holds in place relative to each other: the link H, which
+    stand where the protein's backbone (or the rest of a molecule) was, and
+    the QM atoms they cap (CB of a side chain). Held, the side chains of the
+    QM region stay arranged as the protein keeps them instead of flying off
+    in the hot MD."""
+    nqm = len(region.qm_atoms)
+    return [nqm + k for k in range(len(region.links))] + sorted({region.qm_atoms.index(q) for q, _ in region.links})
+
+
 def _open_structure(fp):
     from qcdata import Structure
 
@@ -1067,6 +1078,8 @@ def expand_network(
                                                                f"{what}; not used as products")
                 elif gen is not None:
                     gen.check()
+                    if gen.name == "nanoreactor" and "anchors" not in opts and view.region.links:
+                        opts["anchors"] = ",".join(str(a) for a in nanoreactor_anchors(view.region))
                     items = gen.propose(model, max_products=max_products, options=opts)
                 elif products_file is not None:
                     from mepd.qcdata_structure_helpers import read_multiple_structure_from_file

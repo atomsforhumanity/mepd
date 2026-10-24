@@ -29,7 +29,17 @@ import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
 
 OPTIONS = {"temperature": 2500.0, "time_ps": 10.0, "compress": 0.7, "period_ps": 1.0, "md_method": "auto",
-           "seed": 0, "workdir": ""}
+           "seed": 0, "workdir": "", "anchors": ""}
+
+
+def parse_anchors(value) -> list[int]:
+    """`anchors`: atom indices (0-based, of the structure the MD runs on)
+    as a list or "1,5,9"; "" or "none" = no anchors."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "false", "0")):
+        return []
+    if isinstance(value, str):
+        return [int(v) for v in value.replace(" ", ",").split(",") if v]
+    return [int(v) for v in value]
 
 
 def _md_method(name: str) -> tuple[str, Optional[str]]:
@@ -122,10 +132,13 @@ def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=
 
 def reactor_products(structure, *, max_products: int = 20, temperature: float = 2500.0, time_ps: float = 10.0,
                      compress: float = 0.7, period_ps: float = 1.0, md_method: str = "auto", seed: int = 0,
-                     workdir: str = "", on_event=None) -> list:
+                     workdir: str = "", on_event=None, anchors="") -> list:
     """Product structures (input atom order) of hot piston MD of `structure`:
     the structure right after each reaction event, one per distinct bond
-    graph, in the order they appeared, at most `max_products`."""
+    graph, in the order they appeared, at most `max_products`. `anchors`:
+    atoms held where they are relative to each other (for a QM/MM system's
+    QM region, its link H: the expansion sets them), the piston pushing
+    only the molecules without one."""
     from mepd.discovery.nanoreactor import (DetectSettings, ReactorSettings, auto_radius, bond_history,
                                             detect_events, read_xyz_frames, run_reactor_md)
 
@@ -154,7 +167,8 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     with tempfile.TemporaryDirectory(prefix="mepd_reactor_gen_") as tmp:
         d = run / "md" if run is not None else Path(tmp)
         traj = run_reactor_md(symbols, xyz, charge=int(structure.charge), multiplicity=int(structure.multiplicity),
-                              settings=settings, workdir=d, executable=exe, on_event=hook)
+                              settings=settings, workdir=d, executable=exe, on_event=hook,
+                              anchors=parse_anchors(anchors))
         _, frames, _ = read_xyz_frames(traj)
     write_live_events(run, total_charge=int(structure.charge), dt_fs=settings.dump_fs)
     if broke:

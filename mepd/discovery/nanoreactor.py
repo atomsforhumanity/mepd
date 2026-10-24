@@ -325,7 +325,7 @@ def piston_schedule(s: ReactorSettings, ramp_steps: int = 5) -> list[tuple[float
 
 def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, settings: ReactorSettings,
                    workdir: Path, executable: Optional[str] = None, on_event: OnEvent = None,
-                   timeout_s: float = 24 * 3600) -> Path:
+                   timeout_s: float = 24 * 3600, anchors: Sequence[int] = ()) -> Path:
     """Run the piston MD with xtb in `workdir`; returns trajectory.xyz
     (every frame, Angstrom). Each piston segment is one xtb run restarted
     from the previous one's positions and velocities, with the wall at that
@@ -352,10 +352,35 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
     # wall "temperature" that gives `wall_force`.
     beta = 1.0
     wall_t = settings.wall_force / HARTREE_TO_KCAL_PER_MOL / ANGSTROM_TO_BOHR / (beta * 3.166811563e-6)
+    # Anchors (e.g. the link H of a QM region cut from a protein, where its
+    # backbone was): their distances to each other held by xtb's harmonic
+    # $constrain (xtb's MD ignores $fix), so the side chains they cap stay
+    # arranged as in the protein; the piston then pushes only the molecules
+    # without an anchor (the substrate, into the residues).
+    anchors = sorted({int(a) for a in anchors})
+    pushed, kept_in = "all", ""
+    held = ""
+    if len(anchors) >= 2:
+        from mepd.qmmm import bonds as _bonds, molecules as _molecules
+
+        tethered = {a for m in _molecules(len(symbols), _bonds(list(symbols), np.asarray(coords_angstrom)))
+                    if set(m) & set(anchors) for a in m}
+        free = [a for a in range(len(symbols)) if a not in tethered] or \
+               [a for a in range(len(symbols)) if a not in set(anchors)]
+        pushed = ",".join(str(a + 1) for a in free)
+        # The anchored molecules stay inside the wide wall all along, so a
+        # piece that breaks off one cannot fly away.
+        kept = [a for a in range(len(symbols)) if a not in set(free) and a not in set(anchors)]
+        if kept:
+            kept_in = (f"   sphere: {settings.radius * ANGSTROM_TO_BOHR:.6f}, "
+                       f"{','.join(str(a + 1) for a in kept)}\n")
+        held = (f"$constrain\n   force constant={_ANCHOR_FORCE:.3f}\n"
+                f"   atoms: {','.join(str(a + 1) for a in anchors)}\n$end\n")
+
     def wall(r):
         return ("$wall\n   potential=logfermi\n"
                 f"   temp={wall_t:.1f}\n   beta={beta:.3f}\n"
-                f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, all\n$end\n")
+                f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, {pushed}\n{kept_in}$end\n") + held
 
     def run(argv, what, stoppable=False, check=True):
         """The finished xtb run; None if a stop was requested while it ran
@@ -619,6 +644,7 @@ def _clear_stopped(workdir: Path) -> None:
         fp.unlink()
 
 
+_ANCHOR_FORCE = 0.5    # Eh/bohr^2, xtb $constrain between anchors (stiff: ~0.1 A at 3000 K)
 _MD_RETRIES = 5        # breakdowns of xtb's MD in one segment before the run gives up
 _ENERGY_JUMP_EH = 1.0  # between frames a few fs apart: no reaction, a wrong SCC solution
 

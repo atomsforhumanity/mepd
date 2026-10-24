@@ -487,6 +487,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   broke down 6 times in each of 3 segments in a row"). If 3 segments in a row still get nowhere, the MD ends
   early and the trajectory so far is analyzed. The job log says each of these.
 
+- **Nanoreactor on a QM/MM system (QM region in vacuum): the QM region's side chains stay anchored.** The
+  link H (where the protein's backbone was) and the QM atoms they cap (CB) are held at their distances to
+  each other (xtb `$constrain`), and the piston pushes only the molecules without an anchor (the substrate,
+  into the residues), the anchored ones kept inside the wide wall. Before, nothing held the residues: in the
+  hot MD they drifted off and lost their caps (1OH0 at 2500 K: the anchor frame moved 3-6 Å and CB-H
+  bonds broke, 27 of 29 reactor states torn; now within 1 Å, caps kept, no xtb breakdowns). Generator option
+  `anchors` (0-based atoms of the QM model, `none` for none) overrides it.
+
 - **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
   perceived over the whole system (protein and water included), re-reading every segment so far: hours per
   segment for a protein. They are now found among the QM atoms only (indices still the system's), each
