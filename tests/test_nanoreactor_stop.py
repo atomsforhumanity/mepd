@@ -324,6 +324,14 @@ def test_anchors_are_held_together_and_the_piston_pushes_only_the_molecules_with
                       workdir=md, executable=_failing_xtb(tmp_path), anchors=[2, 0])
     for name in ("opt.inp", "md.inp"):
         inp = (md / name).read_text()
-        assert inp.split("sphere: ")[1].split("\n")[0].split(", ")[1] == "5,6,7,8"    # the piston
-        assert inp.split("sphere: ")[2].split("\n")[0] == f"{5.0 * nr.ANGSTROM_TO_BOHR:.6f}, 2,4"  # wide, always
+        spheres = [ln.split("sphere: ")[1] for ln in inp.splitlines() if "sphere: " in ln]
+        wide = f"{5.0 * nr.ANGSTROM_TO_BOHR:.6f}"
+        assert spheres[0].split(", ")[1] == "5-8"                      # the piston
+        assert spheres[1:] == [f"{wide}, 2", f"{wide}, 4"]              # wide, always
+        assert not any("," in sp.split(", ", 1)[1] for sp in spheres)   # no comma in a $wall list (xtb aborts)
         assert "$constrain" in inp and "atoms: 1,3\n" in inp
+
+
+def test_wall_atom_ranges():
+    assert nr._atom_ranges([0, 1, 2, 4, 6, 7]) == ["1-3", "5", "7-8"]
+    assert nr._atom_ranges([]) == []

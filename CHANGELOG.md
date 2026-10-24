@@ -493,7 +493,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   into the residues), the anchored ones kept inside the wide wall. Before, nothing held the residues: in the
   hot MD they drifted off and lost their caps (1OH0 at 2500 K: the anchor frame moved 3-6 Å and CB-H
   bonds broke, 27 of 29 reactor states torn; now within 1 Å, caps kept, no xtb breakdowns). Generator option
-  `anchors` (0-based atoms of the QM model, `none` for none) overrides it.
+  `anchors` (0-based atoms of the QM model, `none` for none) overrides it. The wall's atoms go one
+  contiguous range per sphere line: conda-forge's xtb 6.7.1 (the Docker image's) aborts with "free():
+  invalid pointer" on a comma in a `$wall` atom list, which failed the first version of this on the server.
 
 - **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
   perceived over the whole system (protein and water included), re-reading every segment so far: hours per

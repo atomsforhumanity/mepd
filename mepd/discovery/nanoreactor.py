@@ -358,7 +358,7 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
     # arranged as in the protein; the piston then pushes only the molecules
     # without an anchor (the substrate, into the residues).
     anchors = sorted({int(a) for a in anchors})
-    pushed, kept_in = "all", ""
+    pushed, kept_in = ["all"], ""
     held = ""
     if len(anchors) >= 2:
         from mepd.qmmm import bonds as _bonds, molecules as _molecules
@@ -367,20 +367,21 @@ def run_reactor_md(symbols, coords_angstrom, *, charge: int, multiplicity: int, 
                     if set(m) & set(anchors) for a in m}
         free = [a for a in range(len(symbols)) if a not in tethered] or \
                [a for a in range(len(symbols)) if a not in set(anchors)]
-        pushed = ",".join(str(a + 1) for a in free)
+        pushed = _atom_ranges(free)
         # The anchored molecules stay inside the wide wall all along, so a
         # piece that breaks off one cannot fly away.
         kept = [a for a in range(len(symbols)) if a not in set(free) and a not in set(anchors)]
         if kept:
-            kept_in = (f"   sphere: {settings.radius * ANGSTROM_TO_BOHR:.6f}, "
-                       f"{','.join(str(a + 1) for a in kept)}\n")
+            kept_in = "".join(f"   sphere: {settings.radius * ANGSTROM_TO_BOHR:.6f}, {span}\n"
+                              for span in _atom_ranges(kept))
         held = (f"$constrain\n   force constant={_ANCHOR_FORCE:.3f}\n"
                 f"   atoms: {','.join(str(a + 1) for a in anchors)}\n$end\n")
 
     def wall(r):
         return ("$wall\n   potential=logfermi\n"
                 f"   temp={wall_t:.1f}\n   beta={beta:.3f}\n"
-                f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, {pushed}\n{kept_in}$end\n") + held
+                + "".join(f"   sphere: {r * ANGSTROM_TO_BOHR:.6f}, {span}\n" for span in pushed)
+                + f"{kept_in}$end\n") + held
 
     def run(argv, what, stoppable=False, check=True):
         """The finished xtb run; None if a stop was requested while it ran
@@ -642,6 +643,24 @@ def _clear_stopped(workdir: Path) -> None:
     (workdir / "stopped.json").unlink(missing_ok=True)
     for fp in workdir.glob("segment_*.partial.xyz"):
         fp.unlink()
+
+
+def _atom_ranges(atoms) -> list[str]:
+    """0-based atoms as xtb's 1-based contiguous ranges ("4-9", "12"), one
+    per $wall sphere line: conda-forge's xtb 6.7.1 aborts ("free(): invalid
+    pointer") on a comma in a $wall atom list, and on a second sphere with
+    one; one range per line, it runs."""
+    out, run = [], []
+    for a in sorted({int(x) + 1 for x in atoms}):
+        if run and a == run[-1] + 1:
+            run.append(a)
+            continue
+        if run:
+            out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+        run = [a]
+    if run:
+        out.append(f"{run[0]}-{run[-1]}" if len(run) > 1 else f"{run[0]}")
+    return out
 
 
 _ANCHOR_FORCE = 0.5    # Eh/bohr^2, xtb $constrain between anchors (stiff: ~0.1 A at 3000 K)
