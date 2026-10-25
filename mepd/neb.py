@@ -887,7 +887,13 @@ class NEB(PathMinimizer):
         engine: Engine = None,
         charge: int = 0,
         multiplicity: int = 1,
+        ends_only: bool = False,
     ):
+        """An NEB/path search from its written history (`<fp stem>_history/traj_<i>.xyz`).
+        `ends_only` reads just the first and last string (`initial_chain`, `optimized`):
+        a long search writes thousands, and each node read builds its bond graph, so
+        the full history of one tree can take gigabytes for a caller that only wants
+        the final path."""
         if isinstance(fp, str):
             fp = Path(fp)
 
@@ -898,13 +904,16 @@ class NEB(PathMinimizer):
             raise ValueError("No history exists for this. Cannot load object.")
         else:
             history_files = list(history_folder.glob("*.xyz"))
+            indices = range(len(history_files))
+            if ends_only:
+                indices = sorted({0, len(history_files) - 1})
             history = [
                 Chain.from_xyz(
                     history_folder / f"traj_{i}.xyz", parameters=chain_parameters,
                     charge=charge,
                     spinmult=multiplicity
                 )
-                for i, _ in enumerate(history_files)
+                for i in indices
             ]
 
         n = NEB(

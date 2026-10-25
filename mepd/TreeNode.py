@@ -155,7 +155,10 @@ class TreeNode:
         engine=None,
         charge=0,
         multiplicity=1,
+        ends_only=False,
     ):
+        """The split tree written to `folder_name`. `ends_only`: each node keeps only the
+        first and last string of its search history (see NEB.read_from_disk)."""
         if isinstance(folder_name, str):
             folder_name = Path(folder_name)
         adj_mat = np.loadtxt(folder_name / "adj_matrix.txt")
@@ -183,6 +186,7 @@ class TreeNode:
                     engine=engine,
                     charge=charge,
                     multiplicity=multiplicity,
+                    ends_only=ends_only,
                 )
                 for i in range(len(nodes))
             ]
@@ -203,6 +207,7 @@ class TreeNode:
                     engine=engine,
                     charge=charge,
                     multiplicity=multiplicity,
+                    ends_only=ends_only,
                 )
             ]
             root = cls(data=neb_nodes[0], children=[], index=0)

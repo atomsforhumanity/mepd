@@ -505,6 +505,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
   may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
 
+- **Memory of reading a finished search back** (`mepd/neb.py`, `mepd/TreeNode.py`, `mepd/cli_common.py`,
+  `mepd/discovery/cli_expand.py`). Collecting TS guesses after the path searches reloaded every pair tree with
+  its whole written history, building a bond graph for every node of every string: 5.8 GiB for one long
+  22-atom search (9,621 strings), only to use each leaf's last string. `TreeNode.read_from_disk(ends_only=True)`
+  and `NEB.read_from_disk(ends_only=True)` read just each search's first and last string; the TS-guess
+  readers use it (same guesses, 0.3 GiB, under a second instead of 82 s).
+- **Memory of a g-xTB search** (`mepd/engines/_sella.py`, `mepd/pathminimizers/gsm.py`). Sella imported torch
+  (~400 MiB) only to look for a CUDA GPU; with no GPU visible (no `/dev/nvidia*`, or `SELLA_DISABLE_GPU=1`)
+  Sella is now imported without it, and torch stays importable for anything else. GSM's history kept a
+  molecular graph for every node of every live string (each gradient batch, the whole run: ~600 MiB on a
+  20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
+  back. Results are unchanged.
+
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and
   `mepd discovery`'s geomeTRIC IRC; g-xTB, ASE, MLIP and FAIR-Chem engines use Sella's IRC and were not affected.
