@@ -12,6 +12,16 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
+  `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
+  bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
+  atom, or coming off the metal) is not another species; `Comparison.metal_ligand_changed` records it. Off by
+  default: every command still compares all bonds. Following the treatment of dative metal-ligand contacts as
+  zero-order bonds, kept apart from covalent bond changes, in Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the
+  Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+  doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
+  ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
+
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
@@ -472,6 +482,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
+  `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
+  polytope it fitted to the geometry, and for a fluxional centre that changed between two geometries of one
+  molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
+  ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
+  centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
 
 - **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
   not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
