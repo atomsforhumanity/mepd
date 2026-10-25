@@ -591,6 +591,7 @@ class Species:
     round: int
     rel_energy_kcal: float = 0.0
     validation: Optional[dict] = None
+    loose: bool = False   # minimized only to the proposals' loose threshold so far
 
 
 @dataclass
@@ -623,11 +624,22 @@ class ExpansionResult:
         return pairs
 
 
+# Engines whose minimizer takes a force threshold (`fmax`, eV/Angstrom).
+_FMAX_ENGINES = ("GXTBCalculator", "ASEEngine", "ModifiedEngine")
+
+
+def _takes_fmax(engine) -> bool:
+    return any(c.__name__ in _FMAX_ENGINES for c in type(engine).__mro__)
+
+
 def _optimize(engine, nodes: list[StructureNode], maxiter: int, on_event: OnEvent,
-              on_start: Callable[[int], None] = lambda k: None) -> list:
+              on_start: Callable[[int], None] = lambda k: None, fmax: Optional[float] = None) -> list:
     """Optimized node (or an exception) per input, isolating failures.
-    `on_start(k)` is called as optimization k (0-based) starts."""
+    `on_start(k)` is called as optimization k (0-based) starts. `fmax`: stop
+    at this largest force (eV/Angstrom) instead of the engine's own threshold."""
     keywords = {"coordsys": "cart", "maxiter": int(maxiter)}
+    if fmax:
+        keywords["fmax"] = float(fmax)
     batch = getattr(engine, "compute_geometry_optimizations", None)
     if callable(batch) and len(nodes) > 1:
         for k in range(len(nodes)):
@@ -811,6 +823,31 @@ class _LiveReactions:
             self._frames_of[id(p)] = frames
         self._write(p, species, frames, status=status)
 
+    def prepare(self, proposals: list, species) -> None:
+        """Animations of proposals made without one (an external generator's), all at once on the
+        animation workers -- built one after another in the main loop they held up every round
+        (50 collision products of a 23-atom system: ~13 minutes before the first optimization)."""
+        if not self.enabled:
+            return
+        todo = [p for p in proposals if id(p) not in self._frames_of and p.frames is None]
+        if not todo:
+            return
+        from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+        from mepd.cli_common import _unsafe_to_fork
+
+        jobs = [self.job(species[p.source].node, StructureNode(structure=p.structure)) for p in todo]
+        width = max(1, min(self.workers, len(jobs)))
+        if width > 1 and _unsafe_to_fork() is None:
+            import multiprocessing
+
+            pool = ProcessPoolExecutor(width, mp_context=multiprocessing.get_context("fork"))
+        else:
+            pool = ThreadPoolExecutor(width)
+        with pool:
+            for p, frames in zip(todo, pool.map(_morph_frames, jobs)):
+                self._frames_of[id(p)] = frames
+
     def optimizing(self, p: Proposal, species) -> None:
         self.propose(p, species, status="running")
 
@@ -870,6 +907,43 @@ def _build_guesses(props: list[Proposal], node: StructureNode, coords: np.ndarra
         p.frames = frames
 
 
+def _propose_structures_at_once(frontier, result, generator, generator_options, products_file, view,
+                                max_products, workers) -> dict:
+    """A structures generator's products for every frontier species, run concurrently.
+
+    One species at a time leaves CPUs idle: a nanoreactor species runs only its
+    `n_seeds` trajectories. Here as many species run at once as `workers` allows
+    (each with its seeds), so a round's proposals take about one species' time.
+    Returns {species index: items}; species it doesn't cover are proposed in the loop.
+    """
+    from mepd.discovery.generators import get_generator, is_named
+
+    if products_file is not None or view.region is not None or len(frontier) < 2 or not is_named(generator):
+        return {}
+    gen = get_generator(generator)
+    if gen.kind != "structures":
+        return {}
+    gen.check()
+    opts = dict(generator_options or {})
+    per_species = max(1, int(opts.get("n_seeds", 1) or 1))
+    if "parallel" in opts:
+        per_species = max(1, min(per_species, int(opts["parallel"] or per_species)))
+    width = max(1, min(len(frontier), int(workers) // per_species))
+    if width < 2:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(src):
+        try:
+            return gen.propose(result.species[src].node.structure, max_products=max_products, options=dict(opts))
+        except Exception:
+            return None   # the loop retries it on its own and reports the error there
+
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        got = dict(zip(frontier, pool.map(one, frontier)))
+    return {k: v for k, v in got.items() if v is not None}
+
+
 def expand_network(
     seed: StructureNode, engine, *, rounds: int = 1, energy_window_kcal: float = 60.0,
     generator: str = "bond-rules", generator_options: Optional[dict] = None,
@@ -877,7 +951,10 @@ def expand_network(
     form_distance: float = 4.0, max_products: int = 50, allow_radicals: bool = False,
     allow_zwitterions: bool = False, max_species: int = 200, validate_minima: Optional[dict] = None,
     workers: int = 1, minimize_seed: bool = True, steer: str = "window", connect: Optional[Callable] = None,
-    kinetics: Optional[dict] = None, on_event: OnEvent = None,
+    kinetics: Optional[dict] = None, on_event: OnEvent = None, target: Optional[StructureNode] = None,
+    access_cutoff_kcal: Optional[float] = None, reroute_attempts: int = 3, max_expand_per_round: int = 10,
+    checkpoint: Optional[Callable] = None, refine: Optional[Callable] = None,
+    verify: Optional[Callable] = None, proposal_fmax: Optional[float] = 0.05,
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -897,12 +974,60 @@ def expand_network(
         every verified step (`kinetics`: temperature, time_s, threshold;
         see mepd.discovery.kinetics), and only species whose concentration
         flux reaches the threshold are expanded. The network stops growing
-        when none does."""
-    if steer not in ("window", "flux"):
-        raise ValueError(f"steer must be 'window' or 'flux', got {steer!r}.")
-    if steer == "flux" and connect is None:
-        raise ValueError("steer='flux' needs a `connect` callback that finds each reaction's TS.")
+        when none does.
+      * "access": like "flux", every new reaction gets a verified TS, but a
+        species is expanded when the network-wide accessibility (the best
+        route over every verified step found by any search; see
+        mepd.network_aware.accessibility) reaches it climbing at most
+        `access_cutoff_kcal` out of a well AND the microkinetics on the
+        network so far (from the seed, at `kinetics` temperature and time)
+        puts material into it: its peak concentration or its concentration
+        flux reaches `kinetics["threshold"]` (Bensberg & Reiher's two
+        criteria). At most `max_expand_per_round` are expanded per round,
+        the most populated first. Proposed products lying more than the
+        cutoff above the seed are not connected (no route can reach them
+        within it). A hotter or longer reaction (a larger cutoff, faster
+        rates) explores more.
+
+    `verify` (with steer="access"): steps `connect` returns with
+    files["verified"] = False (a TS optimized without an IRC) enter the
+    kinetics at once; after each round, those touching a populated species
+    get an IRC (`verify([(step index, ts file)])` -> [(index, start, end) or
+    None ends]), are moved to the species the IRC actually connects, or
+    dropped if it fails, and the kinetics run again.
+
+    `target`: a product to reach. The seed -> target pair is connected first
+    (a two-ended recursive search; its intermediates join the network), and
+    expansion then proceeds from every species within reach. With
+    steer="access", a target the network can't yet reach within the cutoff
+    (the route found climbs too high) is rerouted: each round, up to
+    `reroute_attempts` of the most accessible species not yet tried get a
+    two-ended search towards the target, and species on the target's side
+    (connected to it by steps whose TS lies within floor + cutoff, and
+    themselves within it) are expanded too, so routes around the blocking
+    step can meet from both ends.
+
+    `proposal_fmax` (eV/Angstrom): proposals are minimized only to this
+    largest force -- enough to tell which species a proposal is and where its
+    energy lies against the cutoff, and a floppy collision complex that would
+    take hundreds of tight steps no longer holds up its round. Species whose
+    free energies the kinetics need are minimized tightly (the engine's own
+    threshold) first; IRC ends always are. None or 0: tight from the start.
+    Engines without a force threshold (_takes_fmax) always minimize their own way."""
+    if steer not in ("window", "flux", "access"):
+        raise ValueError(f"steer must be 'window', 'flux' or 'access', got {steer!r}.")
+    if steer in ("flux", "access") and connect is None:
+        raise ValueError(f"steer={steer!r} needs a `connect` callback that finds each reaction's TS.")
+    if steer == "access" and access_cutoff_kcal is None:
+        raise ValueError("steer='access' needs access_cutoff_kcal.")
     kin = {"temperature": 298.15, "time_s": 3600.0, "threshold": 0.01, **(kinetics or {})}
+    # kinetics on free energies (kin["free_energy"]): thermal corrections from the engine's own Hessians
+    free = None
+    if kin.get("free_energy"):
+        from mepd.discovery.free_energy import FreeEnergies
+
+        free = FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"), workers)
+    loose_fmax = float(proposal_fmax) if proposal_fmax and _takes_fmax(engine) else None
     from mepd.discovery.generators import get_generator, is_named
     from mepd.discovery.generators import propose as propose_products
 
@@ -935,26 +1060,58 @@ def expand_network(
                                                                  allow_radicals=True, allow_zwitterions=True) or "", 0)])
     live = _LiveReactions(seed, e0, workers=workers)
 
-    def _adopt_if_lower(k: int, node) -> None:
+    def _adopt_if_lower(k: int, node, loose: bool = False) -> None:
         """Keep the lowest conformer found as species k's reference."""
         if float(node.energy) < float(result.species[k].node.energy):
             result.species[k].node = node.copy()
             result.species[k].rel_energy_kcal = (float(node.energy) - e0) * HARTREE_TO_KCAL_PER_MOL
+            result.species[k].loose = loose
+
+    def _tighten(indices) -> None:
+        """Minimize the loosely minimized species among `indices` to the
+        engine's own threshold (their Hessians need a true minimum). One that
+        changes connectivity on the way keeps its loose geometry (said)."""
+        todo = [k for k in indices if result.species[k].loose]
+        if not todo:
+            return
+        _phase("tighten", species=len(todo))
+        opts = _optimize(engine, [StructureNode(structure=result.species[k].node.structure) for k in todo],
+                         maxiter, None)
+        for k, opt in zip(todo, opts):
+            sp = result.species[k]
+            sp.loose = False
+            if isinstance(opt, Exception) or not _connectivity_matches(opt, sp.node):
+                why = f"{type(opt).__name__}: {opt}" if isinstance(opt, Exception) else "its connectivity changed"
+                _emit(on_event, "warning", message=f"species {k}: tight minimization not used ({why}); "
+                                                   "its loosely minimized geometry is kept")
+                continue
+            sp.node = opt.copy()
+            sp.rel_energy_kcal = (float(opt.energy) - e0) * HARTREE_TO_KCAL_PER_MOL
 
     def _classify(p, guess, opt, record) -> ProposedEdge:
         intended = _connectivity_matches(opt, guess) if p.broken or p.formed else None
         match = next((k for k, s in enumerate(result.species) if _connectivity_matches(opt, s.node)), None)
         if match is not None:
-            _adopt_if_lower(match, opt)
+            _adopt_if_lower(match, opt, loose=loose_fmax is not None)
             return ProposedEdge(p.source, p, "reverted" if match == p.source else "known_species", match, intended)
         if len(result.species) >= max_species:
             return ProposedEdge(p.source, p, "failed", error="max_species reached")
         rel = (float(opt.energy) - e0) * HARTREE_TO_KCAL_PER_MOL
         smi = lewis_smiles(symbols, view.edges(opt), charge, mult, allow_radicals=True, allow_zwitterions=True) or ""
-        result.species.append(Species(opt.copy(), smi, rnd, rel, record))
+        result.species.append(Species(opt.copy(), smi, rnd, rel, record, loose=loose_fmax is not None))
         idx = len(result.species) - 1
         _emit(on_event, "species_found", index=idx, smiles=smi, rel_energy_kcal=rel, round=rnd)
         return ProposedEdge(p.source, p, "new_species", idx, intended)
+
+    premin: dict = {}   # id(IRC end) -> its minimum, from _minimize_ends
+
+    def _minimize_ends(nodes) -> None:
+        """Minimize IRC ends all at once (the engine's parallelism), for _species_for to use."""
+        todo = list({id(n): n for n in nodes if n is not None and id(n) not in premin}.values())
+        if len(todo) > 1:
+            for n, opt in zip(todo, _optimize(engine, [StructureNode(structure=n.structure) for n in todo],
+                                              maxiter, None)):
+                premin[id(n)] = (n, opt)
 
     def _species_for(node) -> tuple[int, bool]:
         """The species an IRC end is. The end is minimized first (an IRC stops
@@ -962,7 +1119,9 @@ def expand_network(
         than the one on record, that conformer becomes the species' reference
         (barriers are measured from the lowest conformer found); otherwise
         it joins the network as an intermediate."""
-        opt = _optimize(engine, [StructureNode(structure=node.structure)], maxiter, None)[0]
+        hit = premin.pop(id(node), None)
+        opt = hit[1] if hit is not None and hit[0] is node else \
+            _optimize(engine, [StructureNode(structure=node.structure)], maxiter, None)[0]
         if isinstance(opt, Exception):
             return -1, False
         node = opt
@@ -978,69 +1137,420 @@ def expand_network(
         _emit(on_event, "species_found", index=len(result.species) - 1, smiles=smi, rel_energy_kcal=rel, round=rnd)
         return len(result.species) - 1, True
 
-    def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
-        from mepd.discovery.kinetics import Step, select_for_expansion, simulate
-
+    def _new_pairs(round_edges: list[ProposedEdge], max_rel_kcal: Optional[float] = None) -> list:
         pairs = []
         for e in round_edges:
             if e.target is not None and e.target != e.source:
+                if max_rel_kcal is not None and result.species[e.target].rel_energy_kcal > max_rel_kcal:
+                    continue   # no route reaches a product this high within the cutoff
                 pair = (e.source, e.target)
                 if pair not in connected and pair[::-1] not in connected and pair not in pairs:
                     pairs.append(pair)
+        return pairs
+
+    def _connect(pairs: list, search: bool = False) -> None:
+        """Verified steps (TS + IRC between two minima) for `pairs`; IRC ends
+        that are no known species join the network as intermediates.
+        `search`: a path search for every pair, no single-TS shortcut."""
         connected.update(pairs)
         _emit(on_event, "connecting", round=rnd, total=len(pairs))
-        for found in connect(pairs, [s.node for s in result.species]) if pairs else []:
-            (a, new_a), (b, new_b) = _species_for(found["start"]), _species_for(found["end"])
-            for idx, new, parent in ((a, new_a, b), (b, new_b, a)):
-                if new and live.enabled:  # an intermediate the IRC found: tell the live view
-                    live._event(ProposedEdge(parent, Proposal(parent, (), (), result.species[idx].smiles),
-                                             "new_species", idx, None), result.species)
-            if a == b or a < 0 or b < 0:
-                continue
-            ts_e = float(found["ts"].energy)
-            # Two path searches can find the same TS; counting it twice would
-            # double that channel's rate. Distinct TSs between the same pair
-            # stay (parallel channels).
-            if any({st.a, st.b} == {a, b} and abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL < 0.1
-                   for st in result.steps):
-                continue
-            result.steps.append(Step(a, b, ts_e, found.get("label", ""), dict(found.get("files") or {})))
-            if live.enabled:   # the web graph fills that edge in (barrier, TS, IRC) as it happens
-                from mepd.discovery.kinetics import negative_barrier_warning, raw_barriers
+        if not pairs:
+            return
+        if getattr(connect, "live", False):
+            # each TS joins the network as it is found; the kinetics of what is found so far decide
+            # which pieces of the path searches run (_piece_relevant)
+            connect(pairs, [s.node for s in result.species], **({"search": True} if search else {}),
+                    on_found=_add_found, relevant=_piece_relevant)
+            return
+        for found in connect(pairs, [s.node for s in result.species], **({"search": True} if search else {})):
+            _add_found(found)
 
-                # The raw barriers -- a negative one is shown and flagged, never hidden; the finished
-                # run's summary replaces these if a species' energy drops later.
-                fwd, rev = raw_barriers([result.steps[-1]], [float(s.node.energy) for s in result.species])[0]
-                live._progress.append_live_event({
-                    "event": "step", "a": a, "b": b, "label": found.get("label", ""), "ts_energy": ts_e,
-                    "barrier_kcal": [fwd, rev],
-                    "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev)})
+    def _add_found(found) -> None:
+        """One TS found: its ends as species (an IRC end no known species is a new intermediate), the step."""
+        from mepd.discovery.kinetics import Step
+
+        if "pair" in found:   # a TS between two known species (fast connect): no ends to identify
+            (a, new_a), (b, new_b) = (int(found["pair"][0]), False), (int(found["pair"][1]), False)
+        else:
+            _minimize_ends([found["start"], found["end"]])
+            (a, new_a), (b, new_b) = _species_for(found["start"]), _species_for(found["end"])
+        for idx, new, parent in ((a, new_a, b), (b, new_b, a)):
+            if new and live.enabled:  # an intermediate the IRC found: tell the live view
+                live._event(ProposedEdge(parent, Proposal(parent, (), (), result.species[idx].smiles),
+                                         "new_species", idx, None), result.species)
+        if a == b or a < 0 or b < 0:
+            return
+        ts_e = float(found["ts"].energy)
+        # Two path searches can find the same TS; counting it twice would
+        # double that channel's rate. Distinct TSs between the same pair
+        # stay (parallel channels).
+        if any({st.a, st.b} == {a, b} and abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL < 0.1
+               for st in result.steps):
+            return
+        result.steps.append(Step(a, b, ts_e, found.get("label", ""), dict(found.get("files") or {})))
+        if live.enabled:   # the web graph fills that edge in (barrier, TS, IRC) as it happens
+            from mepd.discovery.kinetics import negative_barrier_warning, raw_barriers
+
+            # The raw barriers -- a negative one is shown and flagged, never hidden; the finished
+            # run's summary replaces these if a species' energy drops later.
+            fwd, rev = raw_barriers([result.steps[-1]], [float(s.node.energy) for s in result.species])[0]
+            live._progress.append_live_event({
+                "event": "step", "a": a, "b": b, "label": found.get("label", ""), "ts_energy": ts_e,
+                "barrier_kcal": [fwd, rev],
+                "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev)})
+
+    live_kin = {"n_steps": -1, "hot": set()}
+    known_end: dict = {}
+
+    def _piece_relevant(chain, final: bool = False):
+        """Run a waiting piece of a path search only if material reaches one of its ends: a known species
+        populated (max concentration or flux >= threshold) in the kinetics of the network found so far
+        (electronic energies: a ranking, recomputed whenever a step was added)."""
+        from mepd.discovery.kinetics import simulate
+
+        if len(result.steps) != live_kin["n_steps"]:
+            energies = [float(s.node.energy) for s in result.species]
+            k = simulate(len(result.species), result.steps, energies, temperature=kin["temperature"],
+                         time_s=kin["time_s"])
+            tau = float(kin["threshold"])
+            live_kin["hot"] = {0} | {i for i in range(len(result.species))
+                                     if k.max_concentration[i] >= tau or k.flux[i] >= tau}
+            live_kin["n_steps"] = len(result.steps)
+        for node in (chain[0], chain[-1]):
+            idx = known_end.get(id(node))
+            if idx is None:
+                idx = next((i for i, sp in enumerate(result.species) if _connectivity_matches(node, sp.node)), None)
+                if idx is None:
+                    continue
+                known_end[id(node)] = idx
+            if idx in live_kin["hot"]:
+                return True
+        return None
+
+    def _kinetics_record(pairs: list):
+        from mepd.discovery.kinetics import negative_barrier_warnings, simulate
+
         energies = [float(s.node.energy) for s in result.species]
-        kinetic = simulate(len(result.species), result.steps, energies, temperature=kin["temperature"],
+        k_energies, k_steps, basis = _free_energy_view(energies)
+        energies = [float(s.node.energy) for s in result.species]   # tightened species
+        kinetic = simulate(len(result.species), k_steps, k_energies, temperature=kin["temperature"],
                            time_s=kin["time_s"])
         result.kinetics = kinetic
-        picks = select_for_expansion(kinetic, expanded, kin["threshold"])
-        from mepd.discovery.kinetics import negative_barrier_warnings
-
         warnings = negative_barrier_warnings(result.steps, energies)
         for w in warnings:
             _emit(on_event, "warning", message=w)
         result.rounds[-1]["kinetics"] = {
             "connected_pairs": [list(p) for p in pairs], "verified_steps": len(result.steps),
             "flux": kinetic.flux, "max_concentration": kinetic.max_concentration,
-            "final_concentration": kinetic.final_concentration, "warnings": warnings}
+            "final_concentration": kinetic.final_concentration, "warnings": warnings, "energies": basis}
+        return kinetic
+
+    def _free_energy_view(energies):
+        """(species energies, steps, basis) for the kinetics: free energies when
+        asked for and every correction worked, else the electronic ones (said)."""
+        from mepd.discovery.kinetics import Step
+
+        if free is None or not result.steps:
+            return energies, result.steps, "electronic"
+        # Only the part of the network some route reaches within the cutoff gets Hessians: the rest carries
+        # no flux. Its steps are closed (TS + 1 Hartree), its species keep their electronic energy.
+        n = len(result.species)
+        if access_cutoff_kcal is not None:
+            from mepd.network_aware import accessibility
+
+            acc = accessibility(result.steps, energies, e0)
+            reach = {k for k, st in acc.items() if st.span <= access_cutoff_kcal} | {0}
+            open_steps = [m for m, st in enumerate(result.steps) if st.a in reach and st.b in reach
+                          and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal]
+        else:
+            reach, open_steps = set(range(n)), list(range(len(result.steps)))
+        _tighten(sorted(reach))   # their Hessians need true minima
+        energies = [float(s.node.energy) for s in result.species]
+        ts_structs = []
+        ref = result.species[0].node.structure
+        for st in (result.steps[m] for m in open_steps):
+            fp = (st.files or {}).get("ts")
+            if not fp or not Path(fp).exists():
+                _emit(on_event, "warning", message=f"step {st.label} has no TS geometry: kinetics on electronic "
+                                                   "energies this round")
+                return energies, result.steps, "electronic"
+            ts = _open_structure(fp)
+            ts_structs.append(ts.model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity}))
+        sp_idx = sorted(reach)
+        corr = free.corrections([result.species[k].node.structure for k in sp_idx] + ts_structs,
+                                [False] * len(sp_idx) + [True] * len(ts_structs))
+        for note in dict.fromkeys(free.notes):
+            _emit(on_event, "warning", message=f"free energies: {note}")
+        free.notes.clear()
+        if any(c is None for c in corr):
+            return energies, result.steps, "electronic"
+        sp_corr = dict(zip(sp_idx, corr[:len(sp_idx)]))
+        ts_corr = dict(zip(open_steps, corr[len(sp_idx):]))
+        g = [e + sp_corr.get(k, 0.0) / HARTREE_TO_KCAL_PER_MOL for k, e in enumerate(energies)]
+        steps = [Step(st.a, st.b, st.ts_energy + (ts_corr[m] / HARTREE_TO_KCAL_PER_MOL if m in ts_corr else 1.0),
+                      st.label, st.files) for m, st in enumerate(result.steps)]
+        closed = len(result.steps) - len(open_steps)
+        return g, steps, (f"free energy ({kin['temperature']:g} K, {kin.get('standard_state', '1M')})"
+                          + (f"; {closed} step(s) out of reach closed" if closed else ""))
+
+    def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
+        from mepd.discovery.kinetics import select_for_expansion
+
+        pairs = _new_pairs(round_edges)
+        _connect(pairs)
+        kinetic = _kinetics_record(pairs)
+        picks = select_for_expansion(kinetic, expanded, kin["threshold"])
         _emit(on_event, "kinetics", round=rnd, flux=kinetic.flux, picks=picks)
         return picks
 
+    def _reroute_attempts(acc) -> list:
+        """Two-ended searches towards the target from the most accessible
+        species not yet tried -- none if a route already reaches it."""
+        if t_idx is None or reroute_attempts <= 0 or (t_idx in acc and acc[t_idx].span <= access_cutoff_kcal):
+            return []
+        within = [k for k, st in sorted(acc.items(), key=lambda kv: kv[1].span)
+                  if st.span <= access_cutoff_kcal and k != t_idx]
+        attempts = [(k, t_idx) for k in within if (k, t_idx) not in connected and (t_idx, k) not in connected]
+        return attempts[:reroute_attempts]
+
+    def _reroute(acc, attempts=None) -> tuple:
+        """Target not reached within the cutoff: the target-side species to
+        expand, and (`attempts` None) two-ended searches towards it run now.
+        A round passes the attempts it already ran inside its own connect
+        (one queue, no extra phase waiting on its slowest search). Returns
+        (acc after any new searches, extra frontier); records what blocked
+        the route."""
+        from mepd.network_aware import accessibility, rel_kcal
+
+        info = {"reached": t_idx in acc and acc[t_idx].span <= access_cutoff_kcal}
+        if t_idx in acc:
+            info["route"] = acc[t_idx].as_dict()
+        if info["reached"] or reroute_attempts <= 0:
+            result.rounds[-1]["target_route"] = info
+            return acc, []
+        if attempts is None:
+            attempts = _reroute_attempts(acc)
+            if attempts:
+                _connect(attempts)
+                acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
+        energies = [float(sp.node.energy) for sp in result.species]
+        rel = [rel_kcal(e, e0) for e in energies]
+        # the target's side: reachable from it over steps that could lie on a route within the cutoff
+        side, todo = {t_idx}, [t_idx]
+        while todo:
+            u = todo.pop()
+            for st in result.steps:
+                for a, b in ((st.a, st.b), (st.b, st.a)):
+                    if a == u and b not in side and rel_kcal(st.ts_energy, e0) <= access_cutoff_kcal \
+                            and rel[b] <= access_cutoff_kcal:
+                        side.add(b)
+                        todo.append(b)
+        blocking = [{"a": st.a, "b": st.b, "ts_rel_kcal": round(rel_kcal(st.ts_energy, e0), 2)}
+                    for st in result.steps
+                    if ((st.a in acc and acc[st.a].span <= access_cutoff_kcal) != (st.b in acc and acc[st.b].span <= access_cutoff_kcal))]
+        info.update(reached=t_idx in acc and acc[t_idx].span <= access_cutoff_kcal,
+                    tried_to_target=[list(p) for p in attempts], target_side=sorted(side), blocking_steps=blocking)
+        if t_idx in acc:
+            info["route"] = acc[t_idx].as_dict()
+        result.rounds[-1]["target_route"] = info
+        _emit(on_event, "reroute", round=rnd, **{k: v for k, v in info.items() if k != "blocking_steps"})
+        extra = [k for k in side if k not in expanded and rel[k] <= access_cutoff_kcal] if not info["reached"] else []
+        return acc, extra
+
+    def _verify_needed(kinetic) -> int:
+        """IRC-check the unverified steps that touch a populated species."""
+        if verify is None:
+            return 0
+        tau = float(kin["threshold"])
+        hot = {k for k in range(min(len(kinetic.flux), len(result.species)))
+               if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
+        items = [(n, st.files.get("ts")) for n, st in enumerate(result.steps)
+                 if st.files.get("verified") is False and st.files.get("ts") and (st.a in hot or st.b in hot)]
+        if not items:
+            return 0
+        drop = set()
+        checked = list(verify(items))
+        _minimize_ends([n for _, start, end in checked for n in (start, end)])
+        for idx, start, end in checked:
+            st = result.steps[idx]
+            asked = tuple(st.files.get("pair") or ())
+            if start is None:
+                drop.add(idx)
+                missed = asked
+            else:
+                a, _ = _species_for(start)
+                b, _ = _species_for(end)
+                if a < 0 or b < 0 or a == b:
+                    drop.add(idx)
+                else:
+                    st.a, st.b = a, b
+                    st.files["verified"] = True
+                missed = asked if asked and set(asked) != {a, b} else ()
+            # The single TS optimization found a TS of some other step (kept,
+            # under its real ends) or none: the pair asked for still needs its
+            # path search -- the steps between them, intermediates included.
+            if len(missed) == 2 and tuple(missed) not in searched:
+                retry.append(tuple(missed))
+        result.steps[:] = [st for n, st in enumerate(result.steps) if n not in drop]
+        return len(items)
+
+    def _verify_and_search(kinetic) -> int:
+        """IRC-check the steps the kinetics need; pairs a single TS didn't
+        connect get a full path search (its steps checked the same way)."""
+        checked = _verify_needed(kinetic)
+        while retry:
+            # each search's first piece runs; its deeper pieces only once the kinetics put material at an end
+            todo = list(dict.fromkeys(retry))
+            retry.clear()
+            searched.update(todo)
+            _connect(todo, search=True)
+            checked += _verify_needed(_kinetics_record(todo))
+        return checked
+
+    refined: set = set()
+
+    def _refine_steps(kinetic) -> int:
+        """Channel sampling (`refine`, e.g. `mepd channels`: conformers and mechanisms of both ends, a TS and
+        IRC per distinct path) for every step the kinetics need -- open within the cutoff and touching a
+        populated species -- once per species pair. Its direct channels replace the step's single TS;
+        multistep routes and off-target exits join the network with whatever new species their IRCs end
+        in; lower end conformers become the species' references. Returns the number of pairs sampled."""
+        if refine is None or not result.steps:
+            return 0
+        from mepd.network_aware import accessibility
+
+        energies = [float(sp.node.energy) for sp in result.species]
+        if access_cutoff_kcal is not None:
+            acc = accessibility(result.steps, energies, e0)
+            reach = {k for k, st in acc.items() if st.span <= access_cutoff_kcal} | {0}
+        else:
+            reach = set(range(len(result.species)))
+        tau = float(kin["threshold"])
+        hot = {0} | {k for k in range(min(len(kinetic.flux), len(result.species)))
+                     if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
+        todo = []
+        for st in result.steps:
+            key = frozenset((st.a, st.b))
+            if key in refined or key in {k for k, _, _ in todo}:
+                continue
+            open_ = access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal
+            if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot):
+                todo.append((key, st.a, st.b))
+        if not todo:
+            return 0
+        _emit(on_event, "refining", round=rnd, total=len(todo))
+        outs = refine([(result.species[a].node, result.species[b].node, f"{a}_{b}") for _, a, b in todo])
+        _minimize_ends([n for out in outs if out for n in out.get("conformers", [])]
+                       + [rec[k] for out in outs if out for rec in out.get("direct", []) + out.get("other", [])
+                          if "pair" not in rec for k in ("start", "end")])
+        for (key, a, b), out in zip(todo, outs):
+            refined.add(key)
+            if not out:
+                continue      # the search failed: the step keeps its single TS
+            for node in out.get("conformers", []):
+                k, _ = _species_for(node)          # the lowest conformer of each end becomes the reference
+            if out.get("direct"):
+                # sampled TSs of this step supersede the single one (counting both would double its rate)
+                result.steps[:] = [st for st in result.steps if frozenset((st.a, st.b)) != key]
+            for rec in out.get("direct", []) + out.get("other", []):
+                _add_found(rec)
+        result.rounds[-1]["channels_sampled"] = [[a, b] for _, a, b in todo]
+        return len(todo)
+
+    def _steer_by_access(round_edges: list[ProposedEdge]) -> list[int]:
+        from mepd.network_aware import accessibility, log_event
+
+        pairs = _new_pairs(round_edges, max_rel_kcal=access_cutoff_kcal)
+        skipped = len(_new_pairs(round_edges)) - len(pairs)
+        # Searches towards a target no route reaches yet go in the same queue
+        # as the round's pairs, from the species reachable before this round.
+        attempts = []
+        if t_idx is not None:
+            attempts = [p for p in _reroute_attempts(
+                accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)) if p not in pairs]
+        _connect(pairs + attempts)
+        _phase("connected", round=rnd, pairs=len(pairs) + len(attempts))
+        if verify is not None:
+            checked = _verify_and_search(_kinetics_record(pairs))
+            result.rounds[-1]["irc_verified"] = checked
+            _phase("verified", round=rnd, ircs=checked)
+        n_ref = _refine_steps(_kinetics_record(pairs))
+        _phase("channels", round=rnd, steps=n_ref)
+        acc = accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)
+        extra = []
+        if t_idx is not None:
+            acc, extra = _reroute(acc, attempts)
+        kinetic = _kinetics_record(pairs + attempts)
+        tau = float(kin["threshold"])
+        within = [k for k, st in acc.items() if st.span <= access_cutoff_kcal and k not in expanded]
+        populated = [k for k in within if k < len(kinetic.flux)
+                     and (kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau)]
+        populated.sort(key=lambda k: (-kinetic.max_concentration[k], -kinetic.flux[k]))
+        picks = populated[:max(0, int(max_expand_per_round))]
+        picks += [k for k in extra if k not in picks][:max(0, int(reroute_attempts))]
+        result.rounds[-1]["access_gate"] = {"within_reach_unexpanded": len(within), "populated": len(populated),
+                                            "capped_at": int(max_expand_per_round)}
+        result.rounds[-1]["access"] = {
+            "cutoff_kcal": access_cutoff_kcal, "pairs_not_connected_above_cutoff": skipped,
+            "within_reach": {k: st.as_dict() for k, st in acc.items() if st.span <= access_cutoff_kcal},
+            "out_of_reach": {k: st.as_dict() for k, st in acc.items() if st.span > access_cutoff_kcal}}
+        log_event({"event": "access_round", "round": rnd, "species": len(result.species), "steps": len(result.steps),
+                   "connected": len(pairs), "not_connected_above_cutoff": skipped, "expand_next": picks})
+        _emit(on_event, "access", round=rnd, picks=picks, within=len(result.rounds[-1]["access"]["within_reach"]))
+        return picks
+
+    def _phase(name, **kw):
+        from mepd.network_aware import log_event
+
+        log_event({"event": "phase", "phase": name, **kw})
+
     connected: set[tuple[int, int]] = set()
+    retry: list = []                        # pairs whose single TS turned out to belong elsewhere
+    searched: set[tuple[int, int]] = set()  # pairs that already had their full path search
     expanded: set[int] = set()
     frontier = [0]
+    t_idx = None
+    if target is not None:
+        # Round 0: the two-ended search seed -> target; its intermediates and
+        # verified steps start the network.
+        rnd = 0
+        tnode = target.copy()
+        if minimize_seed:
+            opt = _optimize(engine, [StructureNode(structure=tnode.structure)], maxiter, None)[0]
+            if isinstance(opt, Exception):
+                raise RuntimeError(f"Could not minimize the target: {type(opt).__name__}: {opt}")
+            tnode = opt
+        elif tnode._cached_energy is None:
+            engine.compute_energies([tnode])
+        t_idx = next((k for k, sp in enumerate(result.species) if _connectivity_matches(tnode, sp.node)), None)
+        if t_idx is None:
+            rel = (float(tnode.energy) - e0) * HARTREE_TO_KCAL_PER_MOL
+            smi = lewis_smiles(symbols, view.edges(tnode), charge, mult, allow_radicals=True,
+                               allow_zwitterions=True) or ""
+            result.species.append(Species(tnode.copy(), smi, 0, rel))
+            t_idx = len(result.species) - 1
+            _emit(on_event, "species_found", index=t_idx, smiles=smi, rel_energy_kcal=rel, round=0)
+        result.rounds.append({"round": 0, "sources": [0], "target": t_idx, "proposed": 0, "new_species": [t_idx],
+                              "expanded_next": [], "generator_stats": []})
+        if t_idx != 0 and connect is not None:
+            _connect([(0, t_idx)])
+            if steer == "access":
+                from mepd.network_aware import accessibility
+
+                acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
+                acc, extra = _reroute(acc)   # the route found climbs too high: look for others at once
+                # the seed first; the rest of the route only once the kinetics say material gets there
+                frontier = [0] + [k for k in extra if k != 0][:max(0, int(reroute_attempts))]
+                result.rounds[-1]["expanded_next"] = frontier
     for rnd in range(1, rounds + 1):
         if not frontier:
             break
         expanded.update(frontier)
+        _phase("round_start", round=rnd, frontier=len(frontier))
         n_edges_before = len(result.edges)
         proposals, stats_all = [], []
+        prefetched = _propose_structures_at_once(frontier, result, generator, generator_options, products_file,
+                                                 view, max_products, workers)
         for src in frontier:
             node = result.species[src].node
             coords = view.coords(node)
@@ -1087,8 +1597,12 @@ def expand_network(
                     _emit(on_event, "warning", message=f"{counts['boundary']} product(s) of the QM region broke a "
                                                        "QM/MM boundary bond (a link H stopped being a cap); dropped")
             elif gen is not None and gen.kind == "structures":   # e.g. crest-msreact: product geometries
-                gen.check()
-                items = gen.propose(node.structure, max_products=max_products, options=dict(generator_options or {}))
+                if src in prefetched:
+                    items = prefetched[src]
+                else:
+                    gen.check()
+                    items = gen.propose(node.structure, max_products=max_products,
+                                        options=dict(generator_options or {}))
                 props = external_proposals(items, node.structure, src)
                 stats = {gen.name: len(props)}
             elif gen is not None:
@@ -1116,12 +1630,16 @@ def expand_network(
             result.edges.append(edge)
             live.finish(edge, result.species)
         proposals = [p for p in proposals if p.smiles not in known]
+        _phase("proposed", round=rnd, proposals=len(proposals))
+        live.prepare(proposals, result.species)
+        _phase("animations", round=rnd)
         for p in proposals:
             live.propose(p, result.species, frames=p.frames)
         _emit(on_event, "proposed", round=rnd, total=len(proposals))
         guesses = [StructureNode(structure=p.structure) for p in proposals]
         optimized = _optimize(engine, guesses, maxiter, on_event,
-                              on_start=lambda k: live.optimizing(proposals[k], result.species))
+                              on_start=lambda k: live.optimizing(proposals[k], result.species), fmax=loose_fmax)
+        _phase("optimized", round=rnd, proposals=len(guesses))
         new_frontier = []
         for p, guess, opt in zip(proposals, guesses, optimized):
             edge, record = None, None
@@ -1146,10 +1664,41 @@ def expand_network(
         found = [e.target for e in result.edges if e.outcome == "new_species" and result.species[e.target].round == rnd]
         result.rounds.append({"round": rnd, "sources": frontier, "proposed": len(proposals),
                               "new_species": found, "expanded_next": new_frontier, "generator_stats": stats_all})
-        if steer == "flux":
+        if steer == "access":
+            new_frontier = _steer_by_access(result.edges[n_edges_before:])
+            result.rounds[-1]["expanded_next"] = new_frontier
+            result.rounds[-1]["new_species"] = [k for k, s in enumerate(result.species) if s.round == rnd and k]
+        elif steer == "flux":
             new_frontier = _steer_by_flux(result.edges[n_edges_before:])
             result.rounds[-1]["expanded_next"] = new_frontier
             result.rounds[-1]["new_species"] = [k for k, s in enumerate(result.species) if s.round == rnd and k]
         frontier = new_frontier
+        if checkpoint is not None:
+            checkpoint(result)   # a run cut off later keeps the rounds it finished
+    if steer == "access" and t_idx is not None and connect is not None and result.rounds:
+        # Searches towards the target that the last round's network opened up
+        # would have joined the next round's queue: there is none, so run them now.
+        from mepd.network_aware import accessibility
+
+        rnd = result.rounds[-1]["round"]
+        acc = accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)
+        attempts = _reroute_attempts(acc)
+        if attempts:
+            _connect(attempts)
+            acc = accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)
+            _reroute(acc, attempts)
+            _kinetics_record(attempts)
+            result.rounds[-1]["final_reroute"] = [list(p) for p in attempts]
+    if steer == "access" and verify is not None and result.rounds:
+        # the final prediction rests on IRC-checked steps only where it matters
+        rnd = result.rounds[-1]["round"]
+        if _verify_and_search(result.kinetics if result.kinetics is not None else _kinetics_record([])):
+            _kinetics_record([])
+            result.rounds[-1]["final_irc_check"] = True
+    if steer == "access" and refine is not None and result.rounds and result.steps:
+        # steps the last round made relevant get their channel sampling too
+        rnd = result.rounds[-1]["round"]
+        if _refine_steps(result.kinetics if result.kinetics is not None else _kinetics_record([])):
+            _kinetics_record([])
     live.close()
     return result

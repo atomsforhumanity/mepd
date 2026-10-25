@@ -180,6 +180,9 @@ def _chain_payload_for_worker(input_chain: Chain) -> dict:
     lineage = getattr(input_chain, "_same_pair_split_lineage", None)
     if isinstance(lineage, dict):
         payload["same_pair_split_lineage"] = copy.deepcopy(lineage)
+    route = getattr(input_chain, "_na_route", None)
+    if route is not None:
+        payload["na_route"] = [route.well, route.span]
     ancestors = getattr(input_chain, "_split_ancestors", None)
     if ancestors:
         payload["split_ancestors"] = [
@@ -207,6 +210,11 @@ def _chain_from_worker_payload(payload: dict) -> Chain:
     lineage = payload.get("same_pair_split_lineage")
     if isinstance(lineage, dict):
         chain._same_pair_split_lineage = copy.deepcopy(lineage)
+    route = payload.get("na_route")
+    if route is not None:
+        from mepd.network_aware import RouteState
+
+        chain._na_route = RouteState(well=float(route[0]), span=float(route[1]))
     ancestors = payload.get("split_ancestors")
     if ancestors:
         chain._split_ancestors = [
@@ -282,6 +290,12 @@ class MSMEP:
         self._attempted_pair_cache: list[
             tuple[StructureNode, StructureNode, bool, bool]
         ] = []
+        # Network-aware pruning (mepd/network_aware.py). In the serial
+        # depth-first search, leaves finish in route order, so one running
+        # RouteState is the route from the start up to the next piece; the
+        # parallel search uses each piece's inherited bound instead.
+        self._na_state = None
+        self._na_sequential = False
 
     def _resolve_recursive_split_max_depth(self, max_depth: int | None = None) -> int | None:
         if max_depth is not None:
@@ -731,6 +745,9 @@ class MSMEP:
                 {"nodes": input_chain, "parameters": self.inputs.chain_inputs})
         if attempted_pairs_payload is not None:
             self._set_attempted_pairs_payload(attempted_pairs_payload)
+        if tree_depth == 0 and parent_index is None:
+            self._na_sequential = True
+            self._na_state = None
         max_depth = self._resolve_recursive_split_max_depth(max_depth)
         tree_log.started(tree_node_index, parent_index, tree_depth, input_chain)
         history, sequence_of_chains = self._guarded_step(
@@ -825,6 +842,105 @@ class MSMEP:
         set_monitor_verdict("elementary")
         return history_node
 
+    # --- network-aware pruning -------------------------------------------
+    def _na_cutoff(self) -> float | None:
+        from mepd.network_aware import resolve_cutoff
+
+        return resolve_cutoff(self.inputs.path_min_inputs)
+
+    def _na_floor(self, input_chain: Chain) -> float:
+        """The one energy reference of the whole search (Hartree): the
+        follow-up searches of a network share their root's."""
+        pmi = self.inputs.path_min_inputs
+        floor = getattr(pmi, "network_floor_hartree", None)
+        if floor is None:
+            floor = float(input_chain[0].energy)
+            with contextlib.suppress(Exception):
+                pmi.network_floor_hartree = floor
+        return float(floor)
+
+    def _na_state_in(self, input_chain: Chain, e0: float):
+        """The route state at this piece's start."""
+        from mepd.network_aware import RouteState
+
+        if self._na_sequential and self._na_state is not None:
+            return self._na_state
+        route = getattr(input_chain, "_na_route", None)
+        if route is not None:
+            return route
+        return RouteState.at(e0)
+
+    def _na_set_children(self, children: list[Chain], state_in, floor: float) -> None:
+        """Each piece of a split inherits a lower bound on the route up to its
+        start: the route through the minima before it."""
+        from mepd.network_aware import rel_kcal
+
+        def energy(node):
+            try:
+                e = node.energy
+            except Exception:
+                e = None
+            if e is None:
+                self.inputs.engine.compute_energies([node])
+                e = node.energy
+            return e
+
+        state = state_in
+        for child in children:
+            child._na_route = state
+            state = state.through(rel_kcal(energy(child[0]), floor)).through(rel_kcal(energy(child[-1]), floor))
+
+    def _na_finish_leaf(self, history_node: TreeNode, input_chain: Chain, state_in, floor: float,
+                        cutoff: float | None) -> None:
+        """A leaf is done: fold its path into the route; a step above the
+        cutoff is kept but marked kinetically irrelevant (no TS search)."""
+        from mepd.network_aware import log_event, rel_kcal
+
+        data = getattr(history_node, "data", None)
+        traj = getattr(data, "chain_trajectory", None) or []
+        chain = traj[-1] if traj else input_chain
+        energies = [n.energy for n in chain.nodes if getattr(n, "energy", None) is not None]
+        e0, e1 = rel_kcal(input_chain[0].energy, floor), rel_kcal(input_chain[-1].energy, floor)
+        state = state_in.through(e0)
+        peak = rel_kcal(max(energies), floor) if energies else max(e0, e1)
+        peak_source = "path"
+        # Irrelevant for the whole network only if the TS itself lies above the
+        # floor + cutoff (any route over it climbs at least that much); a climb
+        # out of this path's own deepest well is not enough (another route may
+        # reach the same TS from a shallower well).
+        if cutoff is not None and peak > cutoff and len(chain) > 2:
+            # The path's highest image is only an upper bound on the barrier
+            # (the search stops early once it sees one step), so it can't
+            # prune by itself: optimize the TS and judge by that. If the TS
+            # can't be confirmed, the step is not cut (cutting chemistry on a
+            # guess is worse than searching a bit more).
+            peak_source = "unverified"
+            try:
+                from mepd.compute import find_ts
+
+                ts = find_ts(chain.get_ts_node(), self.inputs.engine)
+                peak = rel_kcal(ts.energy, floor)
+                peak_source = "ts"
+                history_node.na_ts = ts
+            except Exception as exc:
+                self._say(f"Could not confirm this step's TS ({type(exc).__name__}: {exc}); not cutting it.",
+                          warn=True)
+        # An unconfirmed peak doesn't enter the route either (it would cut the
+        # pieces after it on a guess).
+        state = (state if peak_source == "unverified" else state.over(peak)).through(e1)
+        above = cutoff is not None and peak_source != "unverified" and peak > cutoff
+        if above and getattr(history_node, "leaf_status", None) in (None, ""):
+            history_node.leaf_status = "above_cutoff"
+        if above:
+            history_node.skip_ts = True
+        history_node.na_route = state.as_dict()
+        if self._na_sequential:
+            self._na_state = state
+        log_event({"event": "leaf", "node": int(history_node.index), "start_kcal": round(e0, 2),
+                   "end_kcal": round(e1, 2), "peak_kcal": round(peak, 2), "peak_from": peak_source, **state.as_dict(),
+                   "cutoff_kcal": cutoff, "above_cutoff": bool(above),
+                   "status": getattr(history_node, "leaf_status", None) or "elementary"})
+
     def _run_recursive_step(
         self,
         input_chain: Chain,
@@ -858,6 +974,36 @@ class MSMEP:
         ch._reset_node_convergence(input_chain)
         self.inputs.engine.compute_gradients(input_chain)
 
+        na_cutoff = self._na_cutoff()
+        na_state_in = na_floor = None
+        if na_cutoff is not None:
+            from mepd.network_aware import RouteState, log_event, rel_kcal
+
+            na_floor = self._na_floor(input_chain)
+            e0, e1 = rel_kcal(input_chain[0].energy, na_floor), rel_kcal(input_chain[-1].energy, na_floor)
+            na_state_in = self._na_state_in(input_chain, e0)
+            # Prune only on a bound that holds for every route in the network:
+            # reaching a species at e0 above the floor climbs at least e0. (Two
+            # weaker rules failed the tier-2 tests: bounding by the piece's END
+            # lost intermediates its search finds on the way; blocking the rest
+            # of a search path after a confirmed high step lost species that a
+            # lower route from another search reaches.) A piece from a start
+            # within reach is searched, wherever it heads.
+            bound = RouteState.at(e0)
+            if bound.span > na_cutoff:
+                self._say(
+                    f"Not searching this piece: its start lies {e0:.1f} kcal/mol above the floor, beyond the cutoff "
+                    f"({na_cutoff:.1f}) for any route; ends at {e0:+.1f} / {e1:+.1f} kcal/mol.",
+                    snapshot=True, warn=True)
+                leaf = _empty_leaf(tree_node_index, status="pruned_above_cutoff")
+                leaf.rejected_chain = input_chain.copy()
+                leaf.na_route = bound.as_dict()
+                log_event({"event": "pruned", "node": int(tree_node_index), "depth": int(tree_depth),
+                           "start_kcal": round(e0, 2), "end_kcal": round(e1, 2), **bound.as_dict(),
+                           "cutoff_kcal": na_cutoff})
+                set_monitor_verdict("unresolved")
+                return leaf, []
+
         if is_identical(
             self=input_chain[0],
             other=input_chain[-1],
@@ -880,6 +1026,8 @@ class MSMEP:
 
         if elem_step_results.is_elem_step:
             set_monitor_verdict("elementary")
+            if na_cutoff is not None:
+                self._na_finish_leaf(history_node, input_chain, na_state_in, na_floor, na_cutoff)
             return history_node, []
 
         over = search_control.search_over(self.inputs.path_min_inputs)
@@ -914,12 +1062,18 @@ class MSMEP:
                 self._same_pair_split_limit_message(same_pair_split_count),
                 snapshot=True, warn=True,
             )
-            return self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
-                                      "same_pair_split_limit_reached"), []
+            leaf = self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
+                                      "same_pair_split_limit_reached")
+            if na_cutoff is not None:
+                self._na_finish_leaf(leaf, input_chain, na_state_in, na_floor, na_cutoff)
+            return leaf, []
 
         if resolved_max_depth is not None and tree_depth >= resolved_max_depth:
-            return self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
-                                      "max_depth_reached"), []
+            leaf = self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
+                                      "max_depth_reached")
+            if na_cutoff is not None:
+                self._na_finish_leaf(leaf, input_chain, na_state_in, na_floor, na_cutoff)
+            return leaf, []
 
         if self._repeats_an_ancestor(input_chain):
             # Keep this node's own minimized chain as the leaf so the
@@ -930,7 +1084,10 @@ class MSMEP:
                 "(a cycle); not splitting it again.",
                 snapshot=True, warn=True,
             )
-            return self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload, "cycle"), []
+            leaf = self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload, "cycle")
+            if na_cutoff is not None:
+                self._na_finish_leaf(leaf, input_chain, na_state_in, na_floor, na_cutoff)
+            return leaf, []
 
         chain_trajectory = getattr(root_neb_obj, "chain_trajectory", None) or []
         if not chain_trajectory:
@@ -970,6 +1127,12 @@ class MSMEP:
             sequence_of_chains, input_chain, same_pair_split_count + 1
         )
         self._set_child_split_ancestors(sequence_of_chains, input_chain)
+        if na_cutoff is not None:
+            from mepd.network_aware import log_event
+
+            self._na_set_children(sequence_of_chains, na_state_in, na_floor)
+            log_event({"event": "split", "node": int(tree_node_index), "depth": int(tree_depth),
+                       "pieces": len(sequence_of_chains), "criterion": str(elem_step_results.splitting_criterion)})
         _record_split_count(same_pair_split_count + 1)
         return history_node, sequence_of_chains
 
@@ -981,6 +1144,7 @@ class MSMEP:
         attempted_pairs_payload: list[dict[str, Any]] | None = None,
     ) -> TreeNode:
         """Recursively autosplit NEBs, evaluating split branches in parallel."""
+        self._na_sequential = False
         if attempted_pairs_payload is not None:
             self._set_attempted_pairs_payload(attempted_pairs_payload)
         resolved_max_depth = self._resolve_recursive_split_max_depth()

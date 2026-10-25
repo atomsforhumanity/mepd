@@ -1494,6 +1494,24 @@ def run_channels(
         run=lambda task: _ts_and_irc_once(task[1], task[0], ts_dir, run_inputs, q, m) and None,
         during=workers, after=analysis_width,
     )
+    from mepd.network_aware import resolve_cutoff
+
+    if resolve_cutoff(run_inputs.path_min_inputs) is not None \
+            and getattr(run_inputs.path_min_inputs, "network_floor_hartree", None) is None:
+        # Network-aware pruning: one floor for every pair, the lowest reactant
+        # conformer (barrier floor rule), not each pair's own start.
+        energies = []
+        for node in structures[:n_start]:
+            try:
+                e = node.energy
+            except Exception:
+                e = None
+            if e is None:
+                run_inputs.engine.compute_energies([node])
+                e = node.energy
+            energies.append(float(e))
+        run_inputs.path_min_inputs.network_floor_hartree = min(energies)
+        stats["network_floor_hartree"] = min(energies)
     _run_msmep_pairs(
         structures, candidates, pairs_dir, run_inputs,
         parallel=parallel, parallel_workers=parallel_workers, workers=workers,

@@ -92,6 +92,15 @@ def _nanoreactor(structure, *, max_products, options):
     return reactor_products(structure, max_products=max_products, **options)
 
 
+def _collide(structure, *, max_products, options):
+    from mepd.discovery.collide_generator import OPTIONS, collide_products
+
+    unknown = set(options) - set(OPTIONS)
+    if unknown:
+        raise ValueError(f"collide options are {', '.join(sorted(OPTIONS))} (got {', '.join(sorted(unknown))}).")
+    return collide_products(structure, max_products=max_products, **options)
+
+
 GENERATORS: dict[str, Generator] = {
     "bond-rules": Generator(
         "bond-rules", "Bond rules (mepd)",
@@ -109,6 +118,18 @@ GENERATORS: dict[str, Generator] = {
             "cite": ["P. Pracht, S. Grimme, C. Bannwarth, F. Bohle, S. Ehlert, G. Feldmann, J. Gorges, M. Müller, "
                      "T. Neudecker, C. Plett, S. Spicher, P. Steinbach, P. A. Wesołowski, F. Zeller, J. Chem. Phys. "
                      "160, 114110 (2024), doi:10.1063/5.0197592"]}}),
+    "collide": Generator(
+        "collide", "Collisions (the Reactor's Collide)",
+        "Langevin MD on GFN2-xTB at a moderate temperature in which two atoms are pulled together for a moment, "
+        "then let go -- the interactive Reactor's Collide, run unattended over many pairs. Finds unimolecular "
+        "decompositions and rearrangements the piston nanoreactor rarely makes.",
+        _collide, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
+        options=dict(__import__("mepd.discovery.collide_generator", fromlist=["OPTIONS"]).OPTIONS),
+        references={"collide": {
+            "method": "steered Langevin MD (a capped harmonic pull between two atoms, then a free run and a quench) "
+                      "on GFN2-xTB (tblite)",
+            "cite": ["C. Bannwarth, S. Ehlert, S. Grimme, J. Chem. Theory Comput. 15, 1652-1671 (2019), "
+                     "doi:10.1021/acs.jctc.8b01176"]}}),
     "nanoreactor": Generator(
         "nanoreactor", "Nanoreactor MD (hot, squeezed)",
         "Hot molecular dynamics of the structure inside a periodically contracting wall; the structure right "
