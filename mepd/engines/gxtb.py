@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -238,6 +239,21 @@ def _run_gxtb_process(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float,
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# xtb's implicit-solvent flags (and their short forms).
+_SOLVATION_FLAGS = frozenset({"--alpb", "--gbsa", "-g", "--cosmo", "--cpcmx", "--gbe"})
+
+
+def _split_args(args) -> list[str]:
+    """One argv entry per word: xtb reads "--alpb water" given as one
+    argument as an unknown flag and runs in the gas phase without a word
+    (mepd#11), so entries with spaces are split as a shell would."""
+    out = []
+    for arg in [args] if isinstance(args, str) else args:
+        arg = str(arg)
+        out.extend(shlex.split(arg) if any(c.isspace() for c in arg) else [arg])
+    return out
+
+
 @dataclass
 class GXTBCalculator(Engine):
     """Direct local g-xTB engine using the xtb executable with the g-xTB flag."""
@@ -277,7 +293,15 @@ class GXTBCalculator(Engine):
         if self.executable is None:
             self.executable = os.getenv("GXTB_EXECUTABLE") or "gxtb"
         self.executable = str(self.executable)
-        self.extra_args = [str(arg) for arg in self.extra_args]
+        self.extra_args = _split_args(self.extra_args)
+        if self.add_gxtb_flag or standalone_gxtb(self.executable):
+            solvation = [a for a in self.extra_args if a.split("=")[0] in _SOLVATION_FLAGS]
+            if solvation:
+                raise ValueError(
+                    f"g-xTB has no implicit-solvent parameters ({' '.join(solvation)} in extra_args): with "
+                    "--alpb/--gbsa xtb stops, and --cosmo/--cpcmx/--gbe give gas-phase or implausible energies. "
+                    "Use a profile [solvation] table (method = \"correction\": GFN2-xTB solvation on top of "
+                    "g-xTB) instead.")
         self.env = {str(k): str(v) for k, v in dict(self.env or {}).items()}
 
     def _resolve_executable(self) -> None:
