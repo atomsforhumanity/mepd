@@ -504,6 +504,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   xtb SCC is smeared at the reactor's electronic temperature (3000 K) from the start and starts from the
   previous step's charges (0.26 → 0.17 s per step on 1OH0, and no 300 K SCC that fails first); a step whose
   energy jumps is redone from scratch.
+- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
+  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
+  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
+  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
+  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+
+- **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
+  `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
+  polytope it fitted to the geometry, and for a fluxional centre that changed between two geometries of one
+  molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
+  ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
+  centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
 
 - **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
   not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
