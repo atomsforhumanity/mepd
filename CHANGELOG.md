@@ -488,6 +488,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
   into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
   their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
+  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
+  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
+  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
+  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
 
 - **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
   `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
