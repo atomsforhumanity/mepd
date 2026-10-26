@@ -242,6 +242,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **The demo moves to mepd.afh.org.** The Ingress serves both `mepd.afh.org` and `mepd.atomsforhumanity.org`
+  until Cloudflare redirects the old domain, and the deploy now checks `https://mepd.afh.org/login`.
+
 - **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
   complex is removed with any of them (as before). The delete confirmation (Explore selection and the
   Inspector) now names those complexes. (#14)
