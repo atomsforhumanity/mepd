@@ -13,6 +13,6 @@ access (compute nodes, air-gapped lab servers). Unmodified upstream builds:
 
 To update, re-download from https://cdn.jsdelivr.net/npm/<package>@<version>/...
 
-The fonts match atomsforhumanity.org's typography (Source Serif 4 titles, Source Sans 3 text, Geist Mono code).
+The fonts match afh.org's typography (Source Serif 4 titles, Source Sans 3 text, Geist Mono code).
 
 Figtree is the open stand-in for Meta's proprietary Optimistic typeface in the optional "Playground" layout (modelled on the UMA playground).
