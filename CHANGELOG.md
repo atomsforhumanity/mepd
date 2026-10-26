@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
+  keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
+  is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
+  `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
+  `--search-budget`, now on `mepd run` too. (#13)
+
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
@@ -235,6 +241,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
+  complex is removed with any of them (as before). The delete confirmation (Explore selection and the
+  Inspector) now names those complexes. (#14)
+
+- **`thermo.qrrho(ts=True)` says when it could not leave out the reaction coordinate.** A Hessian at another
+  level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
+  and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
+  to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
 
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
@@ -472,6 +487,23 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
+  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
+  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
+  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
+  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+
+- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
+  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
+  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
+  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
+  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
+
+- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
+  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
+  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
+  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
 
 - **Nanoreactor (xtb/g-xTB MD): a reactor no longer falls apart into atoms when xtb's SCC breaks down.**
   xtb's MD goes on after a failed SCC with zero energy and zero forces (every later step fails too, and so

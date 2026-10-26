@@ -93,6 +93,13 @@ COVALENT_RADII = {
     "K": 2.03, "Ca": 1.76, "Fe": 1.32, "Cu": 1.32, "Zn": 1.22, "Se": 1.20, "Br": 1.20, "I": 1.39,
 }
 
+# Cations whose contacts are ionic, not bonds: within 1.15x its Cordero
+# radius a K+ "bonds" to every O within 3.1 A, gluing a whole solvation
+# shell into one species and turning coordination changes into reactions.
+# They come out as their own ions ([K+]). Be and Mg stay covalent
+# (Grignard reagents, organoberyllium chemistry).
+IONIC_ELEMENTS = frozenset({"Li", "Na", "K", "Rb", "Cs", "Ca", "Sr", "Ba"})
+
 MD_METHODS = ("gfn2", "gfn1", "gxtb", "level")   # "level": any mepd engine (run_engine_md)
 
 
@@ -824,8 +831,10 @@ Pair = tuple[int, int]
 
 
 def _radius_sum(symbols) -> np.ndarray:
+    """r_i + r_j; 0 (never bonded) for a pair with an ionic cation."""
     r = np.array([COVALENT_RADII.get(s, 1.5) for s in symbols])
-    return r[:, None] + r[None, :]
+    covalent = np.array([s not in IONIC_ELEMENTS for s in symbols])
+    return (r[:, None] + r[None, :]) * (covalent[:, None] & covalent[None, :])
 
 
 def perceive_bonds(symbols, coords, factor: float = 1.25) -> set[Pair]:
@@ -1117,7 +1126,10 @@ class Labeler:
 
         out = []
         electrons = sum(_Z.get(s, 0) for s in syms)
-        for q in sorted(range(-self.max_charge, self.max_charge + 1), key=abs):
+        charges = sorted(range(-self.max_charge, self.max_charge + 1), key=abs)
+        if len(syms) == 1 and syms[0] in IONIC_ELEMENTS:   # never a neutral (radical) K: K+ + MeO-, not K. + MeO.
+            charges = list(METAL_CHARGES[syms[0]])
+        for q in charges:
             if electrons - q < 0:
                 continue
             mult = 1 if (electrons - q) % 2 == 0 else 2
