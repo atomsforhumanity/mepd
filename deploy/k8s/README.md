@@ -89,7 +89,7 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
   programs, paths and credentials. A new visitor is made by opening the page,
   and their workspace by the page's first API call, so crawlers that run no
   JavaScript leave nothing on disk. To slow abuse, add a Cloudflare
-  rate-limiting rule for `mepd.atomsforhumanity.org/` and `/api/jobs`;
+  rate-limiting rule for `mepd.afh.org/` and `/api/jobs`;
   Cloudflare sees each visitor's real address. To require a shared password
   again, set `MEPD_DEMO_PASSWORD` (e.g. from a Secret) in `mepd-demo.yaml`.
 - **Plain HTTP.** mepd serves plain HTTP. The Cloudflare tunnel terminates
