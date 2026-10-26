@@ -236,6 +236,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
+  complex is removed with any of them (as before). The delete confirmation (Explore selection and the
+  Inspector) now names those complexes. (#14)
+
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
   substituent commands and the web app:
@@ -514,6 +518,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
   flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
   `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
+- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
+  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
+  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
+  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
 
 - **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
   `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination

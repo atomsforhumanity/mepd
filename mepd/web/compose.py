@@ -101,9 +101,33 @@ def _fragments(structure) -> list:
     coords = np.asarray(structure.geometry).reshape(-1, 3) / ANGSTROM_TO_BOHR
     bonds = perceive_bonds(symbols, coords)
     mols = components(len(symbols), bonds)
-    labels = Labeler(symbols, max_charge=max(1, abs(int(structure.charge)))).assign(mols, bonds, int(structure.charge))
+    labeler = Labeler(symbols, max_charge=max(1, abs(int(structure.charge))))
+    labels = labeler.assign(mols, bonds, int(structure.charge))
+    # Without charges the labeler prefers neutral molecules, radicals if need
+    # be (homolysis): a closed-shell ion pair would come out as two radicals.
+    # Then GFN2-xTB's partial charges decide, as in the nanoreactor.
+    if len(mols) > 1 and int(structure.multiplicity) == 1 and any(lab.multiplicity > 1 for lab in labels):
+        hint = _partial_charges(symbols, coords, int(structure.charge))
+        if hint is not None:
+            labels = labeler.assign(mols, bonds, int(structure.charge), hint)
     return [Structure(symbols=[symbols[a] for a in comp], geometry=coords[list(comp)] * ANGSTROM_TO_BOHR,
                       charge=lab.charge, multiplicity=lab.multiplicity) for comp, lab in zip(mols, labels)]
+
+
+def _partial_charges(symbols, coords_angstrom, charge: int):
+    """GFN2-xTB atomic partial charges, or None (no xtb here, or it failed)."""
+    import tempfile
+    from pathlib import Path
+
+    from mepd import programs
+    from mepd.discovery.nanoreactor import frame_partial_charges
+
+    exe = programs.xtb_executable(download=False)
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory(prefix="mepd-charges-") as tmp:
+        return frame_partial_charges(symbols, coords_angstrom, charge=charge, multiplicity=1, method="gfn2",
+                                     electronic_temperature=300.0, workdir=Path(tmp), executable=exe)
 
 
 def compose(ws: Workspace, reactants: list[str], *, products: Optional[list[str]] = None,
