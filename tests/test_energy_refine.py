@@ -92,3 +92,51 @@ def test_a_charged_complex_counts_as_its_ions(monkeypatch):
     s = Structure(symbols=sym, geometry=xyz * 1.8897259886, charge=-1, multiplicity=1)
     parts = FreeEnergies(None, 298.15).parts(s, False)
     assert sorted((len(p), q, m) for p, q, m in parts) == [(3, 0, 1), (7, -1, 1)]
+
+
+class _Counted(_Table):
+    def __init__(self, table):
+        super().__init__(table)
+        self.calls = 0
+
+    def compute_energies(self, nodes):
+        self.calls += len(nodes)
+        return super().compute_energies(nodes)
+
+
+def test_a_rerun_picks_up_what_was_kept_at_the_same_level_only(tmp_path):
+    species, steps, low = _network(tmp_path)
+    high = {k: v - 400.0 for k, v in low.items()}
+    kw = dict(temperature=298.15, time_s=3600.0, free_energy=False, save_dir=tmp_path / "refined")
+    first = refine_energies(species, steps, low_engine=_Table(low), high_engine=_Counted(high), **kw)
+    again = _Counted(high)
+    second = refine_energies(species, steps, low_engine=_Table(low), high_engine=again, **kw)
+    assert again.calls == 0
+    assert [r["g_high_kcal"] for r in second["refined"]] == pytest.approx([r["g_high_kcal"] for r in first["refined"]])
+    other = _Counted({k: v - 1.0 for k, v in high.items()})     # another level: nothing reused
+    refine_energies(species, steps, low_engine=_Table(low), high_engine=other, **kw)
+    assert other.calls > 0
+
+
+def test_a_reconvergence_is_kept_as_soon_as_it_ends(tmp_path, monkeypatch):
+    from mepd.discovery import energy_refine
+
+    species, steps, low = _network(tmp_path)
+    high = {k: v - 400.0 for k, v in low.items()}
+    done = []
+
+    def reopt(item, engine, free):
+        done.append((item.kind, item.index))
+        return {"e_high": high[round(float(item.structure.geometry[0][0]), 3)] - KCAL,
+                "g_high": high[round(float(item.structure.geometry[0][0]), 3)] - KCAL, "structures": list(item.parts)}
+
+    monkeypatch.setattr(energy_refine, "_reoptimize", reopt)
+    kw = dict(temperature=298.15, time_s=3600.0, free_energy=False, save_dir=tmp_path / "refined", mode="reoptimize")
+    first = refine_energies(species, steps, low_engine=_Table(low), high_engine=_Table(high), **kw)
+    assert done[0][0] == "ts"                        # the slow ones start first
+    assert len(list((tmp_path / "refined" / "reoptimized").glob("*.json"))) == len(done) == 5
+    done.clear()
+    second = refine_energies(species, steps, low_engine=_Table(low), high_engine=_Table(high), **kw)
+    assert done == []
+    assert [r["how"] for r in second["refined"]] == ["reoptimized"] * 5
+    assert [r["g_high_kcal"] for r in second["refined"]] == pytest.approx([r["g_high_kcal"] for r in first["refined"]])

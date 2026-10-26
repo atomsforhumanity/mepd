@@ -23,6 +23,10 @@ Two modes, like the implicit-solvent correction (mepd solvent):
   aligned RMSD from the explorer's geometry, largest over the molecules),
   and with `save_dir` both geometries are written there.
 
+With `save_dir`, every single point and re-convergence is kept as soon
+as it ends, and running again picks up from what was kept (at the same
+level of theory only): a re-convergence at DFT can take hours per TS.
+
 Which part of the network: the species and steps the explorer's own
 free-energy kinetics use (reached from the seed within the barrier cutoff);
 the rest carries no flux and keeps the explorer's energies. A species of
@@ -95,6 +99,52 @@ def _single_point(item: Item, low, high) -> dict:
     e_low = sum(_energy(s, low) for s in item.parts)
     e_high = sum(_energy(s, high) for s in item.parts)
     return {"e_low": e_low, "e_high": e_high, "delta_kcal": (e_high - e_low) * HARTREE_TO_KCAL_PER_MOL}
+
+
+def _level(engine) -> str:
+    """What sets an engine's energies (its type and scientific settings, not
+    threads, memory or paths): a saved result is reused only at the same level."""
+    import dataclasses
+
+    skip = {"threads", "memory", "maxcore", "python", "executable", "timeout", "keep_workdirs"}
+    if dataclasses.is_dataclass(engine):
+        fields = {f.name: getattr(engine, f.name, None) for f in dataclasses.fields(engine)}
+    else:
+        fields = {k: v for k, v in vars(engine).items() if isinstance(v, (str, int, float, bool, tuple, list, dict))}
+    fields = {k: v for k, v in fields.items() if k not in skip and not k.startswith("_")}
+    return f"{type(engine).__name__}{sorted((k, repr(v)) for k, v in fields.items())}"
+
+
+class _Saved:
+    """Results kept as each one finishes (`save_dir`/<stage>/<name>.json,
+    geometries included), so a run that stops -- a time limit, a crash -- keeps what
+    it finished, and the same command picks up from there."""
+
+    def __init__(self, save_dir: Optional[Path], level: str):
+        self.dir, self.level = (Path(save_dir) if save_dir is not None else None), level
+
+    def get(self, stage: str, name: str) -> Optional[dict]:
+        import json
+
+        if self.dir is None or not (self.dir / stage / f"{name}.json").exists():
+            return None
+        rec = json.loads((self.dir / stage / f"{name}.json").read_text())
+        return rec["result"] if rec.get("level") == self.level else None
+
+    def put(self, stage: str, name: str, result: dict) -> None:
+        import json
+
+        if self.dir is None:
+            return
+        d = self.dir / stage
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{name}.json.tmp"
+        tmp.write_text(json.dumps({"level": self.level, "result": result}))
+        tmp.replace(d / f"{name}.json")
+
+
+def _stem(item: Item) -> str:
+    return f"species_{item.index}" if item.kind == "species" else f"ts_{item.index}"
 
 
 def _reoptimize(item: Item, high, free_high: Optional[FreeEnergies]) -> dict:
@@ -201,11 +251,18 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     threads = max(1, int(getattr(high_engine, "threads", 1) or 1))
     at_once = max(1, int(workers) // threads)
 
+    saved = _Saved(save_dir, f"{_level(low_engine)} -> {_level(high_engine)}")
+
     def sp(item):
+        done = saved.get("single_points", _stem(item))
+        if done is not None:
+            return done
         try:
-            return _single_point(item, low_engine, high_engine)
+            r = _single_point(item, low_engine, high_engine)
         except Exception as exc:
             return f"{type(exc).__name__}: {exc}"
+        saved.put("single_points", _stem(item), r)
+        return r
 
     sps = list(_fork_map(sp, items, at_once))
     failed = [(it, r) for it, r in zip(items, sps) if isinstance(r, str)]
@@ -228,12 +285,31 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
         free_high = FreeEnergies(high_engine, temperature, standard_state, 1) if free_energy else None
 
         def reopt(item):
-            try:
-                return _reoptimize(item, high_engine, free_high)
-            except Exception as exc:
-                return f"{type(exc).__name__}: {exc}"
+            from qcdata import Structure
 
-        for it, row, r in zip(items, rows, _fork_map(reopt, items, at_once)):
+            done = saved.get("reoptimized", _stem(item))
+            if done is not None:
+                if "error" in done:
+                    return done["error"]
+                return {**done, "structures": [Structure.from_xyz(x) for x in done["structures"]]}
+            import sys
+            import time
+
+            t0 = time.time()
+            try:
+                r = _reoptimize(item, high_engine, free_high)
+            except Exception as exc:
+                r = f"{type(exc).__name__}: {exc}"
+            saved.put("reoptimized", _stem(item), {"error": r} if isinstance(r, str) else
+                      {**r, "structures": [st.to_xyz() for st in r["structures"]]})
+            print(f"{_stem(item)}: {'failed' if isinstance(r, str) else 're-converged'} in {time.time() - t0:.0f} s",
+                  file=sys.stderr, flush=True)
+            return r
+
+        # the TS searches take longest: start them first
+        order = sorted(range(len(items)), key=lambda i: items[i].kind != "ts")
+        by_item = dict(zip(order, _fork_map(reopt, [items[i] for i in order], at_once)))
+        for it, row, r in zip(items, rows, (by_item[i] for i in range(len(items)))):
             label = f"species {it.index}" if it.kind == "species" else f"TS of step {steps[it.index].label}"
             if isinstance(r, str):
                 say(f"{label}: not re-converged at the higher level ({r}); its single-point free energy is used")

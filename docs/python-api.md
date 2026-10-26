@@ -66,7 +66,7 @@ qcdata's comment line stores charge and multiplicity, so `write_xyz` then
 
 | Function | |
 |---|---|
-| `engine(name="gxtb", *, program=None, solvation=None, **options)` | `"gxtb"`, `"xtb"` (`method="gfn2"`), `"mlip"` (`model="aimnet2-rxn"`), `"fairchem"`, `"ase"` (`calculator="pkg.module:Class"`), `"psi4"`, `"terachem"`, `"qccompute"`/`"chemcloud"` (`program="psi4"`, plus its keywords) |
+| `engine(name="gxtb", *, program=None, solvation=None, **options)` | `"gxtb"`, `"xtb"` (`method="gfn2"`), `"mlip"` (`model="aimnet2-rxn"`), `"fairchem"`, `"ase"` (`calculator="pkg.module:Class"`), `"psi4"`, `"orca"` (ORCA's own optimizers and analytic Hessians; `method`, `basis`, `threads`, `maxcore`), `"terachem"`, `"qccompute"`/`"chemcloud"` (`program="psi4"`, plus its keywords) |
 | `engine_from_profile(path)` | the engine a profile `.toml` describes |
 | `set_threads(n)` | OMP/MKL/OpenBLAS threads for this process and the programs it starts |
 

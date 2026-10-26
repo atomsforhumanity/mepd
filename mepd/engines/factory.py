@@ -15,6 +15,7 @@ _OPTION_FIELDS = {
     "mlip": "mlip_engine_kwds",
     "fairchem": "fairchem_engine_kwds",
     "psi4": "psi4_engine_kwds",
+    "orca": "orca_engine_kwds",
     "terachem": "terachem_engine_kwds",
 }
 
@@ -24,7 +25,7 @@ def engine(name: str = "gxtb", *, program: str | None = None, solvation: dict | 
 
     `name`: "gxtb" (local g-xTB), "xtb" (GFN2/GFN1-xTB; `method=`), "mlip"
     (`model="aimnet2-rxn"` etc.; `mepd models` lists them), "fairchem", "ase"
-    (`calculator="package.module:Class"`, `calculator_kwds={...}`), "psi4",
+    (`calculator="package.module:Class"`, `calculator_kwds={...}`), "psi4", "orca",
     "terachem", or "qccompute"/"chemcloud" (`program="psi4"` plus the program's
     keywords as options). `solvation`, e.g. {"solvent": "water"}, adds implicit
     solvent. These are the `engine_name` and `*_engine_kwds` of a profile file.

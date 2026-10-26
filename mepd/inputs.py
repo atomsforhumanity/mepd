@@ -578,7 +578,8 @@ class RunInputs:
         `ase_engine_kwds.calculator = "package.module:ClassName"` with its
         keyword arguments in `ase_engine_kwds.calculator_kwds`), "xtb"
         (GFN2-/GFN1-xTB run directly, `xtb_engine_kwds.method`; takes point
-        charges, so it can be the QM level in TIP3P water), "psi4", or
+        charges, so it can be the QM level in TIP3P water), "psi4", "orca"
+        (ORCA's own optimizers and analytic Hessians, `orca_engine_kwds`), or
         "terachem" (a local TeraChem, `terachem_engine_kwds` method/basis/
         keywords; takes point charges too -- see mepd/engines/terachem.py).
     `solvation`: optional implicit solvent for whichever engine, e.g.
@@ -624,6 +625,7 @@ class RunInputs:
     fairchem_engine_kwds: dict = None
     mlip_engine_kwds: dict = None
     psi4_engine_kwds: dict = None
+    orca_engine_kwds: dict = None
     terachem_engine_kwds: dict = None
     geometry_optimizer_kwds: dict = None
     optimizer_kwds: dict = None
@@ -810,7 +812,7 @@ class RunInputs:
             self.program_kwds = None
 
         if self.program_kwds is None:
-            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "xtb", "terachem"}:
+            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "orca", "xtb", "terachem"}:
                 # Neither engine uses the qccompute/chemcloud ProgramArgs/qcdata
                 # input construct -- gxtb shells out directly, and ASEEngine
                 # takes an already-constructed ase.Calculator.
@@ -858,6 +860,7 @@ class RunInputs:
         self.fairchem_engine_kwds = dict(self.fairchem_engine_kwds or {})
         self.mlip_engine_kwds = dict(self.mlip_engine_kwds or {})
         self.psi4_engine_kwds = dict(self.psi4_engine_kwds or {})
+        self.orca_engine_kwds = dict(self.orca_engine_kwds or {})
         self.xtb_engine_kwds = dict(self.xtb_engine_kwds or {})
         self.terachem_engine_kwds = dict(self.terachem_engine_kwds or {})
         if self.engine_name == "terachem" or "terachem" in str(self.program):
@@ -954,6 +957,10 @@ class RunInputs:
             from mepd.engines.psi4 import Psi4Engine
 
             eng = Psi4Engine(**dict(self.psi4_engine_kwds or {}))
+        elif self.engine_name == 'orca':
+            from mepd.engines.orca import OrcaEngine
+
+            eng = OrcaEngine(**dict(self.orca_engine_kwds or {}))
         elif self.engine_name == 'terachem':
             from mepd.engines.terachem import TeraChemEngine
 
