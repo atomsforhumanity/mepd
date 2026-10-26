@@ -453,6 +453,19 @@ def run(
         help="--cutoff-temperature: kcal/mol added for the method's error (electronic vs free energies, xTB vs a "
         "reference level).",
     ),
+    max_depth: Optional[int] = typer.Option(
+        None, "--max-depth", min=0,
+        help="With --recursive/--parallel: split at most this many levels deep. A path at that depth that "
+        "is still not elementary is optimized to convergence and kept as one step (leaf status "
+        "'max_depth_reached'). Default: the profile's recursive_split_max_depth (none).",
+    ),
+    search_budget: float = typer.Option(
+        0.0, "--search-budget",
+        help="With --recursive/--parallel: wall-clock seconds (from the start of the command) after which "
+        "no search is split further. Each one that finishes is kept as a 'time_budget' leaf with its own "
+        "path, and --use-tsopt/--irc then run on what was found. Searches already running finish first. "
+        "0 (default) = no budget.",
+    ),
     use_tsopt: bool = typer.Option(
         False, "--use-tsopt",
         help="After the NEB/MSMEP run, automatically optimize a transition state "
@@ -541,6 +554,9 @@ def run(
     ),
 ) -> None:
     """Run a NEB optimization between two endpoint structures."""
+    import time
+
+    _command_started = time.time()
     from mepd.nodes.node import StructureNode
     import mepd.chainhelpers as ch
 
@@ -588,6 +604,11 @@ def run(
         run_inputs.path_min_inputs.cutoff_temperature = num(cutoff_temperature)
         run_inputs.path_min_inputs.cutoff_time_s = num(cutoff_time, 86400.0)
         run_inputs.path_min_inputs.cutoff_margin_kcal = num(cutoff_margin, 10.0)
+    if isinstance(max_depth, int):   # (typer's OptionInfo when called directly)
+        run_inputs.path_min_inputs.recursive_split_max_depth = max_depth
+    if isinstance(search_budget, (int, float)) and search_budget > 0:
+        # Read by MSMEP: no further splits after it (search_control.search_over).
+        run_inputs.path_min_inputs.recursive_split_deadline = _command_started + float(search_budget)
     run_inputs.atom_mapping_inputs.n_candidates = atom_mapping_candidates
     run_inputs.atom_mapping_inputs.metric = atom_mapping_metric
     run_inputs.atom_mapping_inputs.veto_margin = atom_mapping_veto_margin

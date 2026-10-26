@@ -60,3 +60,16 @@ def test_a_product_with_no_lewis_structure_is_named_after_optimizing(monkeypatch
     monkeypatch.setattr(ne, "lewis_smiles", lambda *a, **k: None)
     (p,), _ = ne._region_proposals(view, node, 0, [region.model_structure(s)])
     assert p.smiles == "external-0"
+
+
+def test_the_nanoreactor_anchors_a_qm_region_at_its_link_h_and_the_atoms_they_cap():
+    from mepd.discovery.network_expansion import nanoreactor_anchors
+
+    s = _propanol()
+    region = QMMMRegion.build(s, QM_PROPANOL, active_radius=None)
+    model = region.model_structure(s)
+    nqm = len(region.qm_atoms)
+    anchors = nanoreactor_anchors(region)
+    assert anchors[:len(region.links)] == list(range(nqm, nqm + len(region.links)))
+    assert all(model.symbols[a] == "H" for a in anchors[:len(region.links)])
+    assert anchors[len(region.links):] == sorted(region.qm_atoms.index(q) for q, _ in region.links)

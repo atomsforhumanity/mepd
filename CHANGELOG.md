@@ -21,6 +21,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
   doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
   ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
+- **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
+  keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
+  is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
+  `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
+  `--search-budget`, now on `mepd run` too. (#13)
 
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
@@ -245,6 +250,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
+  complex is removed with any of them (as before). The delete confirmation (Explore selection and the
+  Inspector) now names those complexes. (#14)
+
+- **`thermo.qrrho(ts=True)` says when it could not leave out the reaction coordinate.** A Hessian at another
+  level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
+  and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
+  to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
 
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
@@ -489,6 +503,54 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
   ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
   centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
+- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
+  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
+  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
+  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
+  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+
+- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
+  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
+  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
+  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
+  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
+
+- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
+  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
+  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
+  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
+
+- **Nanoreactor (xtb/g-xTB MD): a reactor no longer falls apart into atoms when xtb's SCC breaks down.**
+  xtb's MD goes on after a failed SCC with zero energy and zero forces (every later step fails too, and so
+  does every later segment, from the broken charges in `xtbrestart`), so the atoms fly off in straight lines;
+  an SCC that lands on a wrong solution gives a jump of tens of Eh, a kick to ~10^4 K, "MD is unstable", and
+  every later segment restarts from those velocities. Seen with a ketosteroid isomerase active site (1OH0,
+  QM: the steroid + Tyr16/Asp40/Tyr57/Asp103, charge -2) at 3000 K: atoms after 0.3 ps, no products. Now
+  such a run is cut at its last good frame (zero energy, a jump of more than 1 Eh between frames, or an
+  unstable stop) and the segment goes on from there with a fresh SCC guess and new velocities at the
+  temperature; a segment that breaks down 6 times keeps its good frames and the next starts from the last
+  of them, and the piston closes 15% less far from then on (each time: a reactor squeezed past what xtb can
+  converge is squeezed less rather than failing the expansion; 1OH0 at compress = 0.5 failed with "xtb's MD
+  broke down 6 times in each of 3 segments in a row"). If 3 segments in a row still get nowhere, the MD ends
+  early and the trajectory so far is analyzed. The job log says each of these.
+
+- **Nanoreactor on a QM/MM system (QM region in vacuum): the QM region's side chains stay anchored.** The
+  link H (where the protein's backbone was) and the QM atoms they cap (CB) are held at their distances to
+  each other (xtb `$constrain`), and the piston pushes only the molecules without an anchor (the substrate,
+  into the residues), the anchored ones kept inside the wide wall. Before, nothing held the residues: in the
+  hot MD they drifted off and lost their caps (1OH0 at 2500 K: the anchor frame moved 3-6 Å and CB-H
+  bonds broke, 27 of 29 reactor states torn; now within 1 Å, caps kept, no xtb breakdowns). Generator option
+  `anchors` (0-based atoms of the QM model, `none` for none) overrides it. The wall's atoms go one
+  contiguous range per sphere line: conda-forge's xtb 6.7.1 (the Docker image's) aborts with "free():
+  invalid pointer" on a comma in a `$wall` atom list, which failed the first version of this on the server.
+
+- **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
+  perceived over the whole system (protein and water included), re-reading every segment so far: hours per
+  segment for a protein. They are now found among the QM atoms only (indices still the system's), each
+  segment read once. The products step reads the QM atoms, and whole frames only for products. The MD's
+  xtb SCC is smeared at the reactor's electronic temperature (3000 K) from the start and starts from the
+  previous step's charges (0.26 → 0.17 s per step on 1OH0, and no 300 K SCC that fails first); a step whose
+  energy jumps is redone from scratch.
 
 - **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
   not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB

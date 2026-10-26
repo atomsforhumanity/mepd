@@ -43,3 +43,15 @@ def test_xtb_free_energy_is_reproduced():
                         linear=fr["linear"], standard_state="1atm")
     assert fr["rotational_number"] == 2
     assert ours["g_corr"] == pytest.approx(fr["xtb_g298_eh"] * thermo.HARTREE_KCAL, abs=0.1)
+
+
+def test_ts_without_a_negative_mode_is_flagged_and_a_given_mode_is_dropped():
+    # mepd#12: a Hessian at another level than the TS often has no negative mode.
+    sym, xyz = EO
+    base = thermo.qrrho(EO_FREQS, sym, xyz, 298.15, rotational_number=2)
+    kept = thermo.qrrho([45.0] + EO_FREQS, sym, xyz, 298.15, rotational_number=2, ts=True)
+    assert not kept["ts_mode_dropped"] and "no negative frequency" in kept["warning"]
+    assert kept["g_corr"] < base["g_corr"]
+    given = thermo.qrrho([45.0] + EO_FREQS, sym, xyz, 298.15, rotational_number=2, ts=True, ts_mode=0)
+    assert given["ts_mode_dropped"] and "warning" not in given and given["g_corr"] == pytest.approx(base["g_corr"])
+    assert thermo.qrrho([-900.0] + EO_FREQS, sym, xyz, 298.15, rotational_number=2, ts=True)["ts_mode_dropped"]

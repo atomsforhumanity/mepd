@@ -121,7 +121,7 @@ class GFNFFEngine(Engine):
 
     # ------------------------------------------------------------ program
     def _run(self, workdir: Path, symbols, coords_bohr, charge: int, grad: bool = True,
-             uhf: int = 0, point_charges=None) -> tuple[float, np.ndarray]:
+             uhf: int = 0, point_charges=None, etemp: Optional[float] = None) -> tuple[float, np.ndarray]:
         (workdir / "in.xyz").write_text(_xyz(symbols, coords_bohr))
         method = ["--gfnff"] if self.method == "gfnff" else ["--gfn", self.method[-1], "--uhf", str(int(uhf))]
         argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge))]
@@ -135,6 +135,8 @@ class GFNFFEngine(Engine):
             argv += ["--input", "xcontrol"]
         if grad:
             argv.append("--grad")
+        if etemp:
+            argv += ["--etemp", f"{float(etemp):.1f}"]
         env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OMP_STACKSIZE": "256M"}
 
         def run(extra=()):
@@ -150,7 +152,7 @@ class GFNFFEngine(Engine):
             # end the whole run.
             from mepd.engines.gxtb import SCF_FALLBACKS, _scf_not_converged
 
-            for retry in SCF_FALLBACKS:
+            for retry in (SCF_FALLBACKS if not etemp else (("--iterations", "1000"),)):
                 if proc.returncode == 0 or not _scf_not_converged(proc.stdout + proc.stderr):
                     break
                 (workdir / "xtbrestart").unlink(missing_ok=True)   # the failed run's charges
@@ -282,12 +284,22 @@ class XTBEngine(GFNFFEngine):
 
     method: str = "gfn2"
     supports_point_charges: bool = True
+    # Hot MD (the QM/MM nanoreactor) sets these: Fermi smearing at this
+    # electronic temperature from the first SCC (K; None = xtb's 300 K), and
+    # each calculation in a thread starting from that thread's last charges
+    # (consecutive MD steps differ little; a failed SCC is retried without).
+    electronic_temperature: Optional[float] = None
+    reuse_scc_guess: bool = False
 
     def __post_init__(self):
         super().__post_init__()
         if self.method == "gfnff":
             raise ValueError("engine_name = \"xtb\" is GFN2- or GFN1-xTB (method = \"gfn2\" / \"gfn1\")")
         self._local = threading.local()
+
+    def forget_scc_guess(self) -> None:
+        """This thread's next calculation starts its SCC from scratch."""
+        self._local.guess = None
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -314,8 +326,14 @@ class XTBEngine(GFNFFEngine):
         els = list(elements) if elements is not None else ["H"] * len(pcs)
         pc = [(float(q), tuple(float(v) for v in xyz), _Z.get(str(el), 1)) for (q, xyz), el in zip(pcs, els)]
         with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
+            key = (tuple(str(x) for x in symbols), int(charge), int(multiplicity))
+            guess = getattr(self._local, "guess", None) if self.reuse_scc_guess else None
+            if guess is not None and guess[0] == key:
+                (Path(tmp) / "xtbrestart").write_bytes(guess[1])
             e, g = self._run(Path(tmp), symbols, coords_bohr, charge, uhf=int(multiplicity) - 1,
-                             point_charges=pc or None)
+                             point_charges=pc or None, etemp=self.electronic_temperature)
+            if self.reuse_scc_guess and (Path(tmp) / "xtbrestart").exists():
+                self._local.guess = (key, (Path(tmp) / "xtbrestart").read_bytes())
             fp = Path(tmp) / "charges"
             self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
             pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
