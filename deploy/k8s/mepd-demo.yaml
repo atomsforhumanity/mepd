@@ -170,13 +170,3 @@ spec:
               service:
                 name: mepd
                 port: {name: http}
-    # The old domain, until Cloudflare redirects it to mepd.afh.org.
-    - host: mepd.atomsforhumanity.org
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: mepd
-                port: {name: http}

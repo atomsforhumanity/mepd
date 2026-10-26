@@ -242,8 +242,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
-- **The demo moves to mepd.afh.org.** The Ingress serves both `mepd.afh.org` and `mepd.atomsforhumanity.org`
-  until Cloudflare redirects the old domain, and the deploy now checks `https://mepd.afh.org/login`.
+- **The demo moves to mepd.afh.org.** The Ingress serves only `mepd.afh.org`; Cloudflare redirects
+  `mepd.atomsforhumanity.org` there. The deploy now checks `https://mepd.afh.org/login`.
   The retrosynthesis data mirror is now `https://public.afh.org/mepd/retro/` (the image's `DATA_MIRROR`).
 
 - **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
