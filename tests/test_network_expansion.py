@@ -584,3 +584,95 @@ def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tigh
     assert reached and not any(res.species[k].loose for k in reached)
     tight = expand_network(_node("C#N"), Engine(), rounds=1, allow_zwitterions=True, proposal_fmax=0)
     assert not any(s.loose for s in tight.species)
+
+
+def test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=None):
+    """A barrierless association: the TS search from the piece's highest image lands on a rotation saddle, whose
+    IRC ends are one species. The IRC check drops that TS; the piece keeps its highest image instead (an upper
+    bound), as when the TS search fails outright -- otherwise the network loses the step."""
+    def connect(pairs, nodes, search=False):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            if not search:   # the single TS optimization: its IRC fails, so the pair gets a path search
+                out.append({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": f"fast_{i}_{j}",
+                            "files": {"verified": False, "ts": "x.xyz", "pair": [i, j]}})
+                continue
+            peak = nodes[j].copy()
+            peak._cached_energy = max(nodes[i].energy, nodes[j].energy) + 3.0 / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "peak": peak, "label": f"pair_{i}_{j}_leaf_0",
+                        "files": {"verified": False, "ts": "y.xyz", "peak": f"ts/pair_{i}_{j}_leaf_0_peak.xyz"}})
+        return out
+
+    holder = {}
+
+    def verify(items):
+        for idx, _ in items:
+            st = holder["r"].steps[idx]
+            if st.files.get("pair"):
+                yield idx, None, None
+            else:                       # the rotation saddle: both IRC ends are the piece's start
+                start = holder["r"].species[st.a].node
+                yield idx, start.copy(), start.copy()
+
+    import mepd.discovery.network_expansion as ne
+    orig = ne.ExpansionResult
+
+    class Capture(orig):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["r"] = self
+
+    ne.ExpansionResult = Capture
+    try:
+        res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect, verify=verify,
+                             access_cutoff_kcal=30.0, max_products=20, refine=refine)
+    finally:
+        ne.ExpansionResult = orig
+    if refine is not None:
+        return res
+    assert res.steps and all(st.files.get("ts_kind") == "path_peak" for st in res.steps)
+    for st in res.steps:
+        top = max(res.species[st.a].node.energy, res.species[st.b].node.energy)
+        assert abs((st.ts_energy - top) * 627.509 - 3.0) < 1e-6
+        assert st.files["ts"].endswith("_peak.xyz") and st.files["verified"] is True
+
+
+def test_a_pair_whose_ts_failed_its_irc_check_gets_its_paths_sampled():
+    """... and that pair gets channel sampling (all conformer pairs and mechanisms): its direct channel, the
+    real TS between the two ends, replaces the path-peak bound."""
+    asked = []
+
+    def refine(items):
+        out = []
+        for a, b, label in items:
+            asked.append(label)
+            ts = a.copy()
+            ts._cached_energy = max(a.energy, b.energy) + 1.0 / 627.509
+            out.append({"direct": [{"start": a, "end": b, "ts": ts, "label": f"ch_{label}",
+                                    "files": {"verified": True}}], "other": [], "conformers": []})
+        return out
+
+    res = test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=refine)
+    assert asked and res.steps
+    assert all(st.label.startswith("ch_") for st in res.steps)   # every bound replaced by a sampled TS
+    assert len(asked) == len(set(asked))
+
+
+def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypatch, tmp_path):
+    import mepd
+    from mepd.discovery.cli_expand import _channels_refiner
+
+    seen = {}
+
+    def fake(a, b, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(mepd, "channels", fake)
+    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 0
+    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 3

@@ -31,8 +31,10 @@ import numpy as np
 
 HARTREE_TO_KCAL = 627.5094740631
 BOHR_PER_ANGSTROM = 1.8897259886
-_EL = {"H": 1, "He": 2, "Li": 3, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "Mg": 12, "Si": 14, "P": 15,
-       "S": 16, "Cl": 17, "K": 19, "Br": 35, "I": 53}
+def _electrons(symbol: str) -> int:
+    from rdkit import Chem
+
+    return Chem.GetPeriodicTable().GetAtomicNumber(symbol)
 
 
 def molecules(symbols, xyz_A, scale: float = 1.25) -> list[list[int]]:
@@ -57,6 +59,39 @@ def molecules(symbols, xyz_A, scale: float = 1.25) -> list[list[int]]:
     for i in range(n):
         groups.setdefault(root(i), []).append(i)
     return sorted(groups.values())
+
+
+def fragment_charges(symbols, xyz_A, charge: int, multiplicity: int, groups: list[list[int]],
+                     tolerance: float = 0.35) -> Optional[list[int]]:
+    """Integer charge of each group of atoms: its summed GFN2-xTB Mulliken
+    charges (ALPB water) rounded, or None when a sum is further than
+    `tolerance` from an integer or the integers don't add up to `charge`."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from mepd.thermo import _xtb
+
+    work = Path(tempfile.mkdtemp(prefix="mepd_fragq_"))
+    try:
+        lines = [str(len(symbols)), ""] + [f"{s} {x:.10f} {y:.10f} {z:.10f}" for s, (x, y, z) in
+                                            zip(symbols, np.asarray(xyz_A).reshape(-1, 3))]
+        (work / "in.xyz").write_text("\n".join(lines) + "\n")
+        run = subprocess.run([_xtb(), "in.xyz", "--sp", "--chrg", str(int(charge)), "--uhf",
+                              str(int(multiplicity) - 1), "--alpb", "water"], cwd=work, capture_output=True,
+                             text=True, env={**os.environ, "OMP_NUM_THREADS": "1"})
+        if run.returncode != 0 or not (work / "charges").exists():
+            raise RuntimeError(f"xtb failed (exit {run.returncode})")
+        q = np.array([float(v) for v in (work / "charges").read_text().split()])
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    sums = [float(q[g].sum()) for g in groups]
+    ints = [int(round(v)) for v in sums]
+    if any(abs(v - i) > tolerance for v, i in zip(sums, ints)) or sum(ints) != int(charge):
+        return None
+    return ints
 
 
 class FreeEnergies:
@@ -93,28 +128,60 @@ class FreeEnergies:
                      linear=shape["linear"], multiplicity=mult, ts=ts,
                      standard_state=self.standard_state)["g_corr"]
 
-    def _correction(self, structure, ts: bool) -> float:
+    def parts(self, structure, ts: bool) -> list[tuple[list[int], int, int]]:
+        """(atoms, charge, multiplicity) of each molecule the species counts
+        as: one entry for a TS. In a charged or open-shell complex each
+        molecule's charge is its share of GFN2-xTB Mulliken charges (ALPB
+        water, where ion pairs stay ions), rounded; a complex whose shares
+        aren't near-integers, or whose spins don't add up, counts as one
+        molecule (said in the notes)."""
         symbols = [str(s) for s in structure.symbols]
         xyz = np.asarray(structure.geometry, dtype=float) / BOHR_PER_ANGSTROM
         charge, mult = int(structure.charge), int(structure.multiplicity)
-        parts = [list(range(len(symbols)))] if ts else molecules(symbols, xyz)
-        if len(parts) > 1 and (charge != 0 or mult != 1):
-            self.notes.append(f"a charged or open-shell species of {len(parts)} molecules counted as one molecule")
-            parts = [list(range(len(symbols)))]
+        whole = [(list(range(len(symbols))), charge, mult)]
+        groups = [list(range(len(symbols)))] if ts else molecules(symbols, xyz)
+        if len(groups) == 1:
+            return whole
+        if charge == 0 and mult == 1:
+            out = [(g, 0, 1 + sum(_electrons(symbols[k]) for k in g) % 2) for g in groups]
+            if all(m == 1 for _, _, m in out):
+                return out
+        try:
+            q = fragment_charges(symbols, xyz, charge, mult, groups)
+        except Exception as exc:
+            self.notes.append(f"charges of a complex's molecules failed ({type(exc).__name__}); counted as one molecule")
+            return whole
+        if q is None:
+            self.notes.append(f"a charged or open-shell species of {len(groups)} molecules counted as one molecule "
+                              "(its molecules' charges are not clear)")
+            return whole
+        out = []
+        for g, qi in zip(groups, q):
+            unpaired = (sum(_electrons(symbols[k]) for k in g) - qi) % 2
+            out.append((g, qi, 1 + unpaired))
+        if sum(m - 1 for _, _, m in out) != mult - 1:
+            self.notes.append(f"an open-shell species of {len(groups)} molecules counted as one molecule "
+                              "(its molecules' spins don't add up to its multiplicity)")
+            return whole
+        return out
+
+    def _correction(self, structure, ts: bool) -> float:
+        symbols = [str(s) for s in structure.symbols]
+        xyz = np.asarray(structure.geometry, dtype=float) / BOHR_PER_ANGSTROM
+        parts = self.parts(structure, ts)
         if len(parts) == 1:
-            return self._one(symbols, xyz, charge, mult, ts)
+            return self._one(symbols, xyz, parts[0][1], parts[0][2], ts)
         import mepd
         from qcdata import Structure
 
         from mepd.nodes.node import StructureNode
 
         total, frags = 0.0, []
-        for p in parts:
+        for p, qi, mi in parts:
             sy = [symbols[k] for k in p]
-            nel = sum(_EL[s] for s in sy)
-            total += self._one(sy, xyz[p], 0, 1 + nel % 2, False)
-            frags.append(StructureNode(structure=Structure(symbols=sy, geometry=xyz[p] * BOHR_PER_ANGSTROM, charge=0,
-                                                           multiplicity=1 + nel % 2)))
+            total += self._one(sy, xyz[p], qi, mi, False)
+            frags.append(StructureNode(structure=Structure(symbols=sy, geometry=xyz[p] * BOHR_PER_ANGSTROM,
+                                                           charge=qi, multiplicity=mi)))
         # The molecules apart: their electronic energies too, not the complex's (whose binding would
         # otherwise count on top of the separated molecules' entropy). Each at its geometry in the complex.
         whole = StructureNode(structure=structure)

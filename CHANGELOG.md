@@ -33,6 +33,21 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
   `--search-budget`, now on `mepd run` too. (#13)
 
+- **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
+  searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
+  steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and
+  outputs go through qccodec; ORCA runs by its full path. The executable is `executable`, `$MEPD_ORCA`,
+  `/opt/orca/orca` or `orca` on PATH, only with ORCA's own programs beside it (`orca` is also GNOME's screen
+  reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
+  licensed, so it is not in the public image.
+
+- **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
+  expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
+  steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
+  re-minimized / have their TS re-found with an IRC check; the kinetics are rerun at both levels
+  (`refined_energies.json`, geometries and RMSDs under `refined/`). Every result is kept as it finishes and a
+  rerun picks up from what was kept at the same level of theory.
+
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
@@ -271,6 +286,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
   and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
   to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
+
+- **Explorer**: a path piece whose TS search fails, or whose TS belongs to another motion by its IRC, keeps its
+  path's highest image as an upper-bound barrier (`ts_kind = "path_peak"`), so a barrierless association no
+  longer cuts the seed off the network; such pairs get channel sampling, and the explorer's channel searches
+  sample every conformer pair of every mechanism by default.
+- **Psi4**: a `[solvation]` table uses Psi4's own PCM instead of xTB solvation on top; Hessians are central
+  differences of gradients, kept per geometry.
 
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
@@ -608,6 +630,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   molecular graph for every node of every live string (each gradient batch, the whole run: ~600 MiB on a
   20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
   back. Results are unchanged.
+
+- **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
+  the stiff solver for hours or create material through rounding (flux-form right-hand side).
+- Explorer element tables come from RDKit, so Pd and other metals work in collide, free energies and the
+  nanoreactor.
 
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and

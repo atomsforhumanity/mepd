@@ -115,7 +115,12 @@ def simulate(n_species: int, steps: Sequence[Step], energies: Sequence[float], *
              time_s: float = 3600.0, start: int = 0, n_samples: int = 80) -> KineticsResult:
     """Integrate dc/dt = K c (plus the running inflow of every species)
     from c = e_start to `time_s` with an implicit (Radau) solver -- rates
-    here span many orders of magnitude."""
+    here span many orders of magnitude. The right-hand side is summed step
+    by step (each step's net flux leaves one species and enters the other),
+    which conserves material exactly; K's diagonal, a sum of rates from
+    ~1e13 /s down to ~1e-5 /s, does not (its rounding error alone creates
+    or destroys material over hours), and the solver could then take hours
+    on one network. K is only the Jacobian."""
     from scipy.integrate import solve_ivp
 
     ks = rate_constants(steps, energies, temperature)
@@ -139,8 +144,23 @@ def simulate(n_species: int, steps: Sequence[Step], energies: Sequence[float], *
         return KineticsResult(time_s, temperature, [0.0] * n, c.tolist(), c.tolist(), barriers(steps, energies))
     fastest = max(max(k) for k in ks)
     t_eval = np.unique(np.concatenate([[0.0], np.geomspace(min(1e-3 / fastest, time_s), time_s, n_samples)]))
-    sol = solve_ivp(lambda t, y: J @ y, (0.0, time_s), y0, method="Radau", jac=J, t_eval=t_eval,
-                    rtol=1e-8, atol=1e-14)
+    live = [(s.a, s.b, kf, kr) for s, (kf, kr) in zip(steps, ks) if s.a != s.b]
+    ia = np.array([x[0] for x in live])
+    ib = np.array([x[1] for x in live])
+    kfs = np.array([x[2] for x in live])
+    krs = np.array([x[3] for x in live])
+
+    def rhs(t, y):
+        c = y[:n]
+        fwd, rev = kfs * c[ia], krs * c[ib]
+        d = np.zeros(2 * n)
+        np.add.at(d, ib, fwd - rev)
+        np.add.at(d, ia, rev - fwd)
+        np.add.at(d, n + ib, fwd)   # inflow into each species, accumulated
+        np.add.at(d, n + ia, rev)
+        return d
+
+    sol = solve_ivp(rhs, (0.0, time_s), y0, method="Radau", jac=J, t_eval=t_eval, rtol=1e-8, atol=1e-14)
     c = np.clip(sol.y[:n], 0.0, None)
     return KineticsResult(time_s, temperature, np.clip(sol.y[n:, -1], 0.0, None).tolist(),
                           c.max(axis=1).tolist(), c[:, -1].tolist(), barriers(steps, energies))
