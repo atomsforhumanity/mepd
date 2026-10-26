@@ -132,6 +132,7 @@ def test_a_calculation_keeps_its_orbitals_and_the_viewer_reads_them(tmp_path, mo
 
     monkeypatch.setenv("MEPD_ORBITALS_DIR", str(tmp_path / "orbitals"))
     monkeypatch.setattr(orbitals, "KEEP_RUNS", 3)
+    monkeypatch.setattr(orbitals, "PRUNE_EVERY", 1)   # prune on every save (the default lets it overshoot a little)
     s = chem.structure_from_smiles("C=O")
     eng = GXTBCalculator()
     for k in range(4):

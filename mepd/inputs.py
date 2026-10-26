@@ -253,6 +253,17 @@ class NEBInputs:
         other species is not run. A -> B splitting into A -> C, C -> D,
         D -> A', A' -> B runs A -> C, D -> A' and A' -> B, not C -> D.
         Default False.
+    Network-aware pruning (mepd/network_aware.py), off unless one of the
+    first two is set:
+    `barrier_cutoff_kcal`: don't search a piece of a split, or TS-optimize a
+        step, whose route from the start must climb more than this out of a
+        well (kcal/mol, energies relative to one floor for the whole search).
+    `cutoff_temperature` (K) with `cutoff_time_s` (default one day) and
+        `cutoff_margin_kcal` (default 10, for the method's error): the
+        cutoff is the barrier with that half-life at that temperature plus
+        the margin, so a hotter or longer reaction explores more.
+    `network_floor_hartree`: the floor; default the root search's start
+        (set for follow-up searches that continue a network).
     """
 
     climb: bool = True
@@ -289,6 +300,11 @@ class NEBInputs:
     recursive_same_pair_split_limit: int = 5
     recursive_cycle_revisits: int = 5
     direct_only: bool = False
+    barrier_cutoff_kcal: Optional[float] = None
+    cutoff_temperature: Optional[float] = None
+    cutoff_time_s: float = 86400.0
+    cutoff_margin_kcal: float = 10.0
+    network_floor_hartree: Optional[float] = None
     ts_converged_stop: bool = True
     ts_converged_window: int = 15
     ts_converged_window_thre: float = 0.5  # kcal/mol

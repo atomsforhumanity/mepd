@@ -29,7 +29,7 @@ import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
 
 OPTIONS = {"temperature": 2500.0, "time_ps": 10.0, "compress": 0.7, "period_ps": 1.0, "md_method": "auto",
-           "seed": 0, "workdir": ""}
+           "seed": 0, "n_seeds": 1, "parallel": 0, "workdir": ""}
 
 
 def _md_method(name: str) -> tuple[str, Optional[str]]:
@@ -54,7 +54,13 @@ def run_dir(workdir: str) -> Optional[Path]:
     base = Path(workdir)
     base.mkdir(parents=True, exist_ok=True)
     k = len(list(base.glob("run_*")))
-    d = base / f"run_{k:02d}"
+    while True:   # claim a folder atomically: several trajectories may start at once
+        d = base / f"run_{k:02d}"
+        try:
+            d.mkdir()
+            break
+        except FileExistsError:
+            k += 1
     (d / "md").mkdir(parents=True, exist_ok=True)
     return d
 
@@ -88,10 +94,47 @@ def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=
 
 def reactor_products(structure, *, max_products: int = 20, temperature: float = 2500.0, time_ps: float = 10.0,
                      compress: float = 0.7, period_ps: float = 1.0, md_method: str = "auto", seed: int = 0,
-                     workdir: str = "", on_event=None) -> list:
+                     n_seeds: int = 1, parallel: int = 0, workdir: str = "", on_event=None) -> list:
     """Product structures (input atom order) of hot piston MD of `structure`:
     the structure right after each reaction event, one per distinct bond
-    graph, in the order they appeared, at most `max_products`."""
+    graph, in the order they appeared, at most `max_products`.
+
+    `n_seeds` > 1 runs that many independent trajectories (random seeds
+    `seed`, `seed`+1, ...; `parallel` of them at once, default all) and pools
+    their states: one trajectory samples one sequence of events, so several
+    short ones cover more of the first-step chemistry than one long one
+    (which mostly goes on to fragment). Products are taken earliest-event
+    first across trajectories, de-duplicated by bond graph."""
+    n_seeds = max(1, int(n_seeds))
+    if n_seeds > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        width = max(1, int(parallel) or n_seeds)
+        kw = dict(max_products=max_products, temperature=temperature, time_ps=time_ps, compress=compress,
+                  period_ps=period_ps, md_method=md_method, workdir=workdir, on_event=on_event)
+        with ThreadPoolExecutor(max_workers=width) as pool:
+            runs = list(pool.map(lambda k: _reactor_states(structure, seed=int(seed) + k, **kw), range(n_seeds)))
+        # earliest event first across trajectories, one product per bond graph
+        pooled = sorted((frame_rank, k, bonds, prod) for k, states in enumerate(runs)
+                        for frame_rank, bonds, prod in states)
+        out, seen = [], set()
+        for _, _, bonds, prod in pooled:
+            if bonds in seen:
+                continue
+            seen.add(bonds)
+            if len(out) < int(max_products):
+                out.append(prod)
+        print(f"nanoreactor: {len(out)} distinct product(s) from {n_seeds} trajectories "
+              f"({sum(len(r) for r in runs)} reactor states).", flush=True)
+        return out
+    return [prod for _, _, prod in _reactor_states(
+        structure, max_products=max_products, temperature=temperature, time_ps=time_ps, compress=compress,
+        period_ps=period_ps, md_method=md_method, seed=seed, workdir=workdir, on_event=on_event)]
+
+
+def _reactor_states(structure, *, max_products: int, temperature: float, time_ps: float, compress: float,
+                    period_ps: float, md_method: str, seed: int, workdir: str, on_event=None) -> list:
+    """One trajectory: [(event rank, bond set, product structure)], earliest first."""
     from mepd.discovery.nanoreactor import (DetectSettings, ReactorSettings, auto_radius, bond_history,
                                             detect_events, read_xyz_frames, run_reactor_md)
 
@@ -123,7 +166,7 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
              f"{settings.temperature:g} K is too hot; the trajectory has gaps. Lower the temperature.")
     hist = bond_history(symbols, frames, detect, settings.dump_fs)
     events = detect_events(len(symbols), hist, detect, settings.dump_fs)
-    out, torn, states = select_states(structure, frames, hist, events, max_products)
+    out, torn, states = select_states(structure, frames, hist, events, max_products, with_keys=True)
     report(len(events), states, torn, len(out), settings.temperature)
     return out
 
@@ -150,10 +193,11 @@ def piston_segments(settings) -> list:
     return piston_schedule(settings)
 
 
-def select_states(structure, frames, hist, events, max_products: int):
+def select_states(structure, frames, hist, events, max_products: int, with_keys: bool = False):
     """The structure after each event, one per distinct bond graph, earliest
     first, skipping states with an atom that lost all its bonds. Returns
-    (products, number skipped as torn, number of distinct states)."""
+    (products, number skipped as torn, number of distinct states); with
+    `with_keys`, each product is (event frame, bond set, structure)."""
     seen = {frozenset(hist.initial)}
     bonded0 = {a for p in hist.initial for a in p}
     out, torn = [], 0
@@ -169,5 +213,6 @@ def select_states(structure, frames, hist, events, max_products: int):
             torn += 1
             continue
         if len(out) < int(max_products):
-            out.append(structure.model_copy(update={"geometry": frames[ev.product_frame] * ANGSTROM_TO_BOHR}))
+            prod = structure.model_copy(update={"geometry": frames[ev.product_frame] * ANGSTROM_TO_BOHR})
+            out.append((int(ev.product_frame), bonds, prod) if with_keys else prod)
     return out, torn, len(seen) - 1

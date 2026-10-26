@@ -4,6 +4,8 @@ this whole module needs to be revamped and integrated with the qcio results obje
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -79,6 +81,11 @@ class ElemStepResults:
     minimization_results: List[Node]
     number_grad_calls: int
     new_structures: list[Node] = field(default_factory=list)
+
+
+class SplitCandidateMinimizationError(RuntimeError):
+    """The minima along a path could not be optimized, so whether it is one
+    elementary step is unknown."""
 
 
 @dataclass
@@ -1594,8 +1601,18 @@ def _chain_is_concave(
                 import traceback
 
                 print(traceback.format_exc())
+                if not os.environ.get("MEPD_PRETEND_ELEM_STEP_ON_MINIMIZATION_FAILURE", "").strip():
+                    # Fail loudly: a chain whose split candidates could not be
+                    # minimized is not known to be one step. Treating it as one
+                    # turned a multi-hump path into a single "elementary step"
+                    # (whole-flask Suzuki run, 2026-10-22); the caller records a
+                    # failed branch instead.
+                    raise SplitCandidateMinimizationError(
+                        f"could not minimize this path's split candidates ({type(e).__name__}: {e}); "
+                        "not treating it as an elementary step") from e
                 print(
-                    f"Error in geometry optimization: {e}. Pretending this is an elem step."
+                    f"Error in geometry optimization: {e}. Pretending this is an elem step "
+                    "(MEPD_PRETEND_ELEM_STEP_ON_MINIMIZATION_FAILURE is set)."
                 )
 
             return ConcavityResults(
