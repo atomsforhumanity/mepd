@@ -1,6 +1,6 @@
 // REST wrappers + the SSE connection that keeps the store in sync.
 import { state, update, set, toast, asRedirect, openTab, select } from './store.js';
-import { isComplex } from './util.js';
+import { complexesGoingWith, isComplex } from './util.js';
 
 async function request(method, url, body, { raw = false } = {}) {
   const opts = { method, headers: {} };
@@ -76,7 +76,10 @@ export async function deleteSelection() {
   if (!n) return;
   const what = [structures.length && `${structures.length} structure${structures.length > 1 ? 's' : ''}`,
     edges.length && `${edges.length} edge${edges.length > 1 ? 's' : ''}`].filter(Boolean).join(' and ');
-  const extra = structures.length ? ' Edges attached to deleted structures go too.' : '';
+  const cxs = complexesGoingWith(state.workspace, structures);
+  const extra = (structures.length ? ' Edges attached to deleted structures go too.' : '')
+    + (cxs.length ? ` Complexes containing them go too: ${cxs.slice(0, 3).map((c) => c.name).join('; ')}`
+      + `${cxs.length > 3 ? ` and ${cxs.length - 3} more` : ''}.` : '');
   if (!confirm(`Delete ${what} from the graph?${extra} Calculation outputs are kept.`)) return;
   const out = await attempt(() => api.post('/api/delete', { structures, edges }));
   if (out) {
