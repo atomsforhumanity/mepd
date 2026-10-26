@@ -19,7 +19,9 @@ Two modes, like the implicit-solvent correction (mepd solvent):
   again from the explorer's and followed by an IRC that must reach the same
   two species, and thermal corrections come from the higher level's own
   Hessians. A TS not recovered keeps its single-point free energy (said in
-  the notes).
+  the notes). How far each structure moved is recorded (`rmsd_angstrom`:
+  aligned RMSD from the explorer's geometry, largest over the molecules),
+  and with `save_dir` both geometries are written there.
 
 Which part of the network: the species and steps the explorer's own
 free-energy kinetics use (reached from the seed within the barrier cutoff);
@@ -102,18 +104,20 @@ def _reoptimize(item: Item, high, free_high: Optional[FreeEnergies]) -> dict:
     from mepd.nodes.node import StructureNode
 
     if item.kind == "species":
-        total, thermal = 0.0, 0.0
+        total, thermal, structures = 0.0, 0.0, []
         for s in item.parts:
             start = StructureNode(structure=s)
             opt = mepd.optimize(StructureNode(structure=s), high)
             if not same_molecule(opt, start):
                 raise RuntimeError("its bonds changed on minimization at the higher level")
             total += _energy(opt.structure, high)
+            structures.append(opt.structure)
             if free_high is not None:
                 thermal += free_high.corrections([opt.structure], [False])[0]
-        return {"e_high": total, "g_high": total + thermal / HARTREE_TO_KCAL_PER_MOL, "structures": None}
+        return {"e_high": total, "g_high": total + thermal / HARTREE_TO_KCAL_PER_MOL, "structures": structures}
     ts = mepd.find_ts(StructureNode(structure=item.structure), high)
-    path = mepd.irc(ts, high).path
+    # the ends only need to be told apart (by their bonds), not frequency-checked
+    path = mepd.irc(ts, high, end_keywords={"check_frequencies": False}).path
     first, last = path.nodes[0], path.nodes[-1]
     a, b = (StructureNode(structure=s) for s in item.ends)
     if not ((same_molecule(first, a) and same_molecule(last, b)) or
@@ -121,13 +125,24 @@ def _reoptimize(item: Item, high, free_high: Optional[FreeEnergies]) -> dict:
         raise RuntimeError("its IRC at the higher level connects other species")
     e = _energy(ts.structure, high)
     thermal = free_high.corrections([ts.structure], [True])[0] if free_high is not None else 0.0
-    return {"e_high": e, "g_high": e + thermal / HARTREE_TO_KCAL_PER_MOL, "structures": ts.structure}
+    return {"e_high": e, "g_high": e + thermal / HARTREE_TO_KCAL_PER_MOL, "structures": [ts.structure]}
+
+
+def _rmsd_angstrom(a, b) -> float:
+    """RMSD (Angstrom) of two geometries of the same atoms after rigid alignment."""
+    from mepd.rigid_alignment import kabsch_align
+    from mepd.units import ANGSTROM_TO_BOHR
+
+    x = np.asarray(b.geometry, dtype=float)
+    y = kabsch_align(np.asarray(a.geometry, dtype=float), x)
+    return float(np.sqrt(((y - x) ** 2).sum(axis=1).mean())) / ANGSTROM_TO_BOHR
 
 
 def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, high_engine,
                     temperature: float, time_s: float, cutoff_kcal: Optional[float] = None,
                     mode: str = "single-point", free_energy: bool = True, standard_state: str = "1M",
-                    workers: int = 1, on_note: Optional[Callable[[str], None]] = None) -> dict:
+                    workers: int = 1, on_note: Optional[Callable[[str], None]] = None,
+                    save_dir: Optional[Path] = None) -> dict:
     """`species`: Structures at the explorer's level (index 0 the seed);
     `steps`: its verified steps, each with files["ts"] (the TS geometry).
     Returns the low- and high-level energies of every refined species and
@@ -223,7 +238,20 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
             if isinstance(r, str):
                 say(f"{label}: not re-converged at the higher level ({r}); its single-point free energy is used")
                 continue
-            row.update(how="reoptimized", e_high=r["e_high"])
+            row.update(how="reoptimized", e_high=r["e_high"],
+                       rmsd_angstrom=max(_rmsd_angstrom(lo, hi) for lo, hi in zip(it.parts, r["structures"])))
+            if save_dir is not None:
+                save_dir = Path(save_dir)
+                save_dir.mkdir(parents=True, exist_ok=True)
+                stem = f"species_{it.index}" if it.kind == "species" else f"ts_{it.index}"
+                files = []
+                for j, (lo, hi) in enumerate(zip(it.parts, r["structures"])):
+                    part = f"_m{j}" if len(it.parts) > 1 else ""
+                    for level, st in (("low", lo), ("high", hi)):
+                        name = f"{stem}{part}_{level}.xyz"
+                        st.save(save_dir / name)
+                        files.append(name)
+                row["files"] = files
             if it.kind == "species":
                 g_high[it.index] = r["g_high"]
             else:
@@ -310,7 +338,8 @@ def refine_run(run_dir: Path, *, low_engine, high_engine, mode: str = "single-po
         species, steps, low_engine=low_engine, high_engine=high_engine,
         temperature=float(steer.get("temperature_K", 298.15)), time_s=float(steer.get("time_s", 3600.0)),
         cutoff_kcal=steer.get("cutoff_kcal"), mode=mode,
-        standard_state=standard_state or steer.get("standard_state", "1M"), workers=workers, on_note=on_note)
+        standard_state=standard_state or steer.get("standard_state", "1M"), workers=workers, on_note=on_note,
+        save_dir=run_dir / "refined")
     for row in out["refined"]:
         if row["kind"] == "species":
             row["smiles"] = summary["species"][row["index"]].get("smiles")

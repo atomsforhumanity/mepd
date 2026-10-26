@@ -188,8 +188,11 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
             if getattr(profile.engine, "n_parallel", None) is not None:
                 profile.engine.n_parallel = each
             try:
+                # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
+                # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
                 res = mepd.channels(a, b, output=folder, profile=profile,
-                                    **{"workers": each, "explore_mechanisms": 2, **options})
+                                    **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 0,
+                                       **options})
             except Exception as exc:
                 typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
                            "it keeps its single TS.")
@@ -308,8 +311,10 @@ def expand(
     refine_mode: str = typer.Option(
         "channels", "--refine",
         help="--steer access: 'channels' (default) runs `mepd channels` -- conformers of both ends and 2 atom "
-             "mappings (mechanisms) -- on every step the kinetics need; its channels replace the step's single "
-             "TS and its off-target exits and multistep routes join the network. 'none' keeps single TSs."),
+             "mappings (mechanisms), every conformer pair of each searched (pairs_per_mechanism=0) -- on every "
+             "step the kinetics need and every pair whose TS failed its IRC check; its channels replace the "
+             "step's single TS and its off-target exits and multistep routes join the network. 'none' keeps "
+             "single TSs."),
     channels_option: List[str] = typer.Option(
         [], "--channels-option", help="key=value for the channel searches (`mepd channels` option names with "
                                       "underscores, e.g. n_conformers=20). Repeatable."),

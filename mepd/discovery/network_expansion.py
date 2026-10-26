@@ -1165,6 +1165,11 @@ def expand_network(
         for found in connect(pairs, [s.node for s in result.species], **({"search": True} if search else {})):
             _add_found(found)
 
+    # label -> (a, b, highest path image, its file) of a path-search piece whose TS still awaits its IRC
+    peak_fallback: dict = {}
+    # species pairs whose TS failed its IRC check: channel sampling for them even before material gets there
+    sample_more: set = set()
+
     def _add_found(found) -> None:
         """One TS found: its ends as species (an IRC end no known species is a new intermediate), the step."""
         from mepd.discovery.kinetics import Step
@@ -1180,6 +1185,8 @@ def expand_network(
                                          "new_species", idx, None), result.species)
         if a == b or a < 0 or b < 0:
             return
+        if found.get("peak") is not None and found.get("label"):
+            peak_fallback[found["label"]] = (a, b, found["peak"], found["files"]["peak"])
         ts_e = float(found["ts"].energy)
         # Two path searches can find the same TS; counting it twice would
         # double that channel's rate. Distinct TSs between the same pair
@@ -1187,6 +1194,18 @@ def expand_network(
         if any({st.a, st.b} == {a, b} and abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL < 0.1
                for st in result.steps):
             return
+        # A path's highest image (no TS found) only bounds a barrier: a pair keeps one, and only while it
+        # lies under every other step of the pair (a lower step makes the bound say nothing).
+        same = [n for n, st in enumerate(result.steps) if {st.a, st.b} == {a, b}]
+        if (found.get("files") or {}).get("ts_kind") == "path_peak":
+            if any(result.steps[n].ts_energy <= ts_e for n in same):
+                return
+            drop = {n for n in same if result.steps[n].files.get("ts_kind") == "path_peak"}
+        else:
+            drop = {n for n in same if result.steps[n].files.get("ts_kind") == "path_peak"
+                    and result.steps[n].ts_energy >= ts_e}
+        if drop:
+            result.steps[:] = [st for n, st in enumerate(result.steps) if n not in drop]
         result.steps.append(Step(a, b, ts_e, found.get("label", ""), dict(found.get("files") or {})))
         if live.enabled:   # the web graph fills that edge in (barrier, TS, IRC) as it happens
             from mepd.discovery.kinetics import negative_barrier_warning, raw_barriers
@@ -1362,11 +1381,13 @@ def expand_network(
         if not items:
             return 0
         drop = set()
+        fallback = []
         checked = list(verify(items))
         _minimize_ends([n for _, start, end in checked for n in (start, end)])
         for idx, start, end in checked:
             st = result.steps[idx]
             asked = tuple(st.files.get("pair") or ())
+            piece = (st.a, st.b)
             if start is None:
                 drop.add(idx)
                 missed = asked
@@ -1384,7 +1405,18 @@ def expand_network(
             # path search -- the steps between them, intermediates included.
             if len(missed) == 2 and tuple(missed) not in searched:
                 retry.append(tuple(missed))
+            # A path-search piece whose TS turned out to belong to another motion (both IRC ends one
+            # species, or other species) keeps its path's highest image, as when no TS is found at all.
+            fb = peak_fallback.pop(st.label, None)
+            if fb is not None and (idx in drop or {st.a, st.b} != set(piece)):
+                fallback.append(fb)
+                # ... and the pair gets all its paths sampled (conformers, mechanisms): the real TS between
+                # these two ends is what the kinetics need, not the bound
+                sample_more.add(frozenset(piece))
         result.steps[:] = [st for n, st in enumerate(result.steps) if n not in drop]
+        for a, b, peak, fp in fallback:
+            _add_found({"pair": (a, b), "ts": peak, "label": f"{Path(fp).stem}",
+                        "files": {"ts": fp, "verified": True, "ts_kind": "path_peak"}})
         return len(items)
 
     def _verify_and_search(kinetic) -> int:
@@ -1405,9 +1437,10 @@ def expand_network(
     def _refine_steps(kinetic) -> int:
         """Channel sampling (`refine`, e.g. `mepd channels`: conformers and mechanisms of both ends, a TS and
         IRC per distinct path) for every step the kinetics need -- open within the cutoff and touching a
-        populated species -- once per species pair. Its direct channels replace the step's single TS;
-        multistep routes and off-target exits join the network with whatever new species their IRCs end
-        in; lower end conformers become the species' references. Returns the number of pairs sampled."""
+        populated species, or between a pair whose TS failed its IRC check -- once per species pair. Its
+        direct channels replace the step's single TS; multistep routes and off-target exits join the network
+        with whatever new species their IRCs end in; lower end conformers become the species' references.
+        Returns the number of pairs sampled."""
         if refine is None or not result.steps:
             return 0
         from mepd.network_aware import accessibility
@@ -1427,7 +1460,7 @@ def expand_network(
             if key in refined or key in {k for k, _, _ in todo}:
                 continue
             open_ = access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal
-            if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot):
+            if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot or key in sample_more):
                 todo.append((key, st.a, st.b))
         if not todo:
             return 0

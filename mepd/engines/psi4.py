@@ -105,6 +105,7 @@ def psi4_python() -> Optional[str]:
 
 INSTALL = ("Psi4 is not installed: install it into its own environment, e.g. `micromamba create -p "
            "~/.local/opt/psi4 -c conda-forge psi4 python=3.12` (or set MEPD_PSI4_PYTHON to a Python that has psi4)")
+_HESSIANS: dict = {}   # Psi4Engine.compute_hessian, per process
 
 
 @dataclass
@@ -236,3 +237,14 @@ class Psi4Engine(Engine):
 
     def compute_irc_chain(self, ts_node, keywords: dict | None = None):
         return self._ase(ts_node).compute_irc_chain(ts_node=ts_node, keywords=keywords)
+
+    def compute_hessian(self, node, step_size: float | None = None):
+        """Central differences of analytic gradients (6N gradients), not the
+        generic fallback's energies ((3N)^2 of them). Kept per geometry, so a
+        frequency check and a thermal correction at the same TS share one."""
+        key = (self.method, self.basis, self.pcm_solvent, tuple(node.symbols), int(node.structure.charge),
+               int(node.structure.multiplicity), np.round(np.asarray(node.coords, dtype=float), 8).tobytes(),
+               step_size)
+        if key not in _HESSIANS:
+            _HESSIANS[key] = self._ase(node).compute_hessian(node, step_size=step_size)
+        return _HESSIANS[key].copy()

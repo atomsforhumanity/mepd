@@ -15,7 +15,10 @@ all pairs:
 A pair starts with a fast-TS job; only if that fails does its path search
 start, piece by piece. Every TS found becomes a step that has not been
 IRC-checked yet (files["verified"] = False): the explorer runs IRCs only
-for the steps its kinetics need (network_expansion, `verify`).
+for the steps its kinetics need (network_expansion, `verify`). An
+elementary piece whose TS search fails (a nearly barrierless association
+has no saddle to find) is kept as a step at its path's highest image
+(files["ts_kind"] = "path_peak"; an upper bound on its barrier).
 
 `max_pieces_per_pair` caps one pair's search (a pathological pair can't
 take the round); what it cut is logged.
@@ -90,6 +93,19 @@ class HorizontalConnector:
         self._write_ts(ts, label)
         return ts
 
+    def _path_peak(self, chain, label: str):
+        """The highest image of a finished elementary piece (written as
+        ts/<label>.xyz), or None when the piece has no energies."""
+        try:
+            nodes = list(chain.nodes)
+            if any(getattr(n, "_cached_energy", None) is None for n in nodes):
+                self.job_inputs.engine.compute_energies(nodes)
+            peak = max(nodes, key=lambda n: float(n.energy)).copy()
+            self._write_ts(peak, label)
+            return peak
+        except Exception:
+            return None
+
     def _root_chain(self, a, b):
         from mepd.chain import Chain
         from mepd.interpolation import initial_chain
@@ -122,7 +138,8 @@ class HorizontalConnector:
             pmi.network_floor_hartree = float(nodes[0].energy)
         found: list[dict] = []
         pieces = {}            # pair -> pieces started
-        counts = {"fast_ok": 0, "fast_failed": 0, "pieces": 0, "leaf_ts_ok": 0, "leaf_ts_failed": 0, "capped": 0,
+        counts = {"fast_ok": 0, "fast_failed": 0, "pieces": 0, "leaf_ts_ok": 0, "leaf_ts_failed": 0, "path_peak": 0,
+                  "capped": 0,
                   "searched": 0, "deferred": 0, "dropped": 0}
         running: dict = {}
         waiting: list = []     # (kind, pair, args) not started yet, in queue order
@@ -231,14 +248,34 @@ class HorizontalConnector:
                         chain, label = args
                         if out is None:
                             counts["leaf_ts_failed"] += 1
+                            peak = self._path_peak(chain, label)
+                            if peak is not None:
+                                # An elementary piece whose TS search failed -- typically a nearly barrierless
+                                # association, which has no saddle to find. Dropping it would cut the network
+                                # where it starts (e.g. a catalyst meeting its substrate), so it is kept with
+                                # its path's highest image as the barrier: an upper bound, and its two ends
+                                # are the piece's own minimized endpoints (nothing for an IRC to check).
+                                counts["path_peak"] += 1
+                                record({"start": chain[0], "end": chain[-1], "ts": peak, "label": label,
+                                        "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": True,
+                                                  "ts_kind": "path_peak"}})
                             continue
                         counts["leaf_ts_ok"] += 1
-                        record({"start": chain[0], "end": chain[-1], "ts": out, "label": label,
-                                "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}})
+                        rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
+                               "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
+                        # The TS search can land on a saddle of some other motion (a rotation next to a
+                        # barrierless association): if its IRC says so, the piece falls back to this.
+                        peak = self._path_peak(chain, f"{label}_peak")
+                        if peak is not None:
+                            rec["peak"] = peak
+                            rec["files"]["peak"] = str(self.ts_dir / f"{label}_peak.xyz")
+                        record(rec)
         log_event({"event": "horizontal_connect", "pairs": len(pairs), **counts})
         self.say(f"Connected {len(pairs)} pair(s): " + (f"{counts['searched']} by path search only, " if search else "")
                  + f"{counts['fast_ok']} by one TS optimization, "
                  f"{counts['fast_failed']} by path search ({counts['pieces']} pieces, {counts['leaf_ts_ok']} TSs"
+                 + (f", {counts['path_peak']} steps whose TS search failed kept at their path's highest image"
+                    if counts["path_peak"] else "")
                  + (f", {counts['capped']} pieces over the per-pair cap not run" if counts["capped"] else "")
                  + (f", {counts['dropped']} pieces nothing reaches dropped" if counts["dropped"] else "") + ").")
         return found
