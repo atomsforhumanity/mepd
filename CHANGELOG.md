@@ -18,16 +18,6 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
   `--search-budget`, now on `mepd run` too. (#13)
 
-- **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
-  `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
-  bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
-  atom, or coming off the metal) is not another species; `Comparison.metal_ligand_changed` records it. Off by
-  default: every command still compares all bonds. Following the treatment of dative metal-ligand contacts as
-  zero-order bonds, kept apart from covalent bond changes, in Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the
-  Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
-  doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
-  ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
-
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
@@ -255,6 +245,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
   complex is removed with any of them (as before). The delete confirmation (Explore selection and the
   Inspector) now names those complexes. (#14)
+
 - **`thermo.qrrho(ts=True)` says when it could not leave out the reaction coordinate.** A Hessian at another
   level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
   and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
@@ -497,6 +488,23 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
+  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
+  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
+  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
+  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+
+- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
+  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
+  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
+  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
+  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
+
+- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
+  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
+  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
+  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
+
 - **Nanoreactor (xtb/g-xTB MD): a reactor no longer falls apart into atoms when xtb's SCC breaks down.**
   xtb's MD goes on after a failed SCC with zero energy and zero forces (every later step fails too, and so
   does every later segment, from the broken charges in `xtbrestart`), so the atoms fly off in straight lines;
@@ -528,27 +536,6 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   xtb SCC is smeared at the reactor's electronic temperature (3000 K) from the start and starts from the
   previous step's charges (0.26 → 0.17 s per step on 1OH0, and no 300 K SCC that fails first); a step whose
   energy jumps is redone from scratch.
-- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
-  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
-  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
-  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
-  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
-- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
-  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
-  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
-  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
-  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
-- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
-  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
-  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
-  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
-
-- **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
-  `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
-  polytope it fitted to the geometry, and for a fluxional centre that changed between two geometries of one
-  molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
-  ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
-  centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
 
 - **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
   not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
