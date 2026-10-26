@@ -41,6 +41,8 @@ _LEAF = {
     "above_cutoff": ("elementary", "An elementary step, but the route from the start over it climbs more than the "
                                    "barrier cutoff: kinetically irrelevant, so no TS search."),
     "time_budget": ("unresolved", "The search budget ran out; the path is kept without splitting it."),
+    "path_search_budget": ("unresolved", "The cap on path searches was reached; the path is kept without "
+                                         "splitting it."),
     "stopped": ("unresolved", "Stopped on request (Stop & analyze); the path is kept as it was, without splitting it."),
     "cycle": ("elementary", "The endpoint pair repeats an ancestor's (a cycle), so it is not split again; the "
                             "path was optimized to convergence and treated as one step."),

@@ -892,8 +892,9 @@ def _run_msmep_pairs(
 
         over = search_control.search_over(run_inputs.path_min_inputs)
         if over is not None:
-            _say(f"Skipping pair ({i}, {j}): " + ("stop requested before it started." if over == "stopped"
-                                                         else "--search-budget reached before it started."))
+            _say(f"Skipping pair ({i}, {j}): " + {"stopped": "stop requested before it started.",
+                                                  "path_search_budget": "--max-path-searches reached before it started."}
+                 .get(over, "--search-budget reached before it started."))
             return
         pair_dir.mkdir(parents=True, exist_ok=True)
         _say(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")

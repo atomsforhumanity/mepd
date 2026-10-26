@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd channels --max-path-searches N`**: a cap on path searches (each pair's first search and every piece a
+  split adds, counted in pair order) instead of a wall-clock budget. Past it, no pair starts and no search is
+  split further, as with `--search-budget` (pieces already queued still run once), but the same inputs stop at
+  the same search on any machine (with one pair at a time), so a search is reproducible for a given seed: two
+  runs of a Transition1x-TMC search capped at 8 wrote byte-identical paths (11 searches each). Leaves cut by it have status
+  `path_search_budget`; `stats.json` records `path_searches` and `max_path_searches_reached`.
 - **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
   `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
   bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another

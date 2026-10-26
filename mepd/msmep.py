@@ -1016,6 +1016,7 @@ class MSMEP:
             return _empty_leaf(tree_node_index, status="identical_endpoints"), []
 
         attempt_payload = self._record_attempted_pair(input_chain)
+        search_control.count_path_search(self.inputs.path_min_inputs)   # --max-path-searches
         root_neb_obj, elem_step_results = self.run_minimize_chain(
             input_chain=input_chain
         )
@@ -1036,6 +1037,8 @@ class MSMEP:
             # output stays continuous; TS discovery still runs on it).
             self._say("Search stopped on request; keeping this path as a leaf instead of splitting it."
                       if over == "stopped" else
+                      "Path-search cap reached; keeping this path as a leaf instead of splitting it."
+                      if over == "path_search_budget" else
                       "Search budget reached; keeping this path as a leaf instead of splitting it.",
                       snapshot=True, warn=True)
             history_node.leaf_status = over
@@ -1303,7 +1306,7 @@ class MSMEP:
                         and bool(getattr(child_history, "data", None))
                         and (bool(getattr(child_history, "converged_unsplit", False))
                              or leaf_status not in {"max_depth_reached", "same_pair_split_limit_reached", "cycle",
-                                                    "time_budget"})
+                                                    "time_budget", "path_search_budget"})
                     )
                     self._mark_attempted_pair_result(
                         job.attempt_payload,

@@ -50,14 +50,52 @@ def stop_requested() -> bool:
 
 
 def search_over(path_min_inputs: Any = None) -> Optional[str]:
-    """Why no more search work should start: "stopped" (asked to), or
-    "time_budget" (--search-budget's deadline has passed); None to go on."""
+    """Why no more search work should start: "stopped" (asked to), "time_budget"
+    (--search-budget's deadline has passed) or "path_search_budget"
+    (--max-path-searches have run); None to go on."""
     if stop_requested():
         return "stopped"
     deadline = getattr(path_min_inputs, "recursive_split_deadline", None)
     if deadline is not None and time.time() > deadline:
         return "time_budget"
+    cap = getattr(path_min_inputs, "max_path_searches", None)
+    if cap and path_searches(path_min_inputs) >= cap:
+        return "path_search_budget"
     return None
+
+
+def start_path_search_count(path_min_inputs: Any, counter: Path, cap: int) -> None:
+    """Count path searches in `counter` (a file, shared by forked workers) and
+    stop new work after `cap` of them (`search_over`). A resumed run keeps
+    counting from the file."""
+    counter = Path(counter)
+    if not counter.exists():
+        counter.write_text("0\n")
+    path_min_inputs.path_search_counter = str(counter)
+    path_min_inputs.max_path_searches = int(cap)
+
+
+def path_searches(path_min_inputs: Any) -> int:
+    """How many path searches have started under `start_path_search_count`."""
+    fp = getattr(path_min_inputs, "path_search_counter", None)
+    if not fp or not Path(fp).exists():
+        return 0
+    return int(Path(fp).read_text().strip() or 0)
+
+
+def count_path_search(path_min_inputs: Any) -> None:
+    """One more path search (called as each starts); no-op without a counter."""
+    import fcntl
+
+    fp = getattr(path_min_inputs, "path_search_counter", None)
+    if not fp:
+        return
+    with open(fp, "r+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        n = int(fh.read().strip() or 0) + 1
+        fh.seek(0)
+        fh.write(f"{n}\n")
+        fh.truncate()
 
 
 @contextlib.contextmanager

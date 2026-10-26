@@ -973,6 +973,7 @@ class ChannelsOptions:
     pairs_per_mechanism: int = 3
     workers: int = 0
     search_budget: float = 0.0
+    max_path_searches: int = 0
     direct_only: Optional[bool] = None
     validate_minima_with_hessian: bool = True
     hessian_minimum_frequency_cutoff: float = -20.0
@@ -1032,6 +1033,8 @@ class ChannelsOptions:
             raise InputsError("--rebuild-splits-from must be none, start or end.")
         if self.search_budget < 0:
             raise InputsError("--search-budget must be >= 0.")
+        if self.max_path_searches < 0:
+            raise InputsError("--max-path-searches must be >= 0.")
 
 
 def apply_options(run_inputs: RunInputs, options: ChannelsOptions) -> None:
@@ -1107,6 +1110,7 @@ def run_channels(
     pairs_per_mechanism = options.pairs_per_mechanism
     workers = options.workers
     search_budget = options.search_budget
+    max_path_searches = int(options.max_path_searches)
 
     import os
     import time
@@ -1478,6 +1482,14 @@ def run_channels(
         # pairs); forked pair workers inherit it with run_inputs.
         setattr(run_inputs.path_min_inputs, "recursive_split_deadline", search_deadline)
         stats["search_budget_seconds"] = search_budget
+    if max_path_searches > 0:
+        from mepd import search_control
+
+        # Counted in a file, so forked pair workers share it; pairs run in a fixed order, so with
+        # one pair at a time the same inputs stop at the same search on every machine.
+        search_control.start_path_search_count(run_inputs.path_min_inputs, output / "path_searches.count",
+                                               max_path_searches)
+        stats["max_path_searches"] = max_path_searches
     # Each pair's TS optimizations and IRCs start as soon as its search is
     # done, in processes of their own (one serial chain of gradients each):
     # alongside the searches still running, a few at a time; once none are
@@ -1520,6 +1532,9 @@ def run_channels(
     stats["msmep_seconds"] = round(time.perf_counter() - t0, 3)
     if search_deadline is not None:
         stats["search_budget_reached"] = time.time() > search_deadline
+    if max_path_searches > 0:
+        stats["path_searches"] = search_control.path_searches(run_inputs.path_min_inputs)
+        stats["max_path_searches_reached"] = stats["path_searches"] >= max_path_searches
     from mepd import search_control
 
     if search_control.stop_requested():   # Stop & analyze: what follows runs on the paths found so far
