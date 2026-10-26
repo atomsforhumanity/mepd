@@ -239,6 +239,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
   complex is removed with any of them (as before). The delete confirmation (Explore selection and the
   Inspector) now names those complexes. (#14)
+- **`thermo.qrrho(ts=True)` says when it could not leave out the reaction coordinate.** A Hessian at another
+  level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
+  and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
+  to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
 
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and

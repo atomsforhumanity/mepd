@@ -110,19 +110,36 @@ def frequencies(symbols: Sequence[str], coords_ang: np.ndarray, *, charge: int =
 
 def qrrho(freqs: Sequence[float], symbols: Sequence[str], coords_ang: np.ndarray, temperature: float, *,
           rotational_number: int = 1, linear: bool = False, multiplicity: int = 1, ts: bool = False,
-          rotor_cutoff: float = ROTOR_CUTOFF_CM, standard_state: str = "1M") -> dict:
+          rotor_cutoff: float = ROTOR_CUTOFF_CM, standard_state: str = "1M",
+          ts_mode: Optional[int] = None) -> dict:
     """Thermal corrections in kcal/mol: {zpe, h (ZPE + thermal enthalpy),
-    s (cal/mol/K), g_corr (= h - T s), n_imaginary}. `ts`: the most
-    negative mode is the reaction coordinate and is left out. Other
+    s (cal/mol/K), g_corr (= h - T s), n_imaginary, ts_mode_dropped}.
+    `ts`: the reaction coordinate is left out: `ts_mode` (an index into
+    `freqs`, e.g. the mode with the largest overlap with the TS's own
+    imaginary mode) if given, else the most negative mode. A Hessian at
+    another level than the TS's (GFN2-xTB at a g-xTB TS) often has no
+    negative mode: then nothing is left out, `ts_mode_dropped` is False and
+    `warning` says so -- the soft mode stays in and G(TS) comes out too low
+    (by ~0.65 kcal/mol, median, on 70 ion-pair TSs; mepd#12). Other
     imaginary modes (numerical noise) count with their absolute value.
     `standard_state`: "1M" (default) or "1atm"."""
     T = float(temperature)
     R = gas_constant
     kT = Boltzmann * T
-    f = sorted(float(x) for x in freqs)
-    n_imag = sum(1 for x in f if x < 0)
-    if ts and f and f[0] < 0:
-        f = f[1:]
+    n_imag = sum(1 for x in freqs if float(x) < 0)
+    warning = None
+    dropped = False
+    if ts and ts_mode is not None:
+        f = sorted(float(x) for k, x in enumerate(freqs) if k != int(ts_mode))
+        dropped = True
+    else:
+        f = sorted(float(x) for x in freqs)
+        if ts and f and f[0] < 0:
+            f = f[1:]
+            dropped = True
+        elif ts:
+            warning = ("no negative frequency at this TS (a Hessian at another level?): the reaction coordinate "
+                       "is kept as a vibration, so G(TS) is too low; pass ts_mode")
     f = [abs(x) for x in f if abs(x) > 1e-6]
     zpe = 0.0
     e_vib = 0.0
@@ -170,7 +187,11 @@ def qrrho(freqs: Sequence[float], symbols: Sequence[str], coords_ang: np.ndarray
     s_el = R * math.log(max(1, int(multiplicity)))
     h = (zpe + e_vib + e_rot + h_tr) / KCAL
     s = (s_vib + s_rot + s_tr + s_el) / 4.184        # cal/mol/K
-    return {"zpe": zpe / KCAL, "h": h, "s": s, "g_corr": h - T * s / 1000.0, "n_imaginary": n_imag}
+    out = {"zpe": zpe / KCAL, "h": h, "s": s, "g_corr": h - T * s / 1000.0, "n_imaginary": n_imag,
+           "ts_mode_dropped": dropped}
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 def cache_key(symbols: Sequence[str], coords_ang: np.ndarray, charge: int, multiplicity: int,
