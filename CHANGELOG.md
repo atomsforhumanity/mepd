@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
+  keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
+  is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
+  `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
+  `--search-budget`, now on `mepd run` too. (#13)
+
 - **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
   `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
   bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
