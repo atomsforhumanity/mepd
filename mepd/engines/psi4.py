@@ -42,6 +42,10 @@ import json, sys, os, tempfile
 import numpy as np
 import psi4
 cfg = json.loads(sys.argv[1])
+# replies go to the real stdout; anything a library prints (PCMSolver does) goes to stderr
+reply = os.fdopen(os.dup(1), "w")
+os.dup2(2, 1)
+sys.stdout = sys.stderr
 scratch = tempfile.mkdtemp(prefix="mepd_psi4_")
 os.chdir(scratch)
 psi4.core.set_output_file(os.path.join(scratch, "psi4.out"), False)
@@ -56,13 +60,22 @@ for line in sys.stdin:
         if req["multiplicity"] != 1:
             opts.setdefault("reference", "uks" if cfg.get("dft", True) else "uhf")
         psi4.set_options(opts)
+        if cfg.get("pcm_solvent"):
+            psi4.set_options({"pcm": True, "pcm_scf_type": "total"})
+            psi4.pcm_helper("Units = Angstrom\nMedium { SolverType = IEFPCM\n Solvent = \"%s\" }\n"
+                            "Cavity { RadiiSet = UFF\n Type = GePol\n Scaling = False\n Area = 0.3\n Mode = Implicit }"
+                            % cfg["pcm_solvent"])
         geom = "\n".join(f"{s} {x:.12f} {y:.12f} {z:.12f}" for s, (x, y, z) in zip(req["symbols"], req["coords"]))
         mol = psi4.geometry(f"{req['charge']} {req['multiplicity']}\n{geom}\nunits bohr\nno_reorient\nno_com\nsymmetry c1")
         kw = {"molecule": mol, "return_wfn": True}
         if req.get("point_charges"):
             kw["external_potentials"] = req["point_charges"]
-        g, wfn = psi4.gradient(cfg["method"], **kw)
-        out = {"energy": wfn.energy(), "gradient": np.asarray(g).tolist()}
+        if req.get("energy_only"):
+            e, wfn = psi4.energy(cfg["method"], **kw)
+            out = {"energy": float(e)}
+        else:
+            g, wfn = psi4.gradient(cfg["method"], **kw)
+            out = {"energy": wfn.energy(), "gradient": np.asarray(g).tolist()}
         try:
             psi4.oeprop(wfn, "MULLIKEN_CHARGES", title="mepd")
             out["charges"] = np.asarray(wfn.atomic_point_charges()).tolist()
@@ -72,8 +85,8 @@ for line in sys.stdin:
             out["pc_gradient"] = np.asarray(wfn.external_pot().gradient_on_charges()).tolist()
     except Exception as exc:
         out = {"error": f"{type(exc).__name__}: {exc}"}
-    sys.stdout.write(json.dumps(out) + "\n")
-    sys.stdout.flush()
+    reply.write(json.dumps(out) + "\n")
+    reply.flush()
 '''
 
 
@@ -107,6 +120,9 @@ class Psi4Engine(Engine):
     python: Optional[str] = None
     timeout: float = 3600.0
     supports_point_charges: bool = True
+    #: implicit solvent: Psi4's own PCM (IEFPCM, PCMSolver's solvent name, e.g. "Water"); set by a
+    #: profile's [solvation] table (mepd.solvation.solvate_engine)
+    pcm_solvent: Optional[str] = None
 
     def __post_init__(self):
         self.python = self.python or psi4_python()
@@ -127,7 +143,7 @@ class Psi4Engine(Engine):
     def _worker(self):
         if self._proc is None or self._proc.poll() is not None:
             cfg = {"method": self.method, "basis": self.basis, "threads": self.threads, "memory": self.memory,
-                   "options": self.options, "dft": self.method.lower() not in ("hf", "scf", "mp2", "ccsd")}
+                   "options": self.options, "pcm_solvent": self.pcm_solvent, "dft": self.method.lower() not in ("hf", "scf", "mp2", "ccsd")}
             env = {**os.environ, "OMP_NUM_THREADS": str(self.threads), "PYTHONNOUSERSITE": "1"}
             env.pop("PYTHONPATH", None)
             self._proc = subprocess.Popen([self.python, "-c", _DRIVER, json.dumps(cfg)], stdin=subprocess.PIPE,
@@ -150,13 +166,15 @@ class Psi4Engine(Engine):
             pass
 
     def energy_gradient(self, symbols, coords_bohr, charge: int = 0, multiplicity: int = 1,
-                        point_charges=None) -> tuple[float, np.ndarray, Optional[np.ndarray]]:
+                        point_charges=None, energy_only: bool = False) -> tuple[float, np.ndarray, Optional[np.ndarray]]:
         """(energy Eh, gradient Eh/bohr, gradient on the point charges or
-        None). `point_charges`: [(q, (x, y, z) in bohr), ...]."""
+        None). `point_charges`: [(q, (x, y, z) in bohr), ...]. `energy_only`:
+        no gradient (None), about half the cost."""
         req = {"symbols": [str(s) for s in symbols],
                "coords": np.asarray(coords_bohr, dtype=float).reshape(-1, 3).tolist(),
                "charge": int(charge), "multiplicity": int(multiplicity),
-               "point_charges": [[float(q), [float(v) for v in xyz]] for q, xyz in (point_charges or [])]}
+               "point_charges": [[float(q), [float(v) for v in xyz]] for q, xyz in (point_charges or [])],
+               "energy_only": bool(energy_only)}
         with self._lock:
             proc = self._worker()
             try:
@@ -176,7 +194,7 @@ class Psi4Engine(Engine):
         # Atomic charges of this calculation (Mulliken): what the environment
         # sees of the QM region between QM steps (microiterations).
         self.last_charges = np.asarray(out["charges"]) if "charges" in out else None
-        return float(out["energy"]), np.asarray(out["gradient"]), pcg
+        return float(out["energy"]), (np.asarray(out["gradient"]) if "gradient" in out else None), pcg
 
     # ------------------------------------------------------------ engine
     def _compute(self, chain: Union[Chain, List]) -> list:
@@ -196,7 +214,12 @@ class Psi4Engine(Engine):
         return np.array([n.gradient for n in self._compute(chain)])
 
     def compute_energies(self, chain: Union[Chain, List]) -> NDArray:
-        return np.array([n.energy for n in self._compute(chain)])
+        nodes = chain.nodes if isinstance(chain, Chain) else list(chain)
+        for n in nodes:     # energies alone: no gradient
+            if n._cached_energy is None:
+                n._cached_energy = self.energy_gradient(list(n.symbols), n.coords, int(n.structure.charge),
+                                                        int(n.structure.multiplicity), energy_only=True)[0]
+        return np.array([n.energy for n in nodes])
 
     def _ase(self, node):
         from mepd.engines.ase import ASEEngine

@@ -1254,16 +1254,9 @@ def expand_network(
             return energies, result.steps, "electronic"
         # Only the part of the network some route reaches within the cutoff gets Hessians: the rest carries
         # no flux. Its steps are closed (TS + 1 Hartree), its species keep their electronic energy.
-        n = len(result.species)
-        if access_cutoff_kcal is not None:
-            from mepd.network_aware import accessibility
+        from mepd.discovery.energy_refine import kinetic_reach
 
-            acc = accessibility(result.steps, energies, e0)
-            reach = {k for k, st in acc.items() if st.span <= access_cutoff_kcal} | {0}
-            open_steps = [m for m, st in enumerate(result.steps) if st.a in reach and st.b in reach
-                          and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal]
-        else:
-            reach, open_steps = set(range(n)), list(range(len(result.steps)))
+        reach, open_steps = kinetic_reach(result.steps, energies, e0, access_cutoff_kcal)
         _tighten(sorted(reach))   # their Hessians need true minima
         energies = [float(s.node.energy) for s in result.species]
         ts_structs = []

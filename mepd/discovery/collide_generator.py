@@ -33,8 +33,10 @@ MAX_PULL = 0.08                  # Hartree/bohr cap on the pull's force, as the 
 OPTIONS = {"n_collisions": 0, "temperature": 1000.0, "pull_fs": 300.0, "relax_fs": 300.0, "k": 100.0,
            "min_hops": 2, "seed": 0, "parallel": 0}
 
-_Z = {"H": 1, "He": 2, "Li": 3, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "Mg": 12, "Si": 14, "P": 15,
-      "S": 16, "Cl": 17, "K": 19, "Br": 35, "I": 53}
+def _atomic_number(symbol: str) -> int:
+    from rdkit import Chem
+
+    return Chem.GetPeriodicTable().GetAtomicNumber(symbol)
 
 
 def _bonds(symbols, xyz_A, scale: float = 1.3) -> frozenset:
@@ -191,7 +193,7 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
 
     from mepd.discovery.nanoreactor import _masses, _wall
 
-    Z = np.array([_Z[s] for s in symbols])
+    Z = np.array([_atomic_number(s) for s in symbols])
     from mepd.discovery.free_energy import molecules
 
     pulls = [tuple(pair)] + ([tuple(pull2)] if pull2 is not None else [])
@@ -267,8 +269,8 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
             norm = np.linalg.norm(step, axis=1, keepdims=True)
             pos = pos + np.where(norm > 0.1, step * 0.1 / np.maximum(norm, 1e-12), step)
             grad = forces(pos, False)
-    except Exception:
-        return None
+    except Exception as exc:     # reported (the first one) by collide_products
+        return f"{type(exc).__name__}: {exc}"
     return pos * BOHR
 
 
@@ -300,8 +302,9 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
              float(pull_fs), float(relax_fs), float(k), s, mv[2], mv[3] if len(mv) > 3 else None) for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
     out, seen, failed, torn, same = [], {start}, 0, 0, 0
+    errors = [e for e in ends if isinstance(e, str)]
     for end in ends:
-        if end is None:
+        if end is None or isinstance(end, str):
             failed += 1
             continue
         b = _bonds(symbols, end)
@@ -316,6 +319,8 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
             out.append(structure.model_copy(update={"geometry": end * ANGSTROM_TO_BOHR}))
     print(f"collide: {len(out)} distinct product(s) from {len(jobs)} collisions of "
           f"{len(moves)} possible moves ({same} back to the start, {torn} with a lone atom, {failed} failed).", flush=True)
+    if errors:
+        print(f"collide: {len(errors)} collision(s) raised an error, the first: {errors[0]}", flush=True)
     return out
 
 
@@ -341,8 +346,9 @@ def _run_in_processes(args: list, width: int) -> list:
                            input=json.dumps(payload), capture_output=True, text=True,
                            env={**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"})
         if r.returncode != 0:
-            return [None] * len(idx)
-        return [None if e is None else np.asarray(e) for e in json.loads(r.stdout.strip().splitlines()[-1])]
+            return [f"collision process failed: {r.stderr.strip()[-300:]}"] * len(idx)
+        return [e if e is None or isinstance(e, str) else np.asarray(e)
+                for e in json.loads(r.stdout.strip().splitlines()[-1])]
 
     import os
 
@@ -364,5 +370,5 @@ def _worker() -> None:
         sym, xyz, q, m, pair, T, pf, rf, k, seed, push, pull2 = j
         e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None,
                      tuple(pull2) if pull2 else None)
-        ends.append(None if e is None else np.asarray(e).tolist())
+        ends.append(e if e is None or isinstance(e, str) else np.asarray(e).tolist())
     print(json.dumps(ends))

@@ -358,6 +358,16 @@ def expand(
         300, "--fast-ts-steps",
         help="Steps for the single TS optimization tried first per pair (--steer access --connect fast); "
         "one that hasn't converged by then fails and its pair gets a path search."),
+    refine_energies: Optional[Path] = typer.Option(
+        None, "--refine-energies", exists=True, dir_okay=False,
+        help="A profile (.toml) of a higher level of theory, e.g. DFT: after the exploration, every species and TS "
+        "the kinetics use gets its energy at that level and the kinetics run again (refined_energies.json). "
+        "See --refine-energies-mode."),
+    refine_energies_mode: str = typer.Option(
+        "single-point", "--refine-energies-mode",
+        help="'single-point' (default): the explorer's geometries and thermal corrections, the higher level's "
+        "electronic energies. 'reoptimize': minima and TSs re-converged at the higher level (each TS with an IRC "
+        "that must reach the same species) and its own Hessians -- much more expensive."),
     max_species: int = typer.Option(200, "--max-species", help="Stop adding species beyond this many."),
     workers: int = typer.Option(
         min(4, max(1, (os.cpu_count() or 1) // 2)), "--workers",
@@ -463,6 +473,9 @@ def expand(
     steer = steer.strip().lower()
     if steer not in ("auto", "window", "flux", "access"):
         raise typer.BadParameter("--steer must be auto, window, flux or access.")
+    if str(refine_energies_mode) not in ("single-point", "reoptimize"):
+        raise typer.BadParameter("--refine-energies-mode must be single-point or reoptimize.")
+    high_engine = _open_run_inputs(refine_energies).engine if isinstance(refine_energies, Path) else None
     run_inputs = _open_run_inputs(inputs)
     pmi = run_inputs.path_min_inputs
     if num(barrier_cutoff) is not None:
@@ -611,7 +624,10 @@ def expand(
         "steering": {"mode": steer, **({"temperature_K": temperature, "time_s": time_s, "flux_threshold": flux_threshold}
                                         if steer == "flux" else
                                         {"cutoff_kcal": access_cutoff, "temperature_K": temperature, "time_s": time_s}
-                                        if steer == "access" else {"energy_window_kcal": energy_window})},
+                                        if steer == "access" else {"energy_window_kcal": energy_window}),
+                     **({"kinetics_energy": str(kinetics_energy).lower() if isinstance(kinetics_energy, str) else "free",
+                         "standard_state": standard_state if isinstance(standard_state, str) else "1M"}
+                        if steer in ("flux", "access") else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
         # kinetics_barrier_kcal: what the rates used (the TS never below an end).
         "steps": [{"a": st.a, "b": st.b, "ts_energy": st.ts_energy, "barrier_kcal": list(raw),
@@ -661,8 +677,73 @@ def expand(
         else:
             typer.echo("No path search completed; no network.json written.")
     (output / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    if high_engine is not None and steer in ("flux", "access") and result.steps:
+        typer.echo(f"Refining energies ({refine_energies_mode}) with {refine_energies}...")
+        try:
+            _write_refined(output, run_inputs.engine, high_engine, str(refine_energies_mode), workers,
+                           level=str(refine_energies))
+        except Exception as exc:
+            typer.echo(f"Energy refinement failed: {type(exc).__name__}: {exc}")
 
     console.print(f"[bold green]{len(result.species) - 1} new species[/bold green] from "
                   f"{len(result.edges)} proposed reactions ({', '.join(f'{v} {k}' for k, v in sorted(counts.items()))}); "
                   f"{len(result.connections())} distinct reactions to connect{network_note}. Results in {output}/",
                   highlight=False)
+
+
+def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: int, level: str = "") -> dict:
+    """refine_run on an expand output; writes refined_energies.json and
+    prints what changed."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from mepd.discovery.energy_refine import refine_run
+
+    out = refine_run(run_dir, low_engine=low_engine, high_engine=high_engine, mode=mode, workers=workers,
+                     on_note=lambda m: typer.echo(f"WARNING: {m}"))
+    out["level"] = level
+    (Path(run_dir) / "refined_energies.json").write_text(json.dumps(out, indent=2, default=str))
+    table = Table(title=f"Refined {out['basis']} (kcal/mol from the seed, {mode}) and final amounts")
+    for col in ("", "species / step", "explorer", "refined", "final explorer", "final refined"):
+        table.add_column(col)
+    kin = out["kinetics"]
+    for row in out["refined"]:
+        if row["kind"] == "species":
+            k = row["index"]
+            if max(kin["low"]["final_concentration"][k], kin["high"]["final_concentration"][k]) < 0.01 and k:
+                continue
+            table.add_row(str(k), row.get("smiles") or "", f"{row['g_low_kcal']:.1f}", f"{row['g_high_kcal']:.1f}",
+                          f"{kin['low']['final_concentration'][k]:.3f}", f"{kin['high']['final_concentration'][k]:.3f}")
+        else:
+            table.add_row("TS", f"{row['a']} -> {row['b']}", f"{row['g_low_kcal']:.1f}", f"{row['g_high_kcal']:.1f}",
+                          "", "")
+    Console().print(table)
+    typer.echo(f"Refined energies in {Path(run_dir) / 'refined_energies.json'}")
+    return out
+
+
+@discovery_app.command("refine-energies")
+def refine_energies_cmd(
+    run_dir: Path = typer.Argument(..., exists=True, file_okay=False,
+                                   help="A `mepd discovery expand` output folder (with summary.json)."),
+    inputs: Path = typer.Option(..., "--inputs", "-i", exists=True, dir_okay=False,
+                                help="Profile (.toml) of the higher level of theory, e.g. DFT."),
+    explorer_inputs: Optional[Path] = typer.Option(
+        None, "--explorer-inputs", exists=True, dir_okay=False,
+        help="The exploration's own profile (default: the one in summary.json, else built-in defaults)."),
+    mode: str = typer.Option("single-point", "--mode", help="single-point or reoptimize (see `expand --refine-energies-mode`)."),
+    workers: int = typer.Option(1, "--workers", help="Processes at once; each higher-level calculation uses the "
+                                                     "profile's own threads."),
+):
+    """Energies of an explored network at a higher level of theory, and the
+    kinetics on them: the explorer's level finds the species and TSs, the
+    higher level decides which of them win."""
+    from mepd.cli import _open_run_inputs
+
+    if mode not in ("single-point", "reoptimize"):
+        raise typer.BadParameter("--mode must be single-point or reoptimize.")
+    summary = json.loads((run_dir / "summary.json").read_text())
+    low = explorer_inputs or (Path(summary["inputs"]) if summary.get("inputs") and Path(summary["inputs"]).exists()
+                              else None)
+    _write_refined(run_dir, _open_run_inputs(low).engine, _open_run_inputs(inputs).engine, mode, workers,
+                   level=str(inputs))
