@@ -12,6 +12,22 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
+  keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
+  is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
+  `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
+  `--search-budget`, now on `mepd run` too. (#13)
+
+- **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
+  `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
+  bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
+  atom, or coming off the metal) is not another species; `Comparison.metal_ligand_changed` records it. Off by
+  default: every command still compares all bonds. Following the treatment of dative metal-ligand contacts as
+  zero-order bonds, kept apart from covalent bond changes, in Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the
+  Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+  doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
+  ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
+
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
