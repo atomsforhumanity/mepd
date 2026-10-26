@@ -301,7 +301,7 @@ class MicroIterations:
         from mepd.engines._sella import sella
 
         IRC = sella().IRC
-        fmax, steps, kw = self._run_kwargs(keywords, 0.1, 1000)
+        fmax, steps, kw = self._run_kwargs(keywords, 0.01, 3000)
         echo = kw.pop("echo", None) or (lambda *_: None)
         opt_kw = dict(kw.pop("optimizer_kwds", kw.pop("optimizer_kwargs", {})) or {})
         for key in ("dx", "eta", "gamma", "keep_going"):

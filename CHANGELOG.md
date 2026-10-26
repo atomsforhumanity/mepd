@@ -251,6 +251,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **IRCs stop at 0.01 eV/Å by default, up to 3000 steps per direction** (Sella; was 0.1 and 1000), and the
+  geomeTRIC IRC at the same largest force (its own default is about 0.023 eV/Å). At 0.1 an IRC can stop on a
+  shoulder well above the minimum, and minimizing from there can slide into another isomer: in a
+  Transition1x-TMC reaction (TMC_20796_Pt), the proton of a Pt-bound HCl moved to the chloride trans to the
+  alkyl chloride, 13.9 kcal/mol lower, which the bond-graph comparison could not see; at 0.01 the IRC itself
+  reaches that minimum. Pass `fmax` (and `steps`) in the IRC keywords for the old behaviour.
 - **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
   complex is removed with any of them (as before). The delete confirmation (Explore selection and the
   Inspector) now names those complexes. (#14)

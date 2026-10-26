@@ -128,7 +128,13 @@ def compute_irc_chain_with_geometric(
                 "gradient": gradient.reshape(-1),
             }
 
-    irc_keywords: dict[str, Any] = {"irc": True, "coordsys": "dlc", "maxiter": 500}
+    from ase.units import Bohr, Hartree
+
+    # stop where the largest force is below 0.01 eV/Angstrom, as the Sella IRC does (geomeTRIC's own
+    # default, 4.5e-4 Hartree/Bohr, is about 0.023 eV/Angstrom)
+    gmax = 0.01 / (Hartree / Bohr)
+    irc_keywords: dict[str, Any] = {"irc": True, "coordsys": "dlc", "maxiter": 500,
+                                    "convergence_gmax": gmax, "convergence_grms": gmax}
     if keywords:
         irc_keywords.update(dict(keywords))
     irc_keywords["irc"] = True
