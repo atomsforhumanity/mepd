@@ -77,7 +77,7 @@ docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMN
   which this image exceeds.
 - **Data mirror.** The retrosynthesis data (~800 MB, `retro-data.txt`) comes
   from our mirror, `DATA_MIRROR` (default
-  `https://public.atomsforhumanity.org/mepd/retro`). Zenodo/figshare are the
+  `https://public.afh.org/mepd/retro`). Zenodo/figshare are the
   fallback for anything the mirror lacks. Every file is checked against the
   SHA-256 pinned in `retro-data.txt`, so the mirror is never trusted on its
   own. `--build-arg DATA_MIRROR=` skips it. See "The data mirror" below.
@@ -115,7 +115,7 @@ data. Give a demo of 4 concurrent jobs ~16 GB of memory.
 
 ## The data mirror
 
-`https://public.atomsforhumanity.org/mepd/retro/` serves the files of
+`https://public.afh.org/mepd/retro/` serves the files of
 `retro-data.txt` by their mirror names, plus `SHA256SUMS` and a `README.md`
 that credits each dataset and its license (the CC-BY files require
 attribution). It is public, which is allowed: everything there is CC-BY-4.0
@@ -133,7 +133,7 @@ through the public URL, which downloads every file and verifies it:
 
 ```bash
 python3 -I deploy/docker/fetch_data.py deploy/docker/retro-data.txt /tmp/mirror-check --flat \
-  --mirror https://public.atomsforhumanity.org/mepd/retro
+  --mirror https://public.afh.org/mepd/retro
 ```
 
 Every line should say `from mirror`. **When a file changes** (e.g. a new
