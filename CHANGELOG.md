@@ -583,7 +583,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   conformer pool from run to run. (#29)
 - **Web results of QM/MM jobs** were read with a process-wide QM region that another thread reading
   another job's result could reset mid-read (the whole system then perceived as one molecule). (#29)
-
+- **Orbitals of a whole QM/MM system froze the web app.** The 3D viewer asks for the orbitals (and, with
+  Fragments on, each molecule's orbitals) of the geometry it shows; for a protein system that meant xtb on all
+  3,951 atoms (it crashed after 3 s) and Lewis structures of the protein's fragments tried charge by charge for
+  minutes, holding the browser's connections so every other page waited. `/api/orbitals` and
+  `/api/fragment-orbitals` now refuse a whole QM/MM system at once.
 - **QM/MM TS searches with a caged environment ran on the whole protein**: with no environment atom free
   to relax (`qmmm_environment = "cage"`), optimizations and TS searches skipped the microiterations and
   gave Sella every atom (3,951 atoms: ~4 min a step). They now see the QM region alone, as in a relaxed
