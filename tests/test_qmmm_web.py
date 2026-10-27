@@ -403,3 +403,14 @@ def test_edit_in_design_opens_the_qm_region_not_the_whole_system(client):
     assert design["natoms"] == 6 and design["smiles"] == "CO"           # methanol, not the 15-atom cluster
     assert any(w.startswith("Only the QM region (6 atoms)") for w in design.get("warnings", []))
     assert (design.get("source") or {}).get("qmmm") == out["system"]["id"]
+
+
+def test_orbitals_of_a_whole_qmmm_system_are_refused_at_once(client):
+    out = _upload(client)
+    xyz = client.get(f"/api/structures/{out['structure']}/xyz").text
+    for url in ("/api/orbitals", "/api/fragment-orbitals"):
+        r = client.post(url, json={"xyz": xyz, "charge": 0, "multiplicity": 1})
+        assert r.status_code == 400 and "whole QM/MM system" in r.json()["detail"], (url, r.text)
+    # The same molecule on its own still gets past the check (to the QM program).
+    r = client.post("/api/orbitals", json={"xyz": "1\n\nH 0 0 0\n", "charge": 0, "multiplicity": 2})
+    assert "whole QM/MM system" not in r.text

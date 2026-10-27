@@ -552,14 +552,18 @@ class Workspace:
         """The QM/MM system a structure belongs to: the one with exactly its
         atoms in its order (a solvated or protein system's atom list is
         unique enough), else None."""
+        return self.qmmm_system_of_symbols(structure.symbols)
+
+    def qmmm_system_of_symbols(self, symbols) -> Optional[str]:
+        """qmmm_system_of for an atom list."""
         systems = self._data.get("qmmm_systems") or {}
         if not systems:
             return None
-        n = len(structure.symbols)
+        n = len(symbols)
         cands = [k for k, v in systems.items() if v.get("natoms") == n]
         if not cands:
             return None
-        key = self._atoms_key(structure.symbols)
+        key = self._atoms_key(symbols)
         return next((k for k in cands if systems[k].get("atoms_key") == key), None)
 
     def qmmm_region(self, sysid: str):
