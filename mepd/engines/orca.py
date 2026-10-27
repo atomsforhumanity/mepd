@@ -45,6 +45,9 @@ INSTALL = ("ORCA was not found: install it (https://www.faccts.de/orca/, free fo
 #: Eh/bohr per eV/Angstrom
 _EV_PER_A_TO_EH_PER_BOHR = 0.529177210903 / 27.211386245988
 _HESSIANS: dict = {}   # OrcaEngine.compute_hessian, per process
+#: geometry steps when none are asked for (ORCA's own default is too few for a
+#: loose pair of molecules, e.g. an IRC end, at TightOpt)
+_MAXITER = {"minimization": 300, "TS search": 200}
 
 
 def orca_executable(explicit: Optional[str] = None) -> Optional[str]:
@@ -178,8 +181,8 @@ class OrcaEngine(Engine):
     def _optimize(self, node, calctype, keywords: Optional[dict], geom: dict) -> list[StructureNode]:
         kw = dict(keywords or {})
         maxiter = kw.pop("maxiter", kw.pop("maxit", kw.pop("steps", None)))
-        if maxiter is not None:
-            geom["maxiter"] = int(maxiter)
+        what = "TS search" if "calc_hess" in geom else "minimization"
+        geom["maxiter"] = int(maxiter) if maxiter is not None else _MAXITER[what]
         fmax = kw.pop("fmax", None)
         if fmax is not None:      # largest force, eV/Angstrom -> ORCA's TolMAXG (Eh/bohr)
             geom["tolmaxg"] = float(fmax) * _EV_PER_A_TO_EH_PER_BOHR
@@ -194,14 +197,13 @@ class OrcaEngine(Engine):
             nodes.append(n)
         converged = ok and "THE OPTIMIZATION HAS CONVERGED" in stdout
         if not converged:
-            what = "TS search" if "optts" in str(calctype).lower() or "transition" in str(calctype).lower() else "minimization"
-            err = ConvergenceError(f"ORCA's {what} did not converge" + ("" if ok else ":\n" + stdout[-2000:]))
+            err = ConvergenceError(f"ORCA's {what} did not converge" + (f" in {geom['maxiter']} steps" if ok else ":\n" + stdout[-2000:]))
             err.structure = nodes[-1] if nodes else None
             raise err
         return nodes
 
     def compute_geometry_optimization(self, node, keywords: dict | None = None) -> list[StructureNode]:
-        """ORCA's own minimizer (`opt_convergence`); keywords `maxiter`, and
+        """ORCA's own minimizer (`opt_convergence`); keywords `maxiter` (default 300), and
         `fmax` (eV/Angstrom) for the largest-force criterion."""
         from qcdata import CalcType
 
@@ -209,7 +211,8 @@ class OrcaEngine(Engine):
 
     def compute_transition_state(self, node, keywords: dict | None = None) -> StructureNode:
         """ORCA's OptTS from an analytic Hessian, recomputed every
-        `hessian_every` steps (keyword; default `ts_hessian_every`)."""
+        `hessian_every` steps (keyword; default `ts_hessian_every`); `maxiter`
+        (default 200)."""
         from qcdata import CalcType
 
         kw = dict(keywords or {})

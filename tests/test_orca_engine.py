@@ -80,6 +80,8 @@ def test_a_largest_force_criterion_becomes_orcas(orca_dir, monkeypatch):
     tol = float(re.search(r"tolmaxg\s+(\S+)", fake.inputs[0]).group(1))
     assert tol == pytest.approx(0.0514 / 51.422, rel=1e-3)      # eV/A -> Eh/bohr
     assert len(nodes) == 3 and nodes[-1].energy == pytest.approx(-76.002)
+    # enough steps by default for a loose pair of molecules (an IRC end)
+    assert int(re.search(r"maxiter\s+(\d+)", fake.inputs[0], re.I).group(1)) == 300
 
 
 def test_an_unconverged_search_raises_with_where_it_stopped(orca_dir, monkeypatch):
