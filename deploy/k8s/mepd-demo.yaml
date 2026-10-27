@@ -161,7 +161,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: mepd.atomsforhumanity.org
+    - host: mepd.afh.org
       http:
         paths:
           - path: /
