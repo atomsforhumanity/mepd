@@ -62,6 +62,41 @@ def read_frames(path: str | Path, *, charge: int | None = None,
     return [as_node(_override(s, charge, multiplicity)) for s in structures]
 
 
+# RDKit's embedding seed for SMILES: an unseeded embedding depends on how much
+# of RDKit's random stream the process used before, so the same SMILES gave a
+# different starting geometry (and conformer pool) from run to run.
+SMILES_EMBED_SEED = 0xF00D
+
+
+def _rdkit_seeded(smiles: str, **struct_kwargs) -> Structure:
+    """qcinf's RDKit SMILES embedding (ETKDG, then MMFF94s), seeded."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    from qcref.constants import ANGSTROM_TO_BOHR
+
+    smiles = smiles.strip()
+    if "." in smiles:
+        raise ValueError("several molecules: RDKit embeds one at a time")
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"RDKit cannot read {smiles!r}")
+    canonical = Chem.MolToSmiles(mol, canonical=True)
+    mol = Chem.AddHs(mol)
+    params = AllChem.ETKDGv2()
+    params.randomSeed = SMILES_EMBED_SEED
+    if AllChem.EmbedMolecule(mol, params) != 0:
+        raise ValueError(f"RDKit could not embed {smiles!r}")
+    AllChem.MMFFOptimizeMolecule(mol, mmffVariant="MMFF94s")
+    return Structure(
+        symbols=[a.GetSymbol() for a in mol.GetAtoms()],
+        geometry=mol.GetConformer().GetPositions() * ANGSTROM_TO_BOHR,
+        charge=Chem.GetFormalCharge(mol),
+        identifiers={"canonical_smiles": canonical, "smiles": smiles, "canonical_smiles_program": "rdkit"},
+        connectivity=[(b.GetBeginAtomIdx(), b.GetEndAtomIdx(), b.GetBondTypeAsDouble()) for b in mol.GetBonds()],
+        **struct_kwargs,
+    )
+
+
 def smiles_to_structure(smiles: str, charge: int | None = None, multiplicity: int | None = None) -> Structure:
     """3D structure for a SMILES string, as a qcdata `Structure`.
 
@@ -77,6 +112,8 @@ def smiles_to_structure(smiles: str, charge: int | None = None, multiplicity: in
     def embed(smi: str, **kwargs):
         for backend in ("rdkit", "openbabel"):
             try:
+                if backend == "rdkit":
+                    return _rdkit_seeded(smi, **kwargs)
                 return qcinf.smiles_to_structure(smi, backend=backend, **kwargs)
             except Exception as exc:
                 errors.append(f"{backend}: {type(exc).__name__}: {exc}")

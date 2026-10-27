@@ -80,7 +80,7 @@ def test_xtb_retries_a_failed_scc_and_holds_a_fixed_electronic_temperature(monke
     calls = _fake_xtb(monkeypatch, lambda argv: "--etemp" in argv)
     eng = gfnff.XTBEngine(method="gfn2", executable="xtb")
     assert eng._run(tmp_path, ["H"], np.zeros((1, 3)), 0, grad=False, uhf=1)[0] == -1.0
-    assert len(calls) == 2 and calls[1][-4:] == ["--etemp", "1000", "--iterations", "1000"]
+    assert len(calls) == 2 and calls[1][-4:] == ["--etemp", "1000.0", "--iterations", "1000"]
     calls.clear()
     eng._run(tmp_path, ["H"], np.zeros((1, 3)), 0, grad=False, uhf=1, etemp=3000.0)
     assert len(calls) == 1 and calls[0][-2:] == ["--etemp", "3000.0"]   # one surface: no other etemp

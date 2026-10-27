@@ -15,7 +15,7 @@ import mepd.chainhelpers as ch
 from mepd.chain import Chain
 from mepd.elementarystep import IS_ELEM_STEP, elem_step_check_kwargs, ElemStepResults, check_if_elem_step
 from mepd.engines import Engine
-from mepd.errors import ElectronicStructureError, NoneConvergedException
+from mepd.errors import ElectronicStructureError, NoneConvergedException, PathDivergedError
 from mepd.inputs import ChainInputs, GIInputs, NEBInputs
 from mepd.nodes.node import Node
 from mepd.optimizers.optimizer import Optimizer
@@ -38,6 +38,15 @@ pybel.ob.obErrorLog.SetOutputLevel(0)
 
 
 MAX_NRETRIES = 3
+# A step is rejected (the chain restored, the step shrunk) when it raises an
+# image's energy by more than this (Hartree) and by more than
+# EXPLOSION_SPAN_FACTOR times the path's energy span before the step ...
+EXPLOSION_ENERGY_RISE = 1.0
+EXPLOSION_SPAN_FACTOR = 10.0
+# ... or makes the largest gradient component this many times the chain's
+# largest before the step, and over EXPLOSION_GRADIENT_FLOOR (Hartree/bohr).
+EXPLOSION_GRADIENT_FACTOR = 100.0
+EXPLOSION_GRADIENT_FLOOR = 1.0
 NMINIMA_STEPS = 5
 
 NSTEPS_STRAIN = 10000000  # turning this off
@@ -51,6 +60,33 @@ PLATEAU_EXIT_MESSAGE = (
     "The chain will likely not converge with more minimization steps; lower spring constants "
     "or higher bead density would be needed."
 )
+
+
+def _step_exploded(before: Chain, after: Chain) -> str | None:
+    """Why a path step is a blow-up (an image's energy up by more than
+    EXPLOSION_ENERGY_RISE and many times the path's own energy span, a
+    gradient up by orders of magnitude, or values no longer finite), or None
+    for an ordinary step."""
+    try:
+        e0 = np.asarray(before.energies, dtype=float)
+        e1 = np.asarray(after.energies, dtype=float)
+        g0 = np.asarray(before.gradients, dtype=float)
+        g1 = np.asarray(after.gradients, dtype=float)
+    except Exception:
+        return None
+    if not (np.all(np.isfinite(e1)) and np.all(np.isfinite(g1))):
+        return "energies or gradients are no longer finite"
+    if e0.shape == e1.shape:
+        rise = e1 - e0
+        k = int(np.argmax(rise))
+        span = float(e0.max() - e0.min()) if e0.size else 0.0
+        if rise[k] > max(EXPLOSION_ENERGY_RISE, EXPLOSION_SPAN_FACTOR * span):
+            return f"image {k} rose {rise[k] * HARTREE_TO_KCAL_MOL:.3g} kcal/mol in one step"
+    gmax0 = float(np.max(np.abs(g0))) if g0.size else 0.0
+    gmax1 = float(np.max(np.abs(g1))) if g1.size else 0.0
+    if gmax1 > EXPLOSION_GRADIENT_FLOOR and gmax1 > EXPLOSION_GRADIENT_FACTOR * max(gmax0, 1e-12):
+        return f"the largest gradient went from {gmax0:.3g} to {gmax1:.3g} Eh/bohr"
+    return None
 
 
 def _endpoint_energy_inversion_warning_text(
@@ -849,6 +885,7 @@ class NEB(PathMinimizer):
         alpha = 1.0
         ntries = 0
         grads_success = False
+        exploded = None
         while not grads_success and ntries < MAX_NRETRIES:
             try:
                 new_chain = self.optimizer.optimize_step(
@@ -862,13 +899,29 @@ class NEB(PathMinimizer):
                         new_chain.nodes[node_index].do_climb = old_node.do_climb
 
                 self.engine.compute_gradients(new_chain)
+                why = _step_exploded(chain, new_chain)
+                if why:
+                    exploded = why
+                    self._say(f"Rejected a path step ({why}); restoring the path and taking a smaller step.")
+                    self._reset_optimizer_history()
+                    if getattr(self.optimizer, "timestep", None) is not None:
+                        self.optimizer.timestep *= 0.5
+                    alpha *= .5
+                    ntries += 1
+                    continue
                 grads_success = True
 
             except ExternalProgramError:
                 print("SHRINKING")
+                exploded = None
                 self.optimizer.g_old = None
                 alpha *= .8
                 ntries += 1
+        if not grads_success and exploded:
+            raise PathDivergedError(
+                f"the path search diverged: {MAX_NRETRIES} ever smaller steps all blew up ({exploded}); "
+                "this branch fails rather than being split on a wrecked path. A mixed electronic temperature "
+                "(xtb SCC fallbacks) or a QM/MM boundary problem are likely causes.")
         if not grads_success and ntries >= MAX_NRETRIES:
             print("!!!Electronic structure error! Smoothing current chain with GI")
             new_chain = ch.run_geodesic(

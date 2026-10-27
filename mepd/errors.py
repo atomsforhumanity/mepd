@@ -41,6 +41,13 @@ class NoneConvergedException(Exception):
         super().__init__(self.msg)
 
 
+class PathDivergedError(RuntimeError):
+    """A path search blew up: a step sent an image's energy or gradient up by
+    orders of magnitude, and smaller steps did not help. The branch fails
+    (MSMEP records a failed leaf) rather than being checked or split on a
+    wrecked path."""
+
+
 @dataclass
 class EnergiesNotComputedError(Exception):
     msg: str = "Energies not computed."

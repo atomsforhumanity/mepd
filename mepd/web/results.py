@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -129,16 +130,22 @@ def _min(values: Iterable[Optional[float]]) -> Optional[float]:
     return min(vals) if vals else None
 
 
-# The QM/MM region of the job being read (see `collect`): its structures
-# are named and compared by their QM region only.
-_REGION = None
+# The QM/MM region of the job being read on this thread (see `collect`): its
+# structures are named and compared by their QM region only. Per thread: the
+# server reads several jobs' results at once.
+_LOCAL = threading.local()
+
+
+def _region():
+    return getattr(_LOCAL, "region", None)
 
 
 def _smiles(node) -> str:
     from mepd.web.chem import perceive_smiles
 
-    if _REGION is not None and len(node.structure.symbols) == _REGION.natoms:
-        return perceive_smiles(_REGION.model_structure(node.structure)) or ""
+    region = _region()
+    if region is not None and len(node.structure.symbols) == region.natoms:
+        return perceive_smiles(region.model_structure(node.structure)) or ""
     return perceive_smiles(node.structure) or ""
 
 
@@ -185,6 +192,17 @@ def _ts_dir_items(out: Path, charge: int, multiplicity: int) -> list[tuple]:
         irc = _load_chain(out / ("irc.xyz" if label == "ts" else f"{label}_irc.xyz"), charge, multiplicity)
         items.append((label, ts_chain[0], irc))
     return items
+
+
+def _ts_check_failure(out: Path, label: str) -> Optional[str]:
+    """Why TS `label` may not be the reaction's (the CLI's
+    `<label>_check_failed.txt`: its mode or its IRC ends), or None."""
+    fp = Path(out) / ("ts_check_failed.txt" if label == "ts" else f"{label}_check_failed.txt")
+    try:
+        text = fp.read_text().strip()
+    except OSError:
+        return None
+    return text.splitlines()[0][:200] if text else None
 
 
 def _irc_failure(out: Path, label: str) -> Optional[str]:
@@ -316,6 +334,9 @@ def collect_ts(out: Path, charge: int, multiplicity: int, floor_hint: Optional[f
     if failed:
         warnings.append(f"{len(failed)} IRC(s) failed, so what those TSs connect is unknown; e.g. "
                         f"{next(iter(failed))}: {next(iter(failed.values()))}")
+    for label, _, _ in ts_items:
+        if why := _ts_check_failure(out, label):
+            warnings.append(f"{label}: {why}")
     groups.append(_group("IRC paths", "irc", irc_entries))
 
     network = _network_group(out / "network.json", floor)
@@ -608,6 +629,8 @@ def collect_tsopt(out: Path, charge: int, multiplicity: int) -> dict:
     for e in ts_entries:
         if e["id"] in failed:
             e["note"] = f"IRC failed ({failed[e['id']]}): what this TS connects is unknown"
+        if why := _ts_check_failure(out, e["id"]):
+            e["note"] = f"{e['note']} · ✗ {why}" if e.get("note") else f"✗ {why}"
     result = _result(headline, [_group("Transition states", "ts", ts_entries),
                                 _group("IRC paths", "irc", irc_entries)],
                      [{"label": "Barrier reference", "value": "lower IRC end"}],
@@ -1761,22 +1784,23 @@ COLLECTORS = {
 def collect(job: dict, job_dir: Optional[Path] = None) -> dict:
     """A job's result. A QM/MM job's structures are named and compared by
     their QM region (the region the job ran with, from its inputs)."""
-    global _REGION
     from mepd.nodes.node import StructureNode
 
+    region = None
     region_fp = Path(job_dir) / "inputs" / "qmmm_region.json" if job_dir is not None and job.get("qmmm") else None
     if region_fp is None and job.get("qmmm") and job.get("source_job"):
         region_fp = Path(job_dir).parent / job["source_job"] / "inputs" / "qmmm_region.json" if job_dir else None
     if region_fp is not None and region_fp.exists():
         from mepd.qmmm import QMMMRegion
 
-        _REGION = QMMMRegion.open(region_fp)
-        StructureNode.set_global_graph_atoms(_REGION.qm_atoms, _REGION.natoms)
+        region = QMMMRegion.open(region_fp)
+    _LOCAL.region = region
     try:
-        return _collect(job, job_dir)
+        with StructureNode.graph_atoms_in_this_thread(region.qm_atoms if region else None,
+                                                      region.natoms if region else None):
+            return _collect(job, job_dir)
     finally:
-        _REGION = None
-        StructureNode.set_global_graph_atoms(None)
+        _LOCAL.region = None
 
 
 def _collect(job: dict, job_dir: Optional[Path] = None) -> dict:

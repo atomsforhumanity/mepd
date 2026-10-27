@@ -403,3 +403,48 @@ def test_edit_in_design_opens_the_qm_region_not_the_whole_system(client):
     assert design["natoms"] == 6 and design["smiles"] == "CO"           # methanol, not the 15-atom cluster
     assert any(w.startswith("Only the QM region (6 atoms)") for w in design.get("warnings", []))
     assert (design.get("source") or {}).get("qmmm") == out["system"]["id"]
+
+
+def test_a_qmmm_result_is_read_by_its_qm_region_while_another_thread_reads_a_plain_one():
+    """#29: the region a result is read with was process-wide, so another
+    thread reading a plain job's result reset it mid-read (seen under xdist:
+    all 15 atoms perceived)."""
+    import threading
+
+    from qcdata import Structure
+
+    from mepd.nodes.node import StructureNode
+
+    s = Structure.from_xyz(SYSTEM)
+    inside, release = threading.Event(), threading.Event()
+    seen = {}
+
+    def qmmm_reader():
+        with StructureNode.graph_atoms_in_this_thread(range(6), len(s.symbols)):
+            inside.set()
+            release.wait(5)
+            seen["qmmm"] = StructureNode(structure=s)._graph_subset()
+
+    def plain_reader():
+        inside.wait(5)
+        with StructureNode.graph_atoms_in_this_thread(None):
+            seen["plain"] = StructureNode(structure=s)._graph_subset()
+        release.set()
+
+    threads = [threading.Thread(target=qmmm_reader), threading.Thread(target=plain_reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert seen == {"qmmm": list(range(6)), "plain": None}
+
+
+def test_orbitals_of_a_whole_qmmm_system_are_refused_at_once(client):
+    out = _upload(client)
+    xyz = client.get(f"/api/structures/{out['structure']}/xyz").text
+    for url in ("/api/orbitals", "/api/fragment-orbitals"):
+        r = client.post(url, json={"xyz": xyz, "charge": 0, "multiplicity": 1})
+        assert r.status_code == 400 and "whole QM/MM system" in r.json()["detail"], (url, r.text)
+    # The same molecule on its own still gets past the check (to the QM program).
+    r = client.post("/api/orbitals", json={"xyz": "1\n\nH 0 0 0\n", "charge": 0, "multiplicity": 2})
+    assert "whole QM/MM system" not in r.text

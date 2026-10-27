@@ -392,6 +392,14 @@ def channels(
         help="Displacement (bohr) applied along the lowest-frequency mode when "
         "rescuing a Hessian-rejected minimum, for --validate-minima-with-hessian.",
     ),
+    qmmm_temperature: float = typer.Option(
+        400.0, "--qmmm-temperature",
+        help="QM/MM profiles (a qmmm table): conformers are the QM region's in its environment, sampled by MD of the "
+        "QM atoms (environment held) at this temperature (K), then minimized.",
+    ),
+    qmmm_md_ps: float = typer.Option(
+        1.0, "--qmmm-md-ps", help="QM/MM profiles: length of that MD (ps; one QM/MM gradient per 0.5 fs).",
+    ),
     output: Path = typer.Option(
         Path("mepd_channels_output"), "--output", "-o",
         help="Directory to write seed pools, per-seed trees, TS-opt+IRC "
