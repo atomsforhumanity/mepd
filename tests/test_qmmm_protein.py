@@ -113,3 +113,22 @@ def test_rigid_docking_keeps_the_species_geometry_and_names_the_site(protein, tm
     d = lambda y: np.linalg.norm(y[:, None] - y[None], axis=2)
     assert np.abs(d(placed) - d(x)).max() < 1e-3          # rigid: every interatomic distance kept
     assert sites[0].residues and all(r.startswith("A:") for r in sites[0].residues)
+
+
+def test_a_caged_environment_still_optimizes_the_qm_region_alone(protein, tmp_path):
+    """With the whole environment frozen (qmmm_environment = "cage"), TS
+    searches and minimizations still go through the microiterations, which
+    hand the optimizer the QM atoms only, not every atom of the protein."""
+    from mepd.engines.frozen import FrozenAtomsEngine
+    from mepd.engines.gfnff import XTBEngine
+    from mepd.engines.qmmm import QMMMEngine
+    from mepd.qmmm import QMMMRegion
+    from mepd.qmmm_protein import build_site_system
+
+    sym, x = _site(protein)
+    build_site_system(protein, sym, x, tmp_path, ligand_charge=-1, water_shell=5.0, active_radius=4.0)
+    region = QMMMRegion.open(tmp_path / "region.json")
+    eng = QMMMEngine(base=XTBEngine(method="gfn2"), region=region, base_dir=str(tmp_path))
+    caged = sorted(set(range(region.natoms)) - set(region.qm_atoms))
+    micro = FrozenAtomsEngine(base=eng, frozen=caged)._micro()
+    assert micro is not None and micro.outer == sorted(region.qm_atoms) and micro.inner == []

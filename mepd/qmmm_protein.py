@@ -40,8 +40,8 @@ import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
 
 FORCEFIELD = ["amber14-all.xml", "amber14/tip3p.xml"]
-# Formal charge of a side chain cut at CA-CB (protonation states as PDBFixer
-# assigns them; HIP is the doubly protonated histidine).
+# Formal charge of a side chain cut at CA-CB in its usual state (see
+# side_chain_charge for the state a residue's hydrogens say it is in).
 SIDE_CHAIN_CHARGE = {"ARG": 1, "LYS": 1, "HIP": 1, "ASP": -1, "GLU": -1}
 INSTALL = "pip install vina pdbfixer (or pip install 'mepd[qmmm]')"
 
@@ -72,12 +72,15 @@ def fetch_pdb(code: str, dest: Path) -> Path:
 
 
 def prepare_protein(source: Path, out_pdb: Path, *, chains: Optional[Sequence[str]] = None, ph: float = 7.0,
-                    keep_water: bool = False) -> dict:
+                    keep_water: bool = False, protonation: Optional[dict] = None) -> dict:
     """The protein of `source` (a PDB file) ready for the force field:
     `chains` kept (all if None), every other residue that is not standard
     protein removed (ligands, ions, crystal waters unless `keep_water`),
-    missing heavy atoms and hydrogens added at `ph`. Missing loops are not
-    rebuilt (their ends stay as they are). Writes `out_pdb`; returns a report."""
+    missing heavy atoms and hydrogens added at `ph`. `protonation` sets a
+    residue's state instead of the pH, {"A:ASP103": "ASH"} (AMBER names: ASH,
+    GLH, LYN, HID, HIE, HIP, CYX): a buried catalytic acid, say. Missing loops
+    are not rebuilt (their ends stay as they are). Writes `out_pdb`; returns a
+    report."""
     _need("pdbfixer", "openmm")
     import openmm
     import openmm.app as app
@@ -104,8 +107,14 @@ def prepare_protein(source: Path, out_pdb: Path, *, chains: Optional[Sequence[st
     fx.findMissingAtoms()
     n_missing = sum(len(v) for v in fx.missingAtoms.values())
     fx.addMissingAtoms()
-    fx.addMissingHydrogens(ph)
     ff = app.ForceField(*FORCEFIELD)
+    variants, set_states = _variants(fx.topology, protonation or {})
+    if set_states:
+        model = app.Modeller(fx.topology, fx.positions)
+        model.addHydrogens(ff, pH=ph, variants=variants)
+        fx.topology, fx.positions = model.topology, model.positions
+    else:
+        fx.addMissingHydrogens(ph)
     system = ff.createSystem(fx.topology, nonbondedMethod=app.NoCutoff)
     nb = next(f for f in system.getForces() if isinstance(f, openmm.NonbondedForce))
     charge = sum(nb.getParticleParameters(i)[0].value_in_unit(openmm.unit.elementary_charge)
@@ -117,7 +126,47 @@ def prepare_protein(source: Path, out_pdb: Path, *, chains: Optional[Sequence[st
     return {"pdb": str(out_pdb), "atoms": fx.topology.getNumAtoms(), "residues": fx.topology.getNumResidues(),
             "chains": sorted({c.id for c in fx.topology.chains()}), "charge": int(round(charge)),
             "gaps_not_rebuilt": gaps, "heavy_atoms_added": n_missing, "replaced": replaced,
-            "removed": removed, "ph": ph}
+            "removed": removed, "ph": ph, "protonation": set_states}
+
+
+# A residue's protonation state: the AMBER name and the PDB names it may have.
+_STATES = {"ASH": "ASP", "ASP": "ASP", "GLH": "GLU", "GLU": "GLU", "LYN": "LYS", "LYS": "LYS", "HID": "HIS",
+           "HIE": "HIS", "HIP": "HIS", "CYX": "CYS", "CYS": "CYS"}
+
+
+def _variants(topology, protonation: dict) -> tuple[list, dict]:
+    """Modeller.addHydrogens `variants` (None = by pH) from {"A:ASP103": "ASH"}."""
+    want = {}
+    for key, state in protonation.items():
+        state = str(state).strip().upper()
+        if state not in _STATES:
+            raise ValueError(f"protonation state {state!r} for {key}: use one of {', '.join(sorted(_STATES))}")
+        want[str(key).strip().upper()] = state
+    variants, done = [], {}
+    for res in topology.residues():
+        tags = (f"{res.chain.id}:{res.name}{res.id}".upper(), f"{res.name}{res.id}".upper())
+        key = next((k for k in tags if k in want), None)
+        if key is None:
+            variants.append(None)
+            continue
+        if _STATES[want[key]] != res.name:
+            raise ValueError(f"{key}: {want[key]} is a state of {_STATES[want[key]]}, not {res.name}")
+        variants.append(want[key])
+        done[key] = want.pop(key)
+    if want:
+        raise ValueError(f"no residue {', '.join(sorted(want))} in the protein")
+    return variants, done
+
+
+def parse_protonation(text: str) -> dict:
+    """'A:ASP103=ASH A:HIS57=HIP' (spaces or commas) → {"A:ASP103": "ASH", ...}."""
+    out = {}
+    for item in text.replace(",", " ").split():
+        if "=" not in item:
+            raise ValueError(f"{item!r}: write RESIDUE=STATE, e.g. A:ASP103=ASH")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
 
 
 _PROTEIN = {"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE",
@@ -205,14 +254,21 @@ class Site:
     hits: int                        # poses (from all boxes) that landed here
     residues: list[str] = field(default_factory=list)   # e.g. "A:ARG90", within 4.5 Å
     scores: list[float] = field(default_factory=list)   # every pose's score here
+    # Distinct orientations at this site, best first (the first is `coords`):
+    # {"score", "coords", "hits", "rmsd"} (rmsd: Å from the first). A molecule
+    # that looks alike from both ends (a steroid with a ketone at each) can
+    # dock either way round in one pocket; only one may be the reactive one.
+    poses: list[dict] = field(default_factory=list)
 
 
 def find_sites(protein_pdb: Path, symbols: Sequence[str], coords_angstrom: np.ndarray, workdir: Path, *,
                box: float = 20.0, spacing: float = 12.0, exhaustiveness: int = 8, poses_per_box: int = 3,
-               cluster: float = 4.0, max_sites: int = 20, workers: int = 4, seed: int = 1,
+               cluster: float = 4.0, pose_rmsd: float = 2.0, max_sites: int = 20, workers: int = 4, seed: int = 1,
                centers: Optional[np.ndarray] = None,
                progress: Optional[Callable[[int, int], None]] = None) -> list[Site]:
-    """Sites where the species docks (rigid, its own geometry), best first."""
+    """Sites where the species docks (rigid, its own geometry), best first.
+    Poses whose centroids are within `cluster` Å are one site; within a site,
+    poses more than `pose_rmsd` Å apart (all atoms) are kept as its `poses`."""
     _need("vina", "openmm")
     import openmm.app as app
     import openmm.unit as unit
@@ -249,16 +305,25 @@ def find_sites(protein_pdb: Path, symbols: Sequence[str], coords_angstrom: np.nd
         placed = np.asarray(p["coords"])
         c = placed.mean(0)
         home = next((s for s in sites if np.linalg.norm(np.asarray(s.centroid) - c) < cluster), None)
+        r, t = _kabsch(ref, placed)
+        full = x0 @ r.T + t
         if home is not None:
             home.hits += 1
             home.scores.append(p["score"])
+            first = np.asarray(home.coords)
+            rmsd = [float(np.sqrt(np.mean(np.sum((full - np.asarray(q["coords"])) ** 2, axis=1)))) for q in home.poses]
+            k = int(np.argmin(rmsd))
+            if rmsd[k] <= pose_rmsd:
+                home.poses[k]["hits"] += 1
+            else:
+                home.poses.append({"score": p["score"], "coords": full.round(4).tolist(), "hits": 1,
+                                   "rmsd": round(float(np.sqrt(np.mean(np.sum((full - first) ** 2, axis=1)))), 2)})
             continue
-        r, t = _kabsch(ref, placed)
-        full = x0 @ r.T + t
         near = sorted({names[i] for hits in tree.query_ball_point(full, r=4.5) for i in hits},
                       key=lambda s: (s.split(":")[0], int("".join(ch for ch in s.split(":")[1] if ch.isdigit()) or 0)))
         sites.append(Site(id=len(sites), score=p["score"], centroid=[float(v) for v in c],
-                          coords=full.round(4).tolist(), hits=1, residues=near, scores=[p["score"]]))
+                          coords=full.round(4).tolist(), hits=1, residues=near, scores=[p["score"]],
+                          poses=[{"score": p["score"], "coords": full.round(4).tolist(), "hits": 1, "rmsd": 0.0}]))
     return sites[:max_sites]
 
 
@@ -317,7 +382,7 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
         if tag in want or f"{res.name}{res.id}".upper() in want:
             side = [a.index for a in res.atoms() if a.name not in ("N", "H", "CA", "HA", "C", "O", "OXT", "H1", "H2", "H3")]
             qm_env += side
-            qm_side_charge += SIDE_CHAIN_CHARGE.get(res.name, 0)
+            qm_side_charge += side_chain_charge(res)
             want.discard(tag)
             want.discard(f"{res.name}{res.id}".upper())
     if want:
@@ -346,6 +411,22 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
             "links": len(region.links), "moving": len(region.active_atoms), "frozen": len(region.frozen_atoms),
             "charge": system_charge, "qm_charge": region.qm_charge, "summary": region.summary(), "relax": relax,
             "structure": structure, "region_obj": region}
+
+
+def side_chain_charge(res) -> int:
+    """Formal charge of a residue's side chain (cut at CA-CB) in the state
+    its hydrogens say: ASP with HD2 is ASH (0), HIS with HD1 and HE2 is HIP
+    (+1), LYS without HZ3 is LYN (0), and so on."""
+    names = {a.name for a in res.atoms()}
+    if res.name == "ASP":
+        return 0 if "HD2" in names else -1
+    if res.name == "GLU":
+        return 0 if "HE2" in names else -1
+    if res.name == "HIS":
+        return 1 if {"HD1", "HE2"} <= names else 0
+    if res.name == "LYS":
+        return 1 if "HZ3" in names else 0
+    return SIDE_CHAIN_CHARGE.get(res.name, 0)
 
 
 def _relax_environment(model, ff, symbols, lig_angstrom, charge: int, multiplicity: int,

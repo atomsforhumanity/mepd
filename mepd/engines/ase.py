@@ -34,7 +34,10 @@ from ase.optimize.bfgs import BFGS
 from ase.optimize.fire import FIRE
 from ase.optimize.mdmin import MDMin
 try:
-    from sella import Sella as SellaOptimizer, IRC as SellaIRC
+    from mepd.engines._sella import sella as _sella
+
+    _sella_module = _sella()          # without torch on a machine with no GPU
+    SellaOptimizer, SellaIRC = _sella_module.Sella, _sella_module.IRC
 except Exception:
     SellaOptimizer = None
     SellaIRC = None
@@ -489,8 +492,10 @@ class ASEEngine(Engine):
             )
 
         ts_keywords = dict(keywords or {})
-        fmax = float(ts_keywords.pop("fmax", 0.1))
-        steps = int(ts_keywords.pop("maxiter", ts_keywords.pop("maxit", ts_keywords.pop("steps", 1000))))
+        # 0.01 eV/Angstrom: at 0.1 an IRC can stop on a shoulder well above the minimum, and minimizing from
+        # there can slide into another isomer that a bond-graph comparison does not see
+        fmax = float(ts_keywords.pop("fmax", 0.01))
+        steps = int(ts_keywords.pop("maxiter", ts_keywords.pop("maxit", ts_keywords.pop("steps", 3000))))
 
         optimizer_kwds = ts_keywords.pop("optimizer_kwds", ts_keywords.pop("optimizer_kwargs", {}))
         if optimizer_kwds is None:

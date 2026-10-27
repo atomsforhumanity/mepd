@@ -208,10 +208,55 @@ def _whole_frames(md_dir: Path, natoms: int, wanted) -> dict:
 
 def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, temperature: float = 2500.0,
                           time_ps: float = 5.0, compress: float = 0.7, period_ps: float = 1.0,
-                          environment_temperature: float = 300.0, seed: int = 0, workdir: str = "",
+                          environment_temperature: float = 300.0, seed: int = 0, n_seeds: int = 1,
+                          electronic_temperature_k: float = 3000.0, workdir: str = "",
                           on_event=None) -> tuple[list, dict]:
     """Whole-system products (the system's atom order) of QM/MM piston MD,
-    and counts {"events", "products", "mm_changed", "boundary"}."""
+    and counts {"events", "products", "mm_changed", "boundary", "torn"}.
+    `n_seeds` > 1: that many trajectories (seeds `seed`, `seed` + 1, ...), one
+    after another, their products pooled (one per distinct QM bond graph);
+    `mepd qmmm reactor` runs seeds in parallel processes instead.
+    `electronic_temperature_k`: the QM level's during the MD (xtb), as the
+    vacuum nanoreactor's 3000 K; 0 keeps the engine's own."""
+    if int(n_seeds) > 1:
+        out, total, seen = [], {}, set()
+        for k in range(int(n_seeds)):
+            items, counts = qmmm_reactor_products(
+                structure, engine, region, max_products=max_products, temperature=temperature, time_ps=time_ps,
+                compress=compress, period_ps=period_ps, environment_temperature=environment_temperature,
+                seed=int(seed) + k, electronic_temperature_k=electronic_temperature_k, workdir=workdir,
+                on_event=on_event)
+            for key, v in counts.items():
+                total[key] = total.get(key, 0) + v
+            for s in items:
+                key = qm_bond_key(s, region)
+                if key not in seen and len(out) < int(max_products):
+                    seen.add(key)
+                    out.append(s)
+        total["products"] = len(out)
+        return out, total
+    return _reactor_products_one(structure, engine, region, max_products=max_products, temperature=temperature,
+                                 time_ps=time_ps, compress=compress, period_ps=period_ps,
+                                 environment_temperature=environment_temperature, seed=seed,
+                                 electronic_temperature_k=electronic_temperature_k, workdir=workdir,
+                                 on_event=on_event)
+
+
+def qm_bond_key(structure, region) -> frozenset:
+    """The QM atoms' bond graph (the nanoreactor's bond test) as a set of
+    index pairs: products with the same key are the same state."""
+    from mepd.discovery.nanoreactor import DetectSettings, bond_history
+
+    qm = list(region.qm_atoms)
+    sym = [str(structure.symbols[i]) for i in qm]
+    xyz = np.asarray(structure.geometry, dtype=float)[qm][None] / ANGSTROM_TO_BOHR
+    hist = bond_history(sym, xyz, DetectSettings(), 1.0)
+    return frozenset(hist.initial)
+
+
+def _reactor_products_one(structure, engine, region, *, max_products, temperature, time_ps, compress, period_ps,
+                          environment_temperature, seed, electronic_temperature_k, workdir,
+                          on_event) -> tuple[list, dict]:
     import tempfile
 
     from mepd.discovery.nanoreactor import (DetectSettings, ReactorSettings, auto_radius, bond_history,
@@ -223,7 +268,9 @@ def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, 
     extent = float(np.max(np.linalg.norm(pos[qm] - pos[qm].mean(axis=0), axis=1)))
     settings = ReactorSettings(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
                                period_ps=float(period_ps), method="level", seed=int(seed),
-                               radius=max(auto_radius(len(qm)), extent + 1.5))
+                               radius=max(auto_radius(len(qm)), extent + 1.5),
+                               electronic_temperature=float(electronic_temperature_k or getattr(
+                                   _xtb_qm_engine(engine), "electronic_temperature", None) or 0.0))
     detect = DetectSettings()
     from mepd.discovery.nanoreactor_generator import _subset_segments, run_dir, segment_hook, write_live_events
 
@@ -232,7 +279,8 @@ def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, 
         d = run / "md" if run is not None else Path(tmp)
         run_qmmm_reactor_md(structure, engine, region, settings=settings, workdir=d,
                             environment_temperature=environment_temperature,
-                            on_event=segment_hook(run, int(region.qm_charge), settings.dump_fs, on_event, atoms=qm))
+                            on_event=segment_hook(run, int(region.qm_charge), settings.dump_fs, on_event,
+                                                  atoms=qm, every_s=30.0))
         # Bonds of the QM atoms only (the whole system's frames are large);
         # whole frames are read just for the products.
         sub, frames = _subset_segments(d, qm)
@@ -272,3 +320,24 @@ def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, 
     report(len(events), len(seen) - 1, counts.get("torn", 0), len(out), settings.temperature)
     counts.setdefault("torn", 0)
     return out, counts
+
+
+def reactor_seed(profile: str, structure_xyz: str, seed: int, options: dict, workdir: str) -> dict:
+    """One seed of `mepd qmmm reactor` in its own process (the QM/MM engine
+    is rebuilt from the profile: it does not pickle). Writes
+    <workdir>/products.xyz (whole systems) and returns the counts."""
+    from qcdata import Structure
+
+    from mepd.inputs import RunInputs
+
+    run_inputs = RunInputs.open(profile)
+    engine = run_inputs.engine
+    region = getattr(engine, "region", None)
+    structure = Structure.open(structure_xyz)
+    if region is None or len(structure.symbols) != region.natoms:
+        raise ValueError(f"{structure_xyz} is not a structure of the profile's QM/MM system")
+    out, counts = qmmm_reactor_products(structure, engine, region, seed=int(seed), workdir=workdir, **options)
+    d = Path(workdir)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "products.xyz").write_text("".join(s.to_xyz() for s in out))
+    return {"seed": int(seed), "products": len(out), **counts}

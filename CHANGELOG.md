@@ -12,11 +12,52 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd qmmm reactor`**: the nanoreactor with QM/MM forces over several trajectories, one process per seed
+  (`--seeds`, `--workers`). The QM region runs hot inside its protein or solvent, which stays near room
+  temperature. Products are whole systems, pooled over seeds (one per distinct QM bond graph), for
+  `mepd discovery expand --products`. The MD runs the QM level at `--etemp` (3000 K, as the vacuum
+  nanoreactor). Network expansion's embedded nanoreactor takes `n_seeds` and `electronic_temperature_k`.
+- **Protein protonation states by hand**: `mepd qmmm protein-sites --protonation "A:ASP103=ASH"` (ASH, GLH,
+  LYN, HID, HIE, HIP, CYX) instead of the pH, e.g. a buried catalytic acid.
+- **Every docked orientation at a site**: sites.json lists each site's distinct poses (`poses`: more than 2 Å
+  RMSD apart), and `mepd qmmm protein-build --pose k` builds one. A molecule that looks alike from both ends
+  docks either way round in one pocket; before, only the best Vina score was kept, which for
+  androstenedione in ketosteroid isomerase (1OH0) was the pose turned end to end from the crystal's.
+- **`mepd channels --max-path-searches N`**: a cap on path searches (each pair's first search and every piece a
+  split adds, counted in pair order) instead of a wall-clock budget. Past it, no pair starts and no search is
+  split further, as with `--search-budget` (pieces already queued still run once), but the same inputs stop at
+  the same search on any machine (with one pair at a time), so a search is reproducible for a given seed: two
+  runs of a Transition1x-TMC search capped at 8 wrote byte-identical paths (11 searches each). Leaves cut by it have status
+  `path_search_budget`; `stats.json` records `path_searches` and `max_path_searches_reached`.
+- **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
+  `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
+  bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
+  atom, or coming off the metal) is not another species; `Comparison.metal_ligand_changed` records it. Off by
+  default: every command still compares all bonds. Following the treatment of dative metal-ligand contacts as
+  zero-order bonds, kept apart from covalent bond changes, in Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the
+  Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+  doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
+  ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
 - **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
   keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
   is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
   `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
   `--search-budget`, now on `mepd run` too. (#13)
+
+- **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
+  searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
+  steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and
+  outputs go through qccodec; ORCA runs by its full path. The executable is `executable`, `$MEPD_ORCA`,
+  `/opt/orca/orca` or `orca` on PATH, only with ORCA's own programs beside it (`orca` is also GNOME's screen
+  reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
+  licensed, so it is not in the public image.
+
+- **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
+  expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
+  steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
+  re-minimized / have their TS re-found with an IRC check; the kinetics are rerun at both levels
+  (`refined_energies.json`, geometries and RMSDs under `refined/`). Every result is kept as it finishes and a
+  rerun picks up from what was kept at the same level of theory.
 
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
@@ -242,6 +283,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **`mepd qmmm protein-build` writes an FSM-TS profile in a caged environment** (`path_min_method = "FSM-TS"`,
+  `qmmm_environment = "cage"`, NEB fallback), not NEB with the shell relaxed. In a relaxed shell the TS
+  search can end on an environment saddle (ketosteroid isomerase: a Tyr57 OH rotation, both IRC ends the
+  same species). Caged FSM-TS gave all three KSI steps' TSs with connecting IRCs, each in under 25 min.
+  Solvent profiles keep NEB.
+- **IRCs stop at 0.01 eV/Å by default, up to 3000 steps per direction** (Sella; was 0.1 and 1000), and the
+  geomeTRIC IRC at the same largest force (its own default is about 0.023 eV/Å). At 0.1 an IRC can stop on a
+  shoulder well above the minimum, and minimizing from there can slide into another isomer: in a
+  Transition1x-TMC reaction (TMC_20796_Pt), the proton of a Pt-bound HCl moved to the chloride trans to the
+  alkyl chloride, 13.9 kcal/mol lower, which the bond-graph comparison could not see; at 0.01 the IRC itself
+  reaches that minimum. Pass `fmax` (and `steps`) in the IRC keywords for the old behaviour.
 - **The demo moves to mepd.afh.org.** The Ingress serves only `mepd.afh.org`; Cloudflare redirects
   `mepd.atomsforhumanity.org` there. The deploy now checks `https://mepd.afh.org/login`.
   The retrosynthesis data mirror is now `https://public.afh.org/mepd/retro/` (the image's `DATA_MIRROR`).
@@ -254,6 +306,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
   and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
   to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
+
+- **Explorer**: a path piece whose TS search fails, or whose TS belongs to another motion by its IRC, keeps its
+  path's highest image as an upper-bound barrier (`ts_kind = "path_peak"`), so a barrierless association no
+  longer cuts the seed off the network; such pairs get channel sampling, and the explorer's channel searches
+  sample every conformer pair of every mechanism by default.
+- **Psi4**: a `[solvation]` table uses Psi4's own PCM instead of xTB solvation on top; Hessians are central
+  differences of gradients, kept per geometry.
 
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
@@ -492,6 +551,22 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **QM/MM TS searches with a caged environment ran on the whole protein**: with no environment atom free
+  to relax (`qmmm_environment = "cage"`), optimizations and TS searches skipped the microiterations and
+  gave Sella every atom (3,951 atoms: ~4 min a step). They now see the QM region alone, as in a relaxed
+  environment.
+- **FSM and FSM-TS crashed on a QM/MM system in a protein** ("cannot reshape array ... into shape (N,3)"):
+  a mostly frozen system is interpolated as a small sub-system, and the geodesic smoother kept that
+  sub-system's path, which FSM turned into whole-system nodes. The smoother now holds the whole system's
+  path. FSM-TS used to fall back to NEB on every protein pair, and an NEB crashed when MSMEP split a branch.
+- **QM side-chain charge from the residue's state**: a protonated Asp (ASH) or Glu (GLH), neutral Lys or
+  doubly protonated His in the QM region was counted with its name's usual charge.
+- **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
+  `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
+  polytope it fitted to the geometry, and for a fluxional centre that changed between two geometries of one
+  molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
+  ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
+  centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
 - **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
   `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
   radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
@@ -572,6 +647,24 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with
   `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
   may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
+
+- **Memory of reading a finished search back** (`mepd/neb.py`, `mepd/TreeNode.py`, `mepd/cli_common.py`,
+  `mepd/discovery/cli_expand.py`). Collecting TS guesses after the path searches reloaded every pair tree with
+  its whole written history, building a bond graph for every node of every string: 5.8 GiB for one long
+  22-atom search (9,621 strings), only to use each leaf's last string. `TreeNode.read_from_disk(ends_only=True)`
+  and `NEB.read_from_disk(ends_only=True)` read just each search's first and last string; the TS-guess
+  readers use it (same guesses, 0.3 GiB, under a second instead of 82 s).
+- **Memory of a g-xTB search** (`mepd/engines/_sella.py`, `mepd/pathminimizers/gsm.py`). Sella imported torch
+  (~400 MiB) only to look for a CUDA GPU; with no GPU visible (no `/dev/nvidia*`, or `SELLA_DISABLE_GPU=1`)
+  Sella is now imported without it, and torch stays importable for anything else. GSM's history kept a
+  molecular graph for every node of every live string (each gradient batch, the whole run: ~600 MiB on a
+  20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
+  back. Results are unchanged.
+
+- **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
+  the stiff solver for hours or create material through rounding (flux-form right-hand side).
+- Explorer element tables come from RDKit, so Pd and other metals work in collide, free energies and the
+  nanoreactor.
 
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and

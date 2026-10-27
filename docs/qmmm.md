@@ -156,6 +156,20 @@ mepd qmmm protein-sites chorismate.xyz --protein 2CHT --chains A,B,C --charge -2
 mepd qmmm protein-build cm_sites --site 0 --qm-residues "A:ARG90" --end prephenate.xyz -o cm_site0
 ```
 
+* `--protonation "A:ASP103=ASH"` (protein-sites) sets a residue's state by
+  hand instead of by `--ph` (AMBER names: ASH, GLH, LYN, HID, HIE, HIP,
+  CYX), e.g. a buried catalytic acid that pH 7 would deprotonate. A side
+  chain in the QM region counts with the charge of the state it is in.
+* Each site lists its distinct poses (`poses` in sites.json: more than 2 Å
+  RMSD apart, best Vina score first, the protein-sites output prints them);
+  `protein-build --pose k` builds that one. A molecule that looks alike from
+  both ends docks either way round in the same pocket, and Vina's scores
+  cannot tell them apart: androstenedione in ketosteroid isomerase (1OH0)
+  scores -9.1 kcal/mol turned end to end from the crystal's equilenin and
+  -8.7 the crystal's way. Compare such poses in one environment with QM/MM
+  (put each pose's coordinates into the same system and minimize) or check
+  them against a crystal ligand.
+
 * Electrostatic embedding: the QM level must take point charges
   (`engine_name = "xtb"` for GFN2-xTB, or `"psi4"`); the written profile uses
   xtb.
@@ -207,6 +221,74 @@ site, best first. Pick a site, click residues to add their side chains to
 the QM region, optionally bring one of the species' reactions along, and
 *Build QM/MM system here*: the system joins Explore as a QM/MM node (and,
 with a reaction, its other end and the edge), minimized embedded.
+
+### The nanoreactor in a protein (or solvent), with QM/MM forces
+
+```bash
+# 8 trajectories, 4 at a time: the QM region at 2500 K inside the protein
+# (moving shell near 300 K), 5 ps each with the piston; products pooled.
+mepd qmmm reactor site0/minimized.xyz -i site0/qmmm_profile.toml --seeds 8 --workers 4 \
+    --temperature 2500 --time 5 -o reactor
+# then optimize, classify and connect them in the same system:
+mepd discovery expand site0/minimized.xyz -i site0/qmmm_profile.toml --products reactor/products.xyz
+```
+
+Each seed is its own process (the QM/MM engine is rebuilt from the profile),
+with its MD, live events and products in `seed_<k>/`. A product is the whole
+system right after an event, unless its frame changed a bond in the MM region
+or stretched a cut bond (both counted in summary.json). The QM level runs at
+`--etemp` (3000 K) during the MD, as the vacuum nanoreactor does, so a bond
+breaking homolytically does not stop the SCC; products are re-optimized at
+the profile's own settings. Events are found among the QM atoms only.
+
+Ketosteroid isomerase (1OH0 chains A+B, Asp103 as ASH) with
+androst-5-ene-3,17-dione and Tyr16, Asp40, Asp103, Tyr57 in the QM region
+(94 QM atoms with link H, GFN2-xTB, 3951 atoms): one QM/MM gradient 1.4 s,
+one MD step about 0.2 s on one core. 8 seeds x 5 ps gave 39 distinct
+products; after `expand`, the clean ones were the enzyme's own chemistry
+(Asp40's H to C6: the Δ4 product; Asp40's H back to C4; O3 protonated by
+Tyr16, Asp103 or Tyr57), the rest 2500 K damage 20-56 kcal/mol up.
+
+#### Steps between the products
+
+`protein-build` writes a profile for this: FSM-TS in a caged environment
+(`qmmm_environment = "cage"`, NEB as FSM-TS's fallback).
+
+```bash
+mepd run --start expand/species/species_0.xyz --end expand/species/species_35.xyz \
+    -i site0/qmmm_profile.toml --recursive --use-tsopt --irc -o step2
+```
+
+- Why the cage: with the shell relaxed, a TS search can let the environment
+  relax under the reaction coordinate and end on an environment saddle (KSI
+  step 1: a Tyr57 OH rotation 9 kcal/mol below the NEB peak, both IRC ends
+  the same species). In the cage every energy of a step, the TS and its IRC
+  share the start's environment.
+- Speed: each caged FSM-TS search took under 25 min for the KSI steps (FSM
+  ~7 min, then the TS on the QM atoms with an exact QM-region Hessian of 540
+  gradients at 0.2 s each, then the pseudo-IRC).
+- If xtb's SCC needs its fallback anywhere along a path, set one electronic
+  temperature for the whole run (`[xtb_engine_kwds] electronic_temperature =
+  1000`). Otherwise
+  images sit on different surfaces, and one KSI NEB blew up.
+- `--use-tsopt` re-optimizes the TS from the path's highest image even after
+  FSM-TS has converged one. For KSI step 1 that second search slid to a wrong
+  saddle. Take FSM-TS's TS (the path's middle node) and run `mepd ts --guess
+  ... --irc` on it.
+
+KSI results (GFN2-xTB/ff14SB, caged, etemp 1000 K; barriers from the
+minimized IRC ends, each with one imaginary mode):
+
+| Step | Barrier | ΔE (kcal/mol) |
+|---|---|---|
+| Asp40 takes the C4 H (Δ5 → dienolate) | 0.7 | −3.0 |
+| Tyr16's H to O3 (dienolate ⇌ dienol) | 0.1 | +0.1 |
+| Asp40 gives the H to C6 (dienolate → Δ4) | 13.0 | +13.0 |
+
+The barriers are far from experiment's ~10-12 kcal/mol for step 1, and the
+product lies above the intermediate, which experiment does not show. 1OH0 was
+crystallized with an intermediate analog, and the protein's −12 charge acts
+without counterions; the dienolate is over-stabilized at B3LYP-D3/6-31G* too.
 
 ## The environment along a path: relaxed, cage, or free energy
 
@@ -343,7 +425,11 @@ from the solvent or protein around it.
   level that takes point charges: `engine_name = "xtb"` (GFN2-/GFN1-xTB,
   xtb's own embedding, ~0.05 s per gradient for an 18-atom QM region in
   ~320 water charges), `"psi4"` (any Psi4 method; B3LYP/def2-SVP ~8 s) or
-  `"terachem"` (see *TeraChem* below).
+  `"terachem"` (see *TeraChem* below). xtb retries an SCC that does not
+  converge with `--etemp 1000`, then `--etemp 3000` (1000 iterations; the
+  log says when); `xtb_engine_kwds.electronic_temperature` fixes the
+  electronic temperature instead (a failure then retries more iterations only). A smeared energy differs from the 300 K one where the gap is
+  small: check the log before comparing such energies.
   g-xTB and the GFN-FF environment are mechanical embedding only, so
   charged or zwitterionic QM regions in polar environments are described
   less well with them.

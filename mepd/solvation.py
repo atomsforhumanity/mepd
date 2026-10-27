@@ -262,14 +262,48 @@ def _native_capable(engine: Engine) -> bool:
     return isinstance(engine, GXTBCalculator) and not engine.add_gxtb_flag and not standalone_gxtb(engine.executable)
 
 
+#: our solvent keys -> PCMSolver's names (Psi4's PCM)
+PCM_SOLVENTS = {"water": "Water", "methanol": "Methanol", "dmso": "DMSO", "acetonitrile": "Acetonitrile",
+                "nitromethane": "Nitromethane", "acetone": "Acetone", "ch2cl2": "Methylenechloride",
+                "thf": "THF", "chcl3": "Chloroform", "toluene": "Toluene", "benzene": "Benzene",
+                "dioxane": "1,4-Dioxane"}
+
+
+#: our solvent keys -> ORCA's CPCM names
+ORCA_SOLVENTS = {"water": "water", "methanol": "methanol", "octanol": "octanol", "dmso": "dmso",
+                 "acetonitrile": "acetonitrile", "dmf": "dmf", "nitromethane": "nitromethane", "acetone": "acetone",
+                 "ch2cl2": "ch2cl2", "thf": "thf", "ethylacetate": "ethylacetate", "chcl3": "chloroform",
+                 "ether": "diethylether", "toluene": "toluene", "benzene": "benzene", "dioxane": "1,4-dioxane",
+                 "hexane": "hexane"}
+
+
 def solvate_engine(engine: Engine, solvation: dict) -> Engine:
     """`engine` in the solvent that a profile's `[solvation]` table asks
-    for: {solvent, model = "alpb", method = "auto" | "native" | "correction"}."""
+    for: {solvent, model = "alpb", method = "auto" | "native" | "correction"}.
+    An engine with its own implicit solvent (GFN2-xTB's ALPB/GBSA, Psi4's
+    PCM, ORCA's CPCM) uses it: "auto" never adds the xTB correction on top of one."""
+    from mepd.engines.orca import OrcaEngine
+    from mepd.engines.psi4 import Psi4Engine
+
     solvent = get_solvent(solvation["solvent"]).key
     model = str(solvation.get("model", "alpb")).lower()
     method = str(solvation.get("method", "auto")).lower()
     if method not in ("auto", "native", "correction"):
         raise ValueError("solvation.method must be auto, native or correction")
+    if isinstance(engine, Psi4Engine) and method in ("auto", "native"):
+        import dataclasses
+
+        if solvent not in PCM_SOLVENTS:
+            raise ValueError(f"Psi4's PCM has no {solvent} here (it has {', '.join(PCM_SOLVENTS)}); "
+                             "set method = \"correction\" for the GFN2-xTB solvation correction instead")
+        return dataclasses.replace(engine, pcm_solvent=PCM_SOLVENTS[solvent])
+    if isinstance(engine, OrcaEngine) and method in ("auto", "native"):
+        import dataclasses
+
+        if solvent not in ORCA_SOLVENTS:
+            raise ValueError(f"ORCA's CPCM has no {solvent} here (it has {', '.join(ORCA_SOLVENTS)}); "
+                             "set method = \"correction\" for the GFN2-xTB solvation correction instead")
+        return dataclasses.replace(engine, cpcm_solvent=ORCA_SOLVENTS[solvent])
     native = _native_capable(engine)
     if method == "native" and not native:
         raise ValueError(f"{type(engine).__name__} has no native implicit solvent here; use method = \"correction\"")

@@ -733,7 +733,9 @@ class GXTBCalculator(Engine):
             return minimize_with_geometric(self, node, fmax=fmax, maxiter=steps)
         ase_engine = self._as_ase_engine_for_node(node)
         if optimizer == "sella":
-            from sella import Sella
+            from mepd.engines._sella import sella
+
+            Sella = sella().Sella
 
             optimizer_kwds = {"order": 0, "hessian_function": self._ase_hessian_function(node)}
             if every:

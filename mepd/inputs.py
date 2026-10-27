@@ -253,6 +253,17 @@ class NEBInputs:
         other species is not run. A -> B splitting into A -> C, C -> D,
         D -> A', A' -> B runs A -> C, D -> A' and A' -> B, not C -> D.
         Default False.
+    Network-aware pruning (mepd/network_aware.py), off unless one of the
+    first two is set:
+    `barrier_cutoff_kcal`: don't search a piece of a split, or TS-optimize a
+        step, whose route from the start must climb more than this out of a
+        well (kcal/mol, energies relative to one floor for the whole search).
+    `cutoff_temperature` (K) with `cutoff_time_s` (default one day) and
+        `cutoff_margin_kcal` (default 10, for the method's error): the
+        cutoff is the barrier with that half-life at that temperature plus
+        the margin, so a hotter or longer reaction explores more.
+    `network_floor_hartree`: the floor; default the root search's start
+        (set for follow-up searches that continue a network).
     """
 
     climb: bool = True
@@ -289,6 +300,11 @@ class NEBInputs:
     recursive_same_pair_split_limit: int = 5
     recursive_cycle_revisits: int = 5
     direct_only: bool = False
+    barrier_cutoff_kcal: Optional[float] = None
+    cutoff_temperature: Optional[float] = None
+    cutoff_time_s: float = 86400.0
+    cutoff_margin_kcal: float = 10.0
+    network_floor_hartree: Optional[float] = None
     ts_converged_stop: bool = True
     ts_converged_window: int = 15
     ts_converged_window_thre: float = 0.5  # kcal/mol
@@ -562,7 +578,8 @@ class RunInputs:
         `ase_engine_kwds.calculator = "package.module:ClassName"` with its
         keyword arguments in `ase_engine_kwds.calculator_kwds`), "xtb"
         (GFN2-/GFN1-xTB run directly, `xtb_engine_kwds.method`; takes point
-        charges, so it can be the QM level in TIP3P water), "psi4", or
+        charges, so it can be the QM level in TIP3P water), "psi4", "orca"
+        (ORCA's own optimizers and analytic Hessians, `orca_engine_kwds`), or
         "terachem" (a local TeraChem, `terachem_engine_kwds` method/basis/
         keywords; takes point charges too -- see mepd/engines/terachem.py).
     `solvation`: optional implicit solvent for whichever engine, e.g.
@@ -608,6 +625,7 @@ class RunInputs:
     fairchem_engine_kwds: dict = None
     mlip_engine_kwds: dict = None
     psi4_engine_kwds: dict = None
+    orca_engine_kwds: dict = None
     terachem_engine_kwds: dict = None
     geometry_optimizer_kwds: dict = None
     optimizer_kwds: dict = None
@@ -794,7 +812,7 @@ class RunInputs:
             self.program_kwds = None
 
         if self.program_kwds is None:
-            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "xtb", "terachem"}:
+            if self.engine_name in {"gxtb", "ase", "fairchem", "mlip", "psi4", "orca", "xtb", "terachem"}:
                 # Neither engine uses the qccompute/chemcloud ProgramArgs/qcdata
                 # input construct -- gxtb shells out directly, and ASEEngine
                 # takes an already-constructed ase.Calculator.
@@ -842,6 +860,7 @@ class RunInputs:
         self.fairchem_engine_kwds = dict(self.fairchem_engine_kwds or {})
         self.mlip_engine_kwds = dict(self.mlip_engine_kwds or {})
         self.psi4_engine_kwds = dict(self.psi4_engine_kwds or {})
+        self.orca_engine_kwds = dict(self.orca_engine_kwds or {})
         self.xtb_engine_kwds = dict(self.xtb_engine_kwds or {})
         self.terachem_engine_kwds = dict(self.terachem_engine_kwds or {})
         if self.engine_name == "terachem" or "terachem" in str(self.program):
@@ -938,6 +957,10 @@ class RunInputs:
             from mepd.engines.psi4 import Psi4Engine
 
             eng = Psi4Engine(**dict(self.psi4_engine_kwds or {}))
+        elif self.engine_name == 'orca':
+            from mepd.engines.orca import OrcaEngine
+
+            eng = OrcaEngine(**dict(self.orca_engine_kwds or {}))
         elif self.engine_name == 'terachem':
             from mepd.engines.terachem import TeraChemEngine
 

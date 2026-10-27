@@ -1296,6 +1296,17 @@ _Z = {"H": 1, "He": 2, "Li": 3, "Be": 4, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9,
       "Se": 34, "Br": 35, "I": 53}
 
 
+def _all_elements(table: dict) -> dict:
+    """`table` completed up to Rn from RDKit (metals included)."""
+    from rdkit import Chem
+
+    pt = Chem.GetPeriodicTable()
+    return {**{pt.GetElementSymbol(z): z for z in range(1, 87)}, **table}
+
+
+_Z = _all_elements(_Z)
+
+
 # ---------------------------------------------------------------------------
 # The network
 # ---------------------------------------------------------------------------

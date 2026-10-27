@@ -119,7 +119,8 @@ class FrozenAtomsEngine(ModifiedEngine):
         return eng
 
     def _micro(self):
-        """Microiterations for a QM/MM engine with a moving environment."""
+        """Microiterations for a QM/MM engine with an AMBER environment (the
+        optimizers move the QM region; the environment, if any moves, follows)."""
         from mepd.engines.qmmm import QMMMEngine
 
         base = self.base
@@ -133,8 +134,10 @@ class FrozenAtomsEngine(ModifiedEngine):
             return None
         from mepd.engines.microiter import MicroIterations
 
-        micro = MicroIterations(base, self.frozen)
-        return micro if micro.inner else None
+        # Also with no environment to relax (a caged one): the optimizers then
+        # see the QM region alone, not every atom of a protein with most fixed
+        # (Sella on 3,951 atoms took ~4 min a step).
+        return MicroIterations(base, self.frozen)
 
     def compute_geometry_optimization(self, node: StructureNode, keywords: dict | None = None) -> list[StructureNode]:
         micro = self._micro()

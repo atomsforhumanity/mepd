@@ -236,6 +236,34 @@ def test_paths_hold_frozen_atoms(monkeypatch):
     interpolation.set_global_frozen_atoms([])
 
 
+def test_mostly_frozen_geodesic_gives_the_whole_systems_path(monkeypatch):
+    """A protein around a QM region is interpolated as a sub-system; the
+    smoother's path (what FSM builds its nodes from) is still every atom's."""
+    from qcdata import Structure
+
+    from mepd import interpolation
+    from mepd.chainhelpers import run_geodesic
+
+    grid = np.array([[i, j, k] for i in range(8) for j in range(8) for k in range(8)], float)[:400] * 4.0
+    xa = grid * 1.8897259886
+    xb = xa.copy()
+    xb[:3] += 1.0
+    a = Structure(symbols=["Ar"] * 400, geometry=xa)
+    monkeypatch.setattr(interpolation, "_GLOBAL_FROZEN", None)
+    interpolation.set_global_frozen_atoms(list(range(3, 400)), 400)
+    try:
+        chain, smoother = run_geodesic([StructureNode(structure=a, has_molecular_graph=False),
+                                        StructureNode(structure=a.model_copy(update={"geometry": xb}),
+                                                      has_molecular_graph=False)],
+                                       nimages=6, return_smoother=True)
+    finally:
+        interpolation.set_global_frozen_atoms([])
+    path = np.asarray(smoother.path)
+    assert path.shape == (len(chain), 400, 3)
+    assert np.allclose(path, np.array([n.coords for n in chain]))
+    assert np.abs(path[:, 3:] - xa[3:]).max() < 1e-9
+
+
 def test_neb_runs_with_frozen_atoms(monkeypatch):
     from mepd import interpolation
     from mepd.chain import Chain

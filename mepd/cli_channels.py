@@ -360,6 +360,14 @@ def channels(
         "being killed with nothing. Searches already queued at the deadline "
         "still run once. 0 (default) = no budget.",
     ),
+    max_path_searches: int = typer.Option(
+        0, "--max-path-searches",
+        help="After this many path searches (each pair's first search and every piece a split adds, "
+        "counted in pair order) no new pair starts and no search is split further, as with --search-budget; "
+        "pieces already queued still run once, so the count can end a little above the cap. Unlike a "
+        "wall-clock budget, the same inputs stop at the same search on any machine (with one pair at a "
+        "time: --workers 1, --no-parallel). 0 (default) = no cap.",
+    ),
     direct_only: Optional[bool] = typer.Option(
         None, "--direct-only/--allow-multistep",
         help="--direct-only: focus compute on the queried pair. When a path search splits, only the pieces "
