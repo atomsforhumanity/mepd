@@ -367,6 +367,11 @@ def protein_build(
     end: Optional[str] = typer.Option(None, "--end", help="The reaction's other end (xyz: the species' atoms): put "
                                       "into the site in place of the species, as in `mepd qmmm reaction`."),
     ts: Optional[str] = typer.Option(None, "--ts", help="A TS between them (xyz, same atoms) to put in too."),
+    counterions: bool = typer.Option(True, "--counterions/--no-counterions", help="Neutralize the protein with "
+                                     "Na+/Cl- beside charged surface groups away from the QM region (without them "
+                                     "its net charge acts on the QM region unscreened)."),
+    ion_min_distance: float = typer.Option(10.0, "--ion-min-distance", help="Counterions at least this many Å "
+                                           "from every QM atom."),
     output: Path = typer.Option(Path("mepd_protein_qmmm"), "--output", "-o"),
 ):
     """The species at a docked site as a QM/MM system: the protein (AMBER
@@ -389,12 +394,24 @@ def protein_build(
     rep = build_site_system(sites_dir / info["protein"], [str(a) for a in species.symbols], np.asarray(rec["coords"]),
                             output, ligand_charge=info["charge"], ligand_multiplicity=info["multiplicity"],
                             qm_residues=qm_residues.split(), water_shell=water_shell, active_radius=active_radius,
-                            freeze_protein=freeze_protein, cutoff=cutoff or None,
+                            freeze_protein=freeze_protein, cutoff=cutoff or None, counterions=counterions,
+                            ion_min_distance=ion_min_distance,
                             name=f"site {site} of {Path(info['prepared']['pdb']).stem}")
+    ions = rep["counterions"]
     typer.echo(f"Site {site}, pose {pose} ({rec['score']:.1f} kcal/mol): {rep['protein_atoms']} protein atoms, {rep['waters']} "
-               f"waters, the species; system charge {rep['charge']:+d}.")
+               f"waters, {ions['Na+']} Na+, {ions['Cl-']} Cl-, the species; force-field charge acting on the QM "
+               f"region {ions['charge_before'] - ions.get('qm_side_chain_charge', 0):+d} -> "
+               f"{ions.get('charge_after', ions['charge_before']) - ions.get('qm_side_chain_charge', 0):+d}, "
+               f"system charge {rep['charge']:+d}.")
+    if ions.get("unplaced"):
+        typer.echo(f"⚠ {ions['unplaced']} counterion(s) found no charged group {ion_min_distance:g} Å or more from the "
+                   "QM region: the environment keeps that net charge (lower --ion-min-distance to place them).")
+    elif not counterions and ions["charge_before"]:
+        typer.echo(f"⚠ No counterions: the environment's net charge ({ions['charge_before']:+d}) acts on the QM region "
+                   "unscreened.")
     _write(output, rep["structure"], rep["region_obj"], {"site": rec["id"], "pose": pose, "score": rec["score"],
-                                                        "residues": rec["residues"], "sites": str(sites_dir)},
+                                                        "residues": rec["residues"], "sites": str(sites_dir),
+                                                        "system_charge": rep["charge"], "counterions": ions},
            paths=_POCKET_PROFILE)
     if end:
         # The reaction's other end (and TS) into the same site, in the

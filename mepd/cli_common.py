@@ -13,7 +13,7 @@ import copy
 import logging
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -921,7 +921,20 @@ def _run_msmep_pairs(
             })
             from mepd.interpolation import initial_chain as _initial_chain
 
-            pair_chain = _initial_chain(seed_chain, run_inputs.chain_inputs, run_inputs.gi_inputs)
+            prepared = None
+            if getattr(run_inputs, "qmmm", None):
+                # A QM/MM pair: the environment matched between the ends and
+                # marched along the path, as for `mepd run` (mepd.qmmm_path).
+                from mepd.qmmm_path import prepare
+
+                prepared = prepare(run_inputs, structures[i], structures[j], int(run_inputs.gi_inputs.nimages),
+                                   echo=_say)
+            if prepared is not None:
+                start_node, _, images = prepared
+                pair_chain = Chain.model_validate({"nodes": [start_node.update_coords(x) for x in images],
+                                                   "parameters": copy.deepcopy(run_inputs.chain_inputs)})
+            else:
+                pair_chain = _initial_chain(seed_chain, run_inputs.chain_inputs, run_inputs.gi_inputs)
             msmep = MSMEP(inputs=run_inputs)
             if parallel:
                 pair_history = msmep.run_parallel_recursive_minimize(
@@ -1023,6 +1036,9 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
 class TsIrcResult:
     ts_node: object
     irc_chain: Optional[Chain] = None
+    # Why the TS may not be this reaction's (its mode, its IRC ends); also in
+    # <label>_check_failed.txt beside it.
+    problems: list = field(default_factory=list)
 
 
 def _optimize_ts_and_irc(
@@ -1033,6 +1049,7 @@ def _optimize_ts_and_irc(
     run_irc: bool,
     label: str = "ts",
     direction=None,
+    already_optimized: bool = False,
 ) -> Optional["TsIrcResult"]:
     """Optimize a TS-guess node with the engine and, if requested, follow up
     with an IRC -- writes <label>.xyz (and <label>_irc.xyz) into `output`.
@@ -1044,6 +1061,9 @@ def _optimize_ts_and_irc(
     standalone `ts` invocation should exit non-zero; a TS opt launched
     automatically after `run` should just warn and let the NEB result
     stand; `channels` needs the IRC chain itself to classify the result).
+
+    `already_optimized`: the node is a TS converged and checked elsewhere
+    (FSM-TS's): it is written and followed by the IRC without a new search.
     """
     from mepd.compute import find_ts, irc
     from mepd.engines.frozen import FrozenAtomsEngine
@@ -1054,15 +1074,24 @@ def _optimize_ts_and_irc(
     if not callable(getattr(engine, "compute_transition_state", None)):
         _say(f"Engine {type(engine).__name__} does not support transition-state optimization.")
         return None
-    _say(f"Optimizing transition state ({label})...")
+    if already_optimized:
+        _say(f"Using the transition state the path search already optimized and checked ({label}).")
+    else:
+        _say(f"Optimizing transition state ({label})...")
     try:
         # A QM/MM search climbs along the given direction (a path's tangent).
         # QM/MM (frozen atoms): no frequency check, the whole system's Hessian
         # is out of reach.
         ts_kwds = run_inputs.ts_inputs.find_ts_keywords(engine) if getattr(run_inputs, "ts_inputs", None) else {}
-        ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo,
-                          **{**ts_kwds, "check_frequencies": False}) if frozen \
-            else find_ts(ts_guess_node, engine, **ts_kwds)
+        if already_optimized:
+            ts_node = ts_guess_node
+            if ts_node.energy is None:
+                engine.compute_energies([ts_node])
+        elif frozen:
+            ts_node = find_ts(ts_guess_node, engine, v0=direction, echo=typer.echo,
+                              **{**ts_kwds, "check_frequencies": False})
+        else:
+            ts_node = find_ts(ts_guess_node, engine, **ts_kwds)
     except Exception as exc:
         cause = exc.__cause__ or exc
         _warn(f"Transition-state optimization failed ({label}): {type(cause).__name__}: {cause}")
@@ -1072,8 +1101,27 @@ def _optimize_ts_and_irc(
     ts_path = output / f"{label}.xyz"
     Chain.model_validate({"nodes": [ts_node], "parameters": ChainInputs()}).write_to_disk(ts_path)
     _say(f"Wrote optimized TS structure to {ts_path}")
+    check_fp = output / ("ts_check_failed.txt" if label == "ts" else f"{label}_check_failed.txt")
+    check_fp.unlink(missing_ok=True)
+    problems: list[str] = []
+    if frozen and direction is not None and not already_optimized:
+        from mepd.qmmm_path import reaction_mode_problems
+
+        try:
+            problems += reaction_mode_problems(ts_node, engine, direction, echo=typer.echo)
+        except Exception as exc:
+            _warn(f"Could not check the TS's mode ({label}; {type(exc).__name__}: {exc}).")
+
+    def _report(result: TsIrcResult) -> TsIrcResult:
+        result.problems = problems
+        if problems:
+            for p in problems:
+                _warn(f"✗ {label}: {p}")
+            check_fp.write_text("".join(f"{p}\n" for p in problems))
+        return result
+
     if not run_irc:
-        return TsIrcResult(ts_node=ts_node)
+        return _report(TsIrcResult(ts_node=ts_node))
 
     _say(f"Computing IRC ({label})...")
     # Beside the TS: why its IRC failed, so a result can say so (rather
@@ -1086,13 +1134,34 @@ def _optimize_ts_and_irc(
         cause = exc.__cause__ or exc
         _warn(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")
         failed_fp.write_text(f"{type(cause).__name__}: {cause}\n")
-        return TsIrcResult(ts_node=ts_node)
+        return _report(TsIrcResult(ts_node=ts_node))
 
     failed_fp.unlink(missing_ok=True)
     irc_path = output / ("irc.xyz" if label == "ts" else f"{label}_irc.xyz")
     irc_chain.write_to_disk(irc_path)
     _say(f"Wrote IRC path to {irc_path}")
-    return TsIrcResult(ts_node=ts_node, irc_chain=irc_chain)
+    same = _irc_ends_same_species(irc_chain, engine)
+    if same:
+        problems.append("both IRC ends are the same species, so this TS joins no two species: a saddle of "
+                        "another motion (a conformer change, a side chain or the environment), not a reaction")
+    return _report(TsIrcResult(ts_node=ts_node, irc_chain=irc_chain))
+
+
+def _irc_ends_same_species(irc_chain: Chain, engine) -> bool:
+    """True when both ends of an IRC have one molecular graph (for QM/MM, the
+    QM region's), so the TS joins no two species. False when they differ or
+    cannot be compared."""
+    from mepd.elementarystep import _comparison_preparer, _prepare_node_for_comparison
+    from mepd.nodes.nodehelpers import _is_connectivity_identical
+
+    try:
+        prepare = _comparison_preparer(engine)
+        a, b = (_prepare_node_for_comparison(n, prepare) for n in (irc_chain[0], irc_chain[-1]))
+        if getattr(a, "graph", None) is None or getattr(b, "graph", None) is None:
+            return False
+        return bool(_is_connectivity_identical(a, b, verbose=False, collect_comparison=False))
+    except Exception:
+        return False
 
 
 def _ts_guess_tasks_from_tree(tree, label_prefix: str) -> list[tuple[str, object]]:

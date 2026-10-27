@@ -601,6 +601,11 @@ class RunInputs:
         the mean force over dynamics of the environment, settings in
         `mean_force` = {temperature, equilibrate_ps, sample_ps, frames};
         see mepd/engines/mean_force.py).
+    `restraints`: harmonic distance restraints added to the engine, as
+        [[restraints]] tables {atoms = [i, j] (0-based), distance (Å),
+        force_constant (kcal/mol/Å², default 500)}; e.g. hold a C-H at 1.10 Å
+        while the rest minimizes (see mepd/restraints.py). On QM/MM they may
+        involve only atoms the QM region's optimizer moves.
     """
 
     engine_name: str = "gxtb"
@@ -633,6 +638,7 @@ class RunInputs:
     qmmm: dict = None
     qmmm_environment: str = None
     mean_force: dict = None
+    restraints: list = None
 
     def __post_init__(self):
         disable_molecular_graphs = False
@@ -1048,7 +1054,10 @@ class RunInputs:
             else:
                 from mepd.engines.qmmm import QMMMEngine
 
-                eng = QMMMEngine(base=eng, region=region, base_dir=self.qmmm.get("base_dir"))
+                eng = QMMMEngine(base=eng, region=region, base_dir=self.qmmm.get("base_dir"),
+                                 restraints=self._qmmm_restraints(region))
+            if self.restraints and region.mm == "terachem":
+                raise InputsError("restraints are not available with TeraChem's own QM/MM (mm = \"terachem\")")
             environment = str(self.qmmm_environment or "relaxed").lower().replace("-", "_")
             if environment not in ("relaxed", "cage", "mean_force"):
                 raise InputsError(f"qmmm_environment must be relaxed, cage or mean_force, not {self.qmmm_environment!r}")
@@ -1077,11 +1086,31 @@ class RunInputs:
             StructureNode.set_global_graph_atoms(region.qm_atoms, region.natoms)
             set_global_frozen_atoms(frozen, region.natoms)
             return FrozenAtomsEngine(base=eng, frozen=frozen, hessian_atoms=list(region.qm_atoms))
+        if self.restraints:
+            from mepd.restraints import RestrainedEngine
+
+            eng = RestrainedEngine(base=eng, restraints=self.restraints)
         if frozen and self.engine_name not in ("qccompute", "chemcloud"):   # TeraChem freezes natively
             from mepd.engines.frozen import FrozenAtomsEngine
 
             return FrozenAtomsEngine(base=eng, frozen=frozen)
         return eng
+
+    def _qmmm_restraints(self, region) -> list:
+        """The restraints, checked against the region: only atoms the QM
+        region's optimizer moves (QM atoms and link partners), since the
+        environment relaxes on its own surface without them."""
+        from mepd.errors import InputsError
+        from mepd.restraints import parse_restraints
+
+        restraints = parse_restraints(self.restraints)
+        movable = set(region.qm_atoms) | {m for _, m in region.links}
+        for r in restraints:
+            outside = [a for a in (r.i, r.j) if a not in movable]
+            if outside:
+                raise InputsError(f"restraint on atoms {r.i}, {r.j}: atom(s) {', '.join(map(str, outside))} are not "
+                                  "QM atoms (or link partners); on QM/MM, restraints act on the QM region only")
+        return restraints
 
     @classmethod
     def open(cls, fp):

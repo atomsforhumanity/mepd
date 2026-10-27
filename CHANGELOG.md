@@ -12,6 +12,24 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Harmonic distance restraints** (`[[restraints]]` in a profile: `atoms = [i, j]`, `distance` in Å,
+  `force_constant` in kcal/mol/Å², 500 by default) on any engine; on QM/MM inside the QM/MM energy, so
+  microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a
+  Michaelis complex minimizes. `mepd optimize` reports each restraint's distance and energy. (#26)
+- **Counterions in `mepd qmmm protein-build`** (on by default; `--no-counterions`, `--ion-min-distance`):
+  Na+/Cl- neutralize the force-field charge acting on the QM region (QM side chains' own charge left
+  out), each ion beside a charged group at least 10 Å from the QM region; the system then carries the QM
+  region's charge. The command reports that charge before and after and the system charge. Without them the
+  KSI dimer's net -12 acted on the QM region unscreened. (#28)
+- **`mepd channels` on QM/MM steps**: conformers of the QM region in its environment, by MD of the QM
+  atoms with QM/MM forces (`--qmmm-temperature`, `--qmmm-md-ps`) and QM/MM minimization; pairs searched
+  with the environment matched and marched as in `mepd run`; no atom mapping or mirror-image merge. (#27)
+- **A check that a TS is the reaction's**: after `run --use-tsopt` on QM/MM, the TS's imaginary mode
+  must overlap the path tangent (QM-region Hessian, environment held), and after any IRC its two ends
+  must be different species. A TS that fails is reported (`<label>_check_failed.txt`, web results). (#25)
+- **A mepd agent skill** packaged as a Claude Code plugin (`plugin/`: SKILL.md, LESSONS.md) for the AFH
+  research-skills catalog. (#16)
+
 - **`mepd qmmm reactor`**: the nanoreactor with QM/MM forces over several trajectories, one process per seed
   (`--seeds`, `--workers`). The QM region runs hot inside its protein or solvent, which stays near room
   temperature. Products are whole systems, pooled over seeds (one per distinct QM bond graph), for
@@ -551,6 +569,20 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **`run --use-tsopt` after FSM-TS** optimized the TS again from the string's interpolated peak (on QM/MM)
+  instead of taking the TS FSM-TS had converged and checked; on KSI step 1 that search ended 108 kcal/mol
+  up on another reaction. It now takes FSM-TS's TS and runs only the IRC. (#22)
+- **NEB steps that blow up are rejected**: a step that raises an image by more than 1 Eh or a gradient
+  100-fold is undone and retried smaller (dt halved); after three, the branch fails instead of MSMEP
+  splitting on the wreck (a KSI NEB went to 1e10 kcal/mol in three steps). (#23)
+- **xtb no longer mixes electronic temperatures within a path**: once an SCC needed Fermi smearing, the
+  engine holds that temperature for every later calculation and computes the rest of the batch (the
+  path's images, a Hessian's displacements) again at it. (#24)
+- **SMILES endpoints embed the same way every time** (RDKit seeded): the unseeded embedding followed the
+  process's random stream, so `mepd channels --start <SMILES>` could start from another geometry and
+  conformer pool from run to run. (#29)
+- **Web results of QM/MM jobs** were read with a process-wide QM region that another thread reading
+  another job's result could reset mid-read (the whole system then perceived as one molecule). (#29)
 - **Orbitals of a whole QM/MM system froze the web app.** The 3D viewer asks for the orbitals (and, with
   Fragments on, each molecule's orbitals) of the geometry it shows; for a protein system that meant xtb on all
   3,951 atoms (it crashed after 3 s) and Lewis structures of the protein's fragments tried charge by charge for

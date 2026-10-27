@@ -43,6 +43,13 @@ FORCEFIELD = ["amber14-all.xml", "amber14/tip3p.xml"]
 # Formal charge of a side chain cut at CA-CB in its usual state (see
 # side_chain_charge for the state a residue's hydrogens say it is in).
 SIDE_CHAIN_CHARGE = {"ARG": 1, "LYS": 1, "HIP": 1, "ASP": -1, "GLU": -1}
+# Counterions sit at least this far (Å) from every QM atom: they screen the protein's
+# net charge, not the chemistry (an ion beside the QM region would be its own problem).
+ION_MIN_DISTANCE = 10.0
+# Charged groups a counterion pairs with: residue -> (anchor atom, charged atoms, ion-charged
+# atoms distance Å). The ion goes beyond the charged atoms' centre, away from the anchor.
+_ANION_GROUPS = {"ASP": ("CG", ("OD1", "OD2"), 2.3), "GLU": ("CD", ("OE1", "OE2"), 2.3)}
+_CATION_GROUPS = {"LYS": ("CE", ("NZ",), 3.0), "ARG": ("NE", ("CZ",), 3.4)}
 INSTALL = "pip install vina pdbfixer (or pip install 'mepd[qmmm]')"
 
 
@@ -331,12 +338,16 @@ def find_sites(protein_pdb: Path, symbols: Sequence[str], coords_angstrom: np.nd
 def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom: np.ndarray, out_dir: Path, *,
                       ligand_charge: int = 0, ligand_multiplicity: int = 1, qm_residues: Sequence[str] = (),
                       water_shell: float = 8.0, active_radius: float = 6.0, freeze_protein: bool = False,
-                      cutoff: Optional[float] = 12.0, name: str = "") -> dict:
+                      cutoff: Optional[float] = 12.0, name: str = "", counterions: bool = True,
+                      ion_min_distance: float = ION_MIN_DISTANCE) -> dict:
     """The species at these coordinates (Å) in the protein, with a TIP3P water
     shell of `water_shell` Å around it, as a QM/MM system in `out_dir`:
     system.xyz, environment.pdb (the force-field atoms: protein, then water)
     and region.json. `qm_residues` ("A:ARG90" or "ARG90"): side chains (from
-    CB on) put in the QM region too. Returns the paths and a summary."""
+    CB on) put in the QM region too. `counterions`: neutralize the protein
+    with Na+/Cl- paired to charged surface groups at least `ion_min_distance`
+    Å from the QM region (see place_counterions). Returns the paths and a
+    summary."""
     _need("openmm")
     import openmm.app as app
     import openmm.unit as unit
@@ -365,6 +376,14 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
         if d.min() < 2.4 or d.max() > water_shell:
             drop.append(res)
     model.delete(drop)
+    names = {r.strip().upper() for r in qm_residues}
+    qm_side = sum(side_chain_charge(res) for res in model.topology.residues()
+                  if f"{res.chain.id}:{res.name}{res.id}".upper() in names or f"{res.name}{res.id}".upper() in names)
+    ions = {"Na+": 0, "Cl-": 0, "unplaced": 0, "charge_before": int(round(_ff_charge(model.topology, ff))),
+            "qm_side_chain_charge": int(qm_side)}
+    if counterions:
+        ions = place_counterions(model, ff, _qm_positions(model, lig, qm_residues), ion_min_distance,
+                                 qm_charge=qm_side)
     relax = _relax_environment(model, ff, symbols, lig, int(ligand_charge), int(ligand_multiplicity), cutoff)
     env_pdb = out_dir / "environment.pdb"
     with open(env_pdb, "w") as fh:
@@ -372,7 +391,7 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
     atoms = list(model.topology.atoms())
     env_xyz = np.asarray(model.getPositions().value_in_unit(unit.angstrom))
     n_env = len(atoms)
-    n_water = (n_env - n_protein) // 3
+    n_water = sum(1 for r in model.topology.residues() if r.name == "HOH")
     env_symbols = [a.element.symbol for a in atoms]
     # QM: the species (appended last) and any side chains asked for.
     want = {r.strip().upper() for r in qm_residues}
@@ -410,7 +429,120 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
             "atoms": len(sym), "protein_atoms": n_protein, "waters": n_water, "qm_atoms": len(qm),
             "links": len(region.links), "moving": len(region.active_atoms), "frozen": len(region.frozen_atoms),
             "charge": system_charge, "qm_charge": region.qm_charge, "summary": region.summary(), "relax": relax,
-            "structure": structure, "region_obj": region}
+            "counterions": ions, "structure": structure, "region_obj": region}
+
+
+def _qm_positions(model, lig: np.ndarray, qm_residues: Sequence[str]) -> np.ndarray:
+    """Positions (Å) of the QM region to be: the species and the side chains named."""
+    import openmm.unit as unit
+
+    want = {r.strip().upper() for r in qm_residues}
+    pos = np.asarray(model.getPositions().value_in_unit(unit.angstrom))
+    idx = [a.index for res in model.topology.residues()
+           if f"{res.chain.id}:{res.name}{res.id}".upper() in want or f"{res.name}{res.id}".upper() in want
+           for a in res.atoms()]
+    return np.vstack([np.asarray(lig, dtype=float), pos[idx]]) if idx else np.asarray(lig, dtype=float)
+
+
+def _clear_spot(centre, axis, dist, solid_tree, ions, qm_tree, min_distance):
+    """A place `dist` Å from `centre`, along `axis` or up to 60 degrees off
+    it, at least 2 Å from every non-water atom, 4 Å from other ions and
+    `min_distance` from the QM region; the clearest such place, or None."""
+    u = np.asarray(axis, dtype=float)
+    u = u / max(np.linalg.norm(u), 1e-8)
+    p = np.cross(u, [1.0, 0.0, 0.0] if abs(u[0]) < 0.9 else [0.0, 1.0, 0.0])
+    p /= np.linalg.norm(p)
+    q = np.cross(u, p)
+    best, best_gap = None, 2.0
+    for tilt in (0.0, 30.0, 60.0):
+        for phi in (range(0, 360, 45) if tilt else (0,)):
+            t, f = np.radians(tilt), np.radians(phi)
+            x = centre + dist * (np.cos(t) * u + np.sin(t) * (np.cos(f) * p + np.sin(f) * q))
+            gap = solid_tree.query(x)[0] if solid_tree is not None else np.inf
+            if gap < best_gap or qm_tree.query(x)[0] < min_distance or \
+                    any(np.linalg.norm(x - y) < 4.0 for y in ions):
+                continue
+            best, best_gap = x, gap
+    return best
+
+
+def place_counterions(model, ff, qm_xyz: np.ndarray, min_distance: float = ION_MIN_DISTANCE,
+                      qm_charge: int = 0) -> dict:
+    """Neutralize the environment (protein and water; in place): one Na+ per
+    excess negative charge, each beside a carboxylate (Asp, Glu, the C
+    terminus), one Cl- per positive charge beside an amine or guanidinium (Lys,
+    Arg, the N terminus). Groups at least `min_distance` Å from the QM region
+    are used, nearest first, so the ions screen the charges acting most on it;
+    an ion's place must be clear of other atoms (waters in the way are
+    removed). Without the ions a protein's net charge (KSI dimer: -12) acts on
+    the QM region unscreened. `qm_charge`: the charge of side chains that
+    will be QM atoms; their force-field charges never act on the QM region,
+    so what is neutralized is the rest (the environment then carries
+    `qm_charge` in force-field terms, the system the QM region's charge).
+    Returns counts, the environment's charge before and after, and how many
+    could not be placed."""
+    import openmm
+    import openmm.app as app
+    import openmm.unit as unit
+    from scipy.spatial import cKDTree
+
+    before = int(round(_ff_charge(model.topology, ff)))
+    acting = before - int(qm_charge)          # the force-field charge the QM region feels
+    want_na, want_cl = max(0, -acting), max(0, acting)
+    pos = np.asarray(model.getPositions().value_in_unit(unit.angstrom))
+    qm_tree = cKDTree(np.asarray(qm_xyz, dtype=float))
+
+    def groups(table, termini):
+        out = []
+        residues = [r for r in model.topology.residues() if r.name != "HOH"]
+        for k, res in enumerate(residues):
+            names = {a.name: a.index for a in res.atoms()}
+            spec = table.get(res.name)
+            if spec is None and termini == "C" and "OXT" in names and "C" in names and "O" in names:
+                spec = ("C", ("O", "OXT"), 2.3)
+            if spec is None and termini == "N" and "H3" in names and "N" in names and "CA" in names:
+                spec = ("CA", ("N",), 3.0)
+            if spec is None or spec[0] not in names or any(n not in names for n in spec[1]):
+                continue
+            centre = pos[[names[n] for n in spec[1]]].mean(0)
+            out.append((float(qm_tree.query(centre)[0]), centre, pos[names[spec[0]]], spec[2]))
+        return sorted(o for o in out if o[0] >= min_distance)
+
+    placed: list[tuple[str, np.ndarray]] = []
+    water_drop: set = set()
+    water_of = {a.index: res for res in model.topology.residues() if res.name == "HOH" for a in res.atoms()}
+    solid = [i for i in range(len(pos)) if i not in water_of]
+    solid_tree = cKDTree(pos[solid]) if solid else None
+    water_idx = sorted(water_of)
+    water_tree = cKDTree(pos[water_idx]) if water_idx else None
+    for kind, want, table, termini in (("NA", want_na, _ANION_GROUPS, "C"), ("CL", want_cl, _CATION_GROUPS, "N")):
+        n = 0
+        for _, centre, anchor, dist in groups(table, termini):
+            if n >= want:
+                break
+            x = _clear_spot(centre, centre - anchor, dist, solid_tree, [y for _, y in placed], qm_tree, min_distance)
+            if x is None:
+                continue                                       # no room by this group: the next one
+            if water_tree is not None:
+                for k in water_tree.query_ball_point(x, 2.6):
+                    water_drop.add(water_of[water_idx[k]])
+            placed.append((kind, x))
+            n += 1
+    if water_drop:
+        model.delete(list(water_drop))
+    if placed:
+        top = app.Topology()
+        chain = top.addChain("X")
+        for kind, _ in placed:
+            res = top.addResidue(kind, chain)
+            top.addAtom(kind, app.element.sodium if kind == "NA" else app.element.chlorine, res)
+        model.add(top, [openmm.Vec3(*(x / 10.0)) for _, x in placed] * unit.nanometer)
+    n_na = sum(1 for k, _ in placed if k == "NA")
+    n_cl = len(placed) - n_na
+    return {"Na+": n_na, "Cl-": n_cl, "unplaced": (want_na - n_na) + (want_cl - n_cl), "charge_before": before,
+            "charge_after": int(round(_ff_charge(model.topology, ff))), "qm_side_chain_charge": int(qm_charge),
+            "waters_removed": len(water_drop),
+            "min_distance": float(min_distance)}
 
 
 def side_chain_charge(res) -> int:

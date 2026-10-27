@@ -52,3 +52,40 @@ def test_gfnff_is_not_retried(tmp_path):
     with pytest.raises(ElectronicStructureError, match=r"^GFN-FF \(xtb\) failed"):
         _run(GFNFFEngine(executable=_fake(tmp_path, always_fail=True), n_parallel=1), tmp_path)
     assert len((tmp_path / "wd" / "calls").read_text().splitlines()) == 1
+
+
+# ---- one surface per path (#24): a rung that worked is held, and the batch is recomputed at it
+
+_FAKE_BY_GEOMETRY = """#!/usr/bin/env python3
+import sys
+args = sys.argv[1:]
+open("{log}", "a").write(" ".join(args) + "\\n")
+z = float(open("in.xyz").read().split()[-1])
+kelvin = float(args[args.index("--etemp") + 1]) if "--etemp" in args else 300.0
+if z > 2.0 and kelvin < 1000:   # a stretched image: SCC fails without smearing
+    print("-1- scf: Self consistent charge iterator did not converge")
+    sys.exit(1)
+open("in.engrad", "w").write("2\\n%.6f\\n" % (-1.0 - kelvin / 1e6) + "0.0\\n" * 6)
+"""
+
+
+def test_a_rung_that_worked_is_held_and_the_whole_batch_shares_it(tmp_path):
+    from qcdata import Structure
+
+    from mepd.nodes.node import StructureNode
+
+    exe = tmp_path / "xtb"
+    exe.write_text(_FAKE_BY_GEOMETRY.replace("{log}", str(tmp_path / "calls")))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    engine = XTBEngine(executable=str(exe), n_parallel=1)
+    nodes = [StructureNode(structure=Structure(symbols=["H", "H"], charge=0, multiplicity=1,
+                                               geometry=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, z * 1.8897]])))
+             for z in (0.74, 1.5, 2.5)]   # Å; the last image's SCC needs smearing
+    energies = engine.compute_energies(nodes)
+    assert np.allclose(energies, -1.0 - 1000 / 1e6)   # all three at 1000 K, none at 300 K
+    assert engine._scc_floor == 1000.0
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert len(calls) == 3 + 1 + 3   # three runs, one retry, the batch again at 1000 K
+    later = StructureNode(structure=nodes[0].structure)
+    engine.compute_energies([later])                  # and every calculation after
+    assert "--etemp 1000.0" in (tmp_path / "calls").read_text().splitlines()[-1]

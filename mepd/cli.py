@@ -325,6 +325,30 @@ def _run_network_completion(
     )
 
 
+def _verified_fsm_ts(leaf, tree_path: Optional[Path] = None):
+    """The TS FSM-TS optimized and verified for an elementary leaf, or None.
+    In memory it is the minimizer's `ts_node`; for a tree read back from disk,
+    the middle of the leaf's final [reactant, TS, product] chain when tree.json
+    records the pseudo-IRC verdict "elementary" for it."""
+    data = getattr(leaf, "data", None)
+    ts = getattr(data, "ts_node", None)
+    if ts is not None:
+        return ts
+    record = None
+    if tree_path is not None and (Path(tree_path) / "tree.json").exists():
+        import json
+
+        try:
+            nodes = json.loads((Path(tree_path) / "tree.json").read_text()).get("nodes", [])
+            record = next((n for n in nodes if int(n.get("index", -1)) == int(leaf.index)), None)
+        except Exception:
+            record = None
+    if not record or (record.get("pseudo_irc") or {}).get("verdict") != "elementary":
+        return None
+    chain = data.chain_trajectory[-1] if data is not None and data.chain_trajectory else None
+    return chain[1] if chain is not None and len(chain) == 3 else None
+
+
 def _ts_guess(chain, run_inputs):
     """The TS guess of a converged path: its highest image, or, for a QM/MM
     system, the interpolated maximum with the path's tangent there as the
@@ -803,7 +827,13 @@ def run(
                     typer.echo(f"ts_leaf_{leaf.index}: above the barrier cutoff ({getattr(leaf, 'na_route', {})}); "
                                "no TS search.")
                     continue
-                guess, direction = _ts_guess(leaf.data.chain_trajectory[-1], run_inputs)
+                verified = _verified_fsm_ts(leaf, tree_path)
+                if verified is not None:
+                    # FSM-TS already optimized this leaf's TS and checked it (one imaginary
+                    # mode, pseudo-IRC joins the ends): take it as is, no second search.
+                    guess, direction = verified, None
+                else:
+                    guess, direction = _ts_guess(leaf.data.chain_trajectory[-1], run_inputs)
                 _optimize_ts_and_irc(
                     guess,
                     run_inputs,
@@ -811,6 +841,7 @@ def run(
                     run_irc=irc,
                     label=f"ts_leaf_{leaf.index}",
                     direction=direction,
+                    already_optimized=verified is not None,
                 )
         return
 
@@ -1697,6 +1728,11 @@ def optimize(
             chain.write_to_disk(output / f"opt_{i}.xyz")
             energy = getattr(node, "_cached_energy", None)
             rec["energy"] = float(energy) if energy is not None else None
+            if run_inputs.restraints:
+                from mepd.restraints import parse_restraints, restraint_report
+
+                rec["restraints"] = restraint_report(parse_restraints(run_inputs.restraints), node.coords)
+                typer.echo(f"  restraints {sources[i]}: " + "; ".join(rec["restraints"]))
         summary.append(rec)
     (output / "summary.json").write_text(json.dumps({"structures": summary}, indent=1))
     n_ok = sum(r["converged"] for r in summary)

@@ -1,0 +1,6 @@
+{
+  "name": "mepd",
+  "description": "Drive mepd (minimum-energy-path discovery): reaction paths, TS + IRC, channel searches, networks, nanoreactor and QM/MM, from the CLI or Python.",
+  "author": {"name": "Atoms for Humanity"},
+  "repository": "https://github.com/atomsforhumanity/mepd"
+}
