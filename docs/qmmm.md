@@ -192,9 +192,10 @@ mepd qmmm protein-build cm_sites --site 0 --qm-residues "A:ARG90" --end prephena
   region feels every charge regardless. Between QM steps the environment is
   relaxed on a sub-system (the moving atoms and everything within the cutoff
   of them), whose forces on the moving atoms are exactly the full system's.
-* Counterions (`--counterions`, on by default): the protein (and water) is
-  neutralized with one Na+ per excess negative charge and one Cl- per
-  positive one, each beside a charged group (Asp, Glu, C terminus / Lys,
+* Counterions (`--counterions`, on by default): the force-field charge that
+  acts on the QM region (protein and water, without side chains that are
+  QM atoms) is neutralized with one Na+ per excess negative charge and one
+  Cl- per positive one, each beside a charged group (Asp, Glu, C terminus / Lys,
   Arg, N terminus) at least `--ion-min-distance` (10 Å) from every QM atom,
   nearest first, so they screen the charges that act most on the QM region.
   The ions are AMBER atoms of the environment (frozen beyond the active

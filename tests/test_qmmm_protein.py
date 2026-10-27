@@ -169,3 +169,19 @@ def test_counterions_neutralize_the_protein_away_from_the_qm_region(protein, tmp
     rep = build_site_system(protein, sym, x, tmp_path / "far", ligand_charge=-1, water_shell=5.0,
                             active_radius=5.0, ion_min_distance=100.0)
     assert rep["counterions"]["unplaced"] == 2 and rep["charge"] == 1
+
+
+def test_counterions_leave_out_the_charge_of_qm_side_chains(protein, tmp_path):
+    """A charged side chain in the QM region acts through the QM calculation,
+    not its force-field charges: only the rest is neutralized, so the system
+    ends with the QM region's charge (KSI: Asp40 in the QM region, 12 Na+ for
+    an environment of -13, not 13)."""
+    from mepd.qmmm_protein import build_site_system
+
+    sym, x = _site(protein)
+    rep = build_site_system(protein, sym, x, tmp_path, ligand_charge=-1, water_shell=5.0, active_radius=5.0,
+                            qm_residues=["A:ARG7"], ion_min_distance=4.0)
+    ions = rep["counterions"]
+    assert ions["charge_before"] == 2 and ions["qm_side_chain_charge"] == 1
+    assert ions["Cl-"] == 1 and ions["unplaced"] == 0
+    assert rep["charge"] == rep["qm_charge"] == 0          # acetate -1 + Arg7 +1

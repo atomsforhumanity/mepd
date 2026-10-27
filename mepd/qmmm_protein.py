@@ -376,9 +376,14 @@ def build_site_system(protein_pdb: Path, symbols: Sequence[str], coords_angstrom
         if d.min() < 2.4 or d.max() > water_shell:
             drop.append(res)
     model.delete(drop)
-    ions = {"Na+": 0, "Cl-": 0, "unplaced": 0, "charge_before": int(round(_ff_charge(model.topology, ff)))}
+    names = {r.strip().upper() for r in qm_residues}
+    qm_side = sum(side_chain_charge(res) for res in model.topology.residues()
+                  if f"{res.chain.id}:{res.name}{res.id}".upper() in names or f"{res.name}{res.id}".upper() in names)
+    ions = {"Na+": 0, "Cl-": 0, "unplaced": 0, "charge_before": int(round(_ff_charge(model.topology, ff))),
+            "qm_side_chain_charge": int(qm_side)}
     if counterions:
-        ions = place_counterions(model, ff, _qm_positions(model, lig, qm_residues), ion_min_distance)
+        ions = place_counterions(model, ff, _qm_positions(model, lig, qm_residues), ion_min_distance,
+                                 qm_charge=qm_side)
     relax = _relax_environment(model, ff, symbols, lig, int(ligand_charge), int(ligand_multiplicity), cutoff)
     env_pdb = out_dir / "environment.pdb"
     with open(env_pdb, "w") as fh:
@@ -461,7 +466,8 @@ def _clear_spot(centre, axis, dist, solid_tree, ions, qm_tree, min_distance):
     return best
 
 
-def place_counterions(model, ff, qm_xyz: np.ndarray, min_distance: float = ION_MIN_DISTANCE) -> dict:
+def place_counterions(model, ff, qm_xyz: np.ndarray, min_distance: float = ION_MIN_DISTANCE,
+                      qm_charge: int = 0) -> dict:
     """Neutralize the environment (protein and water; in place): one Na+ per
     excess negative charge, each beside a carboxylate (Asp, Glu, the C
     terminus), one Cl- per positive charge beside an amine or guanidinium (Lys,
@@ -469,15 +475,20 @@ def place_counterions(model, ff, qm_xyz: np.ndarray, min_distance: float = ION_M
     are used, nearest first, so the ions screen the charges acting most on it;
     an ion's place must be clear of other atoms (waters in the way are
     removed). Without the ions a protein's net charge (KSI dimer: -12) acts on
-    the QM region unscreened. Returns counts, the environment's charge before
-    and after, and how many could not be placed."""
+    the QM region unscreened. `qm_charge`: the charge of side chains that
+    will be QM atoms; their force-field charges never act on the QM region,
+    so what is neutralized is the rest (the environment then carries
+    `qm_charge` in force-field terms, the system the QM region's charge).
+    Returns counts, the environment's charge before and after, and how many
+    could not be placed."""
     import openmm
     import openmm.app as app
     import openmm.unit as unit
     from scipy.spatial import cKDTree
 
     before = int(round(_ff_charge(model.topology, ff)))
-    want_na, want_cl = max(0, -before), max(0, before)
+    acting = before - int(qm_charge)          # the force-field charge the QM region feels
+    want_na, want_cl = max(0, -acting), max(0, acting)
     pos = np.asarray(model.getPositions().value_in_unit(unit.angstrom))
     qm_tree = cKDTree(np.asarray(qm_xyz, dtype=float))
 
@@ -529,7 +540,8 @@ def place_counterions(model, ff, qm_xyz: np.ndarray, min_distance: float = ION_M
     n_na = sum(1 for k, _ in placed if k == "NA")
     n_cl = len(placed) - n_na
     return {"Na+": n_na, "Cl-": n_cl, "unplaced": (want_na - n_na) + (want_cl - n_cl), "charge_before": before,
-            "charge_after": int(round(_ff_charge(model.topology, ff))), "waters_removed": len(water_drop),
+            "charge_after": int(round(_ff_charge(model.topology, ff))), "qm_side_chain_charge": int(qm_charge),
+            "waters_removed": len(water_drop),
             "min_distance": float(min_distance)}
 
 

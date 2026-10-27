@@ -17,8 +17,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a
   Michaelis complex minimizes. `mepd optimize` reports each restraint's distance and energy. (#26)
 - **Counterions in `mepd qmmm protein-build`** (on by default; `--no-counterions`, `--ion-min-distance`):
-  Na+/Cl- neutralize the protein, each beside a charged group at least 10 Å from the QM region. The
-  command reports the environment's charge before and after and the system charge. Without them the
+  Na+/Cl- neutralize the force-field charge acting on the QM region (QM side chains' own charge left
+  out), each ion beside a charged group at least 10 Å from the QM region; the system then carries the QM
+  region's charge. The command reports that charge before and after and the system charge. Without them the
   KSI dimer's net -12 acted on the QM region unscreened. (#28)
 - **`mepd channels` on QM/MM steps**: conformers of the QM region in its environment, by MD of the QM
   atoms with QM/MM forces (`--qmmm-temperature`, `--qmmm-md-ps`) and QM/MM minimization; pairs searched

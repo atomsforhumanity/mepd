@@ -399,9 +399,10 @@ def protein_build(
                             name=f"site {site} of {Path(info['prepared']['pdb']).stem}")
     ions = rep["counterions"]
     typer.echo(f"Site {site}, pose {pose} ({rec['score']:.1f} kcal/mol): {rep['protein_atoms']} protein atoms, {rep['waters']} "
-               f"waters, {ions['Na+']} Na+, {ions['Cl-']} Cl-, the species; environment charge "
-               f"{ions['charge_before']:+d} -> {ions.get('charge_after', ions['charge_before']):+d}, system charge "
-               f"{rep['charge']:+d}.")
+               f"waters, {ions['Na+']} Na+, {ions['Cl-']} Cl-, the species; force-field charge acting on the QM "
+               f"region {ions['charge_before'] - ions.get('qm_side_chain_charge', 0):+d} -> "
+               f"{ions.get('charge_after', ions['charge_before']) - ions.get('qm_side_chain_charge', 0):+d}, "
+               f"system charge {rep['charge']:+d}.")
     if ions.get("unplaced"):
         typer.echo(f"⚠ {ions['unplaced']} counterion(s) found no charged group {ion_min_distance:g} Å or more from the "
                    "QM region: the environment keeps that net charge (lower --ion-min-distance to place them).")
