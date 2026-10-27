@@ -114,10 +114,10 @@ class GFNFFEngine(Engine):
 
     # ------------------------------------------------------------ program
     def _run(self, workdir: Path, symbols, coords_bohr, charge: int, grad: bool = True,
-             uhf: int = 0, point_charges=None) -> tuple[float, np.ndarray]:
+             uhf: int = 0, point_charges=None, extra=()) -> tuple[float, np.ndarray]:
         (workdir / "in.xyz").write_text(_xyz(symbols, coords_bohr))
         method = ["--gfnff"] if self.method == "gfnff" else ["--gfn", self.method[-1], "--uhf", str(int(uhf))]
-        argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge))]
+        argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge)), *extra]
         if point_charges is not None and len(point_charges):
             # xtb's electrostatic embedding: charge, position (bohr) and the
             # element whose chemical hardness damps its interaction at short
@@ -257,6 +257,15 @@ class XTBEngine(GFNFFEngine):
 
     method: str = "gfn2"
     supports_point_charges: bool = True
+    # Electronic temperature (K, Fermi smearing) for every calculation; None:
+    # xtb's 300 K, with the fallbacks below when the SCC fails. Hot reactive
+    # MD wants ~3000 K: a bond breaking homolytically then has fractional
+    # occupations instead of an SCC that stops converging.
+    etemp: Optional[float] = None
+    # Tried in turn when the SCC does not converge (as mepd.solvation does for
+    # GFN2): smearing first, since a failing SCC usually oscillates.
+    SCC_FALLBACKS = (("--iterations", "1000", "--etemp", "1000"), ("--iterations", "1000"),
+                     ("--iterations", "1000", "--etemp", "5000"))
 
     def __post_init__(self):
         super().__post_init__()
@@ -288,13 +297,22 @@ class XTBEngine(GFNFFEngine):
         pcs = list(point_charges or [])
         els = list(elements) if elements is not None else ["H"] * len(pcs)
         pc = [(float(q), tuple(float(v) for v in xyz), _Z.get(str(el), 1)) for (q, xyz), el in zip(pcs, els)]
-        with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
-            e, g = self._run(Path(tmp), symbols, coords_bohr, charge, uhf=int(multiplicity) - 1,
-                             point_charges=pc or None)
-            fp = Path(tmp) / "charges"
-            self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
-            pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
-        return e, g, pcg
+        tries = [("--etemp", f"{float(self.etemp):g}")] if self.etemp else [(), *self.SCC_FALLBACKS]
+        for k, extra in enumerate(tries):
+            with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
+                try:
+                    e, g = self._run(Path(tmp), symbols, coords_bohr, charge, uhf=int(multiplicity) - 1,
+                                     point_charges=pc or None, extra=extra)
+                except ElectronicStructureError as exc:
+                    if k + 1 < len(tries) and "did not converge" in str(exc):
+                        continue
+                    raise
+                if extra and not self.etemp:
+                    print(f"xtb ({self.method}): SCC converged with {' '.join(extra)}", flush=True)
+                fp = Path(tmp) / "charges"
+                self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
+                pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
+            return e, g, pcg
 
     def energy_gradients(self, jobs: list[tuple]) -> list[tuple[float, np.ndarray]]:
         def one(j):

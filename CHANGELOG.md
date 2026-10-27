@@ -12,6 +12,21 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **`mepd qmmm reactor`**: the nanoreactor with QM/MM forces over several trajectories, one process per seed
+  (`--seeds`, `--workers`). The QM region runs hot inside its protein or solvent, which stays near room
+  temperature. Products are whole systems, pooled over seeds (one per distinct QM bond graph), for
+  `mepd discovery expand --products`. The MD runs the QM level at `--etemp` (3000 K, as the vacuum
+  nanoreactor). Network expansion's embedded nanoreactor takes `n_seeds` and `electronic_temperature_k`.
+- **Protein protonation states by hand**: `mepd qmmm protein-sites --protonation "A:ASP103=ASH"` (ASH, GLH,
+  LYN, HID, HIE, HIP, CYX) instead of the pH, e.g. a buried catalytic acid.
+- **Every docked orientation at a site**: sites.json lists each site's distinct poses (`poses`: more than 2 Å
+  RMSD apart), and `mepd qmmm protein-build --pose k` builds one. A molecule that looks alike from both ends
+  docks either way round in one pocket; before, only the best Vina score was kept, which for
+  androstenedione in ketosteroid isomerase (1OH0) was the pose turned end to end from the crystal's.
+- **xtb (GFN2/GFN1) as a QM level retries a failed SCC** with `--etemp 1000`, more iterations, then
+  `--etemp 5000` (as the solvation correction does), and says so in the log; `etemp` sets a fixed
+  electronic temperature instead.
+
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
   says why (`Comparison.reason`) and whether stereochemistry could be decided. `mepd.WrongStationaryPointError`.
@@ -236,6 +251,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **`mepd qmmm protein-build` writes an FSM-TS profile in a caged environment** (`path_min_method = "FSM-TS"`,
+  `qmmm_environment = "cage"`, NEB fallback), not NEB with the shell relaxed. In a relaxed shell the TS
+  search can end on an environment saddle (ketosteroid isomerase: a Tyr57 OH rotation, both IRC ends the
+  same species). Caged FSM-TS gave all three KSI steps' TSs with connecting IRCs, each in under 25 min.
+  Solvent profiles keep NEB.
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
   substituent commands and the web app:
@@ -472,6 +492,21 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **QM/MM TS searches with a caged environment ran on the whole protein**: with no environment atom free
+  to relax (`qmmm_environment = "cage"`), optimizations and TS searches skipped the microiterations and
+  gave Sella every atom (3,951 atoms: ~4 min a step). They now see the QM region alone, as in a relaxed
+  environment.
+- **FSM and FSM-TS crashed on a QM/MM system in a protein** ("cannot reshape array ... into shape (N,3)"):
+  a mostly frozen system is interpolated as a small sub-system, and the geodesic smoother kept that
+  sub-system's path, which FSM turned into whole-system nodes. The smoother now holds the whole system's
+  path. FSM-TS used to fall back to NEB on every protein pair, and an NEB crashed when MSMEP split a branch.
+- **QM/MM nanoreactor in a protein stalled after its first segment**: the live events were found over the
+  whole system (bond detection and molecule labels over 3,900 protein and water atoms, the whole trajectory
+  again after every segment). They are now found among the QM atoms (indices still the system's), at most
+  every 30 s.
+- **QM side-chain charge from the residue's state**: a protonated Asp (ASH) or Glu (GLH), neutral Lys or
+  doubly protonated His in the QM region was counted with its name's usual charge.
 
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and

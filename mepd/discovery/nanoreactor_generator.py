@@ -59,16 +59,30 @@ def run_dir(workdir: str) -> Optional[Path]:
     return d
 
 
-def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float) -> None:
-    """The reactor's events so far, for the Reactor view (never fails the run)."""
+def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float, atoms=None) -> None:
+    """The reactor's events so far, for the Reactor view (never fails the run).
+    `atoms`: only these react (a QM/MM system's QM atoms, `total_charge` theirs):
+    events are found among them alone, with indices back in the whole system's
+    numbering. Bond detection and molecule labels over a whole protein, every
+    segment, would take longer than the MD."""
     if run is None:
         return
     import json
 
-    from mepd.discovery.nanoreactor import DetectSettings, live_events
+    from mepd.discovery.nanoreactor import DetectSettings, events_in_frames, live_events, read_segments
 
     try:
-        data = live_events(run / "md", total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
+        if atoms is None:
+            data = live_events(run / "md", total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
+        else:
+            idx = [int(a) for a in atoms]
+            symbols, frames = read_segments(run / "md")
+            data = events_in_frames([symbols[i] for i in idx], frames[:, idx], total_charge=total_charge,
+                                    detect=DetectSettings(), dt_fs=dt_fs)
+            for rec in data.get("events") or []:
+                rec["atoms"] = [idx[a] for a in rec.get("atoms") or []]
+                for c in rec.get("bond_changes") or []:
+                    c["atoms"] = [idx[a] for a in c["atoms"]]
         tmp = run / "live_events.json.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(run / "live_events.json")
@@ -76,11 +90,21 @@ def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float) -
         pass
 
 
-def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=None):
-    """on_event for the MD: after each segment, the events so far."""
+def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=None, atoms=None,
+                 every_s: float = 0.0):
+    """on_event for the MD: after each segment, the events so far (at most
+    once per `every_s` seconds, and after the last segment: the piston's
+    ramp has many short segments, and each pass re-reads the trajectory)."""
+    import time
+
+    last = [0.0]
+
     def hook(event, payload):
         if event == "md_segment":
-            write_live_events(run, total_charge=total_charge, dt_fs=dt_fs)
+            done = payload.get("segment") == payload.get("segments")
+            if done or time.monotonic() - last[0] >= every_s:
+                write_live_events(run, total_charge=total_charge, dt_fs=dt_fs, atoms=atoms)
+                last[0] = time.monotonic()
         if on_event is not None:
             on_event(event, payload)
     return hook

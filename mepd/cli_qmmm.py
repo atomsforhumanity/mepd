@@ -51,7 +51,16 @@ def _load_system(path: str, charge: Optional[int], multiplicity: Optional[int]):
     return _load_structure_from_smiles_or_xyz(path, charge, multiplicity)
 
 
-def _write(output: Path, system, region, extra: Optional[dict] = None) -> None:
+# A protein pocket: the path, TS and IRC in the reactant's environment (a relaxed shell lets
+# the TS search slide into an environment saddle), so only the QM region moves and FSM-TS is
+# cheap. KSI (1OH0): three steps' FSM-TS + IRC in under 25 min.
+_POCKET_PROFILE = 'path_min_method = "FSM-TS"\nqmmm_environment = "cage"\n\n[path_min_inputs]\nfallback = "NEB"\n'
+# NEB, not FNEB: FNEB regrows its string by geodesic interpolation, slow for hundreds of
+# moving solvent atoms.
+_SOLVENT_PROFILE = 'path_min_method = "NEB"\n'
+
+
+def _write(output: Path, system, region, extra: Optional[dict] = None, paths: str = _SOLVENT_PROFILE) -> None:
     output.mkdir(parents=True, exist_ok=True)
     system.save(str(output / "system.xyz"))
     region.save(output / "region.json")
@@ -60,9 +69,7 @@ def _write(output: Path, system, region, extra: Optional[dict] = None) -> None:
         # Electrostatic embedding needs a QM level that takes point charges.
         engine = "xtb" if region.embedding == "electrostatic" else "gxtb"
         profile.write_text(f'# QM level: edit like any profile. The [qmmm] table embeds it.\nengine_name = "{engine}"\n'
-                           # NEB, not FNEB: FNEB regrows its string by geodesic interpolation,
-                           # slow for hundreds of moving solvent atoms.
-                           'path_min_method = "NEB"\n\n[qmmm]\nfile = "region.json"\n')
+                           + paths + '\n[qmmm]\nfile = "region.json"\n')
     summary = {"system": str(output / "system.xyz"), "region": str(output / "region.json"),
                "profile": str(profile), "natoms": region.natoms, "qm_atoms": len(region.qm_atoms),
                "links": [list(x) for x in region.links], "frozen_atoms": len(region.frozen_atoms),
@@ -282,6 +289,8 @@ def protein_sites(
     protein: str = typer.Option(..., "--protein", help="The protein: a PDB file, or a PDB ID to download."),
     chains: Optional[str] = typer.Option(None, "--chains", help="Chains to keep, e.g. 'A,B,C' (default: all)."),
     ph: float = typer.Option(7.0, "--ph", help="pH for the protonation states of the protein's residues."),
+    protonation: str = typer.Option("", "--protonation", help="Residue states set by hand instead of by --ph, "
+                                    "e.g. 'A:ASP103=ASH A:HIS57=HIP' (AMBER names: ASH, GLH, LYN, HID, HIE, HIP)."),
     box: float = typer.Option(20.0, "--box", help="Edge of each docking box, Å."),
     spacing: float = typer.Option(12.0, "--spacing", help="Spacing of the box centres over the protein, Å."),
     exhaustiveness: int = typer.Option(8, "--exhaustiveness", help="Vina search effort per box."),
@@ -297,7 +306,7 @@ def protein_sites(
     import numpy as np
 
     from mepd.cli_common import _load_structure_from_smiles_or_xyz
-    from mepd.qmmm_protein import fetch_pdb, find_sites, prepare_protein, sites_to_json
+    from mepd.qmmm_protein import fetch_pdb, find_sites, parse_protonation, prepare_protein, sites_to_json
 
     output.mkdir(parents=True, exist_ok=True)
     s = _load_structure_from_smiles_or_xyz(species, charge, multiplicity)
@@ -305,9 +314,16 @@ def protein_sites(
     if not src.exists():
         typer.echo(f"Downloading {protein} from the PDB...")
         src = fetch_pdb(protein, output)
-    prep = prepare_protein(src, output / "protein.pdb", chains=chains.split(",") if chains else None, ph=ph)
+    try:
+        states = parse_protonation(protonation)
+        prep = prepare_protein(src, output / "protein.pdb", chains=chains.split(",") if chains else None, ph=ph,
+                               protonation=states)
+    except ValueError as e:
+        raise typer.BadParameter(str(e), param_hint="--protonation")
     typer.echo(f"Protein: {prep['atoms']} atoms, {prep['residues']} residues, chains {','.join(prep['chains'])}, "
                f"charge {prep['charge']:+d} at pH {ph:g}"
+               + (f"; set {', '.join(f'{k}={v}' for k, v in prep['protonation'].items())}"
+                  if prep["protonation"] else "")
                + (f"; removed {', '.join(prep['removed'])}" if prep["removed"] else "")
                + (f"; {prep['gaps_not_rebuilt']} gap(s) not rebuilt" if prep["gaps_not_rebuilt"] else ""))
     s.save(str(output / "species.xyz"))
@@ -327,6 +343,9 @@ def protein_sites(
     for st in sites[:10]:
         typer.echo(f"  site {st.id}: {st.score:.1f} kcal/mol, found {st.hits}x, near "
                    + " ".join(st.residues[:6]) + (" ..." if len(st.residues) > 6 else ""))
+        if len(st.poses) > 1:
+            typer.echo("    poses: " + ", ".join(f"{k}: {q['score']:.1f} ({q['hits']}x, {q['rmsd']:.1f} Å)"
+                                                 for k, q in enumerate(st.poses[:6])))
     typer.echo(f"Wrote {output}/sites.json ({len(sites)} sites). Next: mepd qmmm protein-build {output} --site 0")
 
 
@@ -334,6 +353,8 @@ def protein_sites(
 def protein_build(
     sites_dir: Path = typer.Argument(..., exists=True, help="A folder from `mepd qmmm protein-sites`."),
     site: int = typer.Option(0, "--site", help="Which site (its id in sites.json)."),
+    pose: int = typer.Option(0, "--pose", help="Which of the site's distinct poses (0: its best Vina score; "
+                             "sites.json lists them, e.g. the species docked either way round)."),
     qm_residues: str = typer.Option("", "--qm-residues", help="Residue side chains to add to the QM region, e.g. "
                                     "'A:ARG90 A:GLU78' (cut at CA-CB, with link atoms)."),
     water_shell: float = typer.Option(8.0, "--water-shell", help="TIP3P water within this many Å of the species."),
@@ -361,15 +382,20 @@ def protein_build(
     if rec is None:
         raise typer.BadParameter(f"no site {site} in {sites_dir}/sites.json")
     species = Structure.open(str(sites_dir / info["species"]))
+    poses = rec.get("poses") or [{"score": rec["score"], "coords": rec["coords"]}]
+    if not 0 <= pose < len(poses):
+        raise typer.BadParameter(f"site {site} has {len(poses)} pose(s) (0..{len(poses) - 1})", param_hint="--pose")
+    rec = {**rec, "score": poses[pose]["score"], "coords": poses[pose]["coords"]}
     rep = build_site_system(sites_dir / info["protein"], [str(a) for a in species.symbols], np.asarray(rec["coords"]),
                             output, ligand_charge=info["charge"], ligand_multiplicity=info["multiplicity"],
                             qm_residues=qm_residues.split(), water_shell=water_shell, active_radius=active_radius,
                             freeze_protein=freeze_protein, cutoff=cutoff or None,
                             name=f"site {site} of {Path(info['prepared']['pdb']).stem}")
-    typer.echo(f"Site {site} ({rec['score']:.1f} kcal/mol): {rep['protein_atoms']} protein atoms, {rep['waters']} "
+    typer.echo(f"Site {site}, pose {pose} ({rec['score']:.1f} kcal/mol): {rep['protein_atoms']} protein atoms, {rep['waters']} "
                f"waters, the species; system charge {rep['charge']:+d}.")
-    _write(output, rep["structure"], rep["region_obj"], {"site": rec["id"], "score": rec["score"],
-                                                        "residues": rec["residues"], "sites": str(sites_dir)})
+    _write(output, rep["structure"], rep["region_obj"], {"site": rec["id"], "pose": pose, "score": rec["score"],
+                                                        "residues": rec["residues"], "sites": str(sites_dir)},
+           paths=_POCKET_PROFILE)
     if end:
         # The reaction's other end (and TS) into the same site, in the
         # species' atom order: one QM/MM system, as for a reaction in solvent.
@@ -418,6 +444,90 @@ def from_tc(
                         '[qmmm]\nfile = "region.json"\n')
     typer.echo(f"TeraChem QM level was {qm['method']}/{qm['basis']}"
                + ("" if mm == "terachem" else "; the profile uses g-xTB for the QM region: change it there."))
+
+
+@qmmm_app.command("reactor")
+def reactor(
+    structure: Path = typer.Argument(..., exists=True, help="The QM/MM system (xyz, e.g. minimized), the profile's atoms."),
+    inputs: Path = typer.Option(..., "--inputs", "-i", exists=True, help="Its profile (qmmm_profile.toml)."),
+    seeds: int = typer.Option(8, "--seeds", help="Trajectories, each with its own random seed."),
+    first_seed: int = typer.Option(0, "--first-seed", help="Seed of the first trajectory (the rest count up)."),
+    workers: int = typer.Option(4, "--workers", help="Trajectories at once (one process each)."),
+    temperature: float = typer.Option(2500.0, "--temperature", help="QM atoms' temperature, K."),
+    environment_temperature: float = typer.Option(300.0, "--environment-temperature", help="Moving environment's, K."),
+    time_ps: float = typer.Option(5.0, "--time", help="Length of each trajectory, ps."),
+    compress: float = typer.Option(0.7, "--compress", help="Narrow wall radius / wide."),
+    period_ps: float = typer.Option(1.0, "--period", help="One piston cycle, ps."),
+    etemp: float = typer.Option(3000.0, "--etemp", help="QM level's electronic temperature during the MD, K "
+                                "(xtb; 0: the profile's own)."),
+    max_products: int = typer.Option(20, "--max-products", help="Per trajectory."),
+    output: Path = typer.Option(Path("mepd_qmmm_reactor"), "--output", "-o"),
+):
+    """The nanoreactor with QM/MM forces, several trajectories: hot piston MD
+    of the QM region inside its environment (protein, solvent), which stays
+    near room temperature and is present all along. Each reaction event's
+    state is a product (the whole system), unless it changed a bond in the MM
+    region or stretched a cut bond. Writes seed_<k>/ (the MD, live events,
+    products.xyz) and products.xyz (all trajectories, one per distinct QM bond
+    graph), for `mepd discovery expand <structure> -i <profile> --products
+    products.xyz` (optimize, classify, connect)."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from qcdata import Structure
+
+    from mepd.discovery.qmmm_reactor import qm_bond_key, reactor_seed
+    from mepd.qmmm import QMMMRegion
+
+    output.mkdir(parents=True, exist_ok=True)
+    opts = {"temperature": temperature, "environment_temperature": environment_temperature, "time_ps": time_ps,
+            "compress": compress, "period_ps": period_ps, "electronic_temperature_k": etemp,
+            "max_products": max_products}
+    todo = [first_seed + k for k in range(seeds)]
+    results = []
+    with ProcessPoolExecutor(max_workers=max(1, min(workers, len(todo))),
+                             mp_context=multiprocessing.get_context("spawn")) as pool:
+        futs = {pool.submit(reactor_seed, str(inputs.resolve()), str(structure.resolve()), s, opts,
+                            str((output / f"seed_{s}").resolve())): s for s in todo}
+        for f in as_completed(futs):
+            s = futs[f]
+            try:
+                r = f.result()
+            except Exception as exc:          # one failed trajectory does not end the others
+                r = {"seed": s, "error": f"{type(exc).__name__}: {exc}"}
+                typer.secho(f"  seed {s} failed: {r['error']}", fg="red")
+            else:
+                typer.echo(f"  seed {s}: {r['events']} event(s), {r['products']} product(s)"
+                           + "".join(f", {r[k]} {w}" for k, w in (("torn", "torn apart"),
+                                                                  ("mm_changed", "changed MM bonds"),
+                                                                  ("boundary", "stretched a cut bond")) if r.get(k)))
+            results.append(r)
+    region = QMMMRegion.open(Path(inputs).parent / _region_file(inputs))
+    system = Structure.open(str(structure))
+    seen, pooled = set(), []
+    for r in sorted(results, key=lambda r: r["seed"]):
+        fp = output / f"seed_{r['seed']}" / "products.xyz"
+        if "error" in r or not fp.exists() or not fp.read_text().strip():
+            continue
+        from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
+
+        for s in read_multiple_structure_from_file(fp, int(system.charge), int(system.multiplicity)):
+            key = qm_bond_key(s, region)
+            if key not in seen:
+                seen.add(key)
+                pooled.append(s)
+    (output / "products.xyz").write_text("".join(s.to_xyz() for s in pooled))
+    (output / "summary.json").write_text(json.dumps({"structure": str(structure), "profile": str(inputs),
+                                                     "options": opts, "seeds": sorted(results, key=lambda r: r["seed"]),
+                                                     "products": len(pooled)}, indent=1))
+    typer.echo(f"{len(pooled)} distinct product(s) from {len(results)} trajectories: {output}/products.xyz. "
+               f"Next: mepd discovery expand {structure} -i {inputs} --products {output}/products.xyz")
+
+
+def _region_file(profile: Path) -> str:
+    import tomllib
+
+    return tomllib.loads(Path(profile).read_text()).get("qmmm", {}).get("file", "region.json")
 
 
 @qmmm_app.command("inspect")
