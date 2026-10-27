@@ -892,8 +892,9 @@ def _run_msmep_pairs(
 
         over = search_control.search_over(run_inputs.path_min_inputs)
         if over is not None:
-            _say(f"Skipping pair ({i}, {j}): " + ("stop requested before it started." if over == "stopped"
-                                                         else "--search-budget reached before it started."))
+            _say(f"Skipping pair ({i}, {j}): " + {"stopped": "stop requested before it started.",
+                                                  "path_search_budget": "--max-path-searches reached before it started."}
+                 .get(over, "--search-budget reached before it started."))
             return
         pair_dir.mkdir(parents=True, exist_ok=True)
         _say(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")
@@ -1130,8 +1131,9 @@ def _pair_ts_guess_tasks(pair_dir: Path, charge: int, multiplicity: int) -> list
     if not (tree_dir / "node_0.xyz").exists():
         return []   # root search failed or was not run (--direct-only): already reported
     try:
-        pair_tree = TreeNode.read_from_disk(
+        pair_tree = TreeNode.read_from_disk(   # only each leaf's final path is used
             tree_dir, chain_parameters=ChainInputs(), charge=charge, multiplicity=multiplicity,
+            ends_only=True,
         )
     except Exception as exc:
         _warn(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
@@ -1184,7 +1186,7 @@ def _collect_ts_guess_tasks(
         if (input_path / "adj_matrix.txt").exists():
             tree = TreeNode.read_from_disk(
                 input_path, chain_parameters=ChainInputs(),
-                charge=tree_charge, multiplicity=tree_multiplicity,
+                charge=tree_charge, multiplicity=tree_multiplicity, ends_only=True,
             )
             return _ts_guess_tasks_from_tree(tree, "ts_")
 

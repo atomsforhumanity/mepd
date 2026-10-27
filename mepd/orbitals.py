@@ -257,7 +257,9 @@ def _executable(method: str) -> list[str]:
             exe = gxtb_executable()
         if not exe:
             raise OrbitalError("g-xTB is not available")
-        return [exe] + ([] if Path(exe).name == "gxtb" else ["--gxtb"])
+        from mepd.programs import standalone_gxtb
+
+        return [exe] + ([] if standalone_gxtb(exe) else ["--gxtb"])
     from mepd.programs import xtb_executable
 
     exe = xtb_executable()
@@ -421,6 +423,22 @@ def _parse_xyz(text: str) -> tuple[list, list]:
     return [r[0] for r in rows], [[float(x) for x in r[1:4]] for r in rows]
 
 
+PRUNE_EVERY = 100          # saves between prunings of a folder (each lists the whole folder)
+_SAVES: dict = {}
+_SAVES_LOCK = threading.Lock()
+
+
+def _due_for_pruning(d: Path) -> bool:
+    """True on a folder's first save in this process and every PRUNE_EVERY-th after: listing and sorting
+    ~1000 files after every SCF held up every thread of a parallel search (24 threads: 11 of them were in
+    here, 5 running g-xTB). The folder may hold up to PRUNE_EVERY beyond `keep` in between."""
+    key = str(d)
+    with _SAVES_LOCK:
+        n = _SAVES.get(key, 0)
+        _SAVES[key] = n + 1
+    return n % PRUNE_EVERY == 0
+
+
 def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str, where: Optional[Path] = None,
                       keep: Optional[int] = -1, source: str = "run") -> Optional[dict]:
     """Keep a finished SCF's molden file in `where` (default $MEPD_ORBITALS_DIR;
@@ -443,11 +461,11 @@ def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str, wher
         with open(d / "index.jsonl", "a") as fh:
             fh.write(json.dumps(entry) + "\n")
         keep = KEEP_RUNS if keep == -1 else keep
-        if keep is not None:
-            files = sorted(d.glob("*.molden"))
-            for old in files[:max(0, len(files) - keep)]:
-                old.unlink(missing_ok=True)
-                old.with_suffix(".json.gz").unlink(missing_ok=True)
+        if keep is not None and _due_for_pruning(d):
+            names = sorted(e.name for e in os.scandir(d) if e.name.endswith(".molden"))
+            for old in names[:max(0, len(names) - keep)]:
+                (d / old).unlink(missing_ok=True)
+                (d / old).with_suffix(".json.gz").unlink(missing_ok=True)
         return entry
     except Exception:
         return None

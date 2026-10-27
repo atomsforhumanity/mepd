@@ -27,14 +27,43 @@ Based on the ab initio nanoreactor (L.-P. Wang et al., Nat. Chem. 6, 1044
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import math
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR, HARTREE_TO_KCAL_PER_MOL
+
+_ENERGY_JUMP_EH = 1.0   # between MD steps 0.5 fs apart: no reaction, a wrong SCC solution
+
+
+def _xtb_qm_engine(engine):
+    """The xtb (GFN2/GFN1) engine at the QM level of a QM/MM engine, if it is one."""
+    from mepd.engines.gfnff import XTBEngine
+
+    for _ in range(5):
+        if engine is None or isinstance(engine, XTBEngine):
+            return engine
+        engine = getattr(engine, "base", None)
+    return None
+
+
+@contextmanager
+def _hot_scc(xtb, electronic_temperature: float):
+    """For the hot MD: xtb's SCC smeared from the start (as the vacuum
+    reactor's), each step starting from the last one's charges."""
+    if xtb is None:
+        yield
+        return
+    saved = (xtb.electronic_temperature, xtb.reuse_scc_guess)
+    xtb.electronic_temperature, xtb.reuse_scc_guess = float(electronic_temperature), True
+    try:
+        yield
+    finally:
+        xtb.electronic_temperature, xtb.reuse_scc_guess = saved
+        xtb.forget_scc_guess()
 
 
 def run_qmmm_reactor_md(structure, engine, region, *, settings, workdir: Path,
@@ -74,69 +103,79 @@ def run_qmmm_reactor_md(structure, engine, region, *, settings, workdir: Path,
     c2 = np.sqrt((1 - c1[:, 0] ** 2) * kt / masses)[:, None]
     c2[frozen] = 0.0
     rng = np.random.default_rng(settings.seed)
-    calls = {"n": 0}
+    calls = {"n": 0, "energy": None}
+    xtb = _xtb_qm_engine(engine)
 
-    def forces(pos, radius_bohr):
+    def qmmm(pos):
         node = StructureNode(structure=structure.model_copy(update={"geometry": pos}), has_molecular_graph=False)
         grad = np.array(engine.compute_gradients([node])[0], dtype=float).reshape(-1, 3)
+        return float(node.energy), grad
+
+    def forces(pos, radius_bohr):
+        energy, grad = qmmm(pos)
+        if xtb is not None and calls["energy"] is not None and abs(energy - calls["energy"]) > _ENERGY_JUMP_EH:
+            xtb.forget_scc_guess()     # the last step's charges led the SCC to a wrong solution
+            energy, grad = qmmm(pos)
+        calls["energy"] = energy
         e_wall, g_wall = _wall(pos[qm] - centre, radius_bohr, wall_au)
         grad[qm] += g_wall
         calls["n"] += 1
-        return float(node.energy) + e_wall, grad
+        return energy + e_wall, grad
 
     from mepd.discovery.nanoreactor import _write_xyz
 
     for name in ("packed.xyz", "reactor.xyz"):      # what the Reactor view reads before the first segment
         if not (workdir / name).exists():
             _write_xyz(workdir / name, symbols, pos0 / ANGSTROM_TO_BOHR, "QM/MM nanoreactor start")
-    pos = pos0.copy()
-    vel = rng.normal(size=pos.shape) * np.sqrt(kt / masses)[:, None]
-    vel[frozen] = 0.0
-    t_done = 0.0
-    for k, (dur, r) in enumerate(schedule):
-        seg, restart = workdir / f"segment_{k:03d}.xyz", workdir / f"segment_{k:03d}.restart.npz"
-        if seg.exists() and restart.exists():
-            state = np.load(restart)
-            pos, vel = state["pos"], state["vel"]
-            t_done += dur
-            continue
-        radius_bohr = r * ANGSTROM_TO_BOHR
-        n_steps = max(1, int(round(dur * 1000.0 / dt)))
-        running = workdir / "xtb.trj"      # the running segment, named like the xtb path's (live views)
-        with running.open("w") as trj:
-            energy, grad = forces(pos, radius_bohr)
-            for step in range(1, n_steps + 1):
-                vel -= 0.5 * dt * _ACC * grad / masses[:, None]
-                pos = pos + 0.5 * dt * vel
-                vel = c1 * vel + c2 * rng.normal(size=vel.shape)
-                vel[frozen] = 0.0
-                pos = pos + 0.5 * dt * vel
+    with _hot_scc(xtb, settings.electronic_temperature):
+        pos = pos0.copy()
+        vel = rng.normal(size=pos.shape) * np.sqrt(kt / masses)[:, None]
+        vel[frozen] = 0.0
+        t_done = 0.0
+        for k, (dur, r) in enumerate(schedule):
+            seg, restart = workdir / f"segment_{k:03d}.xyz", workdir / f"segment_{k:03d}.restart.npz"
+            if seg.exists() and restart.exists():
+                state = np.load(restart)
+                pos, vel = state["pos"], state["vel"]
+                t_done += dur
+                continue
+            radius_bohr = r * ANGSTROM_TO_BOHR
+            n_steps = max(1, int(round(dur * 1000.0 / dt)))
+            running = workdir / "xtb.trj"      # the running segment, named like the xtb path's (live views)
+            with running.open("w") as trj:
                 energy, grad = forces(pos, radius_bohr)
-                vel -= 0.5 * dt * _ACC * grad / masses[:, None]
-                vel[frozen] = 0.0
-                if step % every == 0:
-                    xyz = pos / ANGSTROM_TO_BOHR
-                    trj.write(f"{n}\n energy: {energy:.10f} \n"
-                              + "".join(f"{s} {x:.8f} {y:.8f} {z:.8f}\n" for s, (x, y, z) in zip(symbols, xyz)))
-                    trj.flush()
-                if not np.all(np.isfinite(pos)):
-                    raise RuntimeError(f"the QM/MM MD blew up in segment {k} (step {step})")
-        np.savez(restart, pos=pos, vel=vel)
-        running.replace(seg)
-        t_done += dur
+                for step in range(1, n_steps + 1):
+                    vel -= 0.5 * dt * _ACC * grad / masses[:, None]
+                    pos = pos + 0.5 * dt * vel
+                    vel = c1 * vel + c2 * rng.normal(size=vel.shape)
+                    vel[frozen] = 0.0
+                    pos = pos + 0.5 * dt * vel
+                    energy, grad = forces(pos, radius_bohr)
+                    vel -= 0.5 * dt * _ACC * grad / masses[:, None]
+                    vel[frozen] = 0.0
+                    if step % every == 0:
+                        xyz = pos / ANGSTROM_TO_BOHR
+                        trj.write(f"{n}\n energy: {energy:.10f} \n"
+                                  + "".join(f"{s} {x:.8f} {y:.8f} {z:.8f}\n" for s, (x, y, z) in zip(symbols, xyz)))
+                        trj.flush()
+                    if not np.all(np.isfinite(pos)):
+                        raise RuntimeError(f"the QM/MM MD blew up in segment {k} (step {step})")
+            np.savez(restart, pos=pos, vel=vel)
+            running.replace(seg)
+            t_done += dur
 
-        def temp(mask):
-            return float(np.sum(masses[mask, None] * vel[mask] ** 2) * _KIN / (3 * max(1, mask.sum()) * _KB))
+            def temp(mask):
+                return float(np.sum(masses[mask, None] * vel[mask] ** 2) * _KIN / (3 * max(1, mask.sum()) * _KB))
 
-        _emit(on_event, "md_segment", segment=k + 1, segments=len(schedule), time_ps=t_done, radius=r,
-              total_ps=settings.time_ps, temperature=temp(is_qm), environment_temperature=temp(~is_qm & ~frozen))
-        try:
-            from mepd.progress import update_status
+            _emit(on_event, "md_segment", segment=k + 1, segments=len(schedule), time_ps=t_done, radius=r,
+                  total_ps=settings.time_ps, temperature=temp(is_qm), environment_temperature=temp(~is_qm & ~frozen))
+            try:
+                from mepd.progress import update_status
 
-            update_status(f"QM/MM nanoreactor: {t_done:.2f}/{settings.time_ps:g} ps, QM {temp(is_qm):.0f} K, "
-                          f"environment {temp(~is_qm & ~frozen):.0f} K")
-        except Exception:
-            pass
+                update_status(f"QM/MM nanoreactor: {t_done:.2f}/{settings.time_ps:g} ps, QM {temp(is_qm):.0f} K, "
+                              f"environment {temp(~is_qm & ~frozen):.0f} K")
+            except Exception:
+                pass
     traj = workdir / "trajectory.xyz"
     with traj.open("w") as out:
         for k in range(len(schedule)):
@@ -145,23 +184,26 @@ def run_qmmm_reactor_md(structure, engine, region, *, settings, workdir: Path,
     return traj
 
 
-@contextlib.contextmanager
-def electronic_temperature(engine, etemp: Optional[float]):
-    """The QM level's electronic temperature set to `etemp` (K) while inside,
-    for engines that have one (xtb's GFN2/GFN1 as `etemp`); the hot MD's
-    homolyses then smear instead of stopping the SCC. Others: unchanged."""
-    e = engine
-    while e is not None and not hasattr(e, "etemp"):
-        e = getattr(e, "base", None)
-    if e is None or not etemp:
-        yield
-        return
-    old = e.etemp
-    e.etemp = float(etemp)
-    try:
-        yield
-    finally:
-        e.etemp = old
+def _whole_frames(md_dir: Path, natoms: int, wanted) -> dict:
+    """{frame: coordinates (Angstrom)} of these frames of the finished
+    segments, counted across them in order, reading only those frames."""
+    wanted, out, base = set(int(f) for f in wanted), {}, 0
+    for fp in sorted(Path(md_dir).glob("segment_*.xyz")):
+        if not wanted - set(out):
+            break
+        with fp.open() as fh:
+            f = base
+            while True:
+                head = fh.readline()
+                if not head.strip():
+                    break
+                fh.readline()
+                lines = [fh.readline() for _ in range(natoms)]
+                if f in wanted:
+                    out[f] = np.array([[float(v) for v in ln.split()[1:4]] for ln in lines])
+                f += 1
+        base = f
+    return out
 
 
 def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, temperature: float = 2500.0,
@@ -193,11 +235,11 @@ def qmmm_reactor_products(structure, engine, region, *, max_products: int = 20, 
                     out.append(s)
         total["products"] = len(out)
         return out, total
-    with electronic_temperature(engine, electronic_temperature_k):
-        return _reactor_products_one(structure, engine, region, max_products=max_products, temperature=temperature,
-                                     time_ps=time_ps, compress=compress, period_ps=period_ps,
-                                     environment_temperature=environment_temperature, seed=seed, workdir=workdir,
-                                     on_event=on_event)
+    return _reactor_products_one(structure, engine, region, max_products=max_products, temperature=temperature,
+                                 time_ps=time_ps, compress=compress, period_ps=period_ps,
+                                 environment_temperature=environment_temperature, seed=seed,
+                                 electronic_temperature_k=electronic_temperature_k, workdir=workdir,
+                                 on_event=on_event)
 
 
 def qm_bond_key(structure, region) -> frozenset:
@@ -213,11 +255,12 @@ def qm_bond_key(structure, region) -> frozenset:
 
 
 def _reactor_products_one(structure, engine, region, *, max_products, temperature, time_ps, compress, period_ps,
-                          environment_temperature, seed, workdir, on_event) -> tuple[list, dict]:
+                          environment_temperature, seed, electronic_temperature_k, workdir,
+                          on_event) -> tuple[list, dict]:
     import tempfile
 
     from mepd.discovery.nanoreactor import (DetectSettings, ReactorSettings, auto_radius, bond_history,
-                                            detect_events, read_xyz_frames)
+                                            detect_events)
     from mepd.qmmm import diagnose
 
     pos = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
@@ -225,35 +268,42 @@ def _reactor_products_one(structure, engine, region, *, max_products, temperatur
     extent = float(np.max(np.linalg.norm(pos[qm] - pos[qm].mean(axis=0), axis=1)))
     settings = ReactorSettings(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
                                period_ps=float(period_ps), method="level", seed=int(seed),
-                               radius=max(auto_radius(len(qm)), extent + 1.5))
+                               radius=max(auto_radius(len(qm)), extent + 1.5),
+                               electronic_temperature=float(electronic_temperature_k or getattr(
+                                   _xtb_qm_engine(engine), "electronic_temperature", None) or 0.0))
     detect = DetectSettings()
-    from mepd.discovery.nanoreactor_generator import run_dir, segment_hook, write_live_events
+    from mepd.discovery.nanoreactor_generator import _subset_segments, run_dir, segment_hook, write_live_events
 
     run = run_dir(workdir)
     with tempfile.TemporaryDirectory(prefix="mepd_qmmm_reactor_") as tmp:
         d = run / "md" if run is not None else Path(tmp)
-        traj = run_qmmm_reactor_md(structure, engine, region, settings=settings, workdir=d,
-                                   environment_temperature=environment_temperature,
-                                   on_event=segment_hook(run, int(region.qm_charge), settings.dump_fs, on_event,
-                                                         atoms=qm, every_s=30.0))
-        symbols, frames, _ = read_xyz_frames(traj)
+        run_qmmm_reactor_md(structure, engine, region, settings=settings, workdir=d,
+                            environment_temperature=environment_temperature,
+                            on_event=segment_hook(run, int(region.qm_charge), settings.dump_fs, on_event,
+                                                  atoms=qm, every_s=30.0))
+        # Bonds of the QM atoms only (the whole system's frames are large);
+        # whole frames are read just for the products.
+        sub, frames = _subset_segments(d, qm)
+        hist = bond_history(sub, frames, detect, settings.dump_fs)
+        events = detect_events(len(qm), hist, detect, settings.dump_fs)
+        seen = {frozenset(hist.initial)}
+        bonded0 = {a for p in hist.initial for a in p}
+        candidates = []
+        for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
+            bonds = frozenset(hist.bonds_at(ev.product_frame))
+            if bonds in seen:
+                continue
+            seen.add(bonds)
+            candidates.append((ev, bonds))
+        whole = _whole_frames(d, len(structure.symbols), [ev.product_frame for ev, _ in candidates])
     write_live_events(run, total_charge=int(region.qm_charge), dt_fs=settings.dump_fs, atoms=qm)
-    sub = [symbols[i] for i in qm]
-    hist = bond_history(sub, frames[:, qm], detect, settings.dump_fs)
-    events = detect_events(len(qm), hist, detect, settings.dump_fs)
-    seen = {frozenset(hist.initial)}
-    bonded0 = {a for p in hist.initial for a in p}
     counts = {"events": len(events), "products": 0, "mm_changed": 0, "boundary": 0}
     out = []
-    for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
-        bonds = frozenset(hist.bonds_at(ev.product_frame))
-        if bonds in seen:
-            continue
-        seen.add(bonds)
+    for ev, bonds in candidates:
         if bonded0 - {a for p in bonds for a in p}:
             counts["torn"] = counts.get("torn", 0) + 1
             continue           # torn into atoms
-        s = structure.model_copy(update={"geometry": frames[ev.product_frame] * ANGSTROM_TO_BOHR})
+        s = structure.model_copy(update={"geometry": whole[ev.product_frame] * ANGSTROM_TO_BOHR})
         rep = diagnose(region, [structure, s])
         if rep["frames"][1]["mm_bond_changes"]:
             counts["mm_changed"] += 1

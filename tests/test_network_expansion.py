@@ -310,3 +310,369 @@ def test_a_lower_conformer_reached_by_an_irc_becomes_the_reference():
     assert float(seed.node.energy) < before - 1e-3
     energies = [float(s.node.energy) for s in res.species]
     assert all(st.ts_energy >= max(energies[st.a], energies[st.b]) for st in res.steps)  # no negative barrier
+
+
+def _connector(ts_kcal, calls=None):
+    def connect(pairs, nodes):
+        if calls is not None:
+            calls.append(list(pairs))
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + ts_kcal / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+        return out
+    return connect
+
+
+def test_access_steering_expands_species_within_reach_of_the_cutoff():
+    """HCN -> HNC: with a TS 5 kcal/mol over the higher end, HNC is within a 30 kcal/mol cutoff and is
+    expanded next; with a 60 kcal/mol TS it is out of reach and the network stops after round 1."""
+    low = expand_network(_node("C#N"), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="access",
+                         connect=_connector(5.0), access_cutoff_kcal=30.0)
+    assert [r["sources"] for r in low.rounds][:2] == [[0], [1]]
+    assert 1 in low.rounds[0]["access"]["within_reach"]
+    high = expand_network(_node("C#N"), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="access",
+                          connect=_connector(60.0), access_cutoff_kcal=30.0)
+    assert len(high.rounds) == 1 and high.rounds[0]["expanded_next"] == []
+    assert 1 in high.rounds[0]["access"]["out_of_reach"]
+
+
+def test_access_steering_does_not_connect_products_above_the_cutoff():
+    """A product lying more than the cutoff above the seed can't be reached within it: no path search.
+    (_GraphEngine: one bond fewer = 0.63 kcal/mol higher.)"""
+    calls = []
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=_connector(5.0, calls),
+                         access_cutoff_kcal=0.1, max_products=20)
+    assert any(s.rel_energy_kcal > 0.1 for s in res.species)          # a product above the cutoff was found ...
+    assert calls == [] and res.rounds[0]["access"]["pairs_not_connected_above_cutoff"] == 1   # ... and not searched
+
+
+def test_a_target_is_searched_first_and_its_route_seeds_the_frontier():
+    calls = []
+    res = expand_network(_node("C#N"), _GraphEngine(), rounds=1, allow_zwitterions=True, steer="access",
+                         connect=_connector(5.0, calls), access_cutoff_kcal=30.0, target=_node("[C-]#[NH+]"))
+    assert calls[0] == [(0, 1)]                      # round 0: seed -> target
+    # the seed is expanded first; route species follow once the kinetics put material into them
+    assert res.rounds[0]["round"] == 0 and res.rounds[0]["expanded_next"] == [0]
+
+
+def test_access_steering_needs_a_cutoff():
+    with pytest.raises(ValueError, match="access_cutoff_kcal"):
+        expand_network(_node("C#N"), _GraphEngine(), steer="access", connect=_connector(5.0))
+
+
+def test_a_target_behind_a_high_step_is_rerouted_through_reachable_species():
+    """Methanol -> formaldehyde + H2: the direct search finds a TS far above the cutoff; the
+    explorer then searches from other species within reach towards the target and finds a low route."""
+    calls = []
+
+    def connect(pairs, nodes):
+        calls.append(list(pairs))
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            high = {i, j} == {0, 1}                                      # the direct route
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + (60.0 if high else 5.0) / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+        return out
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                         access_cutoff_kcal=30.0, target=_node("C=O.[H][H]"), max_products=20)
+    assert res.rounds[0]["target"] == 1                                 # the target's index stays readable
+    assert res.rounds[0]["target_route"]["reached"] is False
+    assert res.rounds[0]["target_route"]["blocking_steps"]
+    reached = [r.get("target_route", {}).get("reached") for r in res.rounds]
+    assert True in reached                                               # a route within the cutoff was found
+    tried = [p for r in res.rounds for p in r.get("target_route", {}).get("tried_to_target", [])]
+    assert all(j == 1 for _, j in tried)     # extra searches (if any were needed) all head for the target
+    # one connect call per round after round 0: searches towards the target join the round's queue
+    assert len(calls) - len([r for r in res.rounds if r["round"] >= 1]) <= 1 + bool(res.rounds[-1].get("final_reroute"))
+
+    # one round only: the search the round opened up (2 -> target) still runs, after it
+    calls.clear()
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect,
+                         access_cutoff_kcal=30.0, target=_node("C=O.[H][H]"), max_products=20)
+    assert res.rounds[-1]["target_route"]["reached"] is True   # in the round, or by the final pass
+
+
+def test_access_steering_expands_only_populated_species_and_caps_each_round():
+    """Within reach is not enough: the kinetics must put material into a species, and at most
+    max_expand_per_round are expanded (the most populated first)."""
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=2, steer="access", connect=_connector(5.0),
+                         access_cutoff_kcal=30.0, max_products=20, max_expand_per_round=1,
+                         kinetics={"temperature": 300.0, "time_s": 3600.0, "threshold": 0.01})
+    gate = res.rounds[0]["access_gate"]
+    assert len(res.rounds[0]["expanded_next"]) <= 1
+    assert gate["populated"] <= gate["within_reach_unexpanded"]
+
+
+def _unverified_connector(ts_kcal):
+    def connect(pairs, nodes):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + ts_kcal / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": f"fast_{i}_{j}",
+                        "files": {"ts": f"fast_{i}_{j}.xyz", "verified": False}})
+        return out
+    return connect
+
+
+def test_fast_steps_are_irc_checked_only_where_the_kinetics_need_them():
+    holder = {}
+
+    def verify(items):
+        holder.setdefault("calls", []).append([i for i, _ in items])
+        nodes = holder["res_nodes"]()
+        return [(i, nodes[holder["steps"]()[i].a], nodes[holder["steps"]()[i].b]) for i, _ in items]
+
+    res_ref = {}
+    holder["res_nodes"] = lambda: [s.node for s in res_ref["r"].species]
+    holder["steps"] = lambda: res_ref["r"].steps
+
+    class Lazy(list):
+        pass
+
+    # run once to get the object, then check verification marks
+    import mepd.discovery.network_expansion as ne
+    orig = ne.ExpansionResult
+
+    class Capture(orig):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            res_ref["r"] = self
+
+    ne.ExpansionResult = Capture
+    try:
+        res = expand_network(_node("C#N"), _GraphEngine(), rounds=2, allow_zwitterions=True, steer="access",
+                             connect=_unverified_connector(5.0), verify=verify, access_cutoff_kcal=30.0)
+    finally:
+        ne.ExpansionResult = orig
+    assert holder.get("calls")                                 # the populated step was checked
+    assert all(st.files.get("verified") for st in res.steps)   # and is now IRC-verified
+
+
+def test_a_fast_step_whose_irc_fails_is_dropped():
+    res = expand_network(_node("C#N"), _GraphEngine(), rounds=1, allow_zwitterions=True, steer="access",
+                         connect=_unverified_connector(5.0), verify=lambda items: [(i, None, None) for i, _ in items],
+                         access_cutoff_kcal=30.0)
+    assert res.steps == []
+
+
+def test_structure_generator_runs_frontier_species_at_once(monkeypatch):
+    # A nanoreactor-like generator: every frontier species is proposed concurrently,
+    # `workers // n_seeds` at a time, instead of one after another.
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from mepd.discovery import generators
+    from mepd.discovery.network_expansion import _propose_structures_at_once
+
+    live, peak, lock = [0], [0], threading.Lock()
+
+    def slow(structure, *, max_products, options):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.2)
+        with lock:
+            live[0] -= 1
+        return [structure]
+
+    monkeypatch.setitem(generators.GENERATORS, "slow-md",
+                        generators.Generator("slow-md", "slow", "test", slow, kind="structures"))
+    result = SimpleNamespace(species={k: SimpleNamespace(node=SimpleNamespace(structure=f"s{k}")) for k in range(6)})
+    view = SimpleNamespace(region=None)
+    got = _propose_structures_at_once(list(range(6)), result, "slow-md", {"n_seeds": 2}, None, view, 5, workers=6)
+    assert got == {k: [f"s{k}"] for k in range(6)}
+    assert peak[0] == 3   # 6 workers / 2 seeds per species
+    # too few workers for two species at once: left to the loop
+    assert _propose_structures_at_once([0, 1], result, "slow-md", {"n_seeds": 8}, None, view, 5, workers=8) == {}
+
+
+def test_checkpoint_gets_the_network_after_every_round():
+    seen = []
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=2, steer="access", connect=_connector(5.0),
+                         access_cutoff_kcal=30.0, max_products=20,
+                         checkpoint=lambda r: seen.append((len(r.rounds), len(r.species))))
+    assert [n for n, _ in seen] == [r["round"] for r in res.rounds if r["round"] >= 1]
+
+
+def test_a_pair_whose_single_ts_belongs_elsewhere_gets_a_path_search():
+    """Formic acid -> CO + H2O: the single TS optimization found the carbene -> CO + H2O TS. The step is
+    kept under its IRC ends, and the pair asked for still gets its full path search."""
+    calls = []
+
+    def connect(pairs, nodes, search=False):
+        calls.append((list(pairs), search))
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}-{search}",
+                        **({} if search else {"pair": (i, j)}),
+                        "files": {"verified": False, "ts": "x.xyz", **({} if search else {"pair": [i, j]})}})
+        return out
+
+    def verify(items):   # every single-TS step's IRC lands on (target, target): no step for the pair asked
+        for idx, _ in items:
+            yield idx, None, None
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect, verify=verify,
+                         access_cutoff_kcal=30.0, max_products=20)
+    fast = [p for ps, s in calls if not s for p in ps]
+    searched = [p for ps, s in calls if s for p in ps]
+    assert fast and sorted(searched) == sorted(set(fast))   # each pair the single TS missed: one path search
+
+
+def test_relevant_steps_get_channel_sampling_that_replaces_the_single_ts_and_adds_exits():
+    """refine (mepd channels in the CLI) runs once per relevant step; its direct channel replaces the single
+    TS (no double counting), its off-target exit adds a species and a step."""
+    asked = []
+
+    def refine(items):
+        out = []
+        for a, b, label in items:
+            asked.append(label)
+            ts = a.copy()
+            ts._cached_energy = max(a.energy, b.energy) + 2.0 / 627.509     # a lower TS than the single one
+            exit_end = _node("C=O.[H][H]")
+            ets = a.copy()
+            ets._cached_energy = a.energy + 3.0 / 627.509
+            out.append({"direct": [{"start": a, "end": b, "ts": ts, "label": f"ch_{label}",
+                                    "files": {"verified": True}}],
+                        "other": [{"start": a, "end": exit_end, "ts": ets, "label": f"exit_{label}",
+                                   "files": {"verified": True}}],
+                        "conformers": []})
+        return out
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=_connector(5.0),
+                         access_cutoff_kcal=30.0, max_products=20, refine=refine)
+    assert asked                                                          # sampled
+    sampled = {frozenset(p) for r in res.rounds for p in r.get("channels_sampled", [])}
+    for key in sampled:
+        labels = [st.label for st in res.steps if frozenset((st.a, st.b)) == key]
+        assert labels and all(l.startswith(("ch_", "exit_")) for l in labels)   # single TS replaced
+    assert any(st.label.startswith("exit_") for st in res.steps)           # off-target exit joined the network
+    assert len(asked) == len(set(asked))                                   # once per pair
+
+
+def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tightly(monkeypatch):
+    """Proposals stop at the loose threshold; before the kinetics take Hessians, the species within reach are
+    minimized to the engine's own threshold. Species out of reach stay loose."""
+    import mepd.discovery.network_expansion as ne
+    from mepd.discovery.free_energy import FreeEnergies
+
+    class Engine(_ShiftEngine):
+        def __init__(self):
+            super().__init__()
+            self.fmax = []
+
+        def compute_geometry_optimization(self, node, keywords=None):
+            self.fmax.append((keywords or {}).get("fmax"))
+            return super().compute_geometry_optimization(node, keywords)
+
+    monkeypatch.setattr(ne, "_takes_fmax", lambda engine: True)
+    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts: [0.0] * len(structures))
+    engine = Engine()
+    res = expand_network(_node("C#N"), engine, rounds=1, allow_zwitterions=True, steer="access",
+                         connect=_connector(5.0), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
+    assert 0.05 in engine.fmax and None in engine.fmax           # loose proposals, tight seed and tightening
+    reached = {k for st in res.steps for k in (st.a, st.b)}
+    assert reached and not any(res.species[k].loose for k in reached)
+    tight = expand_network(_node("C#N"), Engine(), rounds=1, allow_zwitterions=True, proposal_fmax=0)
+    assert not any(s.loose for s in tight.species)
+
+
+def test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=None):
+    """A barrierless association: the TS search from the piece's highest image lands on a rotation saddle, whose
+    IRC ends are one species. The IRC check drops that TS; the piece keeps its highest image instead (an upper
+    bound), as when the TS search fails outright -- otherwise the network loses the step."""
+    def connect(pairs, nodes, search=False):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            if not search:   # the single TS optimization: its IRC fails, so the pair gets a path search
+                out.append({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": f"fast_{i}_{j}",
+                            "files": {"verified": False, "ts": "x.xyz", "pair": [i, j]}})
+                continue
+            peak = nodes[j].copy()
+            peak._cached_energy = max(nodes[i].energy, nodes[j].energy) + 3.0 / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "peak": peak, "label": f"pair_{i}_{j}_leaf_0",
+                        "files": {"verified": False, "ts": "y.xyz", "peak": f"ts/pair_{i}_{j}_leaf_0_peak.xyz"}})
+        return out
+
+    holder = {}
+
+    def verify(items):
+        for idx, _ in items:
+            st = holder["r"].steps[idx]
+            if st.files.get("pair"):
+                yield idx, None, None
+            else:                       # the rotation saddle: both IRC ends are the piece's start
+                start = holder["r"].species[st.a].node
+                yield idx, start.copy(), start.copy()
+
+    import mepd.discovery.network_expansion as ne
+    orig = ne.ExpansionResult
+
+    class Capture(orig):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["r"] = self
+
+    ne.ExpansionResult = Capture
+    try:
+        res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect, verify=verify,
+                             access_cutoff_kcal=30.0, max_products=20, refine=refine)
+    finally:
+        ne.ExpansionResult = orig
+    if refine is not None:
+        return res
+    assert res.steps and all(st.files.get("ts_kind") == "path_peak" for st in res.steps)
+    for st in res.steps:
+        top = max(res.species[st.a].node.energy, res.species[st.b].node.energy)
+        assert abs((st.ts_energy - top) * 627.509 - 3.0) < 1e-6
+        assert st.files["ts"].endswith("_peak.xyz") and st.files["verified"] is True
+
+
+def test_a_pair_whose_ts_failed_its_irc_check_gets_its_paths_sampled():
+    """... and that pair gets channel sampling (all conformer pairs and mechanisms): its direct channel, the
+    real TS between the two ends, replaces the path-peak bound."""
+    asked = []
+
+    def refine(items):
+        out = []
+        for a, b, label in items:
+            asked.append(label)
+            ts = a.copy()
+            ts._cached_energy = max(a.energy, b.energy) + 1.0 / 627.509
+            out.append({"direct": [{"start": a, "end": b, "ts": ts, "label": f"ch_{label}",
+                                    "files": {"verified": True}}], "other": [], "conformers": []})
+        return out
+
+    res = test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=refine)
+    assert asked and res.steps
+    assert all(st.label.startswith("ch_") for st in res.steps)   # every bound replaced by a sampled TS
+    assert len(asked) == len(set(asked))
+
+
+def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypatch, tmp_path):
+    import mepd
+    from mepd.discovery.cli_expand import _channels_refiner
+
+    seen = {}
+
+    def fake(a, b, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(mepd, "channels", fake)
+    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 0
+    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 3

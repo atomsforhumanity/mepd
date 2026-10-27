@@ -111,9 +111,10 @@ def test_terachem_single_geomopt_with_frozen_atoms_uses_constraints_file_input()
     assert "run minimize" in tcin
     assert "threads 7" in tcin
     assert "maxit 10" in tcin
-    assert "$constraints" in tcin
-    assert "atom 1" in tcin
-    assert "$end" in tcin
+    # new_minimizer (mepd's default) reads $constraint_freeze, not $constraints (mepd#3)
+    assert "new_minimizer yes" in tcin
+    assert "$constraints" not in tcin
+    assert tcin.rstrip().endswith("end\n\n$constraint_freeze\nxyz 1\n$end")
     assert "frozen_atom_indices" not in tcin
 
 
@@ -155,9 +156,8 @@ def test_terachem_batch_geomopt_with_frozen_atoms_uses_constraints_file_inputs()
     for inp in captured["inputs"]:
         assert isinstance(inp, FileInput)
         tcin = inp.files["tc.in"]
-        assert "$constraints" in tcin
-        assert "atom 2" in tcin
-        assert "$end" in tcin
+        assert "$constraints" not in tcin
+        assert "$constraint_freeze\nxyz 2\n$end" in tcin
 
 
 def test_qccompute_prepare_node_for_comparison_uses_non_frozen_atoms():
@@ -293,3 +293,51 @@ def test_hessian_uses_bigchem_only_on_chemcloud(compute_program, expected, monke
                         lambda prog, inp, **kw: seen.append(prog) or SimpleNamespace(results=None))
     engine._compute_hessian_result(_node_at_x(1.4))
     assert seen[0] == expected
+
+
+def test_terachem_frozen_atoms_follow_the_optimizer():
+    """$constraint_freeze/xyz for new_minimizer, $constraints/atom for the old optimizer."""
+    engine = QCComputeEngine(program="terachem", compute_program="chemcloud",
+                             program_args=ProgramArgs(model={"method": "hf", "basis": "sto-3g"}, keywords={}))
+    build = lambda tc: engine._build_terachem_geomopt_file_input(
+        _node_at_x(1.0), tc_keywords=tc, optimizer_keywords={}, frozen_atom_indices=[2, 0, 0, -1]).files["tc.in"]
+    new = build({"new_minimizer": "yes"})
+    assert "$constraint_freeze\nxyz 1,3\n$end" in new and "$constraints" not in new
+    assert new.index("\nend\n") < new.index("$constraint_freeze")
+    old = build({"new_minimizer": False})
+    assert "$constraints\natom 1\natom 3\n$end" in old and "$constraint_freeze" not in old
+    assert "$constraint" not in engine._build_terachem_geomopt_file_input(
+        _node_at_x(1.0), tc_keywords={"new_minimizer": "yes"}, optimizer_keywords={},
+        frozen_atom_indices=[]).files["tc.in"]
+
+
+def _captured_ts_keywords(keywords):
+    engine = QCComputeEngine(program="xtb", compute_program="qccompute",
+                             program_args=ProgramArgs(model={"method": "gfn2"}, keywords={}))
+    captured = {}
+
+    def _fake_compute_func(inp_obj, **kwargs):
+        captured["input"] = inp_obj
+        return SimpleNamespace(success=False)
+
+    engine.compute_func = _fake_compute_func
+    engine.compute_transition_state(_node_at_x(1.0), keywords=keywords)
+    return captured["input"].keywords
+
+
+def test_ts_keywords_reach_geometric():
+    """compute_transition_state passes its keywords on (mepd#5): FSM-TS's maxiter and fmax."""
+    kw = _captured_ts_keywords({"maxiter": 37, "fmax": 0.001})
+    assert kw["maxiter"] == 37 and "fmax" not in kw
+    # 0.001 eV/Å as a gradient in Hartree/bohr
+    assert kw["convergence_gmax"] == pytest.approx(0.001 * 0.529177210903 / 27.211386245988)
+    assert kw["convergence_gmax"] == pytest.approx(1.9447e-5, rel=1e-4)
+
+
+def test_ts_keywords_defaults_and_pass_through():
+    assert _captured_ts_keywords(None) == {"maxiter": 1000}
+    assert _captured_ts_keywords({"steps": 5, "convergence_set": "GAU_TIGHT"}) == {
+        "maxiter": 5, "convergence_set": "GAU_TIGHT"}
+    given = {"fmax": 0.05, "convergence_gmax": 1e-6}
+    assert _captured_ts_keywords(given)["convergence_gmax"] == 1e-6      # an explicit geomeTRIC value wins
+    assert given == {"fmax": 0.05, "convergence_gmax": 1e-6}             # the caller's dict is not changed

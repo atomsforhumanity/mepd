@@ -201,3 +201,33 @@ def test_irc_ends_are_minimized_and_the_path_runs_minimum_to_minimum():
         assert end.frequencies.n_imaginary() == 0
     raw = mepd.irc(mid, eng, minimize_ends=False)
     assert len(raw.path.nodes) == 3
+
+
+def test_find_ts_defaults_to_mepd_ts_convergence():
+    """mepd.find_ts without fmax/maxiter uses `mepd ts`'s 0.001 eV/Å and 1000 steps,
+    not an engine's looser optimizer default (mepd#6); a given value wins, and an
+    engine whose method takes no keywords is called without them."""
+    import mepd
+    from mepd.inputs import TSInputs
+    from mepd.nodes.node import StructureNode
+    from qcdata import Structure
+
+    node = StructureNode(structure=Structure(symbols=["H", "H"], geometry=[[0, 0, 0], [0, 0, 1.4]]))
+    seen = []
+
+    class Takes:
+        def compute_transition_state(self, node, keywords=None):
+            seen.append(keywords)
+            return node
+
+    class NoKeywords:
+        def compute_transition_state(self, node):
+            seen.append("called")
+            return node
+
+    mepd.find_ts(node, Takes(), check_frequencies=False)
+    mepd.find_ts(node, Takes(), check_frequencies=False, fmax=0.05)
+    mepd.find_ts(node, NoKeywords(), check_frequencies=False)
+    assert seen[0] == {"fmax": TSInputs.fmax, "maxiter": TSInputs.maxiter} == {"fmax": 0.001, "maxiter": 1000}
+    assert seen[1] == {"fmax": 0.05, "maxiter": 1000}
+    assert seen[2] == "called"

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -236,20 +237,64 @@ def _run_network_completion(
 
     builder = NetworkBuilder(data_dir=output, network_inputs=NetworkInputs())
     structures, edges = builder._load_network_data(_tree_dirs())
-    start_ind = int(builder._get_ind_td(ref_list=structures, td=start_node))
-    end_ind = int(builder._get_ind_td(ref_list=structures, td=end_node))
+    # Tree xyz files carry no charge or spin: every structure read back is
+    # neutral singlet. Follow-up searches of a charged system ran at charge 0
+    # (a -3 Suzuki flask: endpoints 689 kcal/mol off). They are the root's.
+    q, mult = int(start_node.structure.charge), int(start_node.structure.multiplicity)
+    for node in structures:
+        st = node.structure
+        if int(st.charge) != q or int(st.multiplicity) != mult:
+            node.structure = st.model_copy(update={"charge": q, "multiplicity": mult})
+
+    def _index(node):
+        try:
+            return int(builder._get_ind_td(ref_list=structures, td=node))
+        except AssertionError:
+            return None
+
+    start_ind, end_ind = _index(start_node), _index(end_node)
+    if end_ind is None or start_ind is None:
+        # Network-aware search: the route was cut before it reached this end
+        # (every piece touching it lay above the barrier cutoff).
+        typer.echo(f"The {'product' if end_ind is None else 'reactant'} is not in the searched network: no route "
+                   "to it within the barrier cutoff was searched (see network_aware.jsonl). Completing what was "
+                   "found.")
 
     def _has_edge(i: int, j: int) -> bool:
         return f"{i}-{j}" in edges or f"{j}-{i}" in edges
 
     if mode == "linear":
-        others = [k for k in range(len(structures)) if k not in (start_ind, end_ind)]
-        candidates = [(start_ind, k) for k in others] + [(k, end_ind) for k in others]
+        ends = [k for k in (start_ind, end_ind) if k is not None]
+        others = [k for k in range(len(structures)) if k not in ends]
+        candidates = ([(start_ind, k) for k in others] if start_ind is not None else []) + \
+                     ([(k, end_ind) for k in others] if end_ind is not None else [])
     else:  # all-to-all
         candidates = [
             (i, j) for i in range(len(structures)) for j in range(i + 1, len(structures))
         ]
     candidates = [(i, j) for i, j in candidates if not _has_edge(i, j)]
+
+    from mepd.network_aware import log_event, rel_kcal, resolve_cutoff
+
+    cutoff = resolve_cutoff(run_inputs.path_min_inputs)
+    floor = getattr(run_inputs.path_min_inputs, "network_floor_hartree", None)
+    if cutoff is not None and floor is not None:
+        def _rel(k):
+            e = getattr(structures[k], "energy", None)
+            return rel_kcal(e, floor) if e is not None else None
+
+        kept = []
+        for i, j in candidates:
+            high = [(k, _rel(k)) for k in (i, j) if _rel(k) is not None and _rel(k) > cutoff]
+            if high:
+                log_event({"event": "completion_pruned", "pair": [int(i), int(j)],
+                           "above_floor_kcal": {int(k): round(e, 2) for k, e in high}, "cutoff_kcal": cutoff})
+            else:
+                kept.append((i, j))
+        if len(kept) < len(candidates):
+            typer.echo(f"Network-aware: {len(candidates) - len(kept)} follow-up pair(s) not run (an end lies more "
+                       f"than {cutoff:.1f} kcal/mol above the floor).")
+        candidates = kept
 
     if len(candidates) > max_followups:
         typer.echo(
@@ -390,6 +435,37 @@ def run(
         "never cut off by this. Raise it for floppy systems that legitimately "
         "need more attempts before finding a real intermediate.",
     ),
+    barrier_cutoff: Optional[float] = typer.Option(
+        None, "--barrier-cutoff",
+        help="Network-aware search: don't search a piece of a split (or TS-optimize a step) whose route from the "
+        "start must climb more than this (kcal/mol) out of a well, all energies relative to one floor (the start). "
+        "Overrides --cutoff-temperature. 0 = off.",
+    ),
+    cutoff_temperature: Optional[float] = typer.Option(
+        None, "--cutoff-temperature",
+        help="Network-aware search: derive the barrier cutoff from a temperature (K): the barrier crossed with a "
+        "half-life of --cutoff-time, plus --cutoff-margin. Hotter or longer = more of the network explored.",
+    ),
+    cutoff_time: float = typer.Option(
+        86400.0, "--cutoff-time", help="--cutoff-temperature: the reaction time scale (s). [default: one day]"),
+    cutoff_margin: float = typer.Option(
+        10.0, "--cutoff-margin",
+        help="--cutoff-temperature: kcal/mol added for the method's error (electronic vs free energies, xTB vs a "
+        "reference level).",
+    ),
+    max_depth: Optional[int] = typer.Option(
+        None, "--max-depth", min=0,
+        help="With --recursive/--parallel: split at most this many levels deep. A path at that depth that "
+        "is still not elementary is optimized to convergence and kept as one step (leaf status "
+        "'max_depth_reached'). Default: the profile's recursive_split_max_depth (none).",
+    ),
+    search_budget: float = typer.Option(
+        0.0, "--search-budget",
+        help="With --recursive/--parallel: wall-clock seconds (from the start of the command) after which "
+        "no search is split further. Each one that finishes is kept as a 'time_budget' leaf with its own "
+        "path, and --use-tsopt/--irc then run on what was found. Searches already running finish first. "
+        "0 (default) = no budget.",
+    ),
     use_tsopt: bool = typer.Option(
         False, "--use-tsopt",
         help="After the NEB/MSMEP run, automatically optimize a transition state "
@@ -478,6 +554,9 @@ def run(
     ),
 ) -> None:
     """Run a NEB optimization between two endpoint structures."""
+    import time
+
+    _command_started = time.time()
     from mepd.nodes.node import StructureNode
     import mepd.chainhelpers as ch
 
@@ -518,6 +597,18 @@ def run(
     run_inputs.path_min_inputs.hessian_minimum_frequency_cutoff = hessian_minimum_frequency_cutoff
     run_inputs.path_min_inputs.hessian_minima_rescue_displacement = hessian_minima_rescue_displacement
     run_inputs.path_min_inputs.recursive_same_pair_split_limit = same_pair_split_limit
+    num = lambda v, default=None: float(v) if isinstance(v, (int, float)) else default  # OptionInfo when called directly
+    if num(barrier_cutoff) is not None:
+        run_inputs.path_min_inputs.barrier_cutoff_kcal = num(barrier_cutoff)
+    if num(cutoff_temperature) is not None:
+        run_inputs.path_min_inputs.cutoff_temperature = num(cutoff_temperature)
+        run_inputs.path_min_inputs.cutoff_time_s = num(cutoff_time, 86400.0)
+        run_inputs.path_min_inputs.cutoff_margin_kcal = num(cutoff_margin, 10.0)
+    if isinstance(max_depth, int):   # (typer's OptionInfo when called directly)
+        run_inputs.path_min_inputs.recursive_split_max_depth = max_depth
+    if isinstance(search_budget, (int, float)) and search_budget > 0:
+        # Read by MSMEP: no further splits after it (search_control.search_over).
+        run_inputs.path_min_inputs.recursive_split_deadline = _command_started + float(search_budget)
     run_inputs.atom_mapping_inputs.n_candidates = atom_mapping_candidates
     run_inputs.atom_mapping_inputs.metric = atom_mapping_metric
     run_inputs.atom_mapping_inputs.veto_margin = atom_mapping_veto_margin
@@ -639,6 +730,13 @@ def run(
         initial_chain = _initial_chain(seed_chain, run_inputs.chain_inputs, run_inputs.gi_inputs)
 
     output.mkdir(parents=True, exist_ok=True)
+    from mepd.network_aware import resolve_cutoff
+
+    na_cutoff = resolve_cutoff(run_inputs.path_min_inputs)
+    if na_cutoff is not None:
+        os.environ.setdefault("MEPD_NETWORK_AWARE_LOG", str(output / "network_aware.jsonl"))
+        typer.echo(f"Network-aware search: barrier cutoff {na_cutoff:.1f} kcal/mol "
+                   f"(events in {os.environ['MEPD_NETWORK_AWARE_LOG']}).")
 
     if recursive or parallel:
         from mepd.msmep import MSMEP
@@ -700,6 +798,10 @@ def run(
         if use_tsopt:
             for leaf in history.ordered_leaves:
                 if not leaf.data or not leaf.data.chain_trajectory:
+                    continue
+                if getattr(leaf, "skip_ts", False):
+                    typer.echo(f"ts_leaf_{leaf.index}: above the barrier cutoff ({getattr(leaf, 'na_route', {})}); "
+                               "no TS search.")
                     continue
                 guess, direction = _ts_guess(leaf.data.chain_trajectory[-1], run_inputs)
                 _optimize_ts_and_irc(

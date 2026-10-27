@@ -1172,3 +1172,29 @@ def test_snap_metrics_compare_snap_placements_not_every_relabeling(capsys):
     assert np.allclose(np.asarray(result.geometry), np.asarray(start.geometry), atol=1e-6)   # snap still fixes it
     out = " ".join(capsys.readouterr().out.split())
     assert "snap's placements of the symmetric atoms for the current numbering" in out and "relabeling" not in out
+
+
+@pytest.mark.parametrize("cap", [{"search_budget": 1e-6}, {"max_depth": 0}])
+def test_cli_run_recursive_caps_keep_what_was_found(tmp_path, monkeypatch, cap):
+    # mepd#13: --search-budget / --max-depth reach MSMEP, whose caps keep the path found so far
+    # (MSMEP's handling of both: test_msmep*).
+    import mepd.msmep as msmep_mod
+
+    _install_fake_gxtb_with_coordinate_dependent_energy(monkeypatch)
+    seen = []
+    real = msmep_mod.MSMEP._run_recursive_step
+
+    def spy(self, *a, **kw):
+        seen.append((getattr(self.inputs.path_min_inputs, "recursive_split_max_depth", None),
+                     getattr(self.inputs.path_min_inputs, "recursive_split_deadline", None)))
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(msmep_mod.MSMEP, "_run_recursive_step", spy)
+    (tmp_path / "start.xyz").write_text(_water().to_xyz())
+    (tmp_path / "end.xyz").write_text(_water(6.0).to_xyz())
+    _run_inputs_for_test().save(tmp_path / "inputs.toml")
+    _call_run(start=tmp_path / "start.xyz", end=tmp_path / "end.xyz", inputs=tmp_path / "inputs.toml",
+              recursive=True, output=tmp_path / "out", **cap)
+    assert (tmp_path / "out" / "mep_output.xyz").exists()
+    depth, deadline = seen[0]
+    assert (depth == 0) if "max_depth" in cap else (deadline is not None and deadline < __import__("time").time())

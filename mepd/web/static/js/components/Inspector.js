@@ -2,7 +2,7 @@
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
 import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
-import { complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
+import { complexesGoingWith, complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
 import { ActionPanel } from './Actions.js';
@@ -138,7 +138,10 @@ function StructureDetail({ rec }) {
   const originJob = useStore((s) => (rec.origin?.job ? s.jobs[rec.origin.job] : null));
   const patch = (body) => attempt(() => api.patch(`/api/structures/${rec.id}`, body));
   const del = async () => {
-    if (!confirm(`Delete ${rec.name} and its edges? Job outputs are kept.`)) return;
+    const cxs = complexesGoingWith(state.workspace, [rec.id]);
+    const also = cxs.length ? ` Complexes containing it go too: ${cxs.slice(0, 3).map((c) => c.name).join('; ')}`
+      + `${cxs.length > 3 ? ` and ${cxs.length - 3} more` : ''}.` : '';
+    if (!confirm(`Delete ${rec.name} and its edges?${also} Job outputs are kept.`)) return;
     await attempt(() => api.del(`/api/structures/${rec.id}`), 'Deleted');
   };
   return html`

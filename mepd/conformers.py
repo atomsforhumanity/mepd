@@ -53,7 +53,7 @@ class CrestInputs:
 
     `timeout_s`: wall-clock ceiling for one CREST call; None disables it.
 
-    `extra_args`: appended verbatim (e.g. "--quick", "--alpb water").
+    `extra_args`: appended, one argument per word (e.g. "--quick", "--alpb water").
 
     `nci_for_complexes`: run CREST in its NCI mode (`--nci`: an ellipsoidal
         wall around the complex) whenever the endpoint is more than one
@@ -407,7 +407,9 @@ def _build_crest_argv(
     # CREST takes the number of unpaired electrons, not the multiplicity.
     if multiplicity and int(multiplicity) > 1:
         argv += ["--uhf", str(int(multiplicity) - 1)]
-    argv += list(crest_inputs.extra_args)
+    from mepd.engines.gxtb import _split_args
+
+    argv += _split_args(crest_inputs.extra_args)   # "--alpb water" as one entry would be ignored
     return argv
 
 

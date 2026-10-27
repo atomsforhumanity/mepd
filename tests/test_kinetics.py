@@ -54,3 +54,25 @@ def test_only_species_reached_by_enough_flux_are_selected():
 def test_no_steps_means_no_flux():
     res = simulate(3, [], [0.0, 0.0, 0.0])
     assert res.flux == [0.0, 0.0, 0.0] and res.final_concentration == [1.0, 0.0, 0.0]
+
+
+def test_barrierless_and_slow_steps_together_conserve_material_and_finish_fast():
+    """Rates from ~1e13 /s (barrierless) to ~1e-80 /s over 6 h: the Radau solve on K y took hours on
+    networks like this one (K's diagonal loses the slow rates to rounding) and created material."""
+    import time
+
+    h = 1 / 627.5094740631
+    rng = np.random.default_rng(0)
+    n = 55
+    e = np.r_[0.0, rng.uniform(-32, 90, n - 1)] * h
+    steps = []
+    for _ in range(90):
+        a, b = rng.choice(n, 2, replace=False)
+        ts = max(e[a], e[b]) + rng.choice([0.0, rng.uniform(0, 3), rng.uniform(10, 60)]) * h
+        steps.append(Step(int(a), int(b), float(ts), "", {}))
+    for i in range(1, 8):
+        steps.append(Step(0, i, float(max(e[0], e[i]) + rng.uniform(15, 25) * h), "", {}))
+    t0 = time.time()
+    k = simulate(n, steps, e.tolist(), temperature=333, time_s=21600)
+    assert time.time() - t0 < 30
+    assert sum(k.final_concentration) == pytest.approx(1.0, abs=1e-6)

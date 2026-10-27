@@ -23,9 +23,41 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   RMSD apart), and `mepd qmmm protein-build --pose k` builds one. A molecule that looks alike from both ends
   docks either way round in one pocket; before, only the best Vina score was kept, which for
   androstenedione in ketosteroid isomerase (1OH0) was the pose turned end to end from the crystal's.
-- **xtb (GFN2/GFN1) as a QM level retries a failed SCC** with `--etemp 1000`, more iterations, then
-  `--etemp 5000` (as the solvation correction does), and says so in the log; `etemp` sets a fixed
-  electronic temperature instead.
+- **`mepd channels --max-path-searches N`**: a cap on path searches (each pair's first search and every piece a
+  split adds, counted in pair order) instead of a wall-clock budget. Past it, no pair starts and no search is
+  split further, as with `--search-budget` (pieces already queued still run once), but the same inputs stop at
+  the same search on any machine (with one pair at a time), so a search is reproducible for a given seed: two
+  runs of a Transition1x-TMC search capped at 8 wrote byte-identical paths (11 searches each). Leaves cut by it have status
+  `path_search_budget`; `stats.json` records `path_searches` and `max_path_searches_reached`.
+- **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
+  `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
+  bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
+  atom, or coming off the metal) is not another species; `Comparison.metal_ligand_changed` records it. Off by
+  default: every command still compares all bonds. Following the treatment of dative metal-ligand contacts as
+  zero-order bonds, kept apart from covalent bond changes, in Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the
+  Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+  doi:10.26434/chemrxiv.15006374/v1 (preprint). In the Transition1x-TMC screen, a quarter of the reaction
+  ends whose bond graphs differed from the dataset's differed only in metal-ligand contacts.
+- **`mepd run --recursive/--parallel --max-depth N --search-budget SECONDS`.** Caps for a recursive MSMEP that
+  keeps splitting (59 nanoreactor pairs: 14 still recursing after 4 h, median 14 min). Past the depth, a path
+  is converged and kept as one step; past the budget, no search is split further. Either way `--use-tsopt` and
+  `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
+  `--search-budget`, now on `mepd run` too. (#13)
+
+- **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
+  searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
+  steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and
+  outputs go through qccodec; ORCA runs by its full path. The executable is `executable`, `$MEPD_ORCA`,
+  `/opt/orca/orca` or `orca` on PATH, only with ORCA's own programs beside it (`orca` is also GNOME's screen
+  reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
+  licensed, so it is not in the public image.
+
+- **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
+  expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
+  steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
+  re-minimized / have their TS re-found with an IRC check; the kinetics are rerun at both levels
+  (`refined_energies.json`, geometries and RMSDs under `refined/`). Every result is kept as it finishes and a
+  rerun picks up from what was kept at the same level of theory.
 
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
@@ -256,6 +288,28 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   search can end on an environment saddle (ketosteroid isomerase: a Tyr57 OH rotation, both IRC ends the
   same species). Caged FSM-TS gave all three KSI steps' TSs with connecting IRCs, each in under 25 min.
   Solvent profiles keep NEB.
+- **IRCs stop at 0.01 eV/Å by default, up to 3000 steps per direction** (Sella; was 0.1 and 1000), and the
+  geomeTRIC IRC at the same largest force (its own default is about 0.023 eV/Å). At 0.1 an IRC can stop on a
+  shoulder well above the minimum, and minimizing from there can slide into another isomer: in a
+  Transition1x-TMC reaction (TMC_20796_Pt), the proton of a Pt-bound HCl moved to the chloride trans to the
+  alkyl chloride, 13.9 kcal/mol lower, which the bond-graph comparison could not see; at 0.01 the IRC itself
+  reaches that minimum. Pass `fmax` (and `steps`) in the IRC keywords for the old behaviour.
+- **Deleting molecules says which complexes go with them.** Explore draws a complex as its molecules, so a
+  complex is removed with any of them (as before). The delete confirmation (Explore selection and the
+  Inspector) now names those complexes. (#14)
+
+- **`thermo.qrrho(ts=True)` says when it could not leave out the reaction coordinate.** A Hessian at another
+  level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
+  and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
+  to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
+
+- **Explorer**: a path piece whose TS search fails, or whose TS belongs to another motion by its IRC, keeps its
+  path's highest image as an upper-bound barrier (`ts_kind = "path_peak"`), so a barrierless association no
+  longer cuts the seed off the network; such pairs get channel sampling, and the explorer's channel searches
+  sample every conformer pair of every mechanism by default.
+- **Psi4**: a `[solvation]` table uses Psi4's own PCM instead of xTB solvation on top; Hessians are central
+  differences of gradients, kept per geometry.
+
 - **Transition states, minima and IRCs are checked, not assumed** (KAIST 500 benchmark on g-xTB, 2026-10-19).
   Defaults everywhere mepd optimizes, including `channels`, `ts`, `run --use-tsopt`, the force, solvent and
   substituent commands and the web app:
@@ -501,12 +555,112 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   a mostly frozen system is interpolated as a small sub-system, and the geodesic smoother kept that
   sub-system's path, which FSM turned into whole-system nodes. The smoother now holds the whole system's
   path. FSM-TS used to fall back to NEB on every protein pair, and an NEB crashed when MSMEP split a branch.
-- **QM/MM nanoreactor in a protein stalled after its first segment**: the live events were found over the
-  whole system (bond detection and molecule labels over 3,900 protein and water atoms, the whole trajectory
-  again after every segment). They are now found among the QM atoms (indices still the system's), at most
-  every 30 s.
 - **QM side-chain charge from the residue's state**: a protonated Asp (ASH) or Glu (GLH), neutral Lys or
   doubly protonated His in the QM region was counted with its name's usual charge.
+- **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
+  `same_molecule`, `connects`). RDKit's stereo tag on a metal (@SP, @TB, @OH) records which coordination
+  polytope it fitted to the geometry, and for a fluxional centre that changed between two geometries of one
+  molecule (IrCl4L as @TB6 in one, @OH7 in the other). The tag is now dropped when all of the centre's
+  ligands are alike but at most one (MA_n, MA_nB), which have no stereoisomers; cis/trans and fac/mer
+  centres keep it. In a 200-reaction Transition1x-TMC screen, 10 more reactions were kept and none fewer.
+- **Alkali and heavier alkaline-earth cations are ions in bond perception** (Li, Na, K, Rb, Cs, Ca, Sr, Ba;
+  `mepd.discovery.nanoreactor.perceive_bonds`, the nanoreactor's bond history, fragment cuts). Their Cordero
+  radii made a K+ "bond" to every O within 3.1 A, so a reactor with KOMe glued urea, methoxide and methanol
+  into one "unusual bonding" species and reported coordination changes as reactions. They now come out as
+  their own ions (`[K+]`), always charged (K+ + MeO-, never two radicals). Be and Mg stay covalent. (#10)
+
+- **g-xTB `extra_args` with a space no longer run silently in the gas phase.** xtb takes `"--alpb water"` given
+  as one argument as an unknown flag, exits 0 and returns the gas-phase energy. `GXTBCalculator` and CREST's
+  `extra_args` now split such entries into one argument per word. A g-xTB engine also refuses implicit-solvent
+  flags (`--alpb`, `--gbsa`, `--cosmo`, `--cpcmx`, `--gbe`): g-xTB has no solvent parameters, so use a
+  `[solvation]` table (GFN2-xTB solvation on top). GFN2-xTB through the same engine keeps them. (#11)
+
+- **An uploaded ion pair splits into ions, not two radicals** (`mepd/web/compose.py`). Without charges, the
+  molecules of a split complex were made neutral where they could be, so pyridinium trifluoroacetate came out
+  as two radicals. When a closed-shell structure splits into radicals, GFN2-xTB partial charges (when xtb is
+  installed) now decide each molecule's charge, as in the nanoreactor. (#14)
+
+- **Nanoreactor (xtb/g-xTB MD): a reactor no longer falls apart into atoms when xtb's SCC breaks down.**
+  xtb's MD goes on after a failed SCC with zero energy and zero forces (every later step fails too, and so
+  does every later segment, from the broken charges in `xtbrestart`), so the atoms fly off in straight lines;
+  an SCC that lands on a wrong solution gives a jump of tens of Eh, a kick to ~10^4 K, "MD is unstable", and
+  every later segment restarts from those velocities. Seen with a ketosteroid isomerase active site (1OH0,
+  QM: the steroid + Tyr16/Asp40/Tyr57/Asp103, charge -2) at 3000 K: atoms after 0.3 ps, no products. Now
+  such a run is cut at its last good frame (zero energy, a jump of more than 1 Eh between frames, or an
+  unstable stop) and the segment goes on from there with a fresh SCC guess and new velocities at the
+  temperature; a segment that breaks down 6 times keeps its good frames and the next starts from the last
+  of them, and the piston closes 15% less far from then on (each time: a reactor squeezed past what xtb can
+  converge is squeezed less rather than failing the expansion; 1OH0 at compress = 0.5 failed with "xtb's MD
+  broke down 6 times in each of 3 segments in a row"). If 3 segments in a row still get nowhere, the MD ends
+  early and the trajectory so far is analyzed. The job log says each of these.
+
+- **Nanoreactor on a QM/MM system (QM region in vacuum): the QM region's side chains stay anchored.** The
+  link H (where the protein's backbone was) and the QM atoms they cap (CB) are held at their distances to
+  each other (xtb `$constrain`), and the piston pushes only the molecules without an anchor (the substrate,
+  into the residues), the anchored ones kept inside the wide wall. Before, nothing held the residues: in the
+  hot MD they drifted off and lost their caps (1OH0 at 2500 K: the anchor frame moved 3-6 Å and CB-H
+  bonds broke, 27 of 29 reactor states torn; now within 1 Å, caps kept, no xtb breakdowns). Generator option
+  `anchors` (0-based atoms of the QM model, `none` for none) overrides it. The wall's atoms go one
+  contiguous range per sphere line: conda-forge's xtb 6.7.1 (the Docker image's) aborts with "free():
+  invalid pointer" on a comma in a `$wall` atom list, which failed the first version of this on the server.
+
+- **QM/MM nanoreactor (`embedded=true`): hours faster.** After each MD segment the live events were
+  perceived over the whole system (protein and water included), re-reading every segment so far: hours per
+  segment for a protein. They are now found among the QM atoms only (indices still the system's), each
+  segment read once. The products step reads the QM atoms, and whole frames only for products. The MD's
+  xtb SCC is smeared at the reactor's electronic temperature (3000 K) from the start and starts from the
+  previous step's charges (0.26 → 0.17 s per step on 1OH0, and no 300 K SCC that fails first); a step whose
+  energy jumps is redone from scratch.
+
+- **GFN2-/GFN1-xTB through the xtb program (`engine_name = "xtb"`, QM/MM low levels): an SCC that does
+  not converge is retried** with Fermi smearing (`--etemp 1000`, then `3000`, 1000 iterations), as the g-xTB
+  engine already did. Before, one such geometry (e.g. a bond breaking in a 3000 K QM/MM nanoreactor) ended the
+  whole run. Its errors now name the method that ran (they said "GFN-FF" for GFN2 runs too).
+
+- **`mepd.find_ts` without `fmax`/`maxiter` used the engine's optimizer default** (0.01 eV/Å for the
+  ASE engines; mepd#6), looser than `mepd ts` (`TSInputs`: 0.001 eV/Å, 1000 steps), at which soft modes read
+  as extra imaginary frequencies. It now defaults to `mepd ts`'s values, which `mepd force`, the substituent
+  screen and the solvent tools inherit. Through QCCompute this means geomeTRIC's `convergence_gmax`
+  1.94e-5 Hartree/bohr, tighter (and slower) than geomeTRIC's own default. A given value wins; an engine
+  whose `compute_transition_state` takes no `keywords` is called as before. (`mepd ts` itself, the frequency
+  check and minimized IRC ends were already on `develop` from the checked-TS work.)
+
+- **A `gxtb` symlink to the g-xTB 2.0.1 build ran GFN2-xTB** (mepd#4). mepd left out `--gxtb` for any
+  binary named `gxtb`, but the 2.0.1 release is an xtb 6.7.1 build that runs GFN2 without it (exit 0, no
+  warning). The flag is now decided from the program (`mepd.programs.standalone_gxtb`, which reads
+  `--version` once per binary), in the engine, orbitals, nanoreactor and solvation. A run meant as g-xTB
+  whose output reports a GFN Hamiltonian now raises instead of returning a GFN2 energy. `find_gxtb` also
+  finds `~/.local/opt/xtb-gxtb-*/bin/xtb`. mepd's image passes `/opt/gxtb/bin/xtb` and was not affected.
+
+- **QCCompute TS optimizations ignored their keywords** (mepd#5). `QCComputeEngine.compute_transition_state`
+  never passed `keywords` on, so FSM-TS's `ts_fmax`/`ts_maxiter` and `mepd.find_ts(..., **keywords)` with
+  ORCA, Psi4 or TeraChem ran geomeTRIC's default convergence. Keywords now reach geomeTRIC: `maxiter`
+  (or `steps`), and ASE's `fmax` in eV/Å as `convergence_gmax` in Hartree/bohr (0.001 eV/Å → 1.94e-5);
+  an explicit `convergence_gmax` wins. The default is still 1000 steps.
+
+- **TeraChem frozen-atom optimizations froze nothing** (mepd#3). With `new_minimizer yes`, which mepd always
+  sets, TeraChem ignores a `$constraints / atom N` group without an error; geomeTRIC reads
+  `$constraint_freeze / xyz N,M` after an `end` line. QCCompute TeraChem optimizations with
+  `frozen_atom_indices` now write that group (`$constraints` stays for `new_minimizer no`). A QM/MM `tc.in`
+  may give frozen atoms either way; a constraint other than whole frozen atoms is rejected, no longer dropped.
+
+- **Memory of reading a finished search back** (`mepd/neb.py`, `mepd/TreeNode.py`, `mepd/cli_common.py`,
+  `mepd/discovery/cli_expand.py`). Collecting TS guesses after the path searches reloaded every pair tree with
+  its whole written history, building a bond graph for every node of every string: 5.8 GiB for one long
+  22-atom search (9,621 strings), only to use each leaf's last string. `TreeNode.read_from_disk(ends_only=True)`
+  and `NEB.read_from_disk(ends_only=True)` read just each search's first and last string; the TS-guess
+  readers use it (same guesses, 0.3 GiB, under a second instead of 82 s).
+- **Memory of a g-xTB search** (`mepd/engines/_sella.py`, `mepd/pathminimizers/gsm.py`). Sella imported torch
+  (~400 MiB) only to look for a CUDA GPU; with no GPU visible (no `/dev/nvidia*`, or `SELLA_DISABLE_GPU=1`)
+  Sella is now imported without it, and torch stays importable for anything else. GSM's history kept a
+  molecular graph for every node of every live string (each gradient batch, the whole run: ~600 MiB on a
+  20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
+  back. Results are unchanged.
+
+- **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
+  the stiff solver for hours or create material through rounding (flux-form right-hand side).
+- Explorer element tables come from RDKit, so Pd and other metals work in collide, free energies and the
+  nanoreactor.
 
 - **geomeTRIC IRC gradients**: `mepd/irc_geometric.py` multiplied every gradient it handed geomeTRIC by
   Bohr→Å (0.529), inconsistent with the energies. Affected IRCs of engines without their own (QCCompute) and

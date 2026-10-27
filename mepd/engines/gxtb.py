@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ from mepd.errors import (
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import update_node_cache
+from mepd.programs import standalone_gxtb
 from mepd.qcdata_structure_helpers import ase_atoms_to_structure
 
 
@@ -170,6 +172,8 @@ log = logging.getLogger(__name__)
 
 # Retries for an SCF that does not converge (tried in order): Fermi smearing
 # at a raised electronic temperature damps the charge oscillation.
+# xtb prints this for GFN0/1/2-xTB runs (also with --silent), never for g-xTB
+_GFN_HAMILTONIAN = re.compile(r":\s*Hamiltonian\s+(GFN\d?-xTB)")
 SCF_FALLBACKS = (("--etemp", "1000", "--iterations", "1000"), ("--etemp", "3000", "--iterations", "1000"))
 
 
@@ -235,6 +239,21 @@ def _run_gxtb_process(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float,
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# xtb's implicit-solvent flags (and their short forms).
+_SOLVATION_FLAGS = frozenset({"--alpb", "--gbsa", "-g", "--cosmo", "--cpcmx", "--gbe"})
+
+
+def _split_args(args) -> list[str]:
+    """One argv entry per word: xtb reads "--alpb water" given as one
+    argument as an unknown flag and runs in the gas phase without a word
+    (mepd#11), so entries with spaces are split as a shell would."""
+    out = []
+    for arg in [args] if isinstance(args, str) else args:
+        arg = str(arg)
+        out.extend(shlex.split(arg) if any(c.isspace() for c in arg) else [arg])
+    return out
+
+
 @dataclass
 class GXTBCalculator(Engine):
     """Direct local g-xTB engine using the xtb executable with the g-xTB flag."""
@@ -274,7 +293,15 @@ class GXTBCalculator(Engine):
         if self.executable is None:
             self.executable = os.getenv("GXTB_EXECUTABLE") or "gxtb"
         self.executable = str(self.executable)
-        self.extra_args = [str(arg) for arg in self.extra_args]
+        self.extra_args = _split_args(self.extra_args)
+        if self.add_gxtb_flag or standalone_gxtb(self.executable):
+            solvation = [a for a in self.extra_args if a.split("=")[0] in _SOLVATION_FLAGS]
+            if solvation:
+                raise ValueError(
+                    f"g-xTB has no implicit-solvent parameters ({' '.join(solvation)} in extra_args): with "
+                    "--alpb/--gbsa xtb stops, and --cosmo/--cpcmx/--gbe give gas-phase or implausible energies. "
+                    "Use a profile [solvation] table (method = \"correction\": GFN2-xTB solvation on top of "
+                    "g-xTB) instead.")
         self.env = {str(k): str(v) for k, v in dict(self.env or {}).items()}
 
     def _resolve_executable(self) -> None:
@@ -393,7 +420,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args if extra_args is None else extra_args)
         # A job's viewer can show this SCF's orbitals (mepd.orbitals): write them as molden.
@@ -421,6 +448,8 @@ class GXTBCalculator(Engine):
             completed = _run_gxtb_process(cmd + list(retry), cwd=cwd, env=env, timeout_s=self.timeout_s, watch=watch)
             if completed.returncode == 0:
                 log.warning("g-xTB SCF did not converge for %s; converged with %s", xyz_path.name, " ".join(retry))
+        if completed.returncode == 0:
+            self._check_ran_gxtb(completed)
         if completed.returncode != 0:
             tried = "" if not (own_retries and _scf_not_converged(completed.stdout + completed.stderr)) else \
                 f" (SCF not converged, also with {'; '.join(' '.join(r) for r in SCF_FALLBACKS)})"
@@ -441,7 +470,7 @@ class GXTBCalculator(Engine):
         mepd.orbitals reads that program's molden files; else None (e.g. GFN1-xTB)."""
         if not os.environ.get("MEPD_ORBITALS_DIR", "").strip():
             return None
-        if self.add_gxtb_flag or Path(self.executable).name == "gxtb":
+        if self.add_gxtb_flag or standalone_gxtb(self.executable):
             return "gxtb"
         gfn = cmd[cmd.index("--gfn") + 1] if "--gfn" in cmd and cmd.index("--gfn") + 1 < len(cmd) else "2"
         return "gfn2" if str(gfn) == "2" else None
@@ -562,7 +591,7 @@ class GXTBCalculator(Engine):
         uhf = max(0, int(multiplicity) - 1)
         if uhf:
             cmd.extend(["--uhf", str(uhf)])
-        if self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+        if self.add_gxtb_flag and not standalone_gxtb(self.executable):
             cmd.append("--gxtb")
         cmd.extend(self.extra_args)
 
@@ -575,7 +604,21 @@ class GXTBCalculator(Engine):
                 msg=f"g-xTB Hessian calculation failed with exit code {completed.returncode}.",
                 obj=completed.stdout + completed.stderr,
             )
+        self._check_ran_gxtb(completed)
         return completed
+
+    def _check_ran_gxtb(self, completed: subprocess.CompletedProcess[str]) -> None:
+        """A run meant as g-xTB whose xtb reports a GFN Hamiltonian ran the wrong
+        method (e.g. an xtb build not given `--gxtb`, mepd#4): stop, don't return it."""
+        if not self.add_gxtb_flag:
+            return
+        found = _GFN_HAMILTONIAN.search(completed.stdout)
+        if found:
+            raise ElectronicStructureError(
+                msg=f"{self.executable} ran {found.group(1)}, not g-xTB: give it the g-xTB build of xtb, "
+                    "or set add_gxtb_flag = false for GFN-xTB.",
+                obj=completed.stdout + completed.stderr,
+            )
 
     def compute_geometry_optimization(
         self,
@@ -690,7 +733,9 @@ class GXTBCalculator(Engine):
             return minimize_with_geometric(self, node, fmax=fmax, maxiter=steps)
         ase_engine = self._as_ase_engine_for_node(node)
         if optimizer == "sella":
-            from sella import Sella
+            from mepd.engines._sella import sella
+
+            Sella = sella().Sella
 
             optimizer_kwds = {"order": 0, "hessian_function": self._ase_hessian_function(node)}
             if every:

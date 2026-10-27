@@ -457,6 +457,37 @@ def test_search_deadline_stops_splitting_but_keeps_the_path(monkeypatch):
         assert np.allclose(out[0].coords, chain[0].coords) and np.allclose(out[-1].coords, chain[-1].coords)
 
 
+def test_max_path_searches_stops_splitting_after_that_many(monkeypatch, tmp_path):
+    """--max-path-searches: after N path searches a finished search is kept as a
+    'path_search_budget' leaf, as with the time budget (serial and parallel)."""
+    from mepd import search_control
+
+    for mode in ("serial", "parallel"):
+        msmep, chain, calls = _cycling_msmep(monkeypatch)
+        msmep.inputs.path_min_inputs.recursive_cycle_revisits = 100   # only the cap stops it
+        counter = tmp_path / f"{mode}.count"
+        search_control.start_path_search_count(msmep.inputs.path_min_inputs, counter, 3)
+        history = (msmep.run_recursive_minimize(chain) if mode == "serial"
+                   else msmep.run_parallel_recursive_minimize(chain, max_workers=2))
+        assert len(calls) == 3, mode
+        assert search_control.path_searches(msmep.inputs.path_min_inputs) == 3, mode
+        assert len(_leaves_with_status(history, "path_search_budget")) == 1, mode
+
+
+def test_pairs_not_started_after_max_path_searches_are_skipped(tmp_path):
+    from types import SimpleNamespace as NS
+
+    from mepd import search_control
+    from mepd.cli_common import _run_msmep_pairs
+
+    run_inputs = NS(path_min_inputs=NS())
+    search_control.start_path_search_count(run_inputs.path_min_inputs, tmp_path / "count", 2)
+    (tmp_path / "count").write_text("2\n")
+    _run_msmep_pairs([None, None], [(0, 1)], tmp_path, run_inputs, parallel=False, parallel_workers=None)
+    assert not (tmp_path / "pair_0_1").exists()
+    assert search_control.search_over(run_inputs.path_min_inputs) == "path_search_budget"
+
+
 def test_pairs_not_started_before_the_search_deadline_are_skipped(tmp_path):
     import time as _time
     from types import SimpleNamespace as NS

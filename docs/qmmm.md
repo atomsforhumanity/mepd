@@ -268,7 +268,8 @@ mepd run --start expand/species/species_0.xyz --end expand/species/species_35.xy
   ~7 min, then the TS on the QM atoms with an exact QM-region Hessian of 540
   gradients at 0.2 s each, then the pseudo-IRC).
 - If xtb's SCC needs its fallback anywhere along a path, set one electronic
-  temperature for the whole run (`[xtb_engine_kwds] etemp = 1000`). Otherwise
+  temperature for the whole run (`[xtb_engine_kwds] electronic_temperature =
+  1000`). Otherwise
   images sit on different surfaces, and one KSI NEB blew up.
 - `--use-tsopt` re-optimizes the TS from the path's highest image even after
   FSM-TS has converged one. For KSI step 1 that second search slid to a wrong
@@ -425,9 +426,9 @@ from the solvent or protein around it.
   xtb's own embedding, ~0.05 s per gradient for an 18-atom QM region in
   ~320 water charges), `"psi4"` (any Psi4 method; B3LYP/def2-SVP ~8 s) or
   `"terachem"` (see *TeraChem* below). xtb retries an SCC that does not
-  converge with `--etemp 1000`, more iterations, then `--etemp 5000` (the
-  log says when); `xtb_engine_kwds.etemp` fixes the electronic temperature
-  instead. A smeared energy differs from the 300 K one where the gap is
+  converge with `--etemp 1000`, then `--etemp 3000` (1000 iterations; the
+  log says when); `xtb_engine_kwds.electronic_temperature` fixes the
+  electronic temperature instead (a failure then retries more iterations only). A smeared energy differs from the 300 K one where the gap is
   small: check the log before comparing such energies.
   g-xTB and the GFN-FF environment are mechanical embedding only, so
   charged or zwitterionic QM regions in polar environments are described

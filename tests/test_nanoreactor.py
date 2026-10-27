@@ -336,3 +336,24 @@ def test_ends_that_change_bonds_on_optimization_but_still_differ_are_kept(tmp_pa
     # both ends optimized into methane: no reaction
     same = {"complex": {"reactant": end("r2.xyz", ch4, -4.0), "product": end("p2.xyz", ch4, -4.0)}}
     assert nr.relaxed_complex([same]) is None
+
+
+def test_alkali_cations_are_ions_not_bonded_to_their_shell():
+    # K+ with two waters 2.7 A away: within 1.15x the Cordero sum (3.1 A),
+    # but a solvation shell, not one molecule.
+    syms = ["K", "O", "H", "H", "O", "H", "H"]
+    xyz = np.array([[0, 0, 0], [2.7, 0, 0], [3.3, 0.76, 0], [3.3, -0.76, 0],
+                    [-2.7, 0, 0], [-3.3, 0.76, 0], [-3.3, -0.76, 0]], dtype=float)
+    bonds = nr.perceive_bonds(syms, xyz)
+    assert all(0 not in b for b in bonds) and len(bonds) == 4
+    mols = nr.components(len(syms), bonds)
+    labels = nr.Labeler(syms).assign(mols, bonds, 1)
+    assert sorted(lab.smiles for lab in labels) == ["O", "O", "[K+]"]
+    hist = nr.bond_history(syms, np.array([xyz, xyz * [1.1, 1, 1]]), nr.DetectSettings(), 1.0)
+    assert all(0 not in b for b in hist.initial) and not hist.changes
+    # Without charges a lone K is still the cation: K+ + MeO-, not two radicals.
+    lone = nr.Labeler(["K", "O", "C", "H", "H", "H"]).assign([(0,), (1, 2, 3, 4, 5)],
+                                                          {(1, 2), (2, 3), (2, 4), (2, 5)}, 0)
+    assert [(lab.smiles, lab.charge) for lab in lone] == [("[K+]", 1), ("C[O-]", -1)]
+    # Mg stays covalent (Grignard reagents)
+    assert nr.perceive_bonds(["Mg", "C"], np.array([[0, 0, 0], [2.1, 0, 0]], dtype=float)) == {(0, 1)}
