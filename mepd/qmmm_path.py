@@ -184,3 +184,38 @@ def peak_guess(nodes, energies=None):
     tangent = xs[k + 1] - xs[k - 1]
     structure = (nodes[k].structure if hasattr(nodes[k], "structure") else nodes[k]).model_copy(update={"geometry": x})
     return structure, tangent
+
+
+# A QM/MM TS whose imaginary mode overlaps the path tangent at the peak by less
+# than this (|cosine| over the atoms the TS search moves) is taken for another
+# motion than the reaction, e.g. a side-chain OH turning in a relaxed
+# environment (KSI step 1: an H transfer's search ended on a Tyr57 rotation).
+MIN_TANGENT_OVERLAP = 0.3
+
+
+def reaction_mode_problems(ts_node, engine, direction, echo=None) -> list[str]:
+    """Why a QM/MM TS is not the path's reaction, from its QM-region Hessian
+    (environment held; 6 QM/MM gradients per moving atom): no negative mode,
+    or an imaginary mode that hardly overlaps the path tangent. Empty when it
+    passes, or when there is nothing to compare (no microiterations, no
+    tangent)."""
+    micro = engine._micro() if callable(getattr(engine, "_micro", None)) else None
+    if micro is None or direction is None:
+        return []
+    d = np.asarray(direction, dtype=float).reshape(-1, 3)[micro.outer].ravel()
+    if np.linalg.norm(d) < 1e-8:
+        return []
+    (echo or (lambda *_: None))(f"Checking the TS's mode: QM-region Hessian, {6 * len(micro.outer)} QM/MM gradients...")
+    w, V = micro.qm_modes(ts_node.structure, np.asarray(ts_node.coords, dtype=float), echo=echo)
+    if w[0] >= 0:
+        return [f"the QM region has no negative curvature at the TS (lowest Hessian eigenvalue {w[0]:.3f} eV/Å²): "
+                "it is not a saddle of the reaction"]
+    overlap = float(abs(V[:, 0] @ d) / np.linalg.norm(d))
+    if overlap < MIN_TANGENT_OVERLAP:
+        moved = np.linalg.norm(V[:, 0].reshape(-1, 3), axis=1)
+        top = [int(micro.outer[i]) for i in np.argsort(moved)[::-1][:3]]
+        return [f"the TS's imaginary mode overlaps the path tangent only {overlap:.2f} (below "
+                f"{MIN_TANGENT_OVERLAP}); it mostly moves atoms {', '.join(map(str, top))}: likely a saddle of "
+                "another motion (e.g. a side chain or the environment), not the reaction. Cage the environment "
+                "(qmmm_environment = \"cage\") or start from a better guess"]
+    return []

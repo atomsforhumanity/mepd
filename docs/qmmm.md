@@ -128,6 +128,15 @@ guess lost the reaction mode within a few steps on the environment-relaxed
 surface and slid into a minimum. Pass `exact_hessian: false` in the TS
 keywords to skip the Hessian.
 
+After the search (`mepd run --use-tsopt`), the TS is checked: a second
+QM-region Hessian there, whose imaginary mode must overlap the path tangent
+by at least 0.3, and, after the IRC, its two ends must be different QM
+species. A TS that fails says why (`✗ ...` in the log, and
+`<label>_check_failed.txt` beside it, shown in the web results); it is kept,
+not deleted, so you can look at it. After FSM-TS, `--use-tsopt` takes the TS
+FSM-TS already optimized and checked (one imaginary mode, pseudo-IRC joining
+the ends) and runs only the IRC from it.
+
 Checked on Menshutkin NMe3 + CH3Cl in 56 moving TIP3P waters: B3LYP/def2-SVP
 (Psi4) TS C–N 2.13 / C–Cl 2.23 Å, 15.0 kcal/mol above the IRC's reactant end
 (gas phase 33.6), 33 min for TS and IRC; GFN2-xTB (`engine_name = "xtb"`)
@@ -183,6 +192,17 @@ mepd qmmm protein-build cm_sites --site 0 --qm-residues "A:ARG90" --end prephena
   region feels every charge regardless. Between QM steps the environment is
   relaxed on a sub-system (the moving atoms and everything within the cutoff
   of them), whose forces on the moving atoms are exactly the full system's.
+* Counterions (`--counterions`, on by default): the protein (and water) is
+  neutralized with one Na+ per excess negative charge and one Cl- per
+  positive one, each beside a charged group (Asp, Glu, C terminus / Lys,
+  Arg, N terminus) at least `--ion-min-distance` (10 Å) from every QM atom,
+  nearest first, so they screen the charges that act most on the QM region.
+  The ions are AMBER atoms of the environment (frozen beyond the active
+  radius). Without them the protein's net charge acts on the QM region
+  unscreened: the KSI dimer (1OH0) is -12, and its dienolate came out far too
+  stable. The command reports the environment's charge before and after and
+  the system charge; ions that find no group far enough away are reported
+  and left out (lower `--ion-min-distance`), never put by the QM region.
 * At build time, the protein's hydrogens and the water are minimized around
   the species (GFN2-xTB charges on it; protein heavy atoms held).
 * Docking is rigid on purpose: the species keeps the geometry it has (a
@@ -366,6 +386,37 @@ elementary-step checks see a noisy surface (switch `do_elem_step_checks`
 off for a single path); the forces are averages over `frames`, so their
 noise (about 2e-3 Eh/bohr at the defaults) limits how far a path converges.
 
+## Restraints
+
+Harmonic distance restraints hold a distance while everything else
+optimizes (QM atoms cannot be frozen), e.g. to test whether a Michaelis
+complex is a minimum with its C-H kept at 1.10 Å:
+
+```toml
+[[restraints]]
+atoms = [3951, 3967]      # 0-based
+distance = 1.10           # Å
+force_constant = 500      # kcal/mol/Å² (default)
+```
+
+They go into the QM/MM energy itself, so microiterative optimizations hold
+them; on QM/MM they may involve only QM atoms and link partners.
+`mepd optimize` reports each restraint's distance and energy. Any engine
+takes them (`mepd/restraints.py`).
+
+## Channels on a QM/MM step
+
+`mepd channels -i <QM/MM profile> --start a.xyz --end b.xyz` (whole systems,
+the same atoms) samples conformers of the QM region in its environment:
+Langevin MD of the QM atoms with QM/MM forces, the environment held
+(`--qmmm-temperature`, 400 K; `--qmmm-md-ps`, 1 ps), frames whose QM bonds
+are still the start's minimized with the profile's engine, then minima told
+apart by the QM atoms' RMSD (`--rmsd-cutoff`) and capped at
+`--n-conformers`. Every reactant x product conformer pair is then searched
+as in solvent (environment matched and marched along the path), with TS and
+IRC per leaf. No atom mapping (both ends are one system) and no mirror-image
+merging; `--pair-from` must be `both`.
+
 ## Checking that a result is not nonsense
 
 `mepd qmmm inspect` (and the web UI's *QM/MM checks*) report, frame by frame:
@@ -427,8 +478,11 @@ from the solvent or protein around it.
   ~320 water charges), `"psi4"` (any Psi4 method; B3LYP/def2-SVP ~8 s) or
   `"terachem"` (see *TeraChem* below). xtb retries an SCC that does not
   converge with `--etemp 1000`, then `--etemp 3000` (1000 iterations; the
-  log says when); `xtb_engine_kwds.electronic_temperature` fixes the
-  electronic temperature instead (a failure then retries more iterations only). A smeared energy differs from the 300 K one where the gap is
+  log says when). Once a temperature was needed, the engine holds it for
+  every later calculation and computes the rest of that batch (a path's
+  images, a Hessian's displacements) again at it, so a path never mixes
+  surfaces; `xtb_engine_kwds.electronic_temperature` sets one from the
+  start. A smeared energy differs from the 300 K one where the gap is
   small: check the log before comparing such energies.
   g-xTB and the GFN-FF environment are mechanical embedding only, so
   charged or zwitterionic QM regions in polar environments are described
@@ -444,8 +498,8 @@ from the solvent or protein around it.
   the nearby environment and put into the system, which the QM/MM
   optimization then relaxes. A product that breaks a cut bond (its link
   hydrogen no longer caps its QM atom) is dropped, and the run says so.
-* Not offered on QM/MM systems (they need whole molecules): reaction
-  channels (conformers, atom mappings), conformers, complexes,
+* Not offered on QM/MM systems in the web UI (they need whole molecules):
+  reaction channels (on the command line they run, see above), conformers, complexes,
   retrosynthesis, VRI, solvent/substituent follow-ups. The Nanoreactor
   operation (several molecules, reactions cut out with only the molecules
   they need) is replaced on a QM/MM system by the `nanoreactor` generator of

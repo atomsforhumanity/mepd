@@ -57,7 +57,8 @@ def test_species_in_protein_has_exact_qmmm_gradients(protein, tmp_path):
     from mepd.qmmm_protein import build_site_system
 
     sym, x = _site(protein)
-    rep = build_site_system(protein, sym, x, tmp_path, ligand_charge=-1, water_shell=5.0, active_radius=5.0)
+    rep = build_site_system(protein, sym, x, tmp_path, ligand_charge=-1, water_shell=5.0, active_radius=5.0,
+                            counterions=False)
     assert rep["charge"] == 1 and rep["qm_charge"] == -1 and rep["protein_atoms"] == 174
     region = QMMMRegion.open(tmp_path / "region.json")
     assert region.qm_atoms == list(range(rep["atoms"] - 7, rep["atoms"])) and region.embedding == "electrostatic"
@@ -132,3 +133,39 @@ def test_a_caged_environment_still_optimizes_the_qm_region_alone(protein, tmp_pa
     caged = sorted(set(range(region.natoms)) - set(region.qm_atoms))
     micro = FrozenAtomsEngine(base=eng, frozen=caged)._micro()
     assert micro is not None and micro.outer == sorted(region.qm_atoms) and micro.inner == []
+
+
+def test_counterions_neutralize_the_protein_away_from_the_qm_region(protein, tmp_path):
+    """The fragment (+2, two Args) gets two Cl- beside its cationic groups, each
+    at least ion_min_distance from the species; the system's charge is then the
+    species' own, and the ions are force-field atoms of the environment."""
+    from qcdata import Structure
+
+    from mepd.qmmm import QMMMRegion
+    from mepd.qmmm_protein import build_site_system
+
+    sym, x = _site(protein)
+    rep = build_site_system(protein, sym, x, tmp_path, ligand_charge=-1, water_shell=5.0, active_radius=5.0,
+                            ion_min_distance=4.0)
+    ions = rep["counterions"]
+    assert ions["charge_before"] == 2 and ions["Cl-"] == 2 and ions["Na+"] == 0 and ions["unplaced"] == 0
+    assert ions["charge_after"] == 0 and rep["charge"] == -1
+    s = Structure.open(str(tmp_path / "system.xyz"))
+    xyz = np.asarray(s.geometry) / ANGSTROM_TO_BOHR
+    region = QMMMRegion.open(tmp_path / "region.json")
+    cl = [i for i, e in enumerate(s.symbols) if e == "Cl"]
+    assert len(cl) == 2
+    for i in cl:
+        assert np.linalg.norm(xyz[region.qm_atoms] - xyz[i], axis=1).min() >= 4.0
+        assert np.sort(np.linalg.norm(xyz - xyz[i], axis=1))[1] > 2.0       # clear of every other atom
+    from mepd.engines.gfnff import XTBEngine
+    from mepd.engines.qmmm import QMMMEngine
+    from mepd.nodes.node import StructureNode
+
+    eng = QMMMEngine(base=XTBEngine(method="gfn2"), region=region, base_dir=str(tmp_path))
+    out = eng.evaluate([StructureNode(structure=s, has_molecular_graph=False)])[0]
+    assert np.isfinite(out["energy"]) and np.abs(out["gradient"][cl]).max() > 0   # the ions are AMBER atoms
+    # Too far to place any: they are reported, not put beside the QM region.
+    rep = build_site_system(protein, sym, x, tmp_path / "far", ligand_charge=-1, water_shell=5.0,
+                            active_radius=5.0, ion_min_distance=100.0)
+    assert rep["counterions"]["unplaced"] == 2 and rep["charge"] == 1

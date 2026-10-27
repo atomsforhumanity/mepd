@@ -80,6 +80,9 @@ def write_step_folder(src: Path, leaf: int, dst: Path) -> None:
     failed = src / f"ts_leaf_{leaf}_irc_failed.txt"
     if failed.exists():
         shutil.copyfile(failed, dst / "irc_failed.txt")
+    check = src / f"ts_leaf_{leaf}_check_failed.txt"
+    if check.exists():
+        shutil.copyfile(check, dst / "ts_check_failed.txt")
 
 
 def point_edge_at_step(ws, edge_id: str, step: dict) -> None:

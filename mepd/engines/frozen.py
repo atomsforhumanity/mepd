@@ -91,9 +91,13 @@ class FrozenAtomsEngine(ModifiedEngine):
         return np.asarray(idx, dtype=int)
 
     def _run(self, chain: Union[Chain, List]) -> list[StructureNode]:
+        from mepd.engines.gfnff import on_one_surface
+
         nodes = chain.nodes if isinstance(chain, Chain) else list(chain)
         todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
-        if todo:
+
+        def compute():
+            todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
             copies = [fresh(n) for n in todo]
             g = np.array(self.base.compute_gradients(copies), dtype=float)
             e = np.array([n.energy for n in copies], dtype=float)
@@ -102,6 +106,9 @@ class FrozenAtomsEngine(ModifiedEngine):
             update_node_cache(node_list=todo, results=[
                 FakeQCIOOutput.model_validate({"results": FakeQCIOResults.model_validate(
                     {"energy": float(ei), "gradient": gi})}) for ei, gi in zip(e, g)])
+
+        if todo:
+            on_one_surface(self, nodes, compute)
         else:
             for n in nodes:   # gradients cached by someone else (an ASE trajectory) carry frozen forces
                 if self.frozen and n._cached_gradient is not None:

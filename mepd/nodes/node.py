@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Union
@@ -14,6 +16,12 @@ from mepd.errors import (EnergiesNotComputedError,
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.molecule import Molecule
 from mepd.qcdata_structure_helpers import structure_to_molecule
+
+# A per-thread graph-atom subset (StructureNode.graph_atoms_in_this_thread), over
+# the process-wide one: the web server reads QM/MM and other jobs' results on
+# several threads at once.
+_THREAD_GRAPH_ATOMS = threading.local()
+_UNSET = object()
 
 
 def _json_safe(value):
@@ -148,8 +156,25 @@ class StructureNode(Node):
     def set_global_graph_atoms(cls, atoms, natoms: int | None = None) -> None:
         cls._global_graph_atoms = None if atoms is None else (tuple(int(i) for i in atoms), int(natoms))
 
+    @classmethod
+    @contextmanager
+    def graph_atoms_in_this_thread(cls, atoms, natoms: int | None = None):
+        """`set_global_graph_atoms` for this thread only, while in the block
+        (None: no subset, whatever the process-wide setting)."""
+        before = getattr(_THREAD_GRAPH_ATOMS, "sub", _UNSET)
+        _THREAD_GRAPH_ATOMS.sub = None if atoms is None else (tuple(int(i) for i in atoms), int(natoms))
+        try:
+            yield
+        finally:
+            if before is _UNSET:
+                del _THREAD_GRAPH_ATOMS.sub
+            else:
+                _THREAD_GRAPH_ATOMS.sub = before
+
     def _graph_subset(self) -> list[int] | None:
-        sub = self._global_graph_atoms
+        sub = getattr(_THREAD_GRAPH_ATOMS, "sub", _UNSET)
+        if sub is _UNSET:
+            sub = self._global_graph_atoms
         if sub is not None and len(self.structure.symbols) == sub[1]:
             return list(sub[0])
         if self.graph_atom_indices_source == "qmmm_qm_atoms" and self.comparison_atom_indices:

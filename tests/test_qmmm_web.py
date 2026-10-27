@@ -403,3 +403,37 @@ def test_edit_in_design_opens_the_qm_region_not_the_whole_system(client):
     assert design["natoms"] == 6 and design["smiles"] == "CO"           # methanol, not the 15-atom cluster
     assert any(w.startswith("Only the QM region (6 atoms)") for w in design.get("warnings", []))
     assert (design.get("source") or {}).get("qmmm") == out["system"]["id"]
+
+
+def test_a_qmmm_result_is_read_by_its_qm_region_while_another_thread_reads_a_plain_one():
+    """#29: the region a result is read with was process-wide, so another
+    thread reading a plain job's result reset it mid-read (seen under xdist:
+    all 15 atoms perceived)."""
+    import threading
+
+    from qcdata import Structure
+
+    from mepd.nodes.node import StructureNode
+
+    s = Structure.from_xyz(SYSTEM)
+    inside, release = threading.Event(), threading.Event()
+    seen = {}
+
+    def qmmm_reader():
+        with StructureNode.graph_atoms_in_this_thread(range(6), len(s.symbols)):
+            inside.set()
+            release.wait(5)
+            seen["qmmm"] = StructureNode(structure=s)._graph_subset()
+
+    def plain_reader():
+        inside.wait(5)
+        with StructureNode.graph_atoms_in_this_thread(None):
+            seen["plain"] = StructureNode(structure=s)._graph_subset()
+        release.set()
+
+    threads = [threading.Thread(target=qmmm_reader), threading.Thread(target=plain_reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert seen == {"qmmm": list(range(6)), "plain": None}

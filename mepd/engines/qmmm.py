@@ -415,6 +415,9 @@ class QMMMEngine(ModifiedEngine):
     region: QMMMRegion
     n_parallel: int = 4
     base_dir: Optional[str] = None     # where relative prmtop/pdb paths live
+    # Harmonic distance restraints (mepd.restraints) in the QM/MM energy itself, so
+    # microiterative optimizations hold them too.
+    restraints: list = field(default_factory=list)
     _low: object = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -422,6 +425,9 @@ class QMMMEngine(ModifiedEngine):
             raise ValueError(f"electrostatic embedding needs a QM engine that takes point charges (engine_name = "
                              f"\"xtb\" or \"psi4\"); {type(self.base).__name__} does not")
         self._low = make_low(self.region, self.n_parallel, Path(self.base_dir) if self.base_dir else None)
+        from mepd.restraints import parse_restraints
+
+        self.restraints = parse_restraints(self.restraints)
         self._inherit()
 
     @property
@@ -435,6 +441,18 @@ class QMMMEngine(ModifiedEngine):
 
     def evaluate(self, nodes: list[StructureNode]) -> list[dict]:
         """Energy, gradient and their parts for each node (nothing cached)."""
+        out = self._evaluate(nodes)
+        if self.restraints:
+            from mepd.restraints import restraint_energy_gradient
+
+            for n, res in zip(nodes, out):
+                e, g = restraint_energy_gradient(self.restraints, n.coords)
+                res["energy"] = float(res["energy"] + e)
+                res["gradient"] = np.asarray(res["gradient"], dtype=float) + g
+                res["restraints"] = float(e)
+        return out
+
+    def _evaluate(self, nodes: list[StructureNode]) -> list[dict]:
         r = self.region
         for n in nodes:
             self._check(n)
@@ -484,14 +502,20 @@ class QMMMEngine(ModifiedEngine):
             return list(pool.map(one, nodes, low))
 
     def _run(self, chain: Union[Chain, List]) -> list[StructureNode]:
+        from mepd.engines.gfnff import on_one_surface
+
         nodes = chain.nodes if isinstance(chain, Chain) else list(chain)
-        todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
-        if todo:
-            res = self.evaluate([fresh(n) for n in todo])
-            update_node_cache(node_list=todo, results=[
-                FakeQCIOOutput.model_validate({"results": FakeQCIOResults.model_validate(
-                    {"energy": r["energy"], "gradient": r["gradient"]})}) for r in res])
-        return nodes
+
+        def compute():
+            todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
+            if todo:
+                res = self.evaluate([fresh(n) for n in todo])
+                update_node_cache(node_list=todo, results=[
+                    FakeQCIOOutput.model_validate({"results": FakeQCIOResults.model_validate(
+                        {"energy": r["energy"], "gradient": r["gradient"]})}) for r in res])
+            return nodes
+
+        return on_one_surface(self, nodes, compute)
 
     def decompose(self, structures) -> list[dict]:
         """Energy parts (Hartree) of each structure, for checks and plots."""
