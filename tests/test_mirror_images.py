@@ -86,3 +86,21 @@ def test_a_chiral_conformer_of_an_achiral_molecule_counts_both_minima():
     _, _, g = mirrors.extend([], [0.0], 300.0)
     rt_ln2_kcal = 0.0019872 * 300.0 * np.log(2.0)
     assert abs(g[0] * 627.5094740631 + rt_ln2_kcal) < 1e-3
+
+
+def test_enantiomers_both_found_share_the_lower_energy_and_the_reach():
+    from mepd.discovery.energy_refine import kinetic_reach
+
+    species = [_node(FLAT), _node(TETRAHEDRAL), _node(mirrored(_st(TETRAHEDRAL)).geometry / ANGSTROM_TO_BOHR)]
+    finder = MirrorFinder()
+    assert finder.species_mirrors(species) == [0, 2, 1]
+    steps = [Step(0, 1, 0.02, "s", {})]
+    # only species 1 is reachable through a found step; its mirror image 2 is reached through the twin
+    reach, _ = kinetic_reach(steps, [0.0, -0.01, -0.005], 0.0, 30.0)
+    assert reach == {0, 1}
+    reach, _ = kinetic_reach(steps, [0.0, -0.01, -0.005], 0.0, 30.0, finder.species_mirrors(species))
+    assert reach == {0, 1, 2}
+    mirrors = finder(species, steps, [_st(TETRAHEDRAL * 0.9 + FLAT * 0.1)])
+    assert mirrors.virtual_of == [] and mirrors.twins == [(0, 0, 2)]
+    _, _, g = mirrors.extend(steps, [0.0, -0.01, -0.005], 300.0)
+    assert g[1] == g[2] == -0.01

@@ -50,15 +50,21 @@ MODES = ("single-point", "reoptimize")
 
 
 def kinetic_reach(steps: Sequence[Step], energies: Sequence[float], e0: float,
-                  cutoff_kcal: Optional[float]) -> tuple[set[int], list[int]]:
+                  cutoff_kcal: Optional[float], mirror_of: Optional[Sequence[int]] = None
+                  ) -> tuple[set[int], list[int]]:
     """(species, step indices) the kinetics treat: reached from species 0
-    climbing at most `cutoff_kcal` (all of them without a cutoff)."""
+    climbing at most `cutoff_kcal` (all of them without a cutoff).
+    `mirror_of`: each species' mirror image (-1: not in the network,
+    mepd.discovery.mirror); a species is reached when its mirror image is,
+    through the twins of the steps that reach that one."""
     if cutoff_kcal is None:
         return set(range(len(energies))), list(range(len(steps)))
     from mepd.network_aware import accessibility
 
     acc = accessibility(steps, energies, e0)
     reach = {k for k, st in acc.items() if st.span <= cutoff_kcal} | {0}
+    if mirror_of is not None:
+        reach |= {mirror_of[k] for k in reach if mirror_of[k] >= 0}
     open_steps = [m for m, st in enumerate(steps) if st.a in reach and st.b in reach
                   and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= cutoff_kcal]
     return reach, open_steps
@@ -214,7 +220,14 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     e_low = [_energy(s, low_engine) for s in species]
     e0 = e_low[0]
     steps = list(steps)
-    reach, open_steps = kinetic_reach(steps, e_low, e0, cutoff_kcal)
+    finder = mirror_of = None
+    if mirror_images:
+        from mepd.discovery.mirror import MirrorFinder
+        from mepd.nodes.node import StructureNode
+
+        finder = MirrorFinder()
+        mirror_of = finder.species_mirrors([StructureNode(structure=s) for s in species])
+    reach, open_steps = kinetic_reach(steps, e_low, e0, cutoff_kcal, mirror_of)
     ref = species[0]
     ts_structs = {}
     for m in open_steps:
@@ -350,11 +363,10 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     mirrors = None
     n_low = n_high = len(species)
     g_low_k, g_high_k = g_low, g_high
-    if mirror_images:
-        from mepd.discovery.mirror import MirrorFinder
+    if finder is not None:
         from mepd.nodes.node import StructureNode
 
-        mirrors = MirrorFinder()([StructureNode(structure=s) for s in species], steps,
+        mirrors = finder([StructureNode(structure=s) for s in species], steps,
                                  [ts_structs.get(m) for m in range(len(steps))],
                                  (lambda s: [g for g, _, _ in splitter.parts(s, False)]) if free_energy else None)
         for msg in dict.fromkeys(mirrors.undecided):

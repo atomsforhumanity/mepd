@@ -170,10 +170,20 @@ class Mirrors:
         conformer of an achiral molecule gets -RT ln 2 per chiral molecule."""
         rt = 8.314462618e-3 / 4.184 * temperature / HARTREE_TO_KCAL      # Hartree
         g = [float(e) for e in energies]
+        # two species the explorer found that are each other's mirror image have one energy: the lower
+        # (the other's lowest conformer, reflected, is a conformer of each)
+        for k, j in enumerate(self.species_mirror[:self.n_species]):
+            if k < j < self.n_species:
+                g[k] = g[j] = min(g[k], g[j])
         for k, n in self.chiral_conformers.items():
             g[k] -= n * rt * math.log(2.0)
         g += [g[k] for k in self.virtual_of]
         out = list(steps)
+        for m, o in self.found_twins:   # the same for twin TSs both found (on one energy scale)
+            if abs(out[m].ts_energy - out[o].ts_energy) * HARTREE_TO_KCAL <= 1.0:
+                low = min(out[m].ts_energy, out[o].ts_energy)
+                out[m] = Step(out[m].a, out[m].b, low, out[m].label, out[m].files)
+                out[o] = Step(out[o].a, out[o].b, low, out[o].label, out[o].files)
         for m, ma, mb in self.twins:
             st = steps[m]
             out.append(Step(ma, mb, st.ts_energy, f"{st.label} (mirror image)",
@@ -244,24 +254,32 @@ class MirrorFinder:
                 return j
         return None
 
+    def species_mirrors(self, species_nodes: Sequence) -> list:
+        """Each species' mirror image among `species_nodes` (itself for an
+        achiral molecule); -1 when the explorer did not find it."""
+        from mepd.nodes.node import StructureNode
+
+        out = []
+        for k, node in enumerate(species_nodes):
+            key = _key(node.structure)
+            if key not in self._mirror_key:
+                self._mirror_key[key] = StructureNode(structure=mirrored(node.structure))
+            j = self._same_species(self._mirror_key[key], species_nodes, k)
+            out.append(-1 if j is None else j)
+        return out
+
     def __call__(self, species_nodes: Sequence, steps: Sequence[Step], ts_structures: Sequence,
                  parts: Optional[Callable] = None) -> Mirrors:
         """`species_nodes`: StructureNodes of the species; `ts_structures`:
         each step's TS (or path peak) Structure, None if it has none;
         `parts(structure)`: the atom groups the free energies count apart
         (None: the whole structure)."""
-        from mepd.nodes.node import StructureNode
-
         n = len(species_nodes)
         out = Mirrors(n)
         notes = out.undecided
         mirror = list(range(n))
-        for k, node in enumerate(species_nodes):
-            key = _key(node.structure)
-            if key not in self._mirror_key:
-                self._mirror_key[key] = StructureNode(structure=mirrored(node.structure))
-            j = self._same_species(self._mirror_key[key], species_nodes, k)
-            if j is None:
+        for k, (node, j) in enumerate(zip(species_nodes, self.species_mirrors(species_nodes))):
+            if j < 0:
                 mirror[k] = n + len(out.virtual_of)
                 out.virtual_of.append(k)
             else:

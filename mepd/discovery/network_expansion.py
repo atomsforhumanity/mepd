@@ -1336,6 +1336,10 @@ def expand_network(
     mirror_said: set = set()
     split_cache: dict = {}
 
+    def _mirror_of():
+        """Each species' mirror image in the network (-1: not found), or None without mirror images."""
+        return None if mirror_finder is None else mirror_finder.species_mirrors([s.node for s in result.species])
+
     def _simulate(steps, energies, free_basis: bool = False):
         """The kinetics of the network found so far (`steps`/`energies`: one
         energy view of result.steps/result.species), every structure counted
@@ -1470,7 +1474,7 @@ def expand_network(
         from mepd.discovery.energy_refine import kinetic_reach
 
         reach, open_steps = kinetic_reach(result.steps, [float(s.node.energy) for s in result.species], e0,
-                                          access_cutoff_kcal)
+                                          access_cutoff_kcal, _mirror_of())
         sp_idx = sorted(reach)
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
@@ -1499,7 +1503,7 @@ def expand_network(
         # no flux. Its steps are closed (TS + 1 Hartree), its species keep their electronic energy.
         from mepd.discovery.energy_refine import kinetic_reach
 
-        reach, open_steps = kinetic_reach(result.steps, energies, e0, access_cutoff_kcal)
+        reach, open_steps = kinetic_reach(result.steps, energies, e0, access_cutoff_kcal, _mirror_of())
         _tighten(sorted(reach))   # their Hessians need true minima
         energies = [float(s.node.energy) for s in result.species]
         ts_structs = []
