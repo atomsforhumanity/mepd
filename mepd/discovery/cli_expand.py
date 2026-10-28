@@ -701,6 +701,8 @@ def expand(
                   for st, bar, raw in zip(result.steps, result.kinetics.barriers_kcal if result.kinetics else [],
                                           raw_barriers(result.steps, [float(s.node.energy) for s in result.species]))],
         "connections": [list(p) for p in pairs],
+        # each step channel sampling ran on: its TSs before and after (how far a first TS overestimated)
+        "channels_log": getattr(result, "channels_log", []),
         "output_files": files,
     }
     counts = {}

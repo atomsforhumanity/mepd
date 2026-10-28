@@ -557,6 +557,11 @@ def test_relevant_steps_get_channel_sampling_that_replaces_the_single_ts_and_add
         assert labels and all(l.startswith(("ch_", "exit_")) for l in labels)   # single TS replaced
     assert any(st.label.startswith("exit_") for st in res.steps)           # off-target exit joined the network
     assert len(asked) == len(set(asked))                                   # once per pair
+    # the log keeps the TS each sampled step had before sampling, and what replaced it
+    assert {frozenset((r["a"], r["b"])) for r in res.channels_log} == sampled
+    for r in res.channels_log:
+        assert r["before"] and not any(b["label"].startswith("ch_") for b in r["before"])
+        assert any(x["label"].startswith("ch_") for x in r["after"])
 
 
 def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tightly(monkeypatch):

@@ -612,6 +612,7 @@ class ExpansionResult:
     rejected: List[StructureNode] = field(default_factory=list)  # not minima after the Hessian check
     steps: list = field(default_factory=list)  # flux steering: verified elementary steps (kinetics.Step)
     kinetics: object = None  # flux steering: the latest kinetics.KineticsResult
+    channels_log: list = field(default_factory=list)  # each sampled step's TSs before and after channel sampling
 
     def connections(self) -> list[tuple[int, int]]:
         """Distinct (source, product) species pairs to connect by path search."""
@@ -1709,12 +1710,21 @@ def expand_network(
                 continue      # the search failed: the step keeps its single TS
             for node in out.get("conformers", []):
                 k, _ = _species_for(node)          # the lowest conformer of each end becomes the reference
+            before = [st for st in result.steps if frozenset((st.a, st.b)) == key]
             if out.get("direct"):
                 # sampled TSs of this step supersede the single one (counting both would double its rate)
                 result.steps[:] = [st for st in result.steps if frozenset((st.a, st.b)) != key]
             for rec in out.get("direct", []) + out.get("other", []):
                 _add_found(rec)
-        result.rounds[-1]["channels_sampled"] = [[a, b] for _, a, b in todo]
+            after = [st for st in result.steps if frozenset((st.a, st.b)) == key]
+            # what sampling changed: the step's TSs before and after, so how far a first TS overestimates its
+            # barrier can be measured (the cutoff decides which steps get sampled from the first TS alone)
+            result.channels_log.append({
+                "a": a, "b": b, "round": rnd, "direct": len(out.get("direct", [])),
+                "before": [{"label": st.label, "ts_energy": st.ts_energy, "kind": st.files.get("ts_kind", "ts"),
+                            "ts": st.files.get("ts")} for st in before],
+                "after": [{"label": st.label, "ts_energy": st.ts_energy} for st in after]})
+        result.rounds[-1].setdefault("channels_sampled", []).extend([a, b] for _, a, b in todo)
         return len(todo)
 
     def _steer_by_access(round_edges: list[ProposedEdge]) -> list[int]:
