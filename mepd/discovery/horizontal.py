@@ -22,10 +22,16 @@ has no saddle to find) is kept as a step at its path's highest image
 
 `max_pieces_per_pair` caps one pair's search (a pathological pair can't
 take the round); what it cut is logged.
+
+Jobs run in forked worker processes: as threads of one process they were
+held to about five busy cores whatever the worker count (each engine call's
+Python-side work is serial under the GIL). The connector reaches the
+children through fork, so only a job's arguments and result are pickled.
 """
 from __future__ import annotations
 
 import concurrent.futures
+import concurrent.futures.process
 import copy
 import os
 import threading
@@ -34,9 +40,16 @@ from typing import Optional
 
 from mepd.network_aware import log_event
 
+_CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
+
+
+def _run_job(method: str, args):
+    return getattr(_CONNECTOR["self"], method)(*args)
+
 
 class HorizontalConnector:
     live = True    # takes on_found / relevant: the caller's network grows while the queue runs
+    reports_pairs = True   # takes on_pair_done
 
     def __init__(self, run_inputs, output: Path, workers: int, *, max_pieces_per_pair: int = 40,
                  max_depth: Optional[int] = 6, nimages: int = 11, fast_ts_steps: int = 300, say=print):
@@ -114,8 +127,34 @@ class HorizontalConnector:
                                      "parameters": copy.deepcopy(self.run_inputs.chain_inputs)})
         return initial_chain(seed, self.run_inputs.chain_inputs, self.run_inputs.gi_inputs)
 
+    # --- the pool -----------------------------------------------------------
+    def _pool(self):
+        """Forked worker processes for the jobs (threads where forking is unsafe).
+        Workers fork when jobs are first submitted, so they see the connector as
+        it is then (e.g. the network floor set at the start of a call)."""
+        import multiprocessing
+
+        from mepd.cli_common import _unsafe_to_fork
+
+        _CONNECTOR["self"] = self
+        unsafe = _unsafe_to_fork() if self.workers > 1 else "one worker"
+        if unsafe:
+            return concurrent.futures.ThreadPoolExecutor(max_workers=self.workers)
+        return concurrent.futures.ProcessPoolExecutor(max_workers=self.workers,
+                                                      mp_context=multiprocessing.get_context("fork"))
+
+    def _broken(self, pool):
+        """A fresh pool in place of one a dead worker broke."""
+        from mepd.cli_common import _warn
+
+        _warn("A connect worker process died without reporting an error (killed by the OS, or a crash "
+              "inside the engine); the jobs it took down run again in a fresh pool.")
+        pool.shutdown(wait=False, cancel_futures=True)
+        return self._pool()
+
     # --- the queue ----------------------------------------------------------
-    def __call__(self, pairs, nodes, search: bool = False, on_found=None, relevant=None) -> list[dict]:
+    def __call__(self, pairs, nodes, search: bool = False, on_found=None, relevant=None,
+                 on_pair_done=None) -> list[dict]:
         """Connect `pairs` of `nodes`. `search`: start every pair's path search
         at once (its single TS was already tried and belonged to another step).
 
@@ -126,7 +165,9 @@ class HorizontalConnector:
         When only waiting pieces are left, each is asked once more with
         final=True and those still not relevant are dropped (logged). Pieces
         are taken best first: the order `relevant` is asked in is the order
-        they were queued, the first relevant one runs."""
+        they were queued, the first relevant one runs. `on_pair_done(pair)`:
+        called once a pair has nothing left queued or running (its TSs all
+        reported), so a caller that saves its progress can skip it on resume."""
         from mepd.network_aware import resolve_cutoff
 
         self.ts_dir.mkdir(parents=True, exist_ok=True)
@@ -144,20 +185,35 @@ class HorizontalConnector:
         running: dict = {}
         waiting: list = []     # (kind, pair, args) not started yet, in queue order
         next_index = {}
+        crashed: dict = {}     # id(job args) -> times its worker died under it
+        outstanding: dict = {}  # pair -> its jobs queued or running
 
         def record(rec):
             found.append(rec)
             if on_found is not None:
                 on_found(rec)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.workers) as pool:
+        pool = self._pool()
+        try:
             def run(kind, pair, args):
-                fut = pool.submit(getattr(self, {"fast": "_fast_ts", "piece": "_piece", "ts": "_leaf_ts"}[kind]),
-                                  *args)
+                nonlocal pool
+                method = {"fast": "_fast_ts", "piece": "_piece", "ts": "_leaf_ts"}[kind]
+                try:
+                    fut = pool.submit(_run_job, method, args)
+                except (concurrent.futures.process.BrokenProcessPool, RuntimeError):
+                    pool = self._broken(pool)
+                    fut = pool.submit(_run_job, method, args)
                 running[fut] = (kind, pair, args)
 
             def queue(kind, pair, *args):
+                outstanding[pair] = outstanding.get(pair, 0) + 1
                 waiting.append((kind, pair, args))
+
+            def settle(pair):
+                """One of `pair`'s jobs is over (done, failed or dropped); its last one ends the pair."""
+                outstanding[pair] -= 1
+                if outstanding[pair] == 0 and on_pair_done is not None:
+                    on_pair_done(pair)
 
             def start_search(pair):
                 i, j = pair
@@ -165,6 +221,8 @@ class HorizontalConnector:
                     root = self._root_chain(nodes[i], nodes[j])
                 except Exception as exc:
                     log_event({"event": "pair_failed", "pair": [i, j], "why": f"{type(exc).__name__}: {exc}"})
+                    if not outstanding.get(pair) and on_pair_done is not None:
+                        on_pair_done(pair)    # nothing of it ever ran
                     return
                 pieces[pair] = 1
                 next_index[pair] = 1
@@ -190,7 +248,10 @@ class HorizontalConnector:
                     for job in waiting:
                         counts["dropped"] += 1
                         log_event({"event": "piece_dropped", "pair": list(job[1]), "depth": job[2][2]})
+                    dropped = [job[1] for job in waiting]
                     waiting.clear()
+                    for pair in dropped:
+                        settle(pair)
 
             for i, j in pairs:
                 if search:
@@ -210,66 +271,85 @@ class HorizontalConnector:
                 done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
                 for fut in done:
                     kind, pair, args = running.pop(fut)
-                    i, j = pair
+                    rerun = False
                     try:
-                        out = fut.result()
-                    except Exception:
-                        out = None
-                    if kind == "fast":
-                        if out is not None:
-                            ts, label = out
-                            counts["fast_ok"] += 1
-                            record({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": label,
-                                    "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False,
-                                              "pair": [i, j]}})
-                        else:
-                            counts["fast_failed"] += 1
-                            start_search(pair)
-                    elif kind == "piece":
-                        if out is None:
-                            continue
-                        history, children = out
-                        if children:
-                            for child in children:
-                                if pieces[pair] >= self.max_pieces:
-                                    counts["capped"] += 1
-                                    continue
-                                pieces[pair] += 1
-                                counts["pieces"] += 1
-                                idx = next_index[pair]
-                                next_index[pair] += 1
-                                queue("piece", pair, child, idx, args[2] + 1)
-                        else:
-                            data = getattr(history, "data", None)
-                            traj = getattr(data, "chain_trajectory", None) or []
-                            if traj and not getattr(history, "skip_ts", False):
-                                queue("ts", pair, traj[-1], f"pair_{i}_{j}_leaf_{history.index}")
-                    elif kind == "ts":
-                        chain, label = args
-                        if out is None:
-                            counts["leaf_ts_failed"] += 1
-                            peak = self._path_peak(chain, label)
+                        i, j = pair
+                        try:
+                            out = fut.result()
+                        except concurrent.futures.process.BrokenProcessPool:
+                            # A worker died (OOM killer, a crashing engine): the jobs it took down run
+                            # again in a fresh pool, once -- a job that kills its worker twice fails.
+                            if getattr(pool, "_broken", False):
+                                pool = self._broken(pool)
+                            crashed[id(args)] = crashed.get(id(args), 0) + 1
+                            if crashed[id(args)] < 2:
+                                run(kind, pair, args)
+                                rerun = True     # still the pair's job: it settles when this run ends
+                                continue
+                            out = None
+                        except Exception:
+                            out = None
+                        if kind == "fast":
+                            if out is not None:
+                                ts, label = out
+                                counts["fast_ok"] += 1
+                                record({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": label,
+                                        "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False,
+                                                  "pair": [i, j]}})
+                            else:
+                                counts["fast_failed"] += 1
+                                start_search(pair)
+                        elif kind == "piece":
+                            if out is None:
+                                continue
+                            history, children = out
+                            if children:
+                                for child in children:
+                                    if pieces[pair] >= self.max_pieces:
+                                        counts["capped"] += 1
+                                        continue
+                                    pieces[pair] += 1
+                                    counts["pieces"] += 1
+                                    idx = next_index[pair]
+                                    next_index[pair] += 1
+                                    queue("piece", pair, child, idx, args[2] + 1)
+                            else:
+                                data = getattr(history, "data", None)
+                                traj = getattr(data, "chain_trajectory", None) or []
+                                if traj and not getattr(history, "skip_ts", False):
+                                    queue("ts", pair, traj[-1], f"pair_{i}_{j}_leaf_{history.index}")
+                        elif kind == "ts":
+                            chain, label = args
+                            if out is None:
+                                counts["leaf_ts_failed"] += 1
+                                peak = self._path_peak(chain, label)
+                                if peak is not None:
+                                    # An elementary piece whose TS search failed -- typically a nearly barrierless
+                                    # association, which has no saddle to find. Dropping it would cut the network
+                                    # where it starts (e.g. a catalyst meeting its substrate), so it is kept with
+                                    # its path's highest image as the barrier: an upper bound, and its two ends
+                                    # are the piece's own minimized endpoints (nothing for an IRC to check).
+                                    counts["path_peak"] += 1
+                                    record({"start": chain[0], "end": chain[-1], "ts": peak, "label": label,
+                                            "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": True,
+                                                      "ts_kind": "path_peak"}})
+                                continue
+                            counts["leaf_ts_ok"] += 1
+                            rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
+                                   "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
+                            # The TS search can land on a saddle of some other motion (a rotation next to a
+                            # barrierless association): if its IRC says so, the piece falls back to this.
+                            peak = self._path_peak(chain, f"{label}_peak")
                             if peak is not None:
-                                # An elementary piece whose TS search failed -- typically a nearly barrierless
-                                # association, which has no saddle to find. Dropping it would cut the network
-                                # where it starts (e.g. a catalyst meeting its substrate), so it is kept with
-                                # its path's highest image as the barrier: an upper bound, and its two ends
-                                # are the piece's own minimized endpoints (nothing for an IRC to check).
-                                counts["path_peak"] += 1
-                                record({"start": chain[0], "end": chain[-1], "ts": peak, "label": label,
-                                        "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": True,
-                                                  "ts_kind": "path_peak"}})
-                            continue
-                        counts["leaf_ts_ok"] += 1
-                        rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
-                               "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
-                        # The TS search can land on a saddle of some other motion (a rotation next to a
-                        # barrierless association): if its IRC says so, the piece falls back to this.
-                        peak = self._path_peak(chain, f"{label}_peak")
-                        if peak is not None:
-                            rec["peak"] = peak
-                            rec["files"]["peak"] = str(self.ts_dir / f"{label}_peak.xyz")
-                        record(rec)
+                                rec["peak"] = peak
+                                rec["files"]["peak"] = str(self.ts_dir / f"{label}_peak.xyz")
+                            record(rec)
+                    finally:
+                        if not rerun:
+                            settle(pair)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            _CONNECTOR.pop("self", None)
         log_event({"event": "horizontal_connect", "pairs": len(pairs), **counts})
         self.say(f"Connected {len(pairs)} pair(s): " + (f"{counts['searched']} by path search only, " if search else "")
                  + f"{counts['fast_ok']} by one TS optimization, "

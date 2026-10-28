@@ -676,3 +676,143 @@ def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypa
     assert seen["pairs_per_mechanism"] == 0
     _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 3
+
+
+class _SteerEngine(_GraphEngine):
+    """A 'higher level': like _GraphEngine, but structures pushed far along
+    +x (the TSs of _ts_file_connector) lie 55 kcal/mol lower."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def compute_energies(self, nodes):
+        self.calls += len(nodes)
+        out = super().compute_energies(nodes)
+        for n in nodes:
+            if float(np.asarray(n.coords)[0, 0]) > 40.0:
+                n._cached_energy -= 55.0 / 627.509
+        return [n._cached_energy for n in nodes]
+
+
+def _ts_file_connector(tmp_path, ts_kcal):
+    def connect(pairs, nodes):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts.structure = ts.structure.model_copy(update={"geometry": np.asarray(ts.coords) + [50.0, 0.0, 0.0]})
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + ts_kcal / 627.509
+            fp = tmp_path / f"ts_{i}_{j}.xyz"
+            ts.structure.save(fp)
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}", "files": {"ts": str(fp)}})
+        return out
+    return connect
+
+
+def test_a_higher_levels_single_points_steer_the_flux(tmp_path):
+    """HCN -> HNC with a TS 60 kcal/mol up at the explorer's level (no flux, no expansion) but 5 at the
+    steering level: HNC gets the flux and is expanded; each single point is kept and reused."""
+    alone = expand_network(_node("C#N"), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                           connect=_ts_file_connector(tmp_path, 60.0))
+    assert alone.rounds[0]["expanded_next"] == []
+    seed = _node("C#N")
+    high = _SteerEngine()
+    res = expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                         connect=_ts_file_connector(tmp_path, 60.0), steer_engine=high,
+                         steer_save_dir=tmp_path / "steer")
+    assert [r["sources"] for r in res.rounds][:2] == [[0], [1]]
+    assert res.kinetics.flux[1] > 0.01
+    assert "single points" in res.rounds[0]["kinetics"]["energies"]
+    assert len(list((tmp_path / "steer" / "single_points").glob("*.json"))) == 3   # 2 species + 1 TS
+    again = _SteerEngine()
+    expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                   connect=_ts_file_connector(tmp_path, 60.0), steer_engine=again, steer_save_dir=tmp_path / "steer")
+    assert again.calls == 0
+
+
+class _Killed(BaseException):
+    """A time limit's SIGTERM, as far as the explorer can tell: nothing of it catches it."""
+
+
+class _LiveConnector:
+    """A live connector (on_found, on_pair_done) whose TSs lie 5 kcal/mol over the higher end; `kill_after`
+    pairs into the run it is 'killed'."""
+    live = True
+    reports_pairs = True
+
+    def __init__(self, kill_after=None):
+        self.kill_after, self.pairs, self.calls = kill_after, [], []
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None):
+        self.calls.append(list(pairs))
+        for i, j in pairs:
+            if self.kill_after is not None and len(self.pairs) >= self.kill_after:
+                raise _Killed()
+            self.pairs.append((i, j))
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            on_found({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+            on_pair_done((i, j))
+        return []
+
+
+def _expand_resumable(seed, connect, state, refine=None, resume=False, **kw):
+    return expand_network(seed.copy(), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                          access_cutoff_kcal=60.0, max_products=20, refine=refine, state_file=state, resume=resume,
+                          kinetics={"threshold": 1e-6}, **kw)
+
+
+def _network(res):
+    return sorted(s.smiles for s in res.species), sorted((st.a, st.b, round(st.ts_energy, 8)) for st in res.steps)
+
+
+def test_a_run_cut_off_while_connecting_resumes_with_the_pairs_it_had_not_finished(tmp_path):
+    seed = _node("CCO")
+    whole = _LiveConnector()
+    ref = _expand_resumable(seed, whole, tmp_path / "ref.pkl")
+    first_round = len(whole.calls[0])
+    assert len(whole.pairs) > first_round + 2      # round 2 connects pairs too
+    cut = _LiveConnector(kill_after=first_round + 2)
+    with pytest.raises(_Killed):
+        _expand_resumable(seed, cut, tmp_path / "state.pkl")
+    rest = _LiveConnector()
+    res = _expand_resumable(seed, rest, tmp_path / "state.pkl", resume=True)
+    assert not set(cut.pairs) & set(rest.pairs)              # nothing finished is connected again
+    assert sorted(cut.pairs + rest.pairs) == sorted(whole.pairs)
+    assert _network(res) == _network(ref)
+    assert [r["expanded_next"] for r in res.rounds] == [r["expanded_next"] for r in ref.rounds]
+
+
+def test_a_run_cut_off_in_channel_sampling_resumes_there(tmp_path):
+    seed = _node("CCO")
+    sampled = []
+
+    def refine(items, kill=None):
+        out = []
+        for a, b, label in items:
+            if kill is not None and len(sampled) >= kill:
+                raise _Killed()
+            sampled.append(label)
+            out.append({"direct": [], "other": [], "conformers": []})
+        return out
+
+    _expand_resumable(seed, _LiveConnector(), tmp_path / "ref.pkl", refine=refine)
+    n_ref, sampled[:] = len(sampled), []
+    assert n_ref > 1
+    with pytest.raises(_Killed):
+        _expand_resumable(seed, _LiveConnector(), tmp_path / "state.pkl", refine=lambda it: refine(it, kill=n_ref - 1))
+    again = _LiveConnector()
+    _expand_resumable(seed, again, tmp_path / "state.pkl", refine=refine, resume=True)
+    assert len(sampled) >= n_ref                 # the round's channel sampling ran again (each step: its record)
+    assert len(again.calls) < 2                  # round 1's connect did not (only round 2's, if any)
+
+
+def test_resuming_with_other_settings_is_refused(tmp_path):
+    seed = _node("CCO")
+    _expand_resumable(seed, _LiveConnector(), tmp_path / "state.pkl")
+    with pytest.raises(ValueError, match="other settings"):
+        expand_network(seed.copy(), _GraphEngine(), rounds=2, steer="access", connect=_LiveConnector(),
+                       access_cutoff_kcal=20.0, max_products=20, state_file=tmp_path / "state.pkl", resume=True,
+                       kinetics={"threshold": 1e-6})
+    with pytest.raises(ValueError, match="Nothing to resume"):
+        _expand_resumable(seed, _LiveConnector(), tmp_path / "none.pkl", resume=True)

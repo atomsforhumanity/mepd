@@ -20,6 +20,26 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
   licensed, so it is not in the public image.
 
+- **The explorer's kinetics count mirror images** (`discovery expand` and `refine-energies`,
+  `--mirror-images/--no-mirror-images`, on by default; `mepd/discovery/mirror.py`). A chiral transition state
+  has a twin of the same energy that the explorer finds by chance or not at all. Now every chiral TS whose
+  twin is not in the network gets one, between the mirror images of its ends: a second channel when both ends
+  are achiral, else a route to the enantiomer, which joins the kinetics as a species if it was not found. A
+  chiral conformer of an achiral molecule gets -RT ln 2. On Cp + methyl acrylate (F0007) the endo:exo ratio
+  stays 75:25 with DFT, but the enantiomers come out racemic (they were 88:12) and conversion goes from
+  49% to 74%. `summary.json` and `refined_energies.json` list what was added (`mirror_images`).
+
+- **A cut-off exploration resumes** (`discovery expand --resume`): the whole exploration is saved in
+  `expand_state.pkl` at every stage of a round, and as each pair finishes while connecting; a run stopped by a
+  time limit or a crash carries on from there, and only the path searches of the pairs it had not finished run
+  again. Each step's finished channel sampling is kept too. `--rounds` can be raised to grow a finished network.
+
+- **The explorer steers on a higher level's single points** (`discovery expand --steer-energies PROFILE`;
+  by default the `--refine-energies` profile): the kinetics that decide which species are expanded, and which
+  steps get channel sampling, use G = G_explorer + (E_high - E_low) on every species and TS they treat. Each
+  geometry is computed once and kept in `steer_single_points/`. The barrier cutoff's reach stays at the
+  explorer's level.
+
 - **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
   expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
   steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
@@ -250,6 +270,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **Explorer**: the connect queue (single TS optimizations, path-search pieces, leaf TSs) runs its jobs in
+  worker processes, not threads of one process, which held it to about five busy cores whatever `--workers`
+  was. Species proposed at once (collide, nanoreactor) share `--workers` instead of each taking all of them.
 
 - **Explorer**: a path piece whose TS search fails, or whose TS belongs to another motion by its IRC, keeps its
   path's highest image as an upper-bound barrier (`ts_kind = "path_peak"`), so a barrierless association no
@@ -494,6 +518,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **Channels**: mechanisms whose chosen atom numbering is the input's own share one path search; run once
+  each, the copies wrote the same pair folder at once and failed (`OSError: Directory not empty`).
 
 - **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
   the stiff solver for hours or create material through rounding (flux-form right-hand side).

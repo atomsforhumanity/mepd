@@ -182,8 +182,16 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
         each = max(1, int(workers) // at_once)
 
         def one(item):
+            import pickle
+
             a, b, label = item
             folder = output / "channels" / f"pair_{label}"
+            done_fp = folder / "explorer_record.pkl"   # this step's finished sampling, for a resumed run
+            if done_fp.is_file():
+                try:
+                    return pickle.loads(done_fp.read_bytes())
+                except Exception:
+                    pass
             profile = copy.deepcopy(run_inputs)
             if getattr(profile.engine, "n_parallel", None) is not None:
                 profile.engine.n_parallel = each
@@ -215,6 +223,9 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
                     rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
             typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
                        f"{len(res.offtarget)} off-target exit(s).")
+            tmp = done_fp.with_name(done_fp.name + ".tmp")
+            tmp.write_bytes(pickle.dumps(rec))
+            tmp.replace(done_fp)
             return rec
 
         return _fork_map(one, items, at_once)
@@ -320,6 +331,11 @@ def expand(
                                       "underscores, e.g. n_conformers=20). Repeatable."),
     standard_state: str = typer.Option("1M", "--standard-state",
                                        help="With --kinetics-energy free: '1M' (solution) or '1atm' (gas)."),
+    mirror_images: bool = typer.Option(
+        True, "--mirror-images/--no-mirror-images",
+        help="Count every species and transition state with its mirror image (x -> -x, same energy): a chiral TS "
+        "whose twin was not found gets one, leading to the mirror images of its ends; a chiral conformer of an achiral "
+        "molecule gets -RT ln 2. The explorer finds one twin or both by chance; this removes that bias."),
     flux_threshold: float = typer.Option(
         0.01, "--flux-threshold",
         help="--steer flux: expand a species once the material that flowed into it (fraction of the seed) "
@@ -373,6 +389,13 @@ def expand(
         help="'single-point' (default): the explorer's geometries and thermal corrections, the higher level's "
         "electronic energies. 'reoptimize': minima and TSs re-converged at the higher level (each TS with an IRC "
         "that must reach the same species) and its own Hessians -- much more expensive."),
+    steer_energies: str = typer.Option(
+        "auto", "--steer-energies",
+        help="--steer flux/access: a profile (.toml) of a higher level of theory whose single points steer the "
+        "exploration: the kinetics that decide which species are expanded (and which steps get channel "
+        "sampling) use G = G_explorer + (E_high - E_low) on every species and TS they treat, each geometry "
+        "computed once (kept in steer_single_points/). 'auto' (default): the --refine-energies profile when "
+        "given; 'none': the explorer's own energies."),
     max_species: int = typer.Option(200, "--max-species", help="Stop adding species beyond this many."),
     workers: int = typer.Option(
         min(4, max(1, (os.cpu_count() or 1) // 2)), "--workers",
@@ -393,6 +416,12 @@ def expand(
     parallel: bool = typer.Option(False, "--parallel", help="--connect: evaluate MSMEP branches in parallel."),
     parallel_workers: Optional[int] = typer.Option(None, "--parallel-workers", help="Workers for --parallel."),
     output: Path = typer.Option(Path("mepd_expand_output"), "--output", "-o", help="Directory to write results into."),
+    resume: bool = typer.Option(
+        False, "--resume",
+        help="Carry on an exploration that stopped (a time limit, a crash) from what it saved in --output "
+        "(expand_state.pkl, written at every stage of a round and every couple of minutes while connecting): "
+        "only the path searches of pairs it had not finished run again. Give the same settings; --rounds can "
+        "be raised to grow a finished network further."),
 ) -> None:
     """Reaction network expansion: propose products of the seed by breaking
     and forming bonds (no Hessian sampling), optimize them, and repeat from
@@ -481,6 +510,15 @@ def expand(
     if str(refine_energies_mode) not in ("single-point", "reoptimize"):
         raise typer.BadParameter("--refine-energies-mode must be single-point or reoptimize.")
     high_engine = _open_run_inputs(refine_energies).engine if isinstance(refine_energies, Path) else None
+    steer_with = str(steer_energies).strip() if isinstance(steer_energies, str) else "auto"
+    if steer_with.lower() == "auto":
+        steer_engine = high_engine
+    elif steer_with.lower() == "none":
+        steer_engine = None
+    else:
+        if not Path(steer_with).is_file():
+            raise typer.BadParameter(f"{steer_with} is not a file.", param_hint="--steer-energies")
+        steer_engine = _open_run_inputs(Path(steer_with)).engine
     run_inputs = _open_run_inputs(inputs)
     pmi = run_inputs.path_min_inputs
     if num(barrier_cutoff) is not None:
@@ -502,6 +540,11 @@ def expand(
         os.environ.setdefault("MEPD_NETWORK_AWARE_LOG", str(Path(output) / "network_aware.jsonl"))
         Path(output).mkdir(parents=True, exist_ok=True)
         typer.echo(f"Network-aware exploration: barrier cutoff {access_cutoff:.1f} kcal/mol.")
+    state_fp = Path(output) / "expand_state.pkl"
+    if resume is True and not state_fp.is_file():
+        raise typer.BadParameter(f"nothing to resume: {state_fp} doesn't exist.", param_hint="--resume")
+    if resume is not True and state_fp.is_file():
+        typer.echo(f"Note: {output} holds a saved exploration; this run starts over (--resume carries it on).")
     _echo_run_inputs_summary(run_inputs)
     seed = StructureNode(structure=_load_structure_from_smiles_or_xyz(structure, charge, multiplicity))
     target_node = (StructureNode(structure=_load_structure_from_smiles_or_xyz(target, charge, multiplicity))
@@ -527,8 +570,18 @@ def expand(
                                                total=payload["total"] or None)
             elif event == "candidate_done" and task["id"] is not None:
                 progress.update(task["id"], completed=payload["index"])
+            elif event == "steer_single_points":
+                progress.console.print(f"Round {payload['round']}: {payload['total']} steering single point(s)",
+                                       highlight=False)
             elif event == "warning":
                 progress.console.print(f"[bold red]WARNING[/bold red] {payload['message']}", highlight=False)
+            elif event == "resumed":
+                progress.console.print(f"Resuming round {payload['round']} ({payload['stage']}): "
+                                       f"{payload['species']} species, {payload['steps']} steps saved.",
+                                       highlight=False)
+            elif event == "resumed_connect":
+                progress.console.print(f"Resuming the connect call it was cut off in: {payload['pairs']} pair(s) "
+                                       f"left, {payload['finished']} finished.", highlight=False)
             elif event == "species_found":
                 progress.console.print(f"[green]✓ species {payload['index']}[/green] {payload['smiles']}  "
                                        f"ΔE={payload['rel_energy_kcal']:+.1f} kcal/mol", highlight=False)
@@ -574,13 +627,19 @@ def expand(
                 kinetics={"temperature": temperature, "time_s": time_s, "threshold": flux_threshold,
                           "free_energy": str(kinetics_energy).lower() == "free" if isinstance(kinetics_energy, str)
                           else True,
-                          "standard_state": standard_state if isinstance(standard_state, str) else "1M"},
+                          "standard_state": standard_state if isinstance(standard_state, str) else "1M",
+                          "mirror_images": mirror_images is not False},
+                steer_engine=steer_engine if steer in ("flux", "access") else None,
+                steer_save_dir=output / "steer_single_points",
+                state_file=output / "expand_state.pkl", resume=resume is True,
                 validate_minima={"frequency_cutoff": validation["hessian_minimum_frequency_cutoff"],
                                  "rescue_displacement": validation["hessian_minima_rescue_displacement"]}
                 if validation else None,
             )
         except Exception as exc:
             typer.echo(f"Network expansion failed: {type(exc).__name__}: {exc}")
+            if state_fp.is_file():
+                typer.echo(f"What it had done is saved: rerun with --resume to carry on from {state_fp}.")
             raise typer.Exit(code=1)
 
     output.mkdir(parents=True, exist_ok=True)
@@ -631,7 +690,8 @@ def expand(
                                         {"cutoff_kcal": access_cutoff, "temperature_K": temperature, "time_s": time_s}
                                         if steer == "access" else {"energy_window_kcal": energy_window}),
                      **({"kinetics_energy": str(kinetics_energy).lower() if isinstance(kinetics_energy, str) else "free",
-                         "standard_state": standard_state if isinstance(standard_state, str) else "1M"}
+                         "standard_state": standard_state if isinstance(standard_state, str) else "1M",
+                         "mirror_images": mirror_images is not False}
                         if steer in ("flux", "access") else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
         # kinetics_barrier_kcal: what the rates used (the TS never below an end).
@@ -655,6 +715,12 @@ def expand(
         for rec, f, cmax, cend in zip(summary["species"], result.kinetics.flux, result.kinetics.max_concentration,
                                       result.kinetics.final_concentration):
             rec.update(flux=f, max_concentration=cmax, final_concentration=cend)
+        if result.kinetics.mirrors is not None:
+            # the mirror images the explorer did not find (mepd.discovery.mirror), after its own species
+            k = result.kinetics
+            summary["mirror_images"] = {**k.mirrors, "virtual_species": [
+                {**v, "flux": k.flux[v["index"]], "max_concentration": k.max_concentration[v["index"]],
+                 "final_concentration": k.final_concentration[v["index"]]} for v in k.mirrors["virtual_species"]]}
     network_note = ""
     if steer in ("flux", "access"):
         connect = True   # the pair trees exist already: network.json is built from them below
@@ -686,7 +752,7 @@ def expand(
         typer.echo(f"Refining energies ({refine_energies_mode}) with {refine_energies}...")
         try:
             _write_refined(output, run_inputs.engine, high_engine, str(refine_energies_mode), workers,
-                           level=str(refine_energies))
+                           level=str(refine_energies), mirror_images=mirror_images is not False)
         except Exception as exc:
             typer.echo(f"Energy refinement failed: {type(exc).__name__}: {exc}")
 
@@ -696,7 +762,8 @@ def expand(
                   highlight=False)
 
 
-def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: int, level: str = "") -> dict:
+def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: int, level: str = "",
+                   mirror_images: bool = True) -> dict:
     """refine_run on an expand output; writes refined_energies.json and
     prints what changed."""
     from rich.console import Console
@@ -705,6 +772,7 @@ def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: i
     from mepd.discovery.energy_refine import refine_run
 
     out = refine_run(run_dir, low_engine=low_engine, high_engine=high_engine, mode=mode, workers=workers,
+                     mirror_images=mirror_images,
                      on_note=lambda m: typer.echo(f"WARNING: {m}"))
     out["level"] = level
     (Path(run_dir) / "refined_energies.json").write_text(json.dumps(out, indent=2, default=str))
@@ -722,6 +790,10 @@ def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: i
         else:
             table.add_row("TS", f"{row['a']} -> {row['b']}", f"{row['g_low_kcal']:.1f}", f"{row['g_high_kcal']:.1f}",
                           "", "")
+    for v in (out.get("mirror_images") or {}).get("virtual_species", []):
+        if max(v["final_low"], v["final_high"]) >= 0.01:
+            table.add_row(str(v["index"]), f"mirror image of {v['mirror_of']}", "", "",
+                          f"{v['final_low']:.3f}", f"{v['final_high']:.3f}")
     Console().print(table)
     typer.echo(f"Refined energies in {Path(run_dir) / 'refined_energies.json'}")
     return out
@@ -739,6 +811,9 @@ def refine_energies_cmd(
     mode: str = typer.Option("single-point", "--mode", help="single-point or reoptimize (see `expand --refine-energies-mode`)."),
     workers: int = typer.Option(1, "--workers", help="Processes at once; each higher-level calculation uses the "
                                                      "profile's own threads."),
+    mirror_images: bool = typer.Option(True, "--mirror-images/--no-mirror-images", help="Count every species and transition state with its mirror image (x -> -x, same energy): a chiral TS "
+        "whose twin was not found gets one, leading to the mirror images of its ends; a chiral conformer of an achiral "
+        "molecule gets -RT ln 2. The explorer finds one twin or both by chance; this removes that bias."),
 ):
     """Energies of an explored network at a higher level of theory, and the
     kinetics on them: the explorer's level finds the species and TSs, the
@@ -751,4 +826,4 @@ def refine_energies_cmd(
     low = explorer_inputs or (Path(summary["inputs"]) if summary.get("inputs") and Path(summary["inputs"]).exists()
                               else None)
     _write_refined(run_dir, _open_run_inputs(low).engine, _open_run_inputs(inputs).engine, mode, workers,
-                   level=str(inputs))
+                   level=str(inputs), mirror_images=mirror_images)

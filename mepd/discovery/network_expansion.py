@@ -933,6 +933,11 @@ def _propose_structures_at_once(frontier, result, generator, generator_options, 
         return {}
     from concurrent.futures import ThreadPoolExecutor
 
+    if "parallel" in opts:
+        # each species gets its share of the workers: `width` species each with all of them
+        # oversubscribed the CPUs `width` times over (9 x 48 processes on 48 cores)
+        opts["parallel"] = max(1, int(workers) // width)
+
     def one(src):
         try:
             return gen.propose(result.species[src].node.structure, max_products=max_products, options=dict(opts))
@@ -942,6 +947,56 @@ def _propose_structures_at_once(frontier, result, generator, generator_options, 
     with ThreadPoolExecutor(max_workers=width) as pool:
         got = dict(zip(frontier, pool.map(one, frontier)))
     return {k: v for k, v in got.items() if v is not None}
+
+
+_STATE_VERSION = 1
+
+
+def _state_fingerprint(engine, steer_engine, steer, kin, access_cutoff_kcal, generator, generator_options,
+                       products_file) -> dict:
+    """The settings a saved exploration was made with that decide its network: a resume must use the same.
+    (How many rounds, species, workers or processes per generator are not among them.)"""
+    import re
+
+    from mepd.discovery.energy_refine import _level
+
+    def level(eng):   # how many processes or threads an engine uses doesn't change the network
+        return re.sub(r"\('n_(parallel|threads)', '[^']*'\)(, )?", "", _level(eng)) if eng is not None else None
+
+    return {"engine": level(engine), "steer_engine": level(steer_engine),
+            "steer": steer, "kinetics": {k: kin[k] for k in sorted(kin)}, "access_cutoff_kcal": access_cutoff_kcal,
+            "generator": str(generator), "products_file": products_file,
+            "generator_options": {k: str(v) for k, v in sorted((generator_options or {}).items()) if k != "parallel"}}
+
+
+def _write_state(fp: Path, state: dict) -> None:
+    """Pickle `state` to `fp` atomically: a run killed mid-write keeps the previous state."""
+    import pickle
+
+    fp = Path(fp)
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = fp.with_name(fp.name + ".tmp")
+    with open(tmp, "wb") as fh:
+        pickle.dump({"version": _STATE_VERSION, **state}, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    tmp.replace(fp)
+
+
+def _load_state(fp: Optional[Path], fingerprint: dict) -> dict:
+    import pickle
+
+    if fp is None or not Path(fp).is_file():
+        raise ValueError(f"Nothing to resume: no saved exploration at {fp}.")
+    with open(fp, "rb") as fh:
+        state = pickle.load(fh)
+    if state.get("version") != _STATE_VERSION:
+        raise ValueError(f"{fp} was saved by another version of mepd (state version {state.get('version')}, "
+                         f"this one reads {_STATE_VERSION}); it can't be resumed.")
+    differ = [k for k in fingerprint if state["fingerprint"].get(k) != fingerprint[k]]
+    if differ:
+        raise ValueError("The saved exploration was made with other settings; resume it with the ones it was "
+                         "saved with. Differs: " + "; ".join(
+                             f"{k}: saved {state['fingerprint'].get(k)!r}, now {fingerprint[k]!r}" for k in differ))
+    return state
 
 
 def expand_network(
@@ -955,6 +1010,8 @@ def expand_network(
     access_cutoff_kcal: Optional[float] = None, reroute_attempts: int = 3, max_expand_per_round: int = 10,
     checkpoint: Optional[Callable] = None, refine: Optional[Callable] = None,
     verify: Optional[Callable] = None, proposal_fmax: Optional[float] = 0.05,
+    steer_engine=None, steer_save_dir: Optional[Path] = None,
+    state_file: Optional[Path] = None, resume: bool = False,
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -1013,7 +1070,26 @@ def expand_network(
     take hundreds of tight steps no longer holds up its round. Species whose
     free energies the kinetics need are minimized tightly (the engine's own
     threshold) first; IRC ends always are. None or 0: tight from the start.
-    Engines without a force threshold (_takes_fmax) always minimize their own way."""
+    Engines without a force threshold (_takes_fmax) always minimize their own way.
+
+    `steer_engine` (steer="flux"/"access"): a higher level of theory (e.g.
+    DFT) whose single points steer: every species and TS the kinetics use
+    gets G = G_explorer + (E_high - E_low) at the explorer's geometry (as
+    mepd.discovery.energy_refine "single-point"), so which species are
+    expanded and which steps get channel sampling follow the higher level's
+    flux. Each geometry is computed once (kept in `steer_save_dir` when
+    given, so a rerun picks them up). Which species lie within the barrier
+    cutoff, and the live ranking of path-search pieces, stay at the
+    explorer's level.
+
+    `state_file`: the whole exploration (network, what was connected and
+    searched, Hessian and steering caches, where in a round it is) is saved
+    there at every stage of a round, and every couple of minutes while pairs
+    are being connected. `resume`: carry on from it -- a run cut off by a time
+    limit loses only the path searches of the pairs it had not finished, and
+    `rounds` can be raised to grow a finished network further. The settings
+    that decide the network (engines, steering, kinetics, cutoff, generator)
+    must be the ones it was saved with."""
     if steer not in ("window", "flux", "access"):
         raise ValueError(f"steer must be 'window', 'flux' or 'access', got {steer!r}.")
     if steer in ("flux", "access") and connect is None:
@@ -1027,6 +1103,13 @@ def expand_network(
         from mepd.discovery.free_energy import FreeEnergies
 
         free = FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"), workers)
+    # higher-level single points that steer the kinetics (steer_engine): E_high - E_low per geometry (Hartree)
+    steer_delta: dict = {}
+    steer_saved = None
+    if steer_engine is not None:
+        from mepd.discovery.energy_refine import _level, _Saved
+
+        steer_saved = _Saved(steer_save_dir, f"{_level(engine)} -> {_level(steer_engine)}")
     loose_fmax = float(proposal_fmax) if proposal_fmax and _takes_fmax(engine) else None
     from mepd.discovery.generators import get_generator, is_named
     from mepd.discovery.generators import propose as propose_products
@@ -1036,6 +1119,13 @@ def expand_network(
     # Every barrier and relative energy is measured from minima at this level,
     # so the seed must be one too: a SMILES embedding or a structure from
     # another level is not (and would give too-low, even negative, barriers).
+    saved = None
+    fingerprint = _state_fingerprint(engine, steer_engine, steer, kin, access_cutoff_kcal, generator,
+                                     generator_options, products_file) if state_file is not None else None
+    if resume:
+        saved = _load_state(state_file, fingerprint)
+        seed = saved["result"].species[0].node.copy()
+        minimize_seed = False
     seed = seed.copy()
     if minimize_seed:
         opt = _optimize(engine, [StructureNode(structure=seed.structure)], maxiter, None)[0]
@@ -1058,6 +1148,8 @@ def expand_network(
     charge, mult = view.charge_mult(seed)
     result = ExpansionResult(species=[Species(seed, lewis_smiles(symbols, view.edges(seed), charge, mult,
                                                                  allow_radicals=True, allow_zwitterions=True) or "", 0)])
+    if saved is not None:
+        result = saved["result"]
     live = _LiveReactions(seed, e0, workers=workers)
 
     def _adopt_if_lower(k: int, node, loose: bool = False) -> None:
@@ -1156,14 +1248,29 @@ def expand_network(
         _emit(on_event, "connecting", round=rnd, total=len(pairs))
         if not pairs:
             return
+        # Saved with the state: a run cut off here resumes with the pairs not done yet (_resume_connect).
+        pos["inflight"] = {"pairs": [list(p) for p in pairs], "search": bool(search), "done": [],
+                           "stage": pos.get("current")}
+        _save(force=True)
         if getattr(connect, "live", False):
             # each TS joins the network as it is found; the kinetics of what is found so far decide
             # which pieces of the path searches run (_piece_relevant)
+            def found_one(rec):
+                _add_found(rec)
+                _save()
+
+            def pair_done(pair):
+                pos["inflight"]["done"].append(list(pair))
+                _save(force=True)
+
+            extra = {"on_pair_done": pair_done} if getattr(connect, "reports_pairs", False) else {}
             connect(pairs, [s.node for s in result.species], **({"search": True} if search else {}),
-                    on_found=_add_found, relevant=_piece_relevant)
-            return
-        for found in connect(pairs, [s.node for s in result.species], **({"search": True} if search else {})):
-            _add_found(found)
+                    on_found=found_one, relevant=_piece_relevant, **extra)
+        else:
+            for found in connect(pairs, [s.node for s in result.species], **({"search": True} if search else {})):
+                _add_found(found)
+        pos["inflight"] = None
+        _save(force=True)
 
     # label -> (a, b, highest path image, its file) of a path-search piece whose TS still awaits its IRC
     peak_fallback: dict = {}
@@ -1220,17 +1327,53 @@ def expand_network(
 
     live_kin = {"n_steps": -1, "hot": set()}
     known_end: dict = {}
+    # every structure counts with its mirror image (mepd.discovery.mirror): the twin of a chiral TS
+    mirror_finder = None
+    if kin.get("mirror_images", True):
+        from mepd.discovery.mirror import MirrorFinder
+
+        mirror_finder = MirrorFinder()
+    mirror_said: set = set()
+    split_cache: dict = {}
+
+    def _simulate(steps, energies, free_basis: bool = False):
+        """The kinetics of the network found so far (`steps`/`energies`: one
+        energy view of result.steps/result.species), every structure counted
+        with its mirror image; `free_basis`: the species count as the
+        molecules the free energies split them into."""
+        from mepd.discovery.kinetics import simulate
+
+        n = len(result.species)
+        if mirror_finder is None or not steps:
+            return simulate(n, steps, energies, temperature=kin["temperature"], time_s=kin["time_s"])
+
+        def parts(structure):
+            from mepd.discovery.mirror import _key
+
+            key = _key(structure)
+            if key not in split_cache:
+                split_cache[key] = [g for g, _, _ in free.parts(structure, False)]
+            return split_cache[key]
+
+        mirrors = mirror_finder([s.node for s in result.species], result.steps,
+                                [_ts_structure(st) for st in result.steps],
+                                parts if free_basis and free is not None else None)
+        for msg in mirrors.undecided:
+            if msg not in mirror_said:
+                mirror_said.add(msg)
+                _emit(on_event, "warning", message=f"mirror images: {msg}")
+        n_all, all_steps, all_energies = mirrors.extend(steps, energies, kin["temperature"])
+        k = simulate(n_all, all_steps, all_energies, temperature=kin["temperature"], time_s=kin["time_s"])
+        k.n_found, k.mirrors = n, mirrors.record()
+        return k
 
     def _piece_relevant(chain, final: bool = False):
         """Run a waiting piece of a path search only if material reaches one of its ends: a known species
         populated (max concentration or flux >= threshold) in the kinetics of the network found so far
         (electronic energies: a ranking, recomputed whenever a step was added)."""
-        from mepd.discovery.kinetics import simulate
-
         if len(result.steps) != live_kin["n_steps"]:
             energies = [float(s.node.energy) for s in result.species]
-            k = simulate(len(result.species), result.steps, energies, temperature=kin["temperature"],
-                         time_s=kin["time_s"])
+            k = _simulate(result.steps, energies)
             tau = float(kin["threshold"])
             live_kin["hot"] = {0} | {i for i in range(len(result.species))
                                      if k.max_concentration[i] >= tau or k.flux[i] >= tau}
@@ -1247,13 +1390,12 @@ def expand_network(
         return None
 
     def _kinetics_record(pairs: list):
-        from mepd.discovery.kinetics import negative_barrier_warnings, simulate
+        from mepd.discovery.kinetics import negative_barrier_warnings
 
         energies = [float(s.node.energy) for s in result.species]
         k_energies, k_steps, basis = _free_energy_view(energies)
         energies = [float(s.node.energy) for s in result.species]   # tightened species
-        kinetic = simulate(len(result.species), k_steps, k_energies, temperature=kin["temperature"],
-                           time_s=kin["time_s"])
+        kinetic = _simulate(k_steps, k_energies, basis.startswith("free"))
         result.kinetics = kinetic
         warnings = negative_barrier_warnings(result.steps, energies)
         for w in warnings:
@@ -1261,10 +1403,92 @@ def expand_network(
         result.rounds[-1]["kinetics"] = {
             "connected_pairs": [list(p) for p in pairs], "verified_steps": len(result.steps),
             "flux": kinetic.flux, "max_concentration": kinetic.max_concentration,
-            "final_concentration": kinetic.final_concentration, "warnings": warnings, "energies": basis}
+            "final_concentration": kinetic.final_concentration, "warnings": warnings, "energies": basis,
+            **({"mirror_images": kinetic.mirrors} if kinetic.mirrors is not None else {})}
         return kinetic
 
+    def _ts_structure(st):
+        fp = (st.files or {}).get("ts")
+        if not fp or not Path(fp).exists():
+            return None
+        ref = result.species[0].node.structure
+        return _open_structure(fp).model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity})
+
+    def _steer_shifts(structs: list) -> list:
+        """E_high - E_low (Hartree) of each (structure, is_ts), the molecules of a species apart when the
+        free energies count them so; None where a single point failed."""
+        import hashlib
+
+        from mepd.cli_common import _fork_map
+        from mepd.discovery.energy_refine import Item, _fragments, _single_point
+        from mepd.discovery.free_energy import FreeEnergies
+
+        splitter = free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"))
+        keys = []
+        todo: dict = {}
+        for s, is_ts in structs:
+            xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
+            key = hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
+                                     is_ts)).encode()).hexdigest()[:24]
+            keys.append(key)
+            if key in steer_delta or key in todo:
+                continue
+            done = steer_saved.get("single_points", key)
+            if done is not None:
+                steer_delta[key] = done["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
+                continue
+            parts = [s] if is_ts or free is None else _fragments(s, splitter.parts(s, False))
+            todo[key] = Item("ts" if is_ts else "species", 0, s, parts)
+        if todo:
+            _emit(on_event, "steer_single_points", round=rnd, total=len(todo))
+            at_once = max(1, int(workers) // max(1, int(getattr(steer_engine, "threads", 1) or 1)))
+
+            def one(item):
+                try:
+                    return _single_point(item, engine, steer_engine)
+                except Exception as exc:
+                    return f"{type(exc).__name__}: {exc}"
+
+            for key, r in zip(todo, _fork_map(one, list(todo.values()), at_once)):
+                if isinstance(r, str):
+                    _emit(on_event, "warning", message=f"steering single point failed ({r}): explorer energy used")
+                    steer_delta[key] = None
+                    continue
+                steer_saved.put("single_points", key, r)
+                steer_delta[key] = r["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
+        return [steer_delta[k] for k in keys]
+
     def _free_energy_view(energies):
+        """(species energies, steps, basis) for the kinetics: the explorer's
+        (_explorer_view), moved by the steering level's single points when
+        there is one."""
+        from mepd.discovery.kinetics import Step
+
+        g, steps, basis = _explorer_view(energies)
+        if steer_engine is None or not result.steps:
+            return g, steps, basis
+        from mepd.discovery.energy_refine import kinetic_reach
+
+        reach, open_steps = kinetic_reach(result.steps, [float(s.node.energy) for s in result.species], e0,
+                                          access_cutoff_kcal)
+        sp_idx = sorted(reach)
+        ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
+        open_steps = [m for m in open_steps if ts[m] is not None]
+        d = _steer_shifts([(result.species[k].node.structure, False) for k in sp_idx]
+                          + [(ts[m], True) for m in open_steps])
+        d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
+        if d_sp.get(0) is None:
+            _emit(on_event, "warning", message="the seed's steering single point failed: kinetics at the "
+                                               "explorer's level this round")
+            return g, steps, basis
+        # relative to the seed, on the explorer's scale (the rest of the network keeps the explorer's energies)
+        g = [e + (d_sp[k] - d_sp[0] if d_sp.get(k) is not None else 0.0) for k, e in enumerate(g)]
+        steps = [Step(st.a, st.b, st.ts_energy + (d_ts[m] - d_sp[0] if d_ts.get(m) is not None else 0.0),
+                      st.label, st.files) for m, st in enumerate(steps)]
+        n = sum(x is not None for x in d)
+        return g, steps, f"{basis}; {type(steer_engine).__name__} single points on {n} of {len(d)} structures"
+
+    def _explorer_view(energies):
         """(species energies, steps, basis) for the kinetics: free energies when
         asked for and every correction worked, else the electronic ones (said)."""
         from mepd.discovery.kinetics import Step
@@ -1308,8 +1532,14 @@ def expand_network(
     def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.discovery.kinetics import select_for_expansion
 
-        pairs = _new_pairs(round_edges)
-        _connect(pairs)
+        ctx = pos["ctx"]
+        ctx.setdefault("done", [])
+        if "pairs" not in ctx:
+            ctx["pairs"] = _new_pairs(round_edges)
+        pairs = ctx["pairs"]
+        if _stage("connected"):
+            _connect(pairs)
+            _stage_done("connected")
         kinetic = _kinetics_record(pairs)
         picks = select_for_expansion(kinetic, expanded, kin["threshold"])
         _emit(on_event, "kinetics", round=rnd, flux=kinetic.flux, picks=picks)
@@ -1486,22 +1716,32 @@ def expand_network(
     def _steer_by_access(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.network_aware import accessibility, log_event
 
-        pairs = _new_pairs(round_edges, max_rel_kcal=access_cutoff_kcal)
-        skipped = len(_new_pairs(round_edges)) - len(pairs)
-        # Searches towards a target no route reaches yet go in the same queue
-        # as the round's pairs, from the species reachable before this round.
-        attempts = []
-        if t_idx is not None:
-            attempts = [p for p in _reroute_attempts(
-                accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)) if p not in pairs]
-        _connect(pairs + attempts)
+        ctx, done = pos["ctx"], pos["ctx"].setdefault("done", [])
+        if "pairs" not in ctx:
+            pairs = _new_pairs(round_edges, max_rel_kcal=access_cutoff_kcal)
+            ctx["skipped"] = len(_new_pairs(round_edges)) - len(pairs)
+            # Searches towards a target no route reaches yet go in the same queue
+            # as the round's pairs, from the species reachable before this round.
+            attempts = []
+            if t_idx is not None:
+                attempts = [p for p in _reroute_attempts(
+                    accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)) if p not in pairs]
+            ctx["pairs"], ctx["attempts"] = pairs, attempts
+        pairs, attempts, skipped = ctx["pairs"], ctx["attempts"], ctx["skipped"]
+        if _stage("connected"):
+            _connect(pairs + attempts)
+            _stage_done("connected")
         _phase("connected", round=rnd, pairs=len(pairs) + len(attempts))
         if verify is not None:
-            checked = _verify_and_search(_kinetics_record(pairs))
-            result.rounds[-1]["irc_verified"] = checked
-            _phase("verified", round=rnd, ircs=checked)
-        n_ref = _refine_steps(_kinetics_record(pairs))
-        _phase("channels", round=rnd, steps=n_ref)
+            if _stage("verified"):
+                ctx["irc_verified"] = _verify_and_search(_kinetics_record(pairs))
+                _stage_done("verified")
+            result.rounds[-1]["irc_verified"] = ctx["irc_verified"]
+            _phase("verified", round=rnd, ircs=ctx["irc_verified"])
+        if _stage("channels"):
+            ctx["channels"] = _refine_steps(_kinetics_record(pairs))
+            _stage_done("channels")
+        _phase("channels", round=rnd, steps=ctx["channels"])
         acc = accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)
         extra = []
         if t_idx is not None:
@@ -1525,6 +1765,31 @@ def expand_network(
         _emit(on_event, "access", round=rnd, picks=picks, within=len(result.rounds[-1]["access"]["within_reach"]))
         return picks
 
+    def _stage(name) -> bool:
+        """True when this round's stage `name` is still to run (a resumed round skips the ones done)."""
+        if name in pos["ctx"].get("done", []):
+            return False
+        pos["current"] = name
+        return True
+
+    def _stage_done(name) -> None:
+        pos["ctx"].setdefault("done", []).append(name)
+        pos["current"] = None
+        _save(force=True)
+
+    def _resume_connect() -> None:
+        """The connect call a resumed run was cut off in: the pairs it had not finished."""
+        fl = pos.get("inflight")
+        if not fl:
+            return
+        finished = {tuple(p) for p in fl["done"]}
+        todo = [tuple(p) for p in fl["pairs"] if tuple(p) not in finished]
+        pos["current"], pos["inflight"] = fl.get("stage"), None
+        _emit(on_event, "resumed_connect", pairs=len(todo), finished=len(finished))
+        _connect(todo, search=fl["search"])
+        if fl.get("stage") == "connected":
+            _stage_done("connected")    # the round's own connect call: nothing else of it to run
+
     def _phase(name, **kw):
         from mepd.network_aware import log_event
 
@@ -1536,7 +1801,41 @@ def expand_network(
     expanded: set[int] = set()
     frontier = [0]
     t_idx = None
-    if target is not None:
+    # Where the run is, saved with the state: the round, its stage, what the round decided so far
+    # ("ctx"), the stages done, and a connect call in flight.
+    pos: dict = {"round": 1, "stage": "propose", "ctx": {}, "inflight": None, "current": None}
+    last_save = [0.0]
+
+    def _save(force: bool = False) -> None:
+        """The state to `state_file` -- at once with `force`, else at most every two minutes."""
+        import time
+
+        if state_file is None or (not force and time.monotonic() - last_save[0] < 120.0):
+            return
+        last_save[0] = time.monotonic()
+        _write_state(state_file, {
+            "fingerprint": fingerprint,
+            "result": result, "pos": pos, "connected": connected, "retry": retry, "searched": searched,
+            "expanded": expanded, "frontier": frontier, "t_idx": t_idx, "refined": refined,
+            "sample_more": sample_more, "peak_fallback": peak_fallback, "steer_delta": steer_delta,
+            "free_cache": dict(free._cache) if free is not None else {}})
+
+    if saved is not None:
+        connected |= saved["connected"]
+        retry[:] = saved["retry"]
+        searched |= saved["searched"]
+        expanded |= saved["expanded"]
+        frontier, t_idx = list(saved["frontier"]), saved["t_idx"]
+        refined |= saved["refined"]
+        sample_more |= saved["sample_more"]
+        peak_fallback.update(saved["peak_fallback"])
+        steer_delta.update(saved["steer_delta"])
+        if free is not None:
+            free._cache.update(saved["free_cache"])
+        pos.update(saved["pos"])
+        _emit(on_event, "resumed", round=pos["round"], stage=pos["stage"], species=len(result.species),
+              steps=len(result.steps))
+    if target is not None and saved is None:
         # Round 0: the two-ended search seed -> target; its intermediates and
         # verified steps start the network.
         rnd = 0
@@ -1568,128 +1867,139 @@ def expand_network(
                 # the seed first; the rest of the route only once the kinetics say material gets there
                 frontier = [0] + [k for k in extra if k != 0][:max(0, int(reroute_attempts))]
                 result.rounds[-1]["expanded_next"] = frontier
-    for rnd in range(1, rounds + 1):
-        if not frontier:
-            break
-        expanded.update(frontier)
-        _phase("round_start", round=rnd, frontier=len(frontier))
-        n_edges_before = len(result.edges)
-        proposals, stats_all = [], []
-        prefetched = _propose_structures_at_once(frontier, result, generator, generator_options, products_file,
-                                                 view, max_products, workers)
-        for src in frontier:
-            node = result.species[src].node
-            coords = view.coords(node)
-            gen = get_generator(generator) if products_file is None and is_named(generator) else None
-            if view.region is not None and (gen is None or gen.kind == "structures"):
-                # QM/MM: a whole-molecule generator (or an imported one) works on
-                # the QM model -- QM atoms capped with link H, at the QM charge and
-                # spin -- and its products are put back into the environment.
-                model = view.region.model_structure(node.structure)
-                opts = dict(generator_options or {})
-                embedded = bool(opts.pop("embedded", False)) and gen is not None and gen.name == "nanoreactor"
-                if embedded:
-                    # The nanoreactor's MD with QM/MM forces, the environment present
-                    # all along: its products are whole systems.
-                    from mepd.discovery.qmmm_reactor import qmmm_reactor_products
+    first = int(pos["round"]) if saved is not None else 1
+    in_round = saved is not None and pos["stage"] != "propose"   # cut off after its proposals
+    if saved is not None:
+        rnd = first
+        _resume_connect()
+    for rnd in range(first, rounds + 1):
+        if in_round and rnd == first:
+            n_edges_before, new_frontier = pos["ctx"]["n_edges_before"], pos["ctx"]["new_frontier"]
+        else:
+            if not frontier:
+                break
+            expanded.update(frontier)
+            _phase("round_start", round=rnd, frontier=len(frontier))
+            n_edges_before = len(result.edges)
+            proposals, stats_all = [], []
+            prefetched = _propose_structures_at_once(frontier, result, generator, generator_options, products_file,
+                                                     view, max_products, workers)
+            for src in frontier:
+                node = result.species[src].node
+                coords = view.coords(node)
+                gen = get_generator(generator) if products_file is None and is_named(generator) else None
+                if view.region is not None and (gen is None or gen.kind == "structures"):
+                    # QM/MM: a whole-molecule generator (or an imported one) works on
+                    # the QM model -- QM atoms capped with link H, at the QM charge and
+                    # spin -- and its products are put back into the environment.
+                    model = view.region.model_structure(node.structure)
+                    opts = dict(generator_options or {})
+                    embedded = bool(opts.pop("embedded", False)) and gen is not None and gen.name == "nanoreactor"
+                    if embedded:
+                        # The nanoreactor's MD with QM/MM forces, the environment present
+                        # all along: its products are whole systems.
+                        from mepd.discovery.qmmm_reactor import qmmm_reactor_products
 
-                    items, reactor_counts = qmmm_reactor_products(
-                        node.structure, engine, view.region, max_products=max_products, on_event=on_event,
-                        **{k: v for k, v in opts.items() if k != "md_method"})
-                    for key, what in (("mm_changed", "changed a bond in the MM region"),
-                                      ("boundary", "stretched a QM/MM cut bond")):
-                        if reactor_counts[key]:
-                            _emit(on_event, "warning", message=f"{reactor_counts[key]} QM/MM nanoreactor event(s) "
-                                                               f"{what}; not used as products")
+                        items, reactor_counts = qmmm_reactor_products(
+                            node.structure, engine, view.region, max_products=max_products, on_event=on_event,
+                            **{k: v for k, v in opts.items() if k != "md_method"})
+                        for key, what in (("mm_changed", "changed a bond in the MM region"),
+                                          ("boundary", "stretched a QM/MM cut bond")):
+                            if reactor_counts[key]:
+                                _emit(on_event, "warning", message=f"{reactor_counts[key]} QM/MM nanoreactor event(s) "
+                                                                   f"{what}; not used as products")
+                    elif gen is not None:
+                        gen.check()
+                        items = gen.propose(model, max_products=max_products, options=opts)
+                    elif products_file is not None:
+                        from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
+                        items = read_multiple_structure_from_file(products_file, charge, mult) if src == 0 else []
+                    else:
+                        items = _import_generator(generator)(model, **dict(generator_options or {}))
+                    # Products of the whole system (e.g. a products file made for it) go
+                    # in as they are; products of the QM model are put back.
+                    items = [s if not isinstance(s, (str, Path)) else _open_structure(s) for s in items]
+                    whole = [s for s in items if len(s.symbols) == len(node.symbols)]
+                    props = external_proposals(whole, node.structure, src) if whole else []
+                    region_props, counts = _region_proposals(
+                        view, node, src, [s for s in items if len(s.symbols) != len(node.symbols)])
+                    props += region_props
+                    stats = {(gen.name if gen is not None else "external"): len(props),
+                             **({"broke_qmmm_boundary": counts["boundary"]} if counts["boundary"] else {})}
+                    if counts["boundary"]:
+                        _emit(on_event, "warning", message=f"{counts['boundary']} product(s) of the QM region broke a "
+                                                           "QM/MM boundary bond (a link H stopped being a cap); dropped")
+                elif gen is not None and gen.kind == "structures":   # e.g. crest-msreact: product geometries
+                    if src in prefetched:
+                        items = prefetched[src]
+                    else:
+                        gen.check()
+                        items = gen.propose(node.structure, max_products=max_products,
+                                            options=dict(generator_options or {}))
+                    props = external_proposals(items, node.structure, src)
+                    stats = {gen.name: len(props)}
                 elif gen is not None:
-                    gen.check()
-                    items = gen.propose(model, max_products=max_products, options=opts)
-                elif products_file is not None:
-                    from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
-                    items = read_multiple_structure_from_file(products_file, charge, mult) if src == 0 else []
-                else:
-                    items = _import_generator(generator)(model, **dict(generator_options or {}))
-                # Products of the whole system (e.g. a products file made for it) go
-                # in as they are; products of the QM model are put back.
-                items = [s if not isinstance(s, (str, Path)) else _open_structure(s) for s in items]
-                whole = [s for s in items if len(s.symbols) == len(node.symbols)]
-                props = external_proposals(whole, node.structure, src) if whole else []
-                region_props, counts = _region_proposals(
-                    view, node, src, [s for s in items if len(s.symbols) != len(node.symbols)])
-                props += region_props
-                stats = {(gen.name if gen is not None else "external"): len(props),
-                         **({"broke_qmmm_boundary": counts["boundary"]} if counts["boundary"] else {})}
-                if counts["boundary"]:
-                    _emit(on_event, "warning", message=f"{counts['boundary']} product(s) of the QM region broke a "
-                                                       "QM/MM boundary bond (a link H stopped being a cap); dropped")
-            elif gen is not None and gen.kind == "structures":   # e.g. crest-msreact: product geometries
-                if src in prefetched:
-                    items = prefetched[src]
-                else:
-                    gen.check()
-                    items = gen.propose(node.structure, max_products=max_products,
-                                        options=dict(generator_options or {}))
-                props = external_proposals(items, node.structure, src)
-                stats = {gen.name: len(props)}
-            elif gen is not None:
-                props, stats = propose_products(
-                    generator, symbols, coords, view.edges(node), options=generator_options, charge=charge,
-                    multiplicity=mult, n_break=n_break, n_form=n_form, form_distance=form_distance,
-                    max_products=max_products, allow_radicals=allow_radicals, allow_zwitterions=allow_zwitterions,
-                    source=src,
-                )
-                props = view.keep(props)
-                _build_guesses(props, node, coords, live, workers, view)
-            else:   # imported products, or a generator given by import path
-                if products_file is not None:  # an external tool's products of the seed
-                    from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
-                    items = read_multiple_structure_from_file(products_file, charge, mult) if src == 0 else []
-                else:
-                    items = _import_generator(generator)(node.structure, **dict(generator_options or {}))
-                props = external_proposals(items, node.structure, src)
-                stats = {"external": len(props)}
-            stats_all.append({"source": src, **stats})
-            proposals.extend(props)
-        known = {s.smiles: k for k, s in enumerate(result.species) if s.smiles}
-        for p in [p for p in proposals if p.smiles in known]:
-            edge = ProposedEdge(p.source, p, "known_species", known[p.smiles], True)
-            result.edges.append(edge)
-            live.finish(edge, result.species)
-        proposals = [p for p in proposals if p.smiles not in known]
-        _phase("proposed", round=rnd, proposals=len(proposals))
-        live.prepare(proposals, result.species)
-        _phase("animations", round=rnd)
-        for p in proposals:
-            live.propose(p, result.species, frames=p.frames)
-        _emit(on_event, "proposed", round=rnd, total=len(proposals))
-        guesses = [StructureNode(structure=p.structure) for p in proposals]
-        optimized = _optimize(engine, guesses, maxiter, on_event,
-                              on_start=lambda k: live.optimizing(proposals[k], result.species), fmax=loose_fmax)
-        _phase("optimized", round=rnd, proposals=len(guesses))
-        new_frontier = []
-        for p, guess, opt in zip(proposals, guesses, optimized):
-            edge, record = None, None
-            if isinstance(opt, Exception):
-                edge = ProposedEdge(p.source, p, "failed", error=f"{type(opt).__name__}: {opt}")
-            elif validate_minima is not None:
-                from mepd.elementarystep import validate_minimum_with_rescue
+                    props, stats = propose_products(
+                        generator, symbols, coords, view.edges(node), options=generator_options, charge=charge,
+                        multiplicity=mult, n_break=n_break, n_form=n_form, form_distance=form_distance,
+                        max_products=max_products, allow_radicals=allow_radicals, allow_zwitterions=allow_zwitterions,
+                        source=src,
+                    )
+                    props = view.keep(props)
+                    _build_guesses(props, node, coords, live, workers, view)
+                else:   # imported products, or a generator given by import path
+                    if products_file is not None:  # an external tool's products of the seed
+                        from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
+                        items = read_multiple_structure_from_file(products_file, charge, mult) if src == 0 else []
+                    else:
+                        items = _import_generator(generator)(node.structure, **dict(generator_options or {}))
+                    props = external_proposals(items, node.structure, src)
+                    stats = {"external": len(props)}
+                stats_all.append({"source": src, **stats})
+                proposals.extend(props)
+            known = {s.smiles: k for k, s in enumerate(result.species) if s.smiles}
+            for p in [p for p in proposals if p.smiles in known]:
+                edge = ProposedEdge(p.source, p, "known_species", known[p.smiles], True)
+                result.edges.append(edge)
+                live.finish(edge, result.species)
+            proposals = [p for p in proposals if p.smiles not in known]
+            _phase("proposed", round=rnd, proposals=len(proposals))
+            live.prepare(proposals, result.species)
+            _phase("animations", round=rnd)
+            for p in proposals:
+                live.propose(p, result.species, frames=p.frames)
+            _emit(on_event, "proposed", round=rnd, total=len(proposals))
+            guesses = [StructureNode(structure=p.structure) for p in proposals]
+            optimized = _optimize(engine, guesses, maxiter, on_event,
+                                  on_start=lambda k: live.optimizing(proposals[k], result.species), fmax=loose_fmax)
+            _phase("optimized", round=rnd, proposals=len(guesses))
+            new_frontier = []
+            for p, guess, opt in zip(proposals, guesses, optimized):
+                edge, record = None, None
+                if isinstance(opt, Exception):
+                    edge = ProposedEdge(p.source, p, "failed", error=f"{type(opt).__name__}: {opt}")
+                elif validate_minima is not None:
+                    from mepd.elementarystep import validate_minimum_with_rescue
 
-                opt, record = validate_minimum_with_rescue(
-                    opt, engine, frequency_cutoff=float(validate_minima.get("frequency_cutoff", -20.0)),
-                    rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
-                    label=f"proposal {p.label}")
-                if not record["is_minimum"]:
-                    edge = ProposedEdge(p.source, p, "not_minimum", error=str(record.get("validation")))
-                    result.rejected.append(opt.copy())
-            if edge is None:
-                edge = _classify(p, guess, opt, record)
-            result.edges.append(edge)
-            live.finish(edge, result.species, product=None if isinstance(opt, Exception) else opt)
-            if edge.outcome == "new_species" and result.species[edge.target].rel_energy_kcal <= energy_window_kcal:
-                new_frontier.append(edge.target)
-        found = [e.target for e in result.edges if e.outcome == "new_species" and result.species[e.target].round == rnd]
-        result.rounds.append({"round": rnd, "sources": frontier, "proposed": len(proposals),
-                              "new_species": found, "expanded_next": new_frontier, "generator_stats": stats_all})
+                    opt, record = validate_minimum_with_rescue(
+                        opt, engine, frequency_cutoff=float(validate_minima.get("frequency_cutoff", -20.0)),
+                        rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
+                        label=f"proposal {p.label}")
+                    if not record["is_minimum"]:
+                        edge = ProposedEdge(p.source, p, "not_minimum", error=str(record.get("validation")))
+                        result.rejected.append(opt.copy())
+                if edge is None:
+                    edge = _classify(p, guess, opt, record)
+                result.edges.append(edge)
+                live.finish(edge, result.species, product=None if isinstance(opt, Exception) else opt)
+                if edge.outcome == "new_species" and result.species[edge.target].rel_energy_kcal <= energy_window_kcal:
+                    new_frontier.append(edge.target)
+            found = [e.target for e in result.edges if e.outcome == "new_species" and result.species[e.target].round == rnd]
+            result.rounds.append({"round": rnd, "sources": frontier, "proposed": len(proposals),
+                                  "new_species": found, "expanded_next": new_frontier, "generator_stats": stats_all})
+            pos.update(round=rnd, stage="steer", current=None,
+                       ctx={"n_edges_before": n_edges_before, "new_frontier": new_frontier, "done": []})
+            _save(force=True)
         if steer == "access":
             new_frontier = _steer_by_access(result.edges[n_edges_before:])
             result.rounds[-1]["expanded_next"] = new_frontier
@@ -1699,6 +2009,8 @@ def expand_network(
             result.rounds[-1]["expanded_next"] = new_frontier
             result.rounds[-1]["new_species"] = [k for k, s in enumerate(result.species) if s.round == rnd and k]
         frontier = new_frontier
+        pos.update(round=rnd + 1, stage="propose", ctx={}, current=None)
+        _save(force=True)
         if checkpoint is not None:
             checkpoint(result)   # a run cut off later keeps the rounds it finished
     if steer == "access" and t_idx is not None and connect is not None and result.rounds:
@@ -1726,5 +2038,6 @@ def expand_network(
         rnd = result.rounds[-1]["round"]
         if _refine_steps(result.kinetics if result.kinetics is not None else _kinetics_record([])):
             _kinetics_record([])
+    _save(force=True)
     live.close()
     return result

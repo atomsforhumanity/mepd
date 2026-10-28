@@ -52,6 +52,10 @@ class KineticsResult:
     max_concentration: list[float]
     final_concentration: list[float]
     barriers_kcal: list[tuple[float, float]]  # (forward a->b, reverse b->a) per step
+    # with mirror images (mepd.discovery.mirror): the species the explorer found come first, the
+    # mirror images it did not find after them; `mirrors` is Mirrors.record()
+    n_found: Optional[int] = None
+    mirrors: Optional[dict] = None
 
 
 def rate_constants(steps: Sequence[Step], energies: Sequence[float], temperature: float) -> list[tuple[float, float]]:
@@ -170,6 +174,7 @@ def select_for_expansion(result: KineticsResult, expanded: set[int], threshold: 
                          limit: Optional[int] = None) -> list[int]:
     """Species not expanded yet whose concentration flux reached
     `threshold`, most flux first."""
-    picks = sorted((j for j, f in enumerate(result.flux) if j not in expanded and f >= threshold),
+    n = len(result.flux) if result.n_found is None else result.n_found   # an added mirror image is no species to expand
+    picks = sorted((j for j, f in enumerate(result.flux[:n]) if j not in expanded and f >= threshold),
                    key=lambda j: -result.flux[j])
     return picks[:limit] if limit else picks

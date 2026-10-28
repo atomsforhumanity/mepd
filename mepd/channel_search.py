@@ -201,7 +201,10 @@ def _expand_pairs_by_mechanism(
         else:
             new_structures.append(StructureNode(structure=r["structure"]))
             r["pair_j"] = len(new_structures) - 1
-        new_candidates.append((r["i"], r["pair_j"]))
+        if (r["i"], r["pair_j"]) not in new_candidates:
+            # Mechanisms whose chosen numbering is the input's own share one search: run twice, the
+            # copies would also write the same pair folder at once.
+            new_candidates.append((r["i"], r["pair_j"]))
     if prior:
         reused = sum(1 for r in rows if (r["i"], r["j"], r["key"]) in prior)
         _log(f"--atom-mapping: {reused} path search(es) keep their earlier labels; "
