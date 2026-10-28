@@ -1149,8 +1149,10 @@ def _optimize_ts_and_irc(
 
 def _irc_ends_same_species(irc_chain: Chain, engine) -> bool:
     """True when both ends of an IRC have one molecular graph (for QM/MM, the
-    QM region's), so the TS joins no two species. False when they differ or
-    cannot be compared."""
+    QM region's) with the same atoms bonded, so the TS joins no two species.
+    False when they differ or cannot be compared. An identity reaction
+    (Cl- + CH3Cl -> ClCH3 + Cl-, a degenerate rearrangement) has the same
+    species at both ends but other atoms bonded: a reaction, so False."""
     from mepd.elementarystep import _comparison_preparer, _prepare_node_for_comparison
     from mepd.nodes.nodehelpers import _is_connectivity_identical
 
@@ -1158,6 +1160,8 @@ def _irc_ends_same_species(irc_chain: Chain, engine) -> bool:
         prepare = _comparison_preparer(engine)
         a, b = (_prepare_node_for_comparison(n, prepare) for n in (irc_chain[0], irc_chain[-1]))
         if getattr(a, "graph", None) is None or getattr(b, "graph", None) is None:
+            return False
+        if {frozenset(e) for e in a.graph.edges} != {frozenset(e) for e in b.graph.edges}:
             return False
         return bool(_is_connectivity_identical(a, b, verbose=False, collect_comparison=False))
     except Exception:

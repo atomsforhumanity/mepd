@@ -2318,7 +2318,7 @@
    },
    {
     "option": "CPCM-X",
-    "where": "this field (--model cpcmx)"
+    "where": "this field (--model cpcmx), with gas-phase geometries only: xtb's CPCM-X has no gradient; not for methanol, acetone, dioxane"
    }
   ],
   "caveats": [
@@ -3090,8 +3090,8 @@
     "where": "this choice (mepd/solvation.py:SOLVENTS)"
    },
    {
-    "option": "GBSA or CPCM-X instead of ALPB",
-    "where": "TOML [solvation] model = \"gbsa\" | \"cpcmx\""
+    "option": "GBSA instead of ALPB",
+    "where": "TOML [solvation] model = \"gbsa\" (CPCM-X has no gradient: only in Solvent effects, gas-phase geometries)"
    },
    {
     "option": "Force correction even when native is possible",

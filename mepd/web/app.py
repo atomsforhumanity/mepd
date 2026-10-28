@@ -2761,10 +2761,14 @@ def attach_conformers(ws: Workspace, job: dict, result: dict) -> int:
     else:
         return 0
     added = 0
+    if job["op"] == "conformers":   # a TS's (`--ts`): TS-optimized, one imaginary mode each
+        owner["tsconf_"] = owner["conf_"]
     for group in result.get("groups", []):
-        if group.get("kind") != "conformers":
+        if group.get("kind") != "conformers" and not (group.get("kind") == "ts" and job["op"] == "conformers"):
             continue
         for entry in group["entries"]:
+            if entry.get("same_core") is False:
+                continue   # its core moved: optimized to another TS, not a conformer of this one
             sid = next((s for prefix, s in owner.items() if entry["id"].startswith(prefix)), None)
             if sid is None or sid not in ws.snapshot()["structures"] or not entry.get("frames"):
                 continue

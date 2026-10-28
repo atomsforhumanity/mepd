@@ -69,3 +69,21 @@ def test_irc_ends_of_one_species_are_reported(monkeypatch, tmp_path):
         assert bool(out.problems) is flagged and check.exists() is flagged
         if flagged:
             assert "same species" in check.read_text()
+
+
+def test_an_identity_reaction_is_not_reported_as_one_species():
+    """Cl- + CH3Cl -> ClCH3 + Cl-: one species at both ends, but the other Cl
+    bonded. Here H transfers between two O of HO...H...OH- (atoms renamed,
+    graph the same)."""
+    from mepd.cli_common import _irc_ends_same_species
+
+    def oho(h):   # O0 ... H2 ... O1, plus an H on each O
+        xyz = np.array([[0.0, 0, 0], [2.4, 0, 0], [h, 0, 0], [-0.3, 0.9, 0], [2.7, 0.9, 0]]) * A2B
+        return StructureNode(structure=Structure(symbols=["O", "O", "H", "H", "H"], geometry=xyz, charge=-1,
+                                                 multiplicity=1))
+
+    left, right, ts = oho(0.97), oho(1.43), oho(1.2)
+    chain = Chain.model_validate({"nodes": [left, ts, right], "parameters": ChainInputs()})
+    assert not _irc_ends_same_species(chain, SimpleNamespace())
+    back = Chain.model_validate({"nodes": [left, ts, oho(0.99)], "parameters": ChainInputs()})
+    assert _irc_ends_same_species(back, SimpleNamespace())
