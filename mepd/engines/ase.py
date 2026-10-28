@@ -262,7 +262,9 @@ class ASEEngine(Engine):
             try:
                 converged = optimizer.run(**run_kwds)
             except Exception as exc:
-                raise ElectronicStructureError(msg="Electronic structure failed.", obj=exc)
+                # Keep the cause: "Electronic structure failed." alone hid why
+                # (e.g. an xtb solvent run that stopped).
+                raise ElectronicStructureError(msg=f"Electronic structure failed: {exc}", obj=exc)
             # ASE returns the last frame whether or not it converged; a run that
             # used up its steps is not a minimum (or a TS) and must not pass as one.
             if not converged:
@@ -379,7 +381,7 @@ class ASEEngine(Engine):
             import traceback
             traceback.print_exc()
             print(f"Error in ASE calculation: {e}")
-            raise ElectronicStructureError(msg="Electronic structure failed.")
+            raise ElectronicStructureError(msg=f"Electronic structure failed: {e}", obj=e)
 
     def _compute_gradient_from_atoms(self, atoms: Atoms) -> NDArray:
         """Return dE/dx in Hartree/Bohr for an ASE Atoms object."""

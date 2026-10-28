@@ -568,7 +568,8 @@ function ResultPanel({ job }) {
         <section class="result-details">
           <h3 class="section-title">Details</h3>
           ${result.summary.length > 0 && html`<dl class="summary">
-            ${result.summary.map((s) => html`<div><dt>${s.label}</dt><dd>${s.value}</dd></div>`)}
+            ${result.summary.map((s) => html`<div><dt>${s.label}</dt><dd>${s.href
+              ? html`<a href=${s.href} target="_blank" rel="noopener">${s.value}</a>` : s.value}</dd></div>`)}
           </dl>`}
           ${result.warnings.length > 0 && html`
             <details class="warn-box small warnings">

@@ -47,6 +47,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the same search on any machine (with one pair at a time), so a search is reproducible for a given seed: two
   runs of a Transition1x-TMC search capped at 8 wrote byte-identical paths (11 searches each). Leaves cut by it have status
   `path_search_budget`; `stats.json` records `path_searches` and `max_path_searches_reached`.
+- **Transition-state conformers: `mepd conformers ts.xyz --ts [--freeze 0-12,3-11]`, and Conformers on a TS in
+  the web app.** CREST samples the TS with its reacting core held at the TS distances (xtb `$constrain`,
+  `CrestInputs.constrain_pairs`, force constant 1), and each kept conformer is TS-optimized with the frequency
+  check, so the lowest TS of a reaction can be found. The core defaults to the pairs the imaginary mode
+  stretches most (`mepd.conformers.ts_reactive_core`). CREST's topology checks are off for this (partial bonds
+  count as topology), so mepd drops a conformer whose held distances moved or whose other bonds changed. CREST
+  now samples in the profile's ALPB/GBSA solvent. In the web app the sampler defaults to Automatic: RDKit for a
+  minimum, CREST for a transition state. Manual page: /manual/ts-conformers. (#15)
 - **Comparing species without metal-ligand contacts** (`metal_ligand_contacts=False` on `compare_structures`,
   `same_molecule` and `connects`). Bonds to transition metals, lanthanides and actinides are left out of the
   bond graphs and the stereochemistry, so a change of coordination alone (a ligand binding through another
@@ -568,6 +576,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **CPCM-X solvation energies were the same for every solvent.** With `--cpcmx`, xtb's `energy` file holds the
+  conductor-like SCF energy CPCM-X starts from (on HCN: -7.0 kcal/mol in water, THF and hexane alike); mepd now
+  reads the printed CPCM-X total (water -5.65, hexane -4.12, as xtb's own dG_solv). xtb also needs CPCM-X's
+  full solvent names: DMSO, DMF, CH2Cl2, THF and ether stopped after the SCF (`--cpcmx thf`), and now run as
+  `--cpcmx tetrahydrofuran` etc.; methanol, acetone and dioxane, not in CPCM-X's database, no longer offer it.
+  xtb's CPCM-X has no gradient (the gas phase's is returned), so profiles and `mepd solvent --mode reoptimize`
+  refuse it with that reason; it stays for single points on gas-phase geometries. (#15)
+- **The IRC-ends check called identity reactions "no reaction".** Cl- + 1-chloropentane (SN2, the other Cl
+  bonded at each end) was flagged "both IRC ends are the same species"; ends now count as the same only when
+  the same atoms are bonded.
+- **"Electronic structure failed." without the cause** from optimizations and TS searches through ASE: the
+  program's error is now part of the message.
 
 - **`run --use-tsopt` after FSM-TS** optimized the TS again from the string's interpolated peak (on QM/MM)
   instead of taking the TS FSM-TS had converged and checked; on KSI step 1 that search ended 108 kcal/mol

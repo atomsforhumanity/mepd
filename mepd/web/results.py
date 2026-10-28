@@ -1127,6 +1127,8 @@ def collect_conformers(out: Path, charge: int, multiplicity: int) -> dict:
     ones (no mepd energies)."""
     s = _read_json(out / "summary.json") or {}
     opt = _read_json(out / "optimized" / "summary.json")
+    if s.get("ts"):
+        return _collect_ts_conformers(out, s, opt, charge, multiplicity)
     nodes, notes, failed = [], [], []
     if opt:
         for rec in opt["structures"]:
@@ -1174,6 +1176,51 @@ def collect_conformers(out: Path, charge: int, multiplicity: int) -> dict:
                     {"label": "Kept (distinct)", "value": stats.get("n_kept")},
                     {"label": "Minimized", "value": "yes" if opt else "no (backend geometries)"},
                     {"label": "Failed", "value": "; ".join(failed) or None}], warnings=failed)
+
+
+def _collect_ts_conformers(out: Path, s: dict, opt: Optional[dict], charge: int, multiplicity: int) -> dict:
+    """`mepd conformers --ts`: the TS conformers, TS-optimized (energies
+    relative to the lowest), or CREST's geometries without --minimize."""
+    stats = s.get("stats") or {}
+    nodes, failed = [], []
+    for row in (opt or {}).get("ts") or []:
+        chain = _load_chain(out / "optimized" / f"{row['label']}.xyz", charge, multiplicity) \
+            if row.get("status") == "ok" else None
+        if chain is None:
+            failed.append(f"{row['label']}: TS optimization failed")
+            continue
+        nodes.append((int(row["label"].rsplit("_", 1)[-1]), chain[0], row))
+    if opt is None:
+        for i, node in enumerate(_load_chain(out / "conformers.xyz", charge, multiplicity) or []):
+            node._cached_energy = None   # CREST's energy, not comparable to mepd's
+            nodes.append((i, node, {}))
+    floor = _min(_node_energy(n) for _, n, _ in nodes)
+    nodes.sort(key=lambda t: (_node_energy(t[1]) is None, _node_energy(t[1]) or 0.0))
+    entries = []
+    for i, node, row in nodes:
+        e = _node_energy(node)
+        note = (f"core moved {row['core_change_ang']:.2f} Å" if "core_change_ang" in row else "") \
+            + (" (another TS?)" if row.get("same_core") is False else "") \
+            + (f" · same TS as conformer {row['same_ts_as'].rsplit('_', 1)[-1]}" if row.get("same_ts_as") else "") \
+            + (f" · mirror image of conformer {row['mirror_of'].rsplit('_', 1)[-1]}"
+               if row.get("mirror_of") and not row.get("same_ts_as") else "")
+        label = f"TS conformer {i}" + ("" if e is None or floor is None else f" ({(e - floor) * HARTREE_TO_KCAL:+.1f})")
+        entry = _entry(f"tsconf_{i}", label, [node], floor, note=note.strip(" ·"))
+        entry["same_core"] = row.get("same_core", True)
+        entries.append(entry)
+    distinct = sum(1 for _, _, row in nodes if not row.get("same_ts_as"))
+    pairs = s.get("frozen_pairs") or []
+    return _result(f"{distinct} TS conformer(s)" + ("" if opt else " (not TS-optimized)"),
+                   [_group("TS conformers", "ts", entries)],
+                   [{"label": "Reacting core held", "value": ", ".join(f"{i}–{j}" for i, j in pairs) or None},
+                    {"label": "Generated", "value": stats.get("n_generated")},
+                    {"label": "Dropped (core moved / bonds changed)",
+                     "value": f"{stats.get('n_dropped_constraint_moved', 0)} / {stats.get('n_dropped_bonds_changed', 0)}"},
+                    {"label": "Kept (distinct)", "value": stats.get("n_kept")},
+                    {"label": "TS-optimized", "value": "yes" if opt else "no (CREST geometries)"},
+                    {"label": "Failed", "value": "; ".join(failed) or None},
+                    {"label": "How it works", "value": "Manual: TS conformers", "href": "/manual/ts-conformers"}],
+                   warnings=failed)
 
 
 _VRI_VERDICT = {

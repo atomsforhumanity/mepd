@@ -12,3 +12,5 @@ change** at the bottom of the page.
 
 - [Orbitals](orbitals): the whole system's HOMO and LUMO, and each
   molecule's own orbitals and how they overlap (fragment orbitals).
+- [Transition-state conformers](ts-conformers): sampling a TS's other
+  arrangements around its reacting core, held fixed, and TS-optimizing each.

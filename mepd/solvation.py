@@ -59,32 +59,50 @@ class Solvent:
     bp_c: float         # boiling point, °C at 1 atm
     mp_c: float         # melting point, °C
     models: tuple = ("alpb", "gbsa", "cpcmx")
+    cpcmx_name: Optional[str] = None   # CPCM-X's own name, where it differs from `key`
+
+    def flag(self, model: str) -> list[str]:
+        """xtb's flag for this solvent in `model`: CPCM-X names solvents in full
+        (--cpcmx tetrahydrofuran); with --cpcmx thf, xtb 6.7.1 stops after the SCF."""
+        return [f"--{model}", (self.cpcmx_name or self.key) if model == "cpcmx" else self.key]
 
 
 # Dielectric constants and phase-transition temperatures: CRC Handbook of
 # Chemistry and Physics (rounded). Only solvents that GFN2-xTB's ALPB model
-# is parametrized for are listed; GBSA covers fewer of them.
+# is parametrized for are listed; GBSA and CPCM-X cover fewer of them
+# (each model checked with xtb 6.7.1: methanol, acetone and dioxane are not in
+# CPCM-X's solvent database).
 SOLVENTS: dict[str, Solvent] = {s.key: s for s in [
     Solvent("water", "Water", "protic", 78.4, 100.0, 0.0),
-    Solvent("methanol", "Methanol", "protic", 32.7, 64.7, -97.6),
+    Solvent("methanol", "Methanol", "protic", 32.7, 64.7, -97.6, ("alpb", "gbsa")),
     Solvent("octanol", "1-Octanol", "protic", 10.3, 195.0, -16.0, ("alpb", "cpcmx")),
-    Solvent("dmso", "DMSO", "polar aprotic", 46.7, 189.0, 19.0),
+    Solvent("dmso", "DMSO", "polar aprotic", 46.7, 189.0, 19.0, cpcmx_name="dimethylsulfoxide"),
     Solvent("acetonitrile", "Acetonitrile", "polar aprotic", 37.5, 81.6, -45.0),
-    Solvent("dmf", "DMF", "polar aprotic", 36.7, 153.0, -61.0),
+    Solvent("dmf", "DMF", "polar aprotic", 36.7, 153.0, -61.0, cpcmx_name="dimethylformamide"),
     Solvent("nitromethane", "Nitromethane", "polar aprotic", 35.9, 101.2, -28.6, ("alpb", "cpcmx")),
-    Solvent("acetone", "Acetone", "polar aprotic", 20.7, 56.1, -94.7),
-    Solvent("ch2cl2", "Dichloromethane", "moderately polar aprotic", 8.9, 39.6, -96.7),
-    Solvent("thf", "THF", "moderately polar aprotic", 7.6, 66.0, -108.4),
+    Solvent("acetone", "Acetone", "polar aprotic", 20.7, 56.1, -94.7, ("alpb", "gbsa")),
+    Solvent("ch2cl2", "Dichloromethane", "moderately polar aprotic", 8.9, 39.6, -96.7,
+            cpcmx_name="methylenechloride"),
+    Solvent("thf", "THF", "moderately polar aprotic", 7.6, 66.0, -108.4, cpcmx_name="tetrahydrofuran"),
     Solvent("ethylacetate", "Ethyl acetate", "moderately polar aprotic", 6.0, 77.1, -83.6, ("alpb", "cpcmx")),
     Solvent("chcl3", "Chloroform", "moderately polar aprotic", 4.8, 61.2, -63.5),
-    Solvent("ether", "Diethyl ether", "nonpolar", 4.3, 34.6, -116.3),
+    Solvent("ether", "Diethyl ether", "nonpolar", 4.3, 34.6, -116.3, cpcmx_name="diethylether"),
     Solvent("toluene", "Toluene", "nonpolar", 2.4, 110.6, -95.0),
     Solvent("benzene", "Benzene", "nonpolar", 2.3, 80.1, 5.5),
-    Solvent("dioxane", "1,4-Dioxane", "nonpolar", 2.2, 101.1, 11.8, ("alpb", "cpcmx")),
+    Solvent("dioxane", "1,4-Dioxane", "nonpolar", 2.2, 101.1, 11.8, ("alpb",)),
     Solvent("hexane", "n-Hexane", "nonpolar", 1.9, 68.7, -95.3),
 ]}
 
 MODELS = {"alpb": "ALPB", "gbsa": "GBSA", "cpcmx": "CPCM-X"}
+
+# xtb's CPCM-X is a correction after the SCF: it changes the energy but not
+# the gradient (xtb 6.7.1, --grad --cpcmx water on HCN: gradient norm equal to
+# the gas phase's to 1e-8 Eh/bohr, energy 5.6 kcal/mol lower). Optimizations,
+# TS searches, IRCs and paths on it would follow gas-phase forces on a
+# solvated energy, so it is for single points on given geometries only.
+CPCMX_NO_GRADIENT = ("CPCM-X has no gradient in xtb (it corrects the energy after the SCF), so it can't drive "
+                     "optimizations, TS searches or paths: use ALPB or GBSA for those, and CPCM-X for single points "
+                     "(`mepd solvent --model cpcmx`, Keep gas-phase geometries)")
 
 
 def get_solvent(name: str) -> Solvent:
@@ -157,7 +175,7 @@ class SolvationCorrection:
         exe = _xtb_executable(self.executable)
         common = dict(executable=exe, add_gxtb_flag=False, n_parallel=self.n_parallel)
         self._gas = GXTBCalculator(**common)
-        self._solv = GXTBCalculator(**common, extra_args=[f"--{self.model}", self.solvent])
+        self._solv = GXTBCalculator(**common, extra_args=sv.flag(self.model))
 
     # Retried in this order when GFN2-xTB's SCC does not converge on a
     # geometry (e.g. stretched bonds in an anion); a node's gas and solvent
@@ -285,9 +303,17 @@ def solvate_engine(engine: Engine, solvation: dict) -> Engine:
     from mepd.engines.orca import OrcaEngine
     from mepd.engines.psi4 import Psi4Engine
 
-    solvent = get_solvent(solvation["solvent"]).key
+    sv = get_solvent(solvation["solvent"])
+    solvent = sv.key
     model = str(solvation.get("model", "alpb")).lower()
     method = str(solvation.get("method", "auto")).lower()
+    if model not in MODELS:
+        raise ValueError(f"unknown solvent model {model!r}; use one of {', '.join(MODELS)}")
+    if model == "cpcmx":
+        raise ValueError(CPCMX_NO_GRADIENT)
+    if model not in sv.models:
+        raise ValueError(f"{sv.label} has no {MODELS[model]} parameters; use "
+                         f"{' or '.join(MODELS[m] for m in sv.models)}")
     if method not in ("auto", "native", "correction"):
         raise ValueError("solvation.method must be auto, native or correction")
     if isinstance(engine, Psi4Engine) and method in ("auto", "native"):
@@ -310,6 +336,6 @@ def solvate_engine(engine: Engine, solvation: dict) -> Engine:
     if method in ("auto", "native") and native:
         import dataclasses
 
-        return dataclasses.replace(engine, extra_args=[*engine.extra_args, f"--{model}", solvent])
+        return dataclasses.replace(engine, extra_args=[*engine.extra_args, *sv.flag(model)])
     return SolvatedEngine(engine, solvent, model=model, method="correction",
                           executable=solvation.get("executable"))
