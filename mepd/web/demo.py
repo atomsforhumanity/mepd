@@ -57,6 +57,8 @@ class DemoPolicy:
                               "workers": 2, "maxiter": 500},
         "nanoreactor": {"time_ps": 10.0, "max_connect": 5, "workers": 2, "instances": 3},
         "nanoreactor-more": {"more_ps": 10.0},
+        # conformers: not capped. A TS's (--ts) is CREST plus one TS optimization per kept
+        # conformer, at most max_atoms atoms, so job_timeout_s bounds it.
         # (a complex's atoms are capped by max_atoms, like any structure: /api/complexes)
         "complex": {"keep": 3},
         # A 6 A shell around a demo-sized molecule: a few hundred solvent atoms.

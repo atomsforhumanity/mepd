@@ -817,6 +817,13 @@ class GXTBCalculator(Engine):
 
     @staticmethod
     def _parse_energy(*, workdir: Path, stdout: str) -> float:
+        if "CPCM-X post-SCF" in stdout:
+            # With --cpcmx the `energy` file holds the conductor-like (COSMO,
+            # epsilon = infinity) SCF energy the CPCM-X evaluation starts
+            # from: the same for every solvent. The CPCM-X total is printed.
+            matches = _TOTAL_ENERGY_RE.findall(stdout)
+            if matches:
+                return float(matches[-1])
         energy_fp = workdir / "energy"
         if energy_fp.exists():
             for line in energy_fp.read_text().splitlines():

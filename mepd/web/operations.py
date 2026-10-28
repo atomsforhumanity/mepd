@@ -369,9 +369,11 @@ class NetworkSplitsParams(Params):
 
 
 class ConformersParams(Params):
-    backend: Literal["rdkit", "crest"] = P("rdkit", "Sampler", "RDKit: ETKDG embeddings relaxed with MMFF "
-                                           "(seconds). CREST: metadynamics at GFN2/GFN-FF (minutes, single-threaded).",
-                                           cli="--backend")
+    backend: Literal["auto", "rdkit", "crest"] = P(
+        "auto", "Sampler", "RDKit: ETKDG embeddings relaxed with MMFF (seconds). CREST: metadynamics at GFN2/GFN-FF "
+        "(minutes, single-threaded). Automatic: RDKit for a minimum; for a transition state CREST, its reacting core "
+        "held fixed (RDKit can't).", cli="--backend",
+        labels={"auto": "Automatic", "rdkit": "RDKit", "crest": "CREST"})
     n_conformers: int = P(20, "Keep at most", "Distinct conformers kept (0 = no cap).", cli="--n-conformers", ge=0)
     minimize: bool = P(True, "Minimize at the profile's level", "So their energies are comparable and the "
                        "lowest one can represent the molecule. Off: the sampler's geometries, without energies.",
@@ -381,19 +383,24 @@ class ConformersParams(Params):
     rmsd_cutoff: float = P(0.1, "Distinct beyond RMSD (bohr)", cli="--rmsd-cutoff", gt=0, advanced=True,
                            group="Sampling")
     crest_method: Literal["--gfn2", "--gfnff", "--gfn2//gfnff"] = P(
-        "--gfn2", "CREST level", cli="--crest-method", advanced=True, group="Sampling", requires="backend=crest")
+        "--gfn2", "CREST level", cli="--crest-method", advanced=True, group="Sampling",
+        requires="backend=crest|auto")
     crest_ewin: float = P(6.0, "CREST window (kcal/mol)", cli="--crest-ewin", gt=0, advanced=True,
-                          group="Sampling", requires="backend=crest")
+                          group="Sampling", requires="backend=crest|auto")
 
 
 def _build_conformers(ctx: JobContext, p: ConformersParams) -> list[str]:
     rec = ctx.structures[0]
-    if is_ts(rec):
-        raise WorkspaceError(f"{rec['name']} is a transition state: conformers are sampled for minima")
-    if p.backend == "crest" and shutil.which("crest") is None:
+    ts = is_ts(rec)
+    backend = ("crest" if ts else "rdkit") if p.backend == "auto" else p.backend
+    if ts and backend != "crest":
+        raise WorkspaceError(f"{rec['name']} is a transition state: sample it with CREST, which holds its reacting "
+                             "core (the bonds that form and break) fixed")
+    if backend == "crest" and shutil.which("crest") is None:
         raise WorkspaceError("CREST isn't installed here (no `crest` on PATH); use the RDKit sampler")
     seed = ctx.snapshot_structure(rec, "seed")
-    return ["conformers", str(seed), *ctx.common_flags(), *generic_flags(p), "--output", str(ctx.output_dir)]
+    return ["conformers", str(seed), *(["--ts"] if ts else []), *ctx.common_flags(), *generic_flags(p),
+            "--output", str(ctx.output_dir)]
 
 
 class ExpandParams(Params):
@@ -1404,7 +1411,8 @@ class SolventParams(Params):
     temperature: float = P(298.15, "Temperature (K)", "For half-lives and rates (298.15 K = 25 °C).",
                            cli="--temperature", gt=0)
     model: Literal["alpb", "gbsa", "cpcmx"] = P(
-        "alpb", "Solvent model", "GFN2-xTB's implicit models: ALPB (default), GBSA, CPCM-X.", cli="--model",
+        "alpb", "Solvent model", "GFN2-xTB's implicit models: ALPB (default), GBSA, CPCM-X (single points only: "
+        "xtb's CPCM-X has no gradient).", cli="--model",
         advanced=True)
 
 
@@ -1416,6 +1424,10 @@ def _build_solvent(ctx: JobContext, p: SolventParams) -> list[str]:
     text = ctx.ws.read_profile(ctx.profile) if ctx.profile else ""
     if "[solvation]" in (text or ""):
         raise WorkspaceError("this job already ran in solvent (its profile has a [solvation] table)")
+    if p.model == "cpcmx" and p.mode == "reoptimize":
+        from mepd.solvation import CPCMX_NO_GRADIENT
+
+        raise WorkspaceError(CPCMX_NO_GRADIENT)
     argv = ["solvent", ctx.source["output_dir"], *ctx.common_flags()]
     for key in dict.fromkeys(p.solvents):
         argv += ["--solvent", key]
@@ -1804,7 +1816,8 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
             "search over the minima reachable from the seed."},)),
     Operation(
         "conformers", "Conformers", "Sample this molecule's conformers with RDKit or CREST and minimize them; "
-        "they are added to the node, and its lowest-energy conformer represents it. (`mepd conformers`)",
+        "they are added to the node, and its lowest-energy conformer represents it. A transition state's are "
+        "sampled by CREST around its reacting core, held fixed, and each is TS-optimized. (`mepd conformers`)",
         "structure", EXPLORE, ConformersParams, _build_conformers,
         produces=["conformers of the node"], cli_path=("conformers",),
         cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output")),
