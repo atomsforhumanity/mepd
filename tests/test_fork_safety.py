@@ -127,6 +127,52 @@ def test_fork_map_retries_serially_when_a_worker_dies():
     assert "died without reporting an error" in proc.stdout + proc.stderr   # a warning: stderr without the CLI
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="workers die with their parent on Linux only")
+def test_a_broken_pool_leaves_no_orphans_and_the_process_exits(tmp_path):
+    """One worker killed (the OOM killer) while the others run pools of their
+    own, in a process with a spawn-context pool (whose resource tracker Python
+    waits for at exit): the others' workers used to be orphaned for good, and
+    the process hung after its last line until something killed it."""
+    import time
+
+    script = f"""
+        import os, signal, time, multiprocessing
+        from concurrent.futures import ProcessPoolExecutor
+        from mepd.cli_common import _fork_map
+
+        MARK = {str(tmp_path / "killed")!r}
+
+        def inner(x):
+            time.sleep(1)
+            return x
+
+        def outer(i):
+            if i == 1 and not os.path.exists(MARK):
+                open(MARK, "w").close()
+                time.sleep(0.3)
+                os.kill(os.getpid(), signal.SIGKILL)
+            return sum(_fork_map(inner, list(range(4)), 2))
+
+        if __name__ == "__main__":
+            spawned = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"))
+            assert list(spawned.map(abs, [-1])) == [1]
+            assert _fork_map(outer, list(range(3)), 3) == [6, 6, 6]
+            spawned.shutdown()
+            print("OK", flush=True)
+        """
+    fp = tmp_path / "broken_pool.py"
+    fp.write_text(textwrap.dedent(script))
+    try:
+        proc = subprocess.run([sys.executable, str(fp)], capture_output=True, text=True, timeout=60)
+    finally:
+        time.sleep(2)
+        orphans = subprocess.run(["pgrep", "-f", str(fp)], capture_output=True, text=True).stdout.split()
+        for pid in orphans:
+            subprocess.run(["kill", "-9", pid])
+    assert proc.returncode == 0 and "OK" in proc.stdout, proc.stderr
+    assert orphans == [], "workers outlived the broken pool"
+
+
 @darwin_only
 def test_fork_probe_says_yes_on_a_guarded_process():
     """The probe is consulted on every parallel stage, so a false alarm would

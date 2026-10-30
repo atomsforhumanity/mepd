@@ -729,6 +729,41 @@ def _completed_tree_dirs(completion_dir: Path) -> list[Path]:
 _FORK_JOB: dict = {}
 
 
+def _fork_worker_init(parent: int) -> None:
+    """Runs first in every worker `_fork_map` forks.
+
+    It dies with its parent (Linux): when a pool breaks (a worker OOM-killed),
+    CPython SIGTERMs the other workers, and the workers *they* had forked were
+    left orphaned, idle forever on a queue nobody feeds.
+
+    It also lets go of the parent's multiprocessing resource tracker, started by
+    any spawn-context pool (e.g. a GPU steering level's). Every forked process
+    holds that tracker's pipe, the tracker runs until the last holder closes
+    it, and Python waits for the tracker when it exits: one orphan kept a
+    finished explorer from exiting for 6 hours."""
+    import os
+
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            import signal
+
+            ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)   # PR_SET_PDEATHSIG
+        except Exception:
+            pass
+        if os.getppid() != parent:   # the parent died before prctl took effect
+            os._exit(1)
+    try:
+        from multiprocessing import resource_tracker
+
+        tracker = resource_tracker._resource_tracker
+        if tracker._fd is not None:
+            os.close(tracker._fd)
+            tracker._fd = tracker._pid = None   # one of this process's own if it needs one
+    except Exception:
+        pass
+
+
 def _fork_call(item):
     return _FORK_JOB["fn"](item)
 
@@ -817,6 +852,7 @@ def _fork_map(fn, items: list, workers: int) -> list:
         return [fn(x) for x in items]
 
     import multiprocessing
+    import os
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
@@ -825,6 +861,7 @@ def _fork_map(fn, items: list, workers: int) -> list:
         with ProcessPoolExecutor(
             max_workers=min(workers, len(items)),
             mp_context=multiprocessing.get_context("fork"),
+            initializer=_fork_worker_init, initargs=(os.getpid(),),
         ) as pool:
             return list(pool.map(_fork_call, items))
     except BrokenProcessPool:
@@ -965,6 +1002,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
     first: a free search slot never waits behind follow-up work)."""
     import collections
     import multiprocessing
+    import os
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from concurrent.futures.process import BrokenProcessPool
 
@@ -976,7 +1014,8 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
     _say(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
                f"{follow_up.during} worker process(es) beside the searches, {follow_up.after} once they are done.")
     try:
-        with ProcessPoolExecutor(max_workers=size, mp_context=multiprocessing.get_context("fork")) as pool:
+        with ProcessPoolExecutor(max_workers=size, mp_context=multiprocessing.get_context("fork"),
+                                 initializer=_fork_worker_init, initargs=(os.getpid(),)) as pool:
             while pairs or extra or running:
                 n_pairs = sum(kind == "pair" for kind, _ in running.values())
                 while pairs and n_pairs < workers:

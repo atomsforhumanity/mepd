@@ -522,6 +522,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
+  orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
+  parent's multiprocessing resource tracker. Together these hung a finished `discovery expand` with GPU
+  steering for 6 hours: Python waits for that tracker at exit, and the orphans kept it alive.
+
 - **Explorer**: labelling a steering level (which saved single points match it) no longer loads an ML
   potential's model; it did, putting CUDA in the explorer's own process, and every later parallel step ran
   serially. ML levels' labels now name their model. `discovery expand` sets `SELLA_DISABLE_GPU=1` unless set:
