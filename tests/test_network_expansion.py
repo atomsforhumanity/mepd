@@ -735,6 +735,24 @@ def test_a_higher_levels_single_points_steer_the_flux(tmp_path):
     assert again.calls == 0
 
 
+class _GPUSteerEngine(_SteerEngine):
+    """The same steering level, as a torch model would declare itself."""
+    holds_torch_model = True
+
+
+def test_a_gpu_steering_level_runs_in_a_process_of_its_own(tmp_path):
+    """Its single points are computed in one spawned process (this one never loads the model, so it can
+    still fork its workers), with the same result as in-process."""
+    seed = _node("C#N")
+    high = _GPUSteerEngine()
+    res = expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                         connect=_ts_file_connector(tmp_path, 60.0), steer_engine=high,
+                         steer_save_dir=tmp_path / "steer")
+    assert high.calls == 0                                   # nothing computed here
+    assert [r["sources"] for r in res.rounds][:2] == [[0], [1]] and res.kinetics.flux[1] > 0.01
+    assert len(list((tmp_path / "steer" / "single_points").glob("*.json"))) == 3
+
+
 class _Killed(BaseException):
     """A time limit's SIGTERM, as far as the explorer can tell: nothing of it catches it."""
 
@@ -821,3 +839,14 @@ def test_resuming_with_other_settings_is_refused(tmp_path):
                        kinetics={"threshold": 1e-6})
     with pytest.raises(ValueError, match="Nothing to resume"):
         _expand_resumable(seed, _LiveConnector(), tmp_path / "none.pkl", resume=True)
+
+
+def test_a_gpu_levels_label_names_its_model_without_loading_it():
+    """Saved single points are keyed by the level's label; building it must not load the model (CUDA in the
+    explorer's own process would stop it forking its workers), and two models must not share a label."""
+    from mepd.discovery.energy_refine import _level
+    from mepd.engines.fairchem import FAIRChemEngine
+
+    small, medium = FAIRChemEngine(model="uma-s-1p2"), FAIRChemEngine(model="uma-m-1p1")
+    assert "uma-s-1p2" in _level(small) and _level(small) != _level(medium)
+    assert small._predictor is None and medium._predictor is None

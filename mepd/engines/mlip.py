@@ -225,6 +225,9 @@ class MLIPEngine(ASEEngine):
     """A machine-learned potential run through ASE (see the module docstring
     for how to choose one)."""
 
+    # a torch model (CUDA once loaded): callers that fork workers run it in a process of its own
+    holds_torch_model = True
+
     def __init__(
         self,
         model: str | None = None,

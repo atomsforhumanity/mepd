@@ -953,6 +953,26 @@ def _propose_structures_at_once(frontier, result, generator, generator_options, 
 _STATE_VERSION = 1
 
 
+_STEER_ENGINES: tuple = ()
+
+
+def _steer_init(engine, steer_engine) -> None:
+    """The spawned process a GPU steering level runs in gets both engines once, so the model is loaded once."""
+    global _STEER_ENGINES
+    _STEER_ENGINES = (engine, steer_engine)
+
+
+def _steer_point(item) -> "dict | str":
+    """One steering single point (energy_refine._single_point) in that
+    process; a failure comes back as its message."""
+    from mepd.discovery.energy_refine import _single_point
+
+    try:
+        return _single_point(item, *_STEER_ENGINES)
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
 def _state_fingerprint(engine, steer_engine, steer, kin, access_cutoff_kcal, generator, generator_options,
                        products_file) -> dict:
     """The settings a saved exploration was made with that decide its network: a resume must use the same.
@@ -1107,6 +1127,7 @@ def expand_network(
     # higher-level single points that steer the kinetics (steer_engine): E_high - E_low per geometry (Hartree)
     steer_delta: dict = {}
     steer_saved = None
+    steer_pool = [None]   # the spawned process a GPU steering level runs in
     if steer_engine is not None:
         from mepd.discovery.energy_refine import _level, _Saved
 
@@ -1454,7 +1475,19 @@ def expand_network(
                 except Exception as exc:
                     return f"{type(exc).__name__}: {exc}"
 
-            for key, r in zip(todo, _fork_map(one, list(todo.values()), at_once)):
+            if getattr(steer_engine, "holds_torch_model", False):
+                # a GPU model: loaded once in a spawned process of its own, so this one never initialises CUDA
+                # (it could no longer fork its workers) and no worker loads a copy of the model
+                if steer_pool[0] is None:
+                    import multiprocessing
+                    from concurrent.futures import ProcessPoolExecutor
+
+                    steer_pool[0] = ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn"),
+                                                        initializer=_steer_init, initargs=(engine, steer_engine))
+                done = list(steer_pool[0].map(_steer_point, todo.values()))
+            else:
+                done = _fork_map(one, list(todo.values()), at_once)
+            for key, r in zip(todo, done):
                 if isinstance(r, str):
                     _emit(on_event, "warning", message=f"steering single point failed ({r}): explorer energy used")
                     steer_delta[key] = None
@@ -2054,4 +2087,6 @@ def expand_network(
             _kinetics_record([])
     _save(force=True)
     live.close()
+    if steer_pool[0] is not None:
+        steer_pool[0].shutdown()
     return result

@@ -38,7 +38,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   by default the `--refine-energies` profile): the kinetics that decide which species are expanded, and which
   steps get channel sampling, use G = G_explorer + (E_high - E_low) on every species and TS they treat. Each
   geometry is computed once and kept in `steer_single_points/`. The barrier cutoff's reach stays at the
-  explorer's level.
+  explorer's level. An ML potential on the GPU (`engine_name = "fairchem"`, e.g. UMA with `device = "cuda"`)
+  steers from one process of its own, which loads the model once, so the explorer's other workers still fork
+  (CUDA does not survive a fork). On the Suzuki oxidative-addition pilot (89 atoms), UMA steering plus DFT
+  refinement gives the same major product as DFT steering, with no DFT during the exploration.
 
 - **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
   expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
@@ -518,6 +521,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **Explorer**: labelling a steering level (which saved single points match it) no longer loads an ML
+  potential's model; it did, putting CUDA in the explorer's own process, and every later parallel step ran
+  serially. ML levels' labels now name their model. `discovery expand` sets `SELLA_DISABLE_GPU=1` unless set:
+  Sella's GPU eigensolves (>= 200 coordinates) had the same effect.
 
 - **Channels**: mechanisms whose chosen atom numbering is the input's own share one path search; run once
   each, the copies wrote the same pair folder at once and failed (`OSError: Directory not empty`).

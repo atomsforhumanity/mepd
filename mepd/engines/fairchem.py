@@ -66,6 +66,8 @@ class FAIRChemEngine(ASEEngine):
 
     # mepd's names for fairchem InferenceSettings; anything else goes to fairchem as is.
     COMPILED = "compile"
+    # a torch model (CUDA once loaded): callers that fork workers run it in a process of its own
+    holds_torch_model = True
 
     def __init__(
         self,

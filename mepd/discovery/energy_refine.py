@@ -112,11 +112,24 @@ def _level(engine) -> str:
     threads, memory or paths): a saved result is reused only at the same level."""
     import dataclasses
 
-    skip = {"threads", "memory", "maxcore", "python", "executable", "timeout", "keep_workdirs"}
+    import inspect
+
+    skip = {"threads", "memory", "maxcore", "python", "executable", "timeout", "keep_workdirs",
+            "disable_molecular_graphs"}
+    simple = (str, int, float, bool, tuple, list, dict)
+
+    def value(name):
+        # read without running a property: an MLIP engine's `calculator` loads the model (CUDA in this process)
+        if name in vars(engine):
+            return vars(engine)[name]
+        return None if isinstance(inspect.getattr_static(engine, name, None), property) else getattr(engine, name, None)
+
     if dataclasses.is_dataclass(engine):
-        fields = {f.name: getattr(engine, f.name, None) for f in dataclasses.fields(engine)}
+        fields = {f.name: value(f.name) for f in dataclasses.fields(engine)}
+        # settings an engine keeps outside its dataclass fields (an MLIP's model name)
+        fields.update({k: v for k, v in vars(engine).items() if k not in fields and isinstance(v, simple)})
     else:
-        fields = {k: v for k, v in vars(engine).items() if isinstance(v, (str, int, float, bool, tuple, list, dict))}
+        fields = {k: v for k, v in vars(engine).items() if isinstance(v, simple)}
     fields = {k: v for k, v in fields.items() if k not in skip and not k.startswith("_")}
     return f"{type(engine).__name__}{sorted((k, repr(v)) for k, v in fields.items())}"
 

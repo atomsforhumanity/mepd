@@ -504,6 +504,10 @@ def expand(
     from mepd.network_aware import resolve_cutoff
 
     num = lambda v, default=None: float(v) if isinstance(v, (int, float)) else default  # OptionInfo when called directly
+    # Sella moves its large eigensolves to the GPU whenever torch sees one (dimension >= 200: ~70+ atoms). In this
+    # process that initialises CUDA, after which it can't fork its workers and every path search runs one at a
+    # time (a 48-core pod at ~3 cores). Off unless the user set it; a GPU steering level has a process of its own.
+    os.environ.setdefault("SELLA_DISABLE_GPU", "1")
     steer = steer.strip().lower()
     if steer not in ("auto", "window", "flux", "access"):
         raise typer.BadParameter("--steer must be auto, window, flux or access.")
