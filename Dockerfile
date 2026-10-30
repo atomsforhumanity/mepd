@@ -15,6 +15,9 @@
 #   conda     micromamba envs from conda-forge: CREST/xtb/packmol, Psi4, MKL
 #   gsm       molecularGSM compiled with its ASE backend (not on conda-forge)
 #   gxtb      the g-xTB release build, checksum-verified
+#   xtb       the official xtb 6.7.1 release, checksum-verified: mepd's GFN-xTB
+#             (solvation). The g-xTB build's CPCM-X gives other values (HCN in
+#             hexane +0.5 vs -2.2 kcal/mol) and conda-forge's ignores the solvent.
 #   pybase    uv and its managed Pythons (3.12 for mepd, 3.11 for AiZynthFinder)
 #   retro     retrosynthesis data (deploy/docker/retro-data.txt, from our mirror
 #             or Zenodo/figshare) and AiZynthFinder's env. Depends only on
@@ -106,6 +109,18 @@ RUN curl -fsSL -o /tmp/gxtb.tar.xz "$GXTB_URL" \
  && echo "$GXTB_SHA256  /tmp/gxtb.tar.xz" | sha256sum -c - \
  && mkdir /opt/gxtb && tar -xJf /tmp/gxtb.tar.xz -C /opt/gxtb --strip-components=1 \
  && rm /tmp/gxtb.tar.xz && test -x /opt/gxtb/bin/xtb
+
+# ----------------------------------------------------------------------- xtb
+FROM ${UBUNTU_IMAGE} AS xtb
+ARG XTB_URL=https://github.com/grimme-lab/xtb/releases/download/v6.7.1/xtb-6.7.1-linux-x86_64.tar.xz
+ARG XTB_SHA256=62a8d18778286e815292ee53d76ce447daf460a4dea3782c0f25cbac7019b5df
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/xtb.tar.xz "$XTB_URL" \
+ && echo "$XTB_SHA256  /tmp/xtb.tar.xz" | sha256sum -c - \
+ && mkdir /opt/xtb && tar -xJf /tmp/xtb.tar.xz -C /opt/xtb --strip-components=1 \
+ && rm /tmp/xtb.tar.xz && test -x /opt/xtb/bin/xtb
 
 # -------------------------------------------------------------------- pybase
 FROM ${UBUNTU_IMAGE} AS pybase
@@ -257,6 +272,7 @@ COPY --from=conda /opt/tools /opt/tools
 COPY --from=conda /opt/psi4 /opt/psi4
 COPY --from=gsm /opt/gsm /opt/gsm
 COPY --from=gxtb /opt/gxtb /opt/gxtb
+COPY --from=xtb /opt/xtb /opt/xtb
 COPY --from=retro --chown=mepd:mepd /opt/mepd/retro /opt/mepd/retro
 # Only the indexes from `stock` (newer than their sources, so mepd uses them).
 COPY --from=stock --chown=mepd:mepd /opt/mepd/retro/zinc_stock_inchikeys.u64.npy \
@@ -272,7 +288,7 @@ COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
 ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/home/mepd \
     GXTB_EXECUTABLE=/opt/gxtb/bin/xtb \
-    XTB_EXECUTABLE=/opt/gxtb/bin/xtb \
+    XTB_EXECUTABLE=/opt/xtb/bin/xtb \
     GSM_EXECUTABLE=/opt/gsm/bin/gsm \
     MEPD_PSI4_PYTHON=/opt/psi4/bin/python \
     MEPD_RETRO_DATA=/opt/mepd/retro \

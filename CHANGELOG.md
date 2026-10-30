@@ -579,9 +579,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
-- **The Docker image runs GFN-xTB with the official xtb 6.7.1 build** (`XTB_EXECUTABLE=/opt/gxtb/bin/xtb`, the
-  build g-xTB already used), not conda-forge's: in the image, CPCM-X still gave one energy for every solvent
-  (the test below failed in CI, so nothing deployed since 2026-10-28). CREST keeps conda-forge's xtb.
+- **The Docker image runs GFN-xTB with the official xtb 6.7.1 release** (`XTB_EXECUTABLE=/opt/xtb/bin/xtb`,
+  checksum-verified), not conda-forge's, whose CPCM-X gave one energy for every solvent (the test below failed
+  in CI, so nothing deployed since 2026-10-28). Not the g-xTB build either: its CPCM-X gives other values
+  (HCN in hexane +0.5 kcal/mol, the release -2.2). CREST keeps conda-forge's xtb.
 - **CPCM-X solvation energies were the same for every solvent.** With `--cpcmx`, xtb's `energy` file holds the
   conductor-like SCF energy CPCM-X starts from (on HCN: -7.0 kcal/mol in water, THF and hexane alike); mepd now
   reads the printed CPCM-X total (water -5.65, hexane -4.12, as xtb's own dG_solv). xtb also needs CPCM-X's
