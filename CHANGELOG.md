@@ -309,6 +309,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **mepd.afh.org allows 300 atoms per structure** (`MEPD_DEMO_MAX_ATOMS`, was 150; also the QM region's
+  cap). To be lowered again if larger jobs crowd the node.
 - **`mepd qmmm protein-build` writes an FSM-TS profile in a caged environment** (`path_min_method = "FSM-TS"`,
   `qmmm_environment = "cage"`, NEB fallback), not NEB with the shell relaxed. In a relaxed shell the TS
   search can end on an environment saddle (ketosteroid isomerase: a Tyr57 OH rotation, both IRC ends the

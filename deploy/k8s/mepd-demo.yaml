@@ -74,7 +74,7 @@ spec:
             # small shared demo). Tables are JSON merged into the defaults; a
             # name the table does not have stops the server at start-up.
             - name: MEPD_DEMO_MAX_ATOMS            # per structure (also the QM region)
-              value: "150"
+              value: "300"
             - name: MEPD_DEMO_JOB_TIMEOUT_S        # 4 h per calculation
               value: "14400"
             - name: MEPD_DEMO_OP_TIMEOUT_S
