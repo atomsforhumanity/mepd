@@ -272,6 +272,7 @@ COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
 ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/home/mepd \
     GXTB_EXECUTABLE=/opt/gxtb/bin/xtb \
+    XTB_EXECUTABLE=/opt/gxtb/bin/xtb \
     GSM_EXECUTABLE=/opt/gsm/bin/gsm \
     MEPD_PSI4_PYTHON=/opt/psi4/bin/python \
     MEPD_RETRO_DATA=/opt/mepd/retro \
