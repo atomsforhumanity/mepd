@@ -166,7 +166,7 @@ def _horizontal(run_inputs, output: Path, workers: int, fast_ts_steps: int = 300
     return HorizontalConnector(run_inputs, output, workers, fast_ts_steps=fast_ts_steps, say=typer.echo)
 
 
-def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
+def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max_depth: int = 6):
     """`refine` for the explorer: `mepd channels` (conformers of both ends, `explore_mechanisms` atom
     mappings, a TS + IRC per distinct path) between the two species of each step. The steps' searches run
     at once, `workers` shared between them (one step's slowest path search would otherwise idle the rest).
@@ -176,7 +176,11 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
     `refine.prefetch(items)` starts sampling steps early, in a background process at a lower priority
     (the explorer calls it while it verifies the round's steps, whose tail leaves most cores idle);
     `refine` then reads what it finished, waits for what it is still sampling, and samples a step again
-    if its species changed in between."""
+    if its species changed in between.
+
+    `max_depth` (0 = none; a profile's own recursive_split_max_depth wins): how deep a step's path searches
+    split. A piece left unsplit at that depth comes back under "deferred" ({"start", "end"}): the explorer
+    searches it only if the kinetics put material at one of its ends."""
     import copy
     import multiprocessing
     import time
@@ -204,6 +208,7 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
             h.update(np.round(np.asarray(n.coords, dtype=float), 6).tobytes())
             h.update(f"{tuple(n.structure.symbols)}{n.structure.charge}{n.structure.multiplicity}".encode())
         h.update(repr(sorted(options.items())).encode())
+        h.update(f"depth={max_depth}".encode())
         return h.hexdigest()
 
     def widths(n: int, total: int) -> tuple[int, int]:
@@ -263,6 +268,11 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
         profile = copy.deepcopy(run_inputs)
         if getattr(profile.engine, "n_parallel", None) is not None:
             profile.engine.n_parallel = _CoreShare(int(workers), background_searches if background else searches)
+        path_min = getattr(profile, "path_min_inputs", None)
+        if max_depth and path_min is not None and getattr(path_min, "recursive_split_max_depth", None) is None:
+            # some searches recursed 39 levels through bands peaking hundreds of kcal/mol up and held a round
+            # for an hour; what lies deeper is left to the kinetics ("deferred")
+            setattr(path_min, "recursive_split_max_depth", int(max_depth))
         try:
             # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
             # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
@@ -274,7 +284,8 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
             typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
                        "it keeps its single TS.")
             return None
-        rec = {"direct": [], "other": [], "conformers": [], "key": key}
+        rec = {"direct": [], "other": [], "conformers": [], "key": key, "deferred": _deferred_pieces(
+            folder, int(a.structure.charge), int(a.structure.multiplicity))}
         for kind, chans in (("direct", res.direct), ("other", res.multistep + res.offtarget)):
             for ch in chans:
                 for st in ch.steps:
@@ -291,7 +302,8 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
             if with_e:
                 rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
         typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
-                   f"{len(res.offtarget)} off-target exit(s).")
+                   f"{len(res.offtarget)} off-target exit(s), {len(rec['deferred'])} piece(s) left at the "
+                   "depth limit.")
         tmp = done_fp.with_name(done_fp.name + ".tmp")
         folder.mkdir(parents=True, exist_ok=True)
         tmp.write_bytes(pickle.dumps(rec))
@@ -358,7 +370,29 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
     return refine
 
 
-BACKGROUND_BRANCHES = 4   # branch processes per path search the channels background runs (see `run`)
+BACKGROUND_BRANCHES = 4
+
+
+def _deferred_pieces(folder: Path, charge: int = 0, multiplicity: int = 1) -> list:
+    """The pieces the path searches under a channels `folder` left unsplit at their depth limit, as
+    {"start", "end"} nodes (each piece's band ends)."""
+    from mepd.nodes.node import StructureNode
+    from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
+
+    out = []
+    for tree_json in sorted(Path(folder).glob("pairs/*/tree/tree.json")):
+        try:
+            nodes = json.loads(tree_json.read_text()).get("nodes", [])
+        except (OSError, ValueError):
+            continue
+        for n in nodes:
+            fp = tree_json.parent / f"node_{n['index']}.xyz"
+            if n.get("leaf_status") != "max_depth_reached" or not fp.exists():
+                continue
+            frames = read_multiple_structure_from_file(fp, charge=charge, spinmult=multiplicity)
+            if len(frames) >= 2:
+                out.append({"start": StructureNode(structure=frames[0]), "end": StructureNode(structure=frames[-1])})
+    return out   # branch processes per path search the channels background runs (see `run`)
 
 
 def _alive(pid: int) -> bool:
@@ -474,6 +508,11 @@ def expand(
     channels_option: List[str] = typer.Option(
         [], "--channels-option", help="key=value for the channel searches (`mepd channels` option names with "
                                       "underscores, e.g. n_conformers=20). Repeatable."),
+    channels_max_depth: int = typer.Option(
+        6, "--channels-max-depth",
+        help="How deep the channel searches split a path (0 = no limit; a profile's recursive_split_max_depth "
+             "wins). A piece left unsplit there is searched later by the connector, only if the kinetics put "
+             "material at one of its ends."),
     standard_state: str = typer.Option("1M", "--standard-state",
                                        help="With --kinetics-energy free: '1M' (solution) or '1atm' (gas)."),
     mirror_images: bool = typer.Option(
@@ -781,7 +820,8 @@ def expand(
                 checkpoint=checkpoint,
                 proposal_fmax=float(proposal_fmax) if isinstance(proposal_fmax, (int, float)) else 0.05,
                 refine=(_channels_refiner(run_inputs, output, workers,
-                                          _parse_options(channels_option) if isinstance(channels_option, list) else {})
+                                          _parse_options(channels_option) if isinstance(channels_option, list) else {},
+                                          int(channels_max_depth) if isinstance(channels_max_depth, int) else 6)
                         if steer == "access" and str(refine_mode).lower() == "channels" else None),
                 kinetics={"temperature": temperature, "time_s": time_s, "threshold": flux_threshold,
                           "free_energy": str(kinetics_energy).lower() == "free" if isinstance(kinetics_energy, str)

@@ -1789,7 +1789,27 @@ def expand_network(
                             "ts": st.files.get("ts")} for st in before],
                 "after": [{"label": st.label, "ts_energy": st.ts_energy} for st in after]})
         result.rounds[-1].setdefault("channels_sampled", []).extend([a, b] for _, a, b in todo)
+        _search_deferred([d for out in outs if out for d in out.get("deferred", [])])
         return len(todo)
+
+    def _search_deferred(pieces: list) -> None:
+        """Pieces the channel searches left unsplit at their depth limit ({"start", "end"}): searched by the
+        connector, as pairs of their own, only where the kinetics now put material at one of their ends --
+        the test the connector's own waiting pieces get (_piece_relevant)."""
+        if not pieces or connect is None:
+            return
+        hot = [p for p in pieces if _piece_relevant((p["start"], p["end"]), final=True)]
+        _minimize_ends([p[k] for p in hot for k in ("start", "end")])
+        pairs = []
+        for p in hot:
+            a, _ = _species_for(p["start"])
+            b, _ = _species_for(p["end"])
+            if min(a, b) < 0 or a == b or (a, b) in connected or (b, a) in connected or (a, b) in pairs:
+                continue
+            pairs.append((a, b))
+        result.rounds[-1].setdefault("deferred", []).append({"pieces": len(pieces), "hot": len(hot),
+                                                             "searched": [list(p) for p in pairs]})
+        _connect(pairs)
 
     def _steer_by_access(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.network_aware import accessibility, log_event

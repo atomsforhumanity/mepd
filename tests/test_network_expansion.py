@@ -676,9 +676,11 @@ def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypa
         raise RuntimeError("stop")
 
     monkeypatch.setattr(mepd, "channels", fake)
-    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    run_inputs = SimpleNamespace(engine=SimpleNamespace(), path_min_inputs=SimpleNamespace())
+    monkeypatch.setattr(mepd, "channels", lambda a, b, profile=None, **kw: (seen.update(kw, profile=profile), fake(a, b)))
     _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 0
+    assert seen["profile"].path_min_inputs.recursive_split_max_depth == 6   # deeper pieces: deferred
     _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 3
 
@@ -888,3 +890,25 @@ def test_a_gpu_levels_label_names_its_model_without_loading_it():
     small, medium = FAIRChemEngine(model="uma-s-1p2"), FAIRChemEngine(model="uma-m-1p1")
     assert "uma-s-1p2" in _level(small) and _level(small) != _level(medium)
     assert small._predictor is None and medium._predictor is None
+
+
+def test_pieces_left_at_the_channel_depth_limit_are_searched_only_where_material_reaches_them():
+    """A piece a step's channel searches left unsplit at their depth limit becomes a connector pair of its
+    own when the kinetics put material at one of its ends (here: the seed); one between two species nobody
+    reaches is not searched."""
+    hot_end, cold = _node("[CH3].[OH]"), (_node("[CH2]O.[H]"), _node("[CH]O.[H][H]"))
+
+    def refine(items):
+        return [{"direct": [], "other": [], "conformers": [],
+                 "deferred": [{"start": a, "end": hot_end}, {"start": cold[0], "end": cold[1]}]}
+                for a, b, label in items]
+
+    connect = _LiveConnector()
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, refine=refine, kinetics={"threshold": 1e-6})
+    smiles = [s.smiles for s in res.species]
+    deferred = [d for r in res.rounds for d in r.get("deferred", [])]
+    assert deferred and all(d["hot"] < d["pieces"] for d in deferred)
+    searched = {tuple(p) for d in deferred for p in d["searched"]}
+    assert searched == {(0, len(smiles) - 1)}     # the hot piece's far end joined the network as a species
+    assert set(map(tuple, connect.calls[-1])) <= searched | {p[::-1] for p in searched}
