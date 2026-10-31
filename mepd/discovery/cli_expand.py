@@ -166,14 +166,15 @@ def _horizontal(run_inputs, output: Path, workers: int, fast_ts_steps: int = 300
     return HorizontalConnector(run_inputs, output, workers, fast_ts_steps=fast_ts_steps, say=typer.echo)
 
 
-def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max_depth: int = 6):
+def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max_depth: int = 6,
+                      prefetch_steps: bool = False):
     """`refine` for the explorer: `mepd channels` (conformers of both ends, `explore_mechanisms` atom
     mappings, a TS + IRC per distinct path) between the two species of each step. The steps' searches run
     at once, `workers` shared between them (one step's slowest path search would otherwise idle the rest).
     Per step: {"direct": [...], "other": [...], "conformers": [...]} (records like connect's), or None if
     the search failed.
 
-    `refine.prefetch(items)` starts sampling steps early, in a background process at a lower priority
+    `prefetch_steps`: `refine.prefetch(items)` starts sampling steps early, in a background process at a lower priority
     (the explorer calls it while it verifies the round's steps, whose tail leaves most cores idle);
     `refine` then reads what it finished, waits for what it is still sampling, and samples a step again
     if its species changed in between.
@@ -366,7 +367,11 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max
         finally:
             stop_background(end=True)
 
-    refine.prefetch = prefetch
+    if prefetch_steps:
+        # off by default: the steps it guesses from the kinetics before the IRC checks are mostly not the
+        # ones asked for after them (Suzuki run 30: 114 sampled, 41 asked for), and it took two thirds of
+        # the cores while the verification waited for them
+        refine.prefetch = prefetch
     return refine
 
 
@@ -508,6 +513,10 @@ def expand(
     channels_option: List[str] = typer.Option(
         [], "--channels-option", help="key=value for the channel searches (`mepd channels` option names with "
                                       "underscores, e.g. n_conformers=20). Repeatable."),
+    channels_prefetch: bool = typer.Option(
+        False, "--channels-prefetch/--no-channels-prefetch",
+        help="Start sampling the channels of the steps the kinetics need already while their IRCs are checked "
+             "(in the background, half the cores). Off: the IRC checks change which steps are needed."),
     channels_max_depth: int = typer.Option(
         6, "--channels-max-depth",
         help="How deep the channel searches split a path (0 = no limit; a profile's recursive_split_max_depth "
@@ -821,7 +830,8 @@ def expand(
                 proposal_fmax=float(proposal_fmax) if isinstance(proposal_fmax, (int, float)) else 0.05,
                 refine=(_channels_refiner(run_inputs, output, workers,
                                           _parse_options(channels_option) if isinstance(channels_option, list) else {},
-                                          int(channels_max_depth) if isinstance(channels_max_depth, int) else 6)
+                                          int(channels_max_depth) if isinstance(channels_max_depth, int) else 6,
+                                          channels_prefetch is True)
                         if steer == "access" and str(refine_mode).lower() == "channels" else None),
                 kinetics={"temperature": temperature, "time_s": time_s, "threshold": flux_threshold,
                           "free_energy": str(kinetics_energy).lower() == "free" if isinstance(kinetics_energy, str)

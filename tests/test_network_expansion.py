@@ -707,7 +707,7 @@ def test_prefetched_channel_steps_are_sampled_once_and_again_if_their_species_ch
     monkeypatch.setattr(mepd, "channels", fake)
     run_inputs = SimpleNamespace(engine=SimpleNamespace())
     a, b, c = _node("CO"), _node("C=O.[H][H]"), _node("CCO")
-    refine = _channels_refiner(run_inputs, tmp_path, 2, {})
+    refine = _channels_refiner(run_inputs, tmp_path, 2, {}, prefetch_steps=True)
     refine.prefetch([(a, b, "0_1"), (b, c, "1_2")])
     time.sleep(0.5)   # the background has started on step 0_1
     outs = refine([(a, b, "0_1"), (b, c, "1_2"), (a, c, "0_2")])
