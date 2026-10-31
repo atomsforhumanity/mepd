@@ -42,6 +42,7 @@ from mepd.pathminimizers.fneb import FreezingNEB
 from mepd.pathminimizers.geometric_neb import GeometricNEB
 from mepd.pathminimizers.nebdlf import DLFindNEB
 from mepd.inputs import DEFAULT_PATH_METHOD, RunInputs
+from mepd.cpus import available_cpus
 from mepd.progress import (
     get_progress_printer,
     preserve_chain_snapshot,
@@ -1149,7 +1150,7 @@ class MSMEP:
             self._set_attempted_pairs_payload(attempted_pairs_payload)
         resolved_max_depth = self._resolve_recursive_split_max_depth()
         if max_workers is None:
-            bounded_workers = min(4, max(1, int(os.cpu_count() or 1)))
+            bounded_workers = min(4, available_cpus())
         else:
             # Honor explicit user-requested parallelism. `os.cpu_count()` can
             # under-report available capacity in constrained launch contexts.
@@ -1190,7 +1191,7 @@ class MSMEP:
         if getattr(self.inputs.engine, "n_parallel", None) == 0:
             branch_inputs = _clone_run_inputs_for_worker(self.inputs)
             branch_inputs.engine.n_parallel = max(
-                1, int(os.cpu_count() or 1) // bounded_workers
+                1, available_cpus() // bounded_workers
             )
 
         def _submit(executor: concurrent.futures.Executor, job: SimpleNamespace) -> None:

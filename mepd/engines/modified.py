@@ -20,6 +20,7 @@ from mepd.engines.engine import Engine
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import update_node_cache
+from mepd.cpus import available_cpus
 
 
 def fresh(node: StructureNode) -> StructureNode:
@@ -106,7 +107,7 @@ class ModifiedEngine(Engine):
 
         # The base engine's calls-at-once setting (0: all cores); each
         # optimization here also runs the term's own calculations.
-        width = int(getattr(self.base, "n_parallel", 0) or 0) or (os.cpu_count() or 1)
+        width = int(getattr(self.base, "n_parallel", 0) or 0) or available_cpus()
         width = max(1, min(len(nodes), width))
         with ThreadPoolExecutor(max_workers=width) as pool:
             return list(pool.map(lambda nd: self.compute_geometry_optimization(nd, keywords), nodes))

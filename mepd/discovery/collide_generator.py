@@ -24,6 +24,7 @@ from typing import Optional
 
 import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
+from mepd.cpus import available_cpus
 
 BOHR = 0.529177210903            # Angstrom
 KCAL = 627.509474
@@ -297,7 +298,7 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
     # 0 (default): every move once, at most AUTO_MAX (small molecules: all of them, a fraction of a second each)
     n = int(n_collisions) or min(len(order), AUTO_MAX)
     jobs = [(order[m % len(order)], int(seed) + m) for m in range(max(n, 1))]
-    width = max(1, int(parallel) or os.cpu_count() or 1)
+    width = max(1, int(parallel) or available_cpus())
     args = [(symbols, xyz, int(structure.charge), int(structure.multiplicity), (mv[0], mv[1]), float(temperature),
              float(pull_fs), float(relax_fs), float(k), s, mv[2], mv[3] if len(mv) > 3 else None) for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
@@ -325,10 +326,10 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
 
 
 def _run_in_processes(args: list, width: int) -> list:
-    """`_collide(*a)` for each of `args`, in `width` fresh Python processes
-    (started, not forked: the explorer calls generators from threads, and a
-    fork of a threaded process can deadlock). Each process gets its share as
-    JSON on stdin and answers in JSON."""
+    """`_collide(*a)` for each of `args`, in fresh Python processes, `width`
+    at a time (started, not forked: the explorer calls generators from
+    threads, and a fork of a threaded process can deadlock). Each process
+    gets its collision as JSON on stdin and answers in JSON."""
     import json
     import subprocess
     import sys
@@ -336,7 +337,10 @@ def _run_in_processes(args: list, width: int) -> list:
 
     if width <= 1:
         return [_collide(*a) for a in args]
-    chunks = [list(range(k, len(args), width)) for k in range(width)]
+    # one collision per process, `width` at a time: fixed shares of ~10 left a round's proposals waiting on the
+    # process with the slowest collisions while the others' cores idled (a process starts in ~0.1 s, a
+    # collision takes ~25 s)
+    chunks = [[i] for i in range(len(args))]
 
     def run(idx):
         payload = [[a[0], np.asarray(a[1]).tolist(), *a[2:4], list(a[4]), *a[5:10],

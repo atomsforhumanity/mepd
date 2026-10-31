@@ -39,12 +39,53 @@ from pathlib import Path
 from typing import Optional
 
 from mepd.network_aware import log_event
+from mepd.cpus import available_cpus
 
 _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
 
 
 def _run_job(method: str, args):
     return getattr(_CONNECTOR["self"], method)(*args)
+
+
+class _CoreShare:
+    """An engine's `n_parallel` that follows the queue: the run's cores over the jobs running right now
+    (read from shared memory the parent updates), so a job left on its own late in a stage -- a deep path
+    search, say -- spreads its images over the cores the finished jobs left idle instead of using one."""
+
+    def __init__(self, total: int, running):
+        self.total, self.running = int(total), running
+
+    def __int__(self) -> int:
+        return max(1, self.total // max(1, int(self.running.value)))
+
+    __index__ = __int__
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __eq__(self, other): return int(self) == other
+    def __hash__(self): return id(self)
+    def __lt__(self, other): return int(self) < other
+    def __le__(self, other): return int(self) <= other
+    def __gt__(self, other): return int(self) > other
+    def __ge__(self, other): return int(self) >= other
+    def __floordiv__(self, other): return int(self) // other
+    def __rfloordiv__(self, other): return other // int(self)
+    def __mul__(self, other): return int(self) * other
+    __rmul__ = __mul__
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+    def __reduce__(self):   # pickled (a spawned process): its value now
+        return int, (int(self),)
+
+    def __repr__(self) -> str:
+        return f"<{int(self)} of {self.total} cores>"
 
 
 class HorizontalConnector:
@@ -67,11 +108,17 @@ class HorizontalConnector:
         self.run_inputs = run_inputs
         # One engine process per job: the pool is the parallelism.
         self.job_inputs = _clone_run_inputs_for_worker(run_inputs)
+        # jobs running now, in memory the forked workers share: their engines size their parallelism by it
+        import multiprocessing
+
+        self._running = multiprocessing.get_context("fork").RawValue("i", 0)
         if hasattr(self.job_inputs.engine, "n_parallel"):
-            # the run's own budget (os.cpu_count() is the node's, not a container's limit)
-            budget = int(getattr(run_inputs.engine, "n_parallel", 0) or 0) or (os.cpu_count() or 1)
-            self.job_inputs.engine.n_parallel = max(1, budget // self.workers)
+            # the run's own budget
+            budget = int(getattr(run_inputs.engine, "n_parallel", 0) or 0) or available_cpus()
+            self.job_inputs.engine.n_parallel = _CoreShare(budget, self._running)
         self._lock = threading.Lock()
+        # optimizer keywords for a leaf TS's piece ends, minimized by its job (None: left to the caller)
+        self.end_keywords: Optional[dict] = None
 
     # --- jobs -------------------------------------------------------------
     def _write_ts(self, ts, label: str) -> str:
@@ -104,7 +151,20 @@ class HorizontalConnector:
 
         ts = mepd.find_ts(chain.get_ts_node(), self.job_inputs.engine)
         self._write_ts(ts, label)
-        return ts
+        if self.end_keywords is None:
+            return ts
+        # The piece's two ends minimized as the caller would (its `end_keywords`), here in the worker: done
+        # by the caller as each TS comes in, they held up the queue (no job starts while it works).
+        from mepd.nodes.node import StructureNode
+
+        ends = []
+        for node in (chain[0], chain[-1]):
+            try:
+                ends.append(self.job_inputs.engine.compute_geometry_optimization(
+                    StructureNode(structure=node.structure), keywords=dict(self.end_keywords))[-1])
+            except Exception:
+                return ts
+        return ("with_ends", ts, ends)
 
     def _path_peak(self, chain, label: str):
         """The highest image of a finished elementary piece (written as
@@ -140,8 +200,11 @@ class HorizontalConnector:
         unsafe = _unsafe_to_fork() if self.workers > 1 else "one worker"
         if unsafe:
             return concurrent.futures.ThreadPoolExecutor(max_workers=self.workers)
+        from mepd.cli_common import _fork_worker_init
+
         return concurrent.futures.ProcessPoolExecutor(max_workers=self.workers,
-                                                      mp_context=multiprocessing.get_context("fork"))
+                                                      mp_context=multiprocessing.get_context("fork"),
+                                                      initializer=_fork_worker_init, initargs=(os.getpid(),))
 
     def _broken(self, pool):
         """A fresh pool in place of one a dead worker broke."""
@@ -204,6 +267,7 @@ class HorizontalConnector:
                     pool = self._broken(pool)
                     fut = pool.submit(_run_job, method, args)
                 running[fut] = (kind, pair, args)
+                self._running.value = len(running)
 
             def queue(kind, pair, *args):
                 outstanding[pair] = outstanding.get(pair, 0) + 1
@@ -271,6 +335,7 @@ class HorizontalConnector:
                 done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
                 for fut in done:
                     kind, pair, args = running.pop(fut)
+                    self._running.value = len(running)
                     rerun = False
                     try:
                         i, j = pair
@@ -335,8 +400,13 @@ class HorizontalConnector:
                                                       "ts_kind": "path_peak"}})
                                 continue
                             counts["leaf_ts_ok"] += 1
+                            ends = None
+                            if isinstance(out, tuple) and out and out[0] == "with_ends":
+                                _, out, ends = out
                             rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
                                    "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
+                            if ends is not None:
+                                rec["ends"] = ends
                             # The TS search can land on a saddle of some other motion (a rotation next to a
                             # barrierless association): if its IRC says so, the piece falls back to this.
                             peak = self._path_peak(chain, f"{label}_peak")

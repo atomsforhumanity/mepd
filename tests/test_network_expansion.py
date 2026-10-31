@@ -683,6 +683,44 @@ def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypa
     assert seen["pairs_per_mechanism"] == 3
 
 
+def test_prefetched_channel_steps_are_sampled_once_and_again_if_their_species_changed(monkeypatch, tmp_path):
+    """`refine.prefetch` samples steps in the background while the explorer verifies; `refine` then reads
+    them, waits for one still running, samples the rest itself -- each step once -- and samples a step
+    again when its species' structures are not the ones it was sampled for."""
+    import os
+    import time
+
+    import mepd
+    from mepd.discovery.cli_expand import _channels_refiner
+
+    calls = tmp_path / "calls"
+    calls.mkdir()
+
+    def fake(a, b, output, **kw):
+        label = output.name
+        (calls / f"{label}-{os.getpid()}-{time.time()}").touch()
+        time.sleep(1.0 if label == "pair_0_1" else 0.2)
+        return SimpleNamespace(direct=[], multistep=[], offtarget=[], start_conformers=[a], end_conformers=[b])
+
+    monkeypatch.setattr(mepd, "channels", fake)
+    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    a, b, c = _node("CO"), _node("C=O.[H][H]"), _node("CCO")
+    refine = _channels_refiner(run_inputs, tmp_path, 2, {})
+    refine.prefetch([(a, b, "0_1"), (b, c, "1_2")])
+    time.sleep(0.5)   # the background has started on step 0_1
+    outs = refine([(a, b, "0_1"), (b, c, "1_2"), (a, c, "0_2")])
+    assert all(out is not None for out in outs)
+    sampled = sorted(f.name.split("-")[0] for f in calls.iterdir())
+    assert sampled == ["pair_0_1", "pair_0_2", "pair_1_2"]
+    assert not list(tmp_path.glob("channels/*/explorer_prefetching"))
+
+    moved = a.update_coords(np.asarray(a.coords) + 0.05)
+    refine([(moved, b, "0_1"), (b, c, "1_2")])
+    sampled = sorted(f.name.split("-")[0] for f in calls.iterdir())
+    assert sampled == ["pair_0_1", "pair_0_1", "pair_0_2", "pair_1_2"]
+    assert (tmp_path / "channels" / "pair_0_1.stale-0").is_dir()
+
+
 class _SteerEngine(_GraphEngine):
     """A 'higher level': like _GraphEngine, but structures pushed far along
     +x (the TSs of _ts_file_connector) lie 55 kcal/mol lower."""

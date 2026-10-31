@@ -11,6 +11,7 @@ import typer
 
 from mepd.chain import Chain
 from mepd.discovery.cli import _progress, _validation_kwargs, discovery_app
+from mepd.cpus import available_cpus
 
 
 def _generator_options(generator: str, values: List[str], output: Path) -> dict:
@@ -70,7 +71,7 @@ def _ts_connector(run_inputs, output: Path, workers: int):
                 continue
             try:
                 tree = TreeNode.read_from_disk(tree_dir, chain_parameters=ChainInputs(), charge=charge,
-                                               multiplicity=mult)
+                                               multiplicity=mult, ends_only=True)
             except Exception as exc:
                 typer.echo(f"Could not read the path search for {i} -> {j}: {type(exc).__name__}: {exc}")
                 continue
@@ -170,67 +171,211 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
     mappings, a TS + IRC per distinct path) between the two species of each step. The steps' searches run
     at once, `workers` shared between them (one step's slowest path search would otherwise idle the rest).
     Per step: {"direct": [...], "other": [...], "conformers": [...]} (records like connect's), or None if
-    the search failed."""
+    the search failed.
+
+    `refine.prefetch(items)` starts sampling steps early, in a background process at a lower priority
+    (the explorer calls it while it verifies the round's steps, whose tail leaves most cores idle);
+    `refine` then reads what it finished, waits for what it is still sampling, and samples a step again
+    if its species changed in between."""
     import copy
+    import multiprocessing
+    import time
 
     import mepd
+    from mepd import cli_common
     from mepd.cli_common import _fork_map
+    from mepd.discovery.horizontal import _CoreShare
 
-    def refine(items):
-        items = list(items)
-        at_once = max(1, min(len(items), int(workers)))
-        each = max(1, int(workers) // at_once)
+    ctx = multiprocessing.get_context("fork")
+    # path searches running in all the steps, prefetched or not (shared with the forked step processes): a
+    # step starts more of its searches, and a search runs its images on more threads, when others leave
+    # cores idle
+    searches = ctx.Value("i", 0)
+    background_searches = ctx.Value("i", 0)
+    background = {"proc": None, "stop": None}
 
-        def one(item):
+    def fingerprint(a, b) -> str:
+        import hashlib
+
+        import numpy as np
+
+        h = hashlib.sha1()
+        for n in (a, b):
+            h.update(np.round(np.asarray(n.coords, dtype=float), 6).tobytes())
+            h.update(f"{tuple(n.structure.symbols)}{n.structure.charge}{n.structure.multiplicity}".encode())
+        h.update(repr(sorted(options.items())).encode())
+        return h.hexdigest()
+
+    def widths(n: int, total: int) -> tuple[int, int]:
+        # a step's path searches (one per mechanism; ~3 with explore_mechanisms 2) at once and fewer steps
+        # at a time: with one worker per step its searches ran in turn, and the round waited on the slowest
+        # step's three in a row
+        each = max(min(3, total), total // max(1, n))
+        return each, max(1, min(n, total // each))
+
+    def sampler(each: int, stop=None):
+        def sample(item):
             import pickle
 
             a, b, label = item
             folder = output / "channels" / f"pair_{label}"
             done_fp = folder / "explorer_record.pkl"   # this step's finished sampling, for a resumed run
+            busy_fp = folder / "explorer_prefetching"
+            key = fingerprint(a, b)
+            if stop is None:   # the explorer's own call: a step the background is still sampling, it waits for
+                while busy_fp.is_file() and _alive(background_pid(folder)):
+                    time.sleep(5)
+                busy_fp.unlink(missing_ok=True)
             if done_fp.is_file():
                 try:
-                    return pickle.loads(done_fp.read_bytes())
+                    rec = pickle.loads(done_fp.read_bytes())
                 except Exception:
-                    pass
-            profile = copy.deepcopy(run_inputs)
-            if getattr(profile.engine, "n_parallel", None) is not None:
-                profile.engine.n_parallel = each
+                    rec = False
+                if rec is not False and rec.get("key", key) == key:
+                    return rec
+                if rec is not False:   # sampled for other structures of these species: start over
+                    k = 0
+                    while folder.with_name(f"{folder.name}.stale-{k}").exists():
+                        k += 1
+                    folder.rename(folder.with_name(f"{folder.name}.stale-{k}"))
+            if stop is not None:   # background: take a step only while the explorer hasn't asked for them
+                with stop.get_lock():
+                    if stop.value:
+                        return None
+                    folder.mkdir(parents=True, exist_ok=True)
+                    busy_fp.write_text(str(os.getpid()))
             try:
-                # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
-                # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
-                res = mepd.channels(a, b, output=folder, profile=profile,
-                                    **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 0,
-                                       **options})
-            except Exception as exc:
-                typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
-                           "it keeps its single TS.")
-                return None
-            rec = {"direct": [], "other": [], "conformers": []}
-            for kind, chans in (("direct", res.direct), ("other", res.multistep + res.offtarget)):
-                for ch in chans:
-                    for st in ch.steps:
-                        if st.irc is None or st.ts is None:
-                            continue
-                        if st.ts._cached_energy is None:
-                            profile.engine.compute_energies([st.ts])
-                        rec[kind].append({"start": st.irc.path[0], "end": st.irc.path[-1], "ts": st.ts,
-                                          "label": f"ch_{label}_{st.folder.parent.name}_{st.folder.name}",
-                                          "files": {"ts": str(st.folder / "ts.xyz"), "verified": True,
-                                                    "channels": str(folder)}})
-            for pool in (res.start_conformers, res.end_conformers):
-                with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
-                if with_e:
-                    rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
-            typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
-                       f"{len(res.offtarget)} off-target exit(s).")
-            tmp = done_fp.with_name(done_fp.name + ".tmp")
-            tmp.write_bytes(pickle.dumps(rec))
-            tmp.replace(done_fp)
-            return rec
+                return _sample(a, b, label, folder, done_fp, key, each, background=stop is not None)
+            finally:
+                if stop is not None:
+                    busy_fp.unlink(missing_ok=True)
+        return sample
 
-        return _fork_map(one, items, at_once)
+    def background_pid(folder) -> int:
+        try:
+            return int((folder / "explorer_prefetching").read_text())
+        except (OSError, ValueError):
+            return 0
 
+    def _sample(a, b, label, folder, done_fp, key, each, background=False):
+        import pickle
+
+        profile = copy.deepcopy(run_inputs)
+        if getattr(profile.engine, "n_parallel", None) is not None:
+            profile.engine.n_parallel = _CoreShare(int(workers), background_searches if background else searches)
+        try:
+            # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
+            # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
+            extra = {"parallel_workers": BACKGROUND_BRANCHES} if background else {}
+            res = mepd.channels(a, b, output=folder, profile=profile,
+                                **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 0,
+                                   **extra, **options})
+        except Exception as exc:
+            typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
+                       "it keeps its single TS.")
+            return None
+        rec = {"direct": [], "other": [], "conformers": [], "key": key}
+        for kind, chans in (("direct", res.direct), ("other", res.multistep + res.offtarget)):
+            for ch in chans:
+                for st in ch.steps:
+                    if st.irc is None or st.ts is None:
+                        continue
+                    if st.ts._cached_energy is None:
+                        profile.engine.compute_energies([st.ts])
+                    rec[kind].append({"start": st.irc.path[0], "end": st.irc.path[-1], "ts": st.ts,
+                                      "label": f"ch_{label}_{st.folder.parent.name}_{st.folder.name}",
+                                      "files": {"ts": str(st.folder / "ts.xyz"), "verified": True,
+                                                "channels": str(folder)}})
+        for pool in (res.start_conformers, res.end_conformers):
+            with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
+            if with_e:
+                rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
+        typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
+                   f"{len(res.offtarget)} off-target exit(s).")
+        tmp = done_fp.with_name(done_fp.name + ".tmp")
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(pickle.dumps(rec))
+        tmp.replace(done_fp)
+        return rec
+
+    def run(items, stop=None):
+        total = max(1, int(workers) // 2) if stop is not None else int(workers)
+        each, at_once = widths(len(items), total)
+        # the background (beside the explorer's own verification) gets half the lanes, counted apart: with all
+        # of them, and each search's branch pool forking ~cores/3 processes, it held 57 GiB in ~1300
+        # processes and the run was killed at its memory limit
+        cli_common._SEARCH_SHARE = (total, background_searches if stop is not None else searches)
+        try:
+            return _fork_map(sampler(each, stop), items, at_once)
+        finally:
+            cli_common._SEARCH_SHARE = None
+
+    def stop_background(end: bool) -> None:
+        """No new steps for the background; `end`: also end it (its steps the explorer asked for are done by
+        then, so what it still runs is a step the kinetics no longer need: left to resume from its folder)."""
+        proc = background["proc"]
+        if proc is None:
+            return
+        with background["stop"].get_lock():
+            background["stop"].value = 1
+        if end:
+            if proc.is_alive():
+                proc.terminate()   # its workers follow it (parent-death signal)
+            proc.join()
+            background["proc"] = None
+
+    def prefetch(items):
+        stop_background(end=True)
+        items = list(items)
+        if not items:
+            return
+        stop = ctx.Value("i", 0)
+
+        def body():
+            cli_common._fork_worker_init(os.getppid())
+            os.nice(10)   # the explorer's own work first: this fills the cores it leaves idle
+            run(items, stop)
+
+        proc = ctx.Process(target=body, name="channels-prefetch")
+        proc.start()
+        if not background.get("atexit"):
+            import atexit
+
+            # not a daemon (those can't start the pools it runs), so Python would wait for it at exit: an
+            # explorer that ends early (an error) ends it instead
+            atexit.register(stop_background, True)
+            background["atexit"] = True
+        background.update(proc=proc, stop=stop)
+
+    def refine(items):
+        stop_background(end=False)
+        try:
+            return run(list(items))
+        finally:
+            stop_background(end=True)
+
+    refine.prefetch = prefetch
     return refine
+
+
+BACKGROUND_BRANCHES = 4   # branch processes per path search the channels background runs (see `run`)
+
+
+def _alive(pid: int) -> bool:
+    """Whether process `pid` is running (a zombie, dead but not yet reaped, is not)."""
+    if pid <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 def _irc_verifier(run_inputs, output: Path, workers: int):
@@ -398,7 +543,7 @@ def expand(
         "given; 'none': the explorer's own energies."),
     max_species: int = typer.Option(200, "--max-species", help="Stop adding species beyond this many."),
     workers: int = typer.Option(
-        min(4, max(1, (os.cpu_count() or 1) // 2)), "--workers",
+        min(4, max(1, available_cpus() // 2)), "--workers",
         help="Processes at once: product guesses, the web live view's animations, path-search jobs, and "
         "engine calculations (g-xTB) unless the engine's own n_parallel is set."),
     validate_minima_with_hessian: bool = typer.Option(
@@ -508,6 +653,9 @@ def expand(
     # process that initialises CUDA, after which it can't fork its workers and every path search runs one at a
     # time (a 48-core pod at ~3 cores). Off unless the user set it; a GPU steering level has a process of its own.
     os.environ.setdefault("SELLA_DISABLE_GPU", "1")
+    from mepd import stackdump
+
+    stackdump.start()
     steer = steer.strip().lower()
     if steer not in ("auto", "window", "flux", "access"):
         raise typer.BadParameter("--steer must be auto, window, flux or access.")
@@ -550,6 +698,13 @@ def expand(
     if resume is not True and state_fp.is_file():
         typer.echo(f"Note: {output} holds a saved exploration; this run starts over (--resume carries it on).")
     _echo_run_inputs_summary(run_inputs)
+    if getattr(run_inputs.engine, "holds_torch_model", False) and hasattr(run_inputs.engine, "server"):
+        # A GPU model as the explorer's own level: one process of its own holds it, and this process and its
+        # workers send it their structures (CUDA here would stop every parallel stage from forking).
+        from mepd.engines.fairchem import serve
+
+        serve(run_inputs.engine)
+        typer.echo(f"Model server for {run_inputs.engine!r} started.")
     seed = StructureNode(structure=_load_structure_from_smiles_or_xyz(structure, charge, multiplicity))
     target_node = (StructureNode(structure=_load_structure_from_smiles_or_xyz(target, charge, multiplicity))
                    if isinstance(target, str) and target else None)

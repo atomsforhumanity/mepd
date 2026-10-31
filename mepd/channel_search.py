@@ -40,6 +40,7 @@ from mepd.cli_common import (
 )
 from mepd.errors import InputsError
 from mepd.inputs import NetworkInputs, RunInputs
+from mepd.cpus import available_cpus
 
 logger = logging.getLogger("mepd.channel_search")
 
@@ -1430,7 +1431,7 @@ def run_channels(
     # usually leaves only a handful of pairs, so naively handing all of them
     # `cpu_count` workers wastes the rest of the machine that --parallel
     # could otherwise be using per pair).
-    cpu_count = os.cpu_count() or 1
+    cpu_count = available_cpus()
     workers_auto = workers == 0
     parallel_workers_auto = parallel_workers is None
     if workers_auto:
@@ -1463,7 +1464,9 @@ def run_channels(
         run_inputs.engine.n_parallel = max(
             1, cpu_count // (workers * (parallel_workers if parallel else 1))
         )
-    stats["engine_parallel"] = getattr(run_inputs.engine, "n_parallel", None)
+    engine_parallel = getattr(run_inputs.engine, "n_parallel", None)
+    # an int now (an explorer's share of its cores changes as its jobs run, and stats.json takes numbers)
+    stats["engine_parallel"] = int(engine_parallel) if engine_parallel is not None else None
 
     if conformers_only:
         _log(

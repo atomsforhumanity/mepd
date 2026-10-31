@@ -10,6 +10,7 @@ so those command modules don't have to import from each other.
 from __future__ import annotations
 
 import copy
+import itertools
 import logging
 import sys
 import time
@@ -81,8 +82,11 @@ def _dataclass_field_values(obj) -> dict:
     """All active fields of a dataclass instance (engine/optimizer), with
     their currently-resolved values -- including ones left at their class
     default and never mentioned in the TOML. Private/internal fields (leading
-    underscore) are excluded."""
+    underscore) are excluded, and so are fields a subclass turned into
+    properties: FAIRChemEngine's `calculator` loads the model onto the GPU,
+    and a process with CUDA initialised can no longer fork its workers."""
     import dataclasses
+    import inspect
 
     if obj is None or not dataclasses.is_dataclass(obj):
         return {}
@@ -90,6 +94,7 @@ def _dataclass_field_values(obj) -> dict:
         f.name: getattr(obj, f.name, None)
         for f in dataclasses.fields(obj)
         if not f.name.startswith("_")
+        and not isinstance(inspect.getattr_static(type(obj), f.name, None), property)
     }
 
 
@@ -726,8 +731,14 @@ def _completed_tree_dirs(completion_dir: Path) -> list[Path]:
     return sorted(t for t in trees if (t / "node_0.xyz").exists())
 
 
-_FORK_JOB: dict = {}
-
+_FORK_JOB: dict = {}   # each running _fork_map's function, by its own key: a worker forked for one keeps
+                       # the others', and one map ending in a worker (nested) leaves the outer map's in place
+_FORK_KEYS = itertools.count()
+# (total, shared counter) set by a caller that runs several `_run_msmep_pairs` at once in forked processes (the
+# explorer's channel steps): the path searches running across all of them. A step then starts more of its own
+# searches than its `workers` while the others leave cores idle -- one with 18 searches otherwise ran them three
+# at a time to the end of the round, long after the other steps had finished.
+_SEARCH_SHARE = None
 
 def _fork_worker_init(parent: int) -> None:
     """Runs first in every worker `_fork_map` forks.
@@ -753,6 +764,9 @@ def _fork_worker_init(parent: int) -> None:
             pass
         if os.getppid() != parent:   # the parent died before prctl took effect
             os._exit(1)
+    from mepd import stackdump
+
+    stackdump.start()
     try:
         from multiprocessing import resource_tracker
 
@@ -764,8 +778,9 @@ def _fork_worker_init(parent: int) -> None:
         pass
 
 
-def _fork_call(item):
-    return _FORK_JOB["fn"](item)
+def _fork_call(job):
+    key, item = job
+    return _FORK_JOB[key](item)
 
 
 def _fork_probe_child() -> None:
@@ -835,11 +850,14 @@ def _fork_map(fn, items: list, workers: int) -> list:
     pickling; only each item and its return value are pickled.
 
     Falls back to running `items` serially -- rather than losing the run --
-    both when forking is known to be unsafe up front and when a child dies
-    without raising (SIGKILL, a segfaulting engine, the OOM killer), which
+    when forking is known to be unsafe up front. When a child dies without
+    raising (SIGKILL, a segfaulting engine, the OOM killer), which
     `ProcessPoolExecutor` can only report as `BrokenProcessPool` for the whole
-    pool. Every caller's `fn` writes its own files or returns its own value,
-    so re-running is wasted time, never a wrong answer."""
+    pool, the unfinished items run again in a new pool, and serially only if
+    that one breaks too (a serial retry of one step's searches once took two
+    hours where the pool needed one). Every caller's `fn` writes its own files
+    or returns its own value, so re-running is wasted time, never a wrong
+    answer."""
     if workers <= 1 or len(items) <= 1:
         return [fn(x) for x in items]
 
@@ -856,23 +874,37 @@ def _fork_map(fn, items: list, workers: int) -> list:
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import BrokenProcessPool
 
-    _FORK_JOB["fn"] = fn
+    key = (os.getpid(), next(_FORK_KEYS))
+    _FORK_JOB[key] = fn
+    results: dict = {}
     try:
-        with ProcessPoolExecutor(
-            max_workers=min(workers, len(items)),
-            mp_context=multiprocessing.get_context("fork"),
-            initializer=_fork_worker_init, initargs=(os.getpid(),),
-        ) as pool:
-            return list(pool.map(_fork_call, items))
-    except BrokenProcessPool:
-        _warn(
-            "A worker process died without reporting an error (killed by the "
-            "OS, or a crash inside the engine); retrying the remaining work "
-            "serially. Re-run with --workers 1 to skip the failed attempt."
-        )
-        return [fn(x) for x in items]
+        for attempt in range(2):
+            todo = [k for k in range(len(items)) if k not in results]
+            futures = []
+            try:
+                with ProcessPoolExecutor(
+                    max_workers=min(workers, len(todo)),
+                    mp_context=multiprocessing.get_context("fork"),
+                    initializer=_fork_worker_init, initargs=(os.getpid(),),
+                ) as pool:
+                    futures = [(k, pool.submit(_fork_call, (key, items[k]))) for k in todo]
+                    for k, fut in futures:
+                        results[k] = fut.result()
+                return [results[k] for k in range(len(items))]
+            except BrokenProcessPool:
+                for k, fut in futures:   # what finished before the pool broke stays done
+                    if k not in results and fut.done() and not fut.cancelled() and fut.exception() is None:
+                        results[k] = fut.result()
+                left = len(items) - len(results)
+                _warn(
+                    "A worker process died without reporting an error (killed by the "
+                    f"OS, or a crash inside the engine); retrying the {left} unfinished item(s) "
+                    + ("in a new pool." if attempt == 0 else
+                       "serially. Re-run with --workers 1 to skip the failed attempts.")
+                )
+        return [results[k] if k in results else fn(items[k]) for k in range(len(items))]
     finally:
-        _FORK_JOB.pop("fn", None)
+        _FORK_JOB.pop(key, None)
 
 
 def _run_msmep_pairs(
@@ -996,41 +1028,91 @@ class PairFollowUp:
     after: int = 1
 
 
-def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, follow_up: PairFollowUp) -> None:
+def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, follow_up: PairFollowUp,
+                               _retry: bool = True) -> None:
     """`_fork_map(one, todo, workers)`, with each pair's follow-up tasks
     queued into the same process pool as soon as that pair is done (pairs
-    first: a free search slot never waits behind follow-up work)."""
+    first: a free search slot never waits behind follow-up work). A worker
+    that dies breaks the pool: the pairs run again in a new one (`one` skips
+    those already done), then serially if that breaks too."""
     import collections
+    import contextlib
     import multiprocessing
     import os
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
     from concurrent.futures.process import BrokenProcessPool
 
     workers = max(1, workers)
+    share = _SEARCH_SHARE
     size = max(workers + max(1, follow_up.during), follow_up.after)
     pairs, extra = collections.deque(todo), collections.deque()
-    running: dict = {}
-    _FORK_JOB["fn"] = lambda item: one(item[1]) if item[0] == "pair" else follow_up.run(item[1])
+    running: dict = {}   # future -> (kind, item, pool)
+
+    def lanes(n_mine: int) -> int:
+        if share is None:
+            return workers
+        return max(workers, n_mine + share[0] - share[1].value)
+
+    def counted(change: int) -> None:
+        if share is not None:
+            with share[1].get_lock():
+                share[1].value += change
+
+    key = (os.getpid(), next(_FORK_KEYS))
+    _FORK_JOB[key] = lambda item: one(item[1]) if item[0] == "pair" else follow_up.run(item[1])
     _say(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
                f"{follow_up.during} worker process(es) beside the searches, {follow_up.after} once they are done.")
     try:
-        with ProcessPoolExecutor(max_workers=size, mp_context=multiprocessing.get_context("fork"),
-                                 initializer=_fork_worker_init, initargs=(os.getpid(),)) as pool:
+        with contextlib.ExitStack() as stack:
+            def new_pool(n: int):
+                return stack.enter_context(ProcessPoolExecutor(
+                    max_workers=n, mp_context=multiprocessing.get_context("fork"),
+                    initializer=_fork_worker_init, initargs=(os.getpid(),)))
+
+            def submit(p, item) -> None:
+                running[p.submit(_fork_call, (key, item))] = (item[0], item[1], p)
+                if item[0] == "pair":
+                    counted(1)
+
+            def pairs_in(p) -> int:
+                return sum(kind == "pair" and q is p for kind, _, q in running.values())
+
+            pool = new_pool(size)
+            # pools for searches only, opened while other steps leave lanes free (a fork pool starts all its
+            # processes at once, so the first can't simply be made as large as the whole run): [pool, size]
+            spare: list = []
             while pairs or extra or running:
-                n_pairs = sum(kind == "pair" for kind, _ in running.values())
-                while pairs and n_pairs < workers:
-                    pair = pairs.popleft()
-                    running[pool.submit(_fork_call, ("pair", pair))] = ("pair", pair)
-                    n_pairs += 1
+                while pairs and pairs_in(pool) < workers:
+                    submit(pool, ("pair", pairs.popleft()))
+                n_pairs = sum(kind == "pair" for kind, _, _ in running.values())
+                if pairs and share is not None:
+                    want = min(len(pairs), lanes(n_pairs) - n_pairs)
+                    for sp in spare:
+                        while want > 0 and pairs and pairs_in(sp[0]) < sp[1]:
+                            submit(sp[0], ("pair", pairs.popleft()))
+                            want -= 1
+                    if want > 0:
+                        spare.append([new_pool(want), want])
+                        for _ in range(want):
+                            submit(spare[-1][0], ("pair", pairs.popleft()))
+                    n_pairs = sum(kind == "pair" for kind, _, _ in running.values())
+                if not pairs:   # nothing left for the spare pools: let their processes go
+                    for sp in spare:
+                        if not pairs_in(sp[0]):
+                            sp[0].shutdown(wait=False)
+                    spare = [sp for sp in spare if pairs_in(sp[0])]
                 limit = follow_up.during if (pairs or n_pairs) else follow_up.after
                 while extra and len(running) - n_pairs < limit:
-                    task = extra.popleft()
-                    running[pool.submit(_fork_call, ("task", task))] = ("task", task)
+                    submit(pool, ("task", extra.popleft()))
                 if not running:
                     break
-                done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                # with a share, look again now and then: other steps' searches ending free lanes for this one
+                done, _ = wait(list(running), return_when=FIRST_COMPLETED,
+                               timeout=10 if share is not None and pairs else None)
                 for fut in done:
-                    kind, item = running.pop(fut)
+                    kind, item, _ = running.pop(fut)
+                    if kind == "pair":
+                        counted(-1)
                     try:
                         fut.result()
                     except BrokenProcessPool:
@@ -1046,15 +1128,21 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                         except Exception as exc:
                             _say(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
     except BrokenProcessPool:
+        counted(-sum(kind == "pair" for kind, _, _ in running.values()))
         _warn(
             "A worker process died without reporting an error (killed by the "
-            "OS, or a crash inside the engine); retrying the remaining work "
-            "serially. Re-run with --workers 1 to skip the failed attempt."
+            "OS, or a crash inside the engine); retrying the unfinished pairs "
+            + ("in a new pool." if _retry else
+               "serially. Re-run with --workers 1 to skip the failed attempts.")
         )
+        _FORK_JOB.pop(key, None)
+        if _retry:
+            _fork_pairs_with_follow_up(one, todo, pairs_dir, workers, follow_up, _retry=False)
+            return
         for pair in todo:
             one(pair)
     finally:
-        _FORK_JOB.pop("fn", None)
+        _FORK_JOB.pop(key, None)
 
 
 @dataclass
@@ -1169,8 +1257,9 @@ def _pair_ts_guess_tasks(pair_dir: Path, charge: int, multiplicity: int) -> list
     if not (tree_dir / "node_0.xyz").exists():
         return []   # root search failed or was not run (--direct-only): already reported
     try:
-        pair_tree = TreeNode.read_from_disk(
+        pair_tree = TreeNode.read_from_disk(   # only each leaf's final path is used
             tree_dir, chain_parameters=ChainInputs(), charge=charge, multiplicity=multiplicity,
+            ends_only=True,
         )
     except Exception as exc:
         _warn(f"Skipping {pair_dir.name}: could not load tree ({type(exc).__name__}: {exc})")
@@ -1223,7 +1312,7 @@ def _collect_ts_guess_tasks(
         if (input_path / "adj_matrix.txt").exists():
             tree = TreeNode.read_from_disk(
                 input_path, chain_parameters=ChainInputs(),
-                charge=tree_charge, multiplicity=tree_multiplicity,
+                charge=tree_charge, multiplicity=tree_multiplicity, ends_only=True,
             )
             return _ts_guess_tasks_from_tree(tree, "ts_")
 

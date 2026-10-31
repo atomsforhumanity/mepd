@@ -934,9 +934,9 @@ def _propose_structures_at_once(frontier, result, generator, generator_options, 
         return {}
     from concurrent.futures import ThreadPoolExecutor
 
-    if "parallel" in opts:
-        # each species gets its share of the workers: `width` species each with all of them
-        # oversubscribed the CPUs `width` times over (9 x 48 processes on 48 cores)
+    if "parallel" in opts or "parallel" in gen.options:
+        # each species gets its share of the workers: `width` species each with all of them (a generator's
+        # default) oversubscribed the CPUs `width` times over (9 x 48 processes on 48 cores)
         opts["parallel"] = max(1, int(workers) // width)
 
     def one(src):
@@ -1274,6 +1274,8 @@ def expand_network(
         pos["inflight"] = {"pairs": [list(p) for p in pairs], "search": bool(search), "done": [],
                            "stage": pos.get("current")}
         _save(force=True)
+        if getattr(connect, "end_keywords", False) is None:
+            connect.end_keywords = {"coordsys": "cart", "maxiter": int(maxiter)}   # as _optimize's
         if getattr(connect, "live", False):
             # each TS joins the network as it is found; the kinetics of what is found so far decide
             # which pieces of the path searches run (_piece_relevant)
@@ -1306,6 +1308,8 @@ def expand_network(
         if "pair" in found:   # a TS between two known species (fast connect): no ends to identify
             (a, new_a), (b, new_b) = (int(found["pair"][0]), False), (int(found["pair"][1]), False)
         else:
+            for node, opt in zip((found["start"], found["end"]), found.get("ends") or ()):
+                premin[id(node)] = (node, opt)     # minimized by the job that found the TS
             _minimize_ends([found["start"], found["end"]])
             (a, new_a), (b, new_b) = _species_for(found["start"]), _species_for(found["end"])
         for idx, new, parent in ((a, new_a, b), (b, new_b, a)):
@@ -1397,21 +1401,32 @@ def expand_network(
         """Run a waiting piece of a path search only if material reaches one of its ends: a known species
         populated (max concentration or flux >= threshold) in the kinetics of the network found so far
         (electronic energies: a ranking, recomputed whenever a step was added)."""
-        if len(result.steps) != live_kin["n_steps"]:
+        import time
+
+        # The kinetics of 400 species take ~5 s (mirror images included), and the connector waits for this
+        # answer before it starts its next job: refreshed when steps were added, but at most once in three
+        # times as long as the last refresh took (always for the final say), so the workers keep running.
+        stale = len(result.steps) != live_kin["n_steps"]
+        if stale and (final or time.monotonic() - live_kin.get("at", 0.0) >= 3.0 * live_kin.get("took", 0.0)):
+            t0 = time.monotonic()
             energies = [float(s.node.energy) for s in result.species]
             k = _simulate(result.steps, energies)
             tau = float(kin["threshold"])
             live_kin["hot"] = {0} | {i for i in range(len(result.species))
                                      if k.max_concentration[i] >= tau or k.flux[i] >= tau}
             live_kin["n_steps"] = len(result.steps)
+            live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         for node in (chain[0], chain[-1]):
-            idx = known_end.get(id(node))
-            if idx is None:
-                idx = next((i for i, sp in enumerate(result.species) if _connectivity_matches(node, sp.node)), None)
-                if idx is None:
-                    continue
-                known_end[id(node)] = idx
-            if idx in live_kin["hot"]:
+            # (the species it is, or None and how many species it was compared with): asked for every waiting
+            # piece each time a job ends, an end that is no species yet is compared only with the new ones
+            held, idx, checked = known_end.get(id(node), (None, None, 0))
+            if held is not node:   # (kept alive with its entry: an id is only unique while its object lives)
+                idx, checked = None, 0
+            if idx is None and checked < len(result.species):
+                idx = next((i for i in range(checked, len(result.species))
+                            if _connectivity_matches(node, result.species[i].node)), None)
+                known_end[id(node)] = (node, idx, len(result.species))
+            if idx is not None and idx in live_kin["hot"]:
                 return True
         return None
 
@@ -1702,15 +1717,10 @@ def expand_network(
 
     refined: set = set()
 
-    def _refine_steps(kinetic) -> int:
-        """Channel sampling (`refine`, e.g. `mepd channels`: conformers and mechanisms of both ends, a TS and
-        IRC per distinct path) for every step the kinetics need -- open within the cutoff and touching a
-        populated species, or between a pair whose TS failed its IRC check -- once per species pair. Its
-        direct channels replace the step's single TS; multistep routes and off-target exits join the network
-        with whatever new species their IRCs end in; lower end conformers become the species' references.
-        Returns the number of pairs sampled."""
+    def _refine_todo(kinetic) -> list:
+        """(pair key, a, b) of every step the kinetics need sampled now (see `_refine_steps`)."""
         if refine is None or not result.steps:
-            return 0
+            return []
         from mepd.network_aware import accessibility
 
         energies = [float(sp.node.energy) for sp in result.species]
@@ -1730,7 +1740,28 @@ def expand_network(
             open_ = access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal
             if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot or key in sample_more):
                 todo.append((key, st.a, st.b))
+        return todo
+
+    def _prefetch_steps(kinetic) -> None:
+        """Start sampling the steps these kinetics would send to `refine` (`refine.prefetch`, if it has
+        one) while the round's verification runs: its tail leaves most cores idle, and `refine` then finds
+        those steps done -- or samples them again if their species changed meanwhile."""
+        prefetch = getattr(refine, "prefetch", None)
+        todo = _refine_todo(kinetic) if prefetch is not None else []
+        if todo:
+            prefetch([(result.species[a].node, result.species[b].node, f"{a}_{b}") for _, a, b in todo])
+
+    def _refine_steps(kinetic) -> int:
+        """Channel sampling (`refine`, e.g. `mepd channels`: conformers and mechanisms of both ends, a TS and
+        IRC per distinct path) for every step the kinetics need -- open within the cutoff and touching a
+        populated species, or between a pair whose TS failed its IRC check -- once per species pair. Its
+        direct channels replace the step's single TS; multistep routes and off-target exits join the network
+        with whatever new species their IRCs end in; lower end conformers become the species' references.
+        Returns the number of pairs sampled."""
+        todo = _refine_todo(kinetic)
         if not todo:
+            if getattr(refine, "prefetch", None) is not None:
+                refine([])   # ends a background sampling (`_prefetch_steps`) of steps no longer needed
             return 0
         _emit(on_event, "refining", round=rnd, total=len(todo))
         outs = refine([(result.species[a].node, result.species[b].node, f"{a}_{b}") for _, a, b in todo])
@@ -1781,7 +1812,10 @@ def expand_network(
         _phase("connected", round=rnd, pairs=len(pairs) + len(attempts))
         if verify is not None:
             if _stage("verified"):
-                ctx["irc_verified"] = _verify_and_search(_kinetics_record(pairs))
+                kinetic = _kinetics_record(pairs)
+                if "channels" not in ctx.get("done", []):
+                    _prefetch_steps(kinetic)
+                ctx["irc_verified"] = _verify_and_search(kinetic)
                 _stage_done("verified")
             result.rounds[-1]["irc_verified"] = ctx["irc_verified"]
             _phase("verified", round=rnd, ircs=ctx["irc_verified"])

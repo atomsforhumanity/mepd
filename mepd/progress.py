@@ -1302,6 +1302,11 @@ def _labels_for_chain(chain):
     return [str(i) for i, _ in enumerate(chain.nodes)]
 
 
+# endpoint SMILES by structure: a band's ends rarely move, and perceiving them again (rdkit bond orders, ~7 ms
+# each, four per printed step) was ~15% of a path search and on the critical path of every band step
+_ENDPOINT_SMILES: dict = {}
+
+
 def _endpoint_smiles_for_chain(chain):
     if structure_to_smiles is None or len(chain.nodes) == 0:
         return "N/A", "N/A"
@@ -1326,6 +1331,24 @@ def _endpoint_smiles_for_chain(chain):
             natom = len(node.coords)
         except Exception:
             natom = 0
+        try:
+            key = (np.asarray(node.coords).tobytes(), tuple(node.structure.symbols),
+                   int(node.structure.charge), int(node.structure.multiplicity))
+        except Exception:
+            key = None
+        if key is not None and key in _ENDPOINT_SMILES:
+            return _ENDPOINT_SMILES[key]
+        smiles = _node_smiles(node, natom)
+        if key is not None:
+            try:
+                if len(_ENDPOINT_SMILES) >= 256:
+                    _ENDPOINT_SMILES.pop(next(iter(_ENDPOINT_SMILES)), None)
+            except RuntimeError:   # another thread changed it meanwhile
+                pass
+            _ENDPOINT_SMILES[key] = smiles
+        return smiles
+
+    def _node_smiles(node, natom) -> str:
         if natom < 100:
             try:
                 smiles = str(structure_to_smiles(node.structure))

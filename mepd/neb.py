@@ -46,6 +46,10 @@ HARTREE_TO_KCAL_MOL = 627.509474
 ENERGY_INVERSION_WARN_KCAL = 1.0
 
 CLIMBING_IMAGE_MAX_STEPS = 100
+# band steps that keep their images' bond graphs; older steps of the history (kept to be written out)
+# drop them: the graphs were ~2/3 of a history's memory, and a deep search's tens of thousands of steps
+# took a worker past 14 GB
+HISTORY_GRAPH_STEPS = 12
 PLATEAU_EXIT_MESSAGE = (
     "Chain convergence metrics have plateaued and adaptive resolution cannot add more images. "
     "The chain will likely not converge with more minimization steps; lower spring constants "
@@ -79,6 +83,18 @@ def _endpoint_energy_inversion_warning_text(
         "This can produce an endpoint TS guess and unstable NEB behavior."
     )
     return msg
+
+
+def _drop_graphs(chain: Chain) -> None:
+    """`chain`'s images without their bond graphs, as copies (an image can be shared with a later
+    step's chain, which keeps its graph)."""
+    nodes = []
+    for node in chain.nodes:
+        if getattr(node, "graph", None) is not None:
+            node = copy.copy(node)
+            node.graph = None
+        nodes.append(node)
+    chain.nodes = nodes
 
 
 @dataclass
@@ -736,6 +752,8 @@ class NEB(PathMinimizer):
 
             self.chain_trajectory.append(new_chain)
             self.gradient_trajectory.append(new_chain.gradients)
+            if len(self.chain_trajectory) > HISTORY_GRAPH_STEPS:
+                _drop_graphs(self.chain_trajectory[-HISTORY_GRAPH_STEPS - 1])
 
             if converged:
                 if self.parameters.v:
@@ -887,7 +905,13 @@ class NEB(PathMinimizer):
         engine: Engine = None,
         charge: int = 0,
         multiplicity: int = 1,
+        ends_only: bool = False,
     ):
+        """An NEB/path search from its written history (`<fp stem>_history/traj_<i>.xyz`).
+        `ends_only` reads just the first and last string (`initial_chain`, `optimized`):
+        a long search writes thousands, and each node read builds its bond graph, so
+        the full history of one tree can take gigabytes for a caller that only wants
+        the final path."""
         if isinstance(fp, str):
             fp = Path(fp)
 
@@ -898,13 +922,16 @@ class NEB(PathMinimizer):
             raise ValueError("No history exists for this. Cannot load object.")
         else:
             history_files = list(history_folder.glob("*.xyz"))
+            indices = range(len(history_files))
+            if ends_only:
+                indices = sorted({0, len(history_files) - 1})
             history = [
                 Chain.from_xyz(
                     history_folder / f"traj_{i}.xyz", parameters=chain_parameters,
                     charge=charge,
                     spinmult=multiplicity
                 )
-                for i, _ in enumerate(history_files)
+                for i in indices
             ]
 
         n = NEB(

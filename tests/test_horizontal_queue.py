@@ -18,6 +18,7 @@ def _connector(tmp_path):
     hc.job_inputs = SimpleNamespace(path_min_inputs=SimpleNamespace(barrier_cutoff_kcal=None, cutoff_temperature=None,
                                                                      network_floor_hartree=None))
     hc._lock = threading.Lock()
+    hc._running = SimpleNamespace(value=0)
     hc._fast_ts = lambda i, j, a, b: None                  # every single TS fails: path searches
     hc._root_chain = lambda a, b: [a, b]
     hc._leaf_ts = lambda chain, label: SimpleNamespace(energy=-1.0)
@@ -78,3 +79,23 @@ def test_the_queue_sets_one_floor_for_every_piece(tmp_path):
     hc._piece = lambda chain, index, depth: (SimpleNamespace(index=index), [])
     hc([(0, 1)], [seed, Node(name="B")])
     assert hc.job_inputs.path_min_inputs.network_floor_hartree == -5.0
+
+
+def test_core_share_follows_the_running_jobs_and_stays_a_number_where_it_is_written():
+    """An engine's n_parallel in the explorer's queues: the cores over the jobs running now. Copies of the
+    run's inputs share it; written out (stats.json, a spawned process) it is the number it is then."""
+    import copy
+    import json
+    import multiprocessing
+    import pickle
+
+    from mepd.discovery.horizontal import _CoreShare
+
+    running = multiprocessing.get_context("fork").RawValue("i", 0)
+    share = _CoreShare(48, running)
+    assert int(share) == 48
+    running.value = 6
+    assert int(share) == 8 and min(20, share) == 8 and share // 2 == 4
+    assert copy.deepcopy(share) is share
+    assert pickle.loads(pickle.dumps(share)) == 8
+    assert json.dumps({"engine_parallel": int(share)}) == '{"engine_parallel": 8}'

@@ -22,6 +22,7 @@ import numpy as np
 import typer
 
 from qcref.constants import HARTREE_TO_KCAL_PER_MOL as HARTREE_TO_KCAL
+from mepd.cpus import available_cpus
 
 FAST_WARNING = ("Fast estimate: only the new group is relaxed, the rest stays at the parent's geometries. "
                 "Re-optimize to confirm large shifts.")
@@ -70,7 +71,7 @@ def substituents(
     output.mkdir(parents=True, exist_ok=True)
     run_inputs = _open_run_inputs(inputs)
     engine = run_inputs.engine
-    width = workers or min(4, os.cpu_count() or 1)   # modest by default: a laptop overheats under sustained full load
+    width = workers or min(4, available_cpus())   # modest by default: a laptop overheats under sustained full load
 
     typer.echo(f"{len(found)} site(s) x {len(groups)} group(s) x {len(channels)} channel(s), {mode}...")
     parents = {c.id: _parent(c, symbols, engine, run_inputs, mode, charge, multiplicity) for c in channels}

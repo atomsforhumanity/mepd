@@ -11,6 +11,7 @@ from typing import List, Optional
 import typer
 
 from mepd.discovery.cli import discovery_app
+from mepd.cpus import available_cpus
 
 
 def _time_left(live: dict, done_ps: float, total_ps: float) -> str:
@@ -389,7 +390,7 @@ def nanoreactor(
 
         import os
 
-        width = refine_workers or max(1, (os.cpu_count() or 1) // max(1, int(getattr(run_inputs.engine, "n_threads", 1)
+        width = refine_workers or max(1, available_cpus() // max(1, int(getattr(run_inputs.engine, "n_threads", 1)
                                                                             or 1)))
         nr.refine(symbols, frames, hist, species, reactions, run_inputs.engine, output, maxiter=maxiter,
                   on_event=say_refined, cache=nr._Caches(previous, refiner) if previous is not None else refiner,

@@ -105,7 +105,8 @@ def test_fork_map_falls_back_to_serial_when_tcl_is_loaded():
 
 def test_fork_map_retries_serially_when_a_worker_dies():
     """A child killed outright surfaces only as `BrokenProcessPool` for the
-    whole pool, which used to abort the run. It must fall back to serial."""
+    whole pool, which used to abort the run. Workers that keep dying end in
+    a serial run."""
     proc = _run(
         """
         import os
@@ -125,6 +126,33 @@ def test_fork_map_retries_serially_when_a_worker_dies():
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
     assert "died without reporting an error" in proc.stdout + proc.stderr   # a warning: stderr without the CLI
+
+
+def test_a_worker_that_dies_once_is_retried_in_a_new_pool(tmp_path):
+    """One worker killed once (the OOM killer at a peak): the unfinished items
+    run again across workers, not serially -- a serial retry of a step's
+    searches once took two hours where the pool needed one."""
+    proc = _run(
+        f"""
+        import os
+        from mepd.cli_common import _fork_map
+
+        PARENT = os.getpid()
+        MARK = {str(tmp_path / "killed")!r}
+
+        def job(i):
+            if i == 1 and not os.path.exists(MARK):
+                open(MARK, "w").close()
+                os._exit(1)
+            return i, os.getpid() != PARENT
+
+        assert _fork_map(job, list(range(4)), workers=2) == [(i, True) for i in range(4)]
+        print("OK")
+        """
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+    assert "in a new pool" in proc.stdout + proc.stderr
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="workers die with their parent on Linux only")
@@ -206,6 +234,61 @@ def test_fork_probe_detects_a_parent_whose_children_would_be_killed():
         print("OK")
         """,
         MEPD_ALLOW_TKINTER="1",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_a_worker_that_runs_its_own_fork_map_still_runs_the_next_item():
+    """A worker taking several items (fewer workers than items) whose item runs
+    a `_fork_map` of its own (the explorer's channel steps: a step's searches)
+    lost the outer map's function when the inner one ended: KeyError on its
+    next item, and the whole expansion failed."""
+    proc = _run(
+        """
+        from mepd.cli_common import _fork_map
+
+        def inner(x):
+            return x * 10
+
+        def outer(i):
+            return sum(_fork_map(inner, [i, i + 1], workers=2))
+
+        assert _fork_map(outer, list(range(6)), workers=2) == [10 * (2 * i + 1) for i in range(6)]
+        print("OK")
+        """
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_a_search_share_lets_a_step_run_more_searches_than_its_workers(tmp_path):
+    """Channel steps run their searches in forked processes of their own, `workers` each. With a share of the
+    run's lanes, a step left alone (the others finished) uses the lanes they freed instead of its own few."""
+    proc = _run(
+        f"""
+        import multiprocessing, os, time
+        from pathlib import Path
+        from mepd import cli_common
+        from mepd.cli_common import PairFollowUp, _fork_pairs_with_follow_up
+
+        OUT = Path({str(tmp_path)!r})
+        searches = multiprocessing.get_context("fork").Value("i", 0)
+        cli_common._SEARCH_SHARE = (4, searches)
+
+        def one(pair):
+            (OUT / f"{{pair[0]}}.start").write_text(str(time.time()))
+            time.sleep(1.0)
+            (OUT / f"{{pair[0]}}.end").write_text(str(time.time()))
+
+        follow = PairFollowUp(tasks=lambda d: [], run=lambda t: None)
+        _fork_pairs_with_follow_up(one, [(k, k + 1) for k in range(8)], OUT, 1, follow)
+        spans = [(float((OUT / f"{{k}}.start").read_text()), float((OUT / f"{{k}}.end").read_text())) for k in range(8)]
+        most = max(sum(a <= t < b for a, b in spans) for t, _ in spans)
+        assert 3 <= most <= 4, most
+        assert searches.value == 0
+        print("OK", most)
+        """
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
