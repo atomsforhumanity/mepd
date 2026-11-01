@@ -275,11 +275,12 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max
             # for an hour; what lies deeper is left to the kinetics ("deferred")
             setattr(path_min, "recursive_split_max_depth", int(max_depth))
         try:
-            # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
-            # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
+            # the 3 best-scoring conformer pairs of each mechanism (`mepd channels`' own default): every pair
+            # (pairs_per_mechanism=0) searched 140 pairs on each of two Cp + methyl acrylate side steps nothing
+            # reaches (174 min vs 47 min), with the same endo:exo (33:67 vs 36:64) and Suzuki product either way
             extra = {"parallel_workers": BACKGROUND_BRANCHES} if background else {}
             res = mepd.channels(a, b, output=folder, profile=profile,
-                                **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 0,
+                                **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 3,
                                    **extra, **options})
         except Exception as exc:
             typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
@@ -506,7 +507,8 @@ def expand(
     refine_mode: str = typer.Option(
         "channels", "--refine",
         help="--steer access: 'channels' (default) runs `mepd channels` -- conformers of both ends and 2 atom "
-             "mappings (mechanisms), every conformer pair of each searched (pairs_per_mechanism=0) -- on every "
+             "mappings (mechanisms), the 3 best conformer pairs of each searched (--channels-option "
+             "pairs_per_mechanism=0 searches all) -- on every "
              "step the kinetics need and every pair whose TS failed its IRC check; its channels replace the "
              "step's single TS and its off-target exits and multistep routes join the network. 'none' keeps "
              "single TSs."),

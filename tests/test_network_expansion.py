@@ -665,7 +665,7 @@ def test_a_pair_whose_ts_failed_its_irc_check_gets_its_paths_sampled():
     assert len(asked) == len(set(asked))
 
 
-def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypatch, tmp_path):
+def test_explorer_channel_searches_sample_the_best_pairs_of_every_mechanism(monkeypatch, tmp_path):
     import mepd
     from mepd.discovery.cli_expand import _channels_refiner
 
@@ -679,10 +679,10 @@ def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypa
     run_inputs = SimpleNamespace(engine=SimpleNamespace(), path_min_inputs=SimpleNamespace())
     monkeypatch.setattr(mepd, "channels", lambda a, b, profile=None, **kw: (seen.update(kw, profile=profile), fake(a, b)))
     _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
-    assert seen["pairs_per_mechanism"] == 0
-    assert seen["profile"].path_min_inputs.recursive_split_max_depth == 6   # deeper pieces: deferred
-    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 3
+    assert seen["profile"].path_min_inputs.recursive_split_max_depth == 6   # deeper pieces: deferred
+    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 0})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 0
 
 
 def test_prefetched_channel_steps_are_sampled_once_and_again_if_their_species_changed(monkeypatch, tmp_path):
