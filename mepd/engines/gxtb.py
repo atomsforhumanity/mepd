@@ -208,7 +208,12 @@ def _tblite_options(extra_args: list) -> dict | None:
 def _tblite_point(node, extra_args) -> tuple[float, np.ndarray] | None:
     """(energy in Hartree, gradient in Hartree/Bohr) for `node` from tblite, restarting from the stored
     wavefunction of the nearest of this thread's recent structures with the same atoms; None when tblite
-    isn't installed, doesn't take these options or fails (the caller then runs xtb)."""
+    isn't installed, doesn't take these options or fails (the caller then runs xtb).
+
+    A failed SCF runs all its cycles (~0.85 s at 24 atoms, xtb itself then converges in ~35 ms), and the
+    next steps of an optimization sit right next to it: so a failure is retried once from a fresh guess,
+    and structures within 1 Bohr RMS of one that failed both ways skip tblite (Suzuki run 34: one TS
+    optimization spent 12 min in ~800 failed attempts while 95 cores idled)."""
     opts = _tblite_options(extra_args)
     if opts is None:
         return None
@@ -227,6 +232,8 @@ def _tblite_point(node, extra_args) -> tuple[float, np.ndarray] | None:
         cache.clear()
         _TBLITE.pid = os.getpid()
     entry = cache.get(key)
+    if entry is not None and any(float(np.sqrt(((p - pos) ** 2).sum(axis=1).mean())) <= 1.0 for p in entry[2]):
+        return None
     try:
         if entry is None:
             calc = Calculator(opts["method"], numbers, pos, charge=float(charge), uhf=uhf)
@@ -235,35 +242,52 @@ def _tblite_point(node, extra_args) -> tuple[float, np.ndarray] | None:
             calc.set("accuracy", opts["acc"])
             if opts["solvation"]:
                 calc.add(*opts["solvation"])
-            entry = cache[key] = (calc, [])
+            entry = cache[key] = (calc, [], [])
             if len(cache) > 8:
                 cache.pop(next(iter(cache)))
-        calc, recent = entry
+        calc, recent, failed = entry
         calc.update(pos)
-        guess = None
-        if recent:
-            dist, guess = min(((float(np.sqrt(((p - pos) ** 2).sum(axis=1).mean())), r) for p, r in recent),
-                              key=lambda t: t[0])
-            if dist > 1.0:   # Bohr RMS: too far for its wavefunction to help
-                guess = None
-        # copy: tblite otherwise overwrites the guess in place, leaving the stored structure with another one's
-        res = calc.singlepoint(guess, copy=True) if guess is not None else calc.singlepoint()
-        energy, gradient = float(res.get("energy")), np.array(res.get("gradient"))
     except Exception:
+        return None
+    guess = None
+    if recent:
+        dist, guess = min(((float(np.sqrt(((p - pos) ** 2).sum(axis=1).mean())), r) for p, r in recent),
+                          key=lambda t: t[0])
+        if dist > 1.0:   # Bohr RMS: too far for its wavefunction to help
+            guess = None
+    res = None
+    for start in ([guess, None] if guess is not None else [None]):
+        try:
+            # copy: tblite otherwise overwrites the guess in place, leaving the stored structure with another one's
+            res = calc.singlepoint(start, copy=True) if start is not None else calc.singlepoint()
+            energy, gradient = float(res.get("energy")), np.array(res.get("gradient"))
+            break
+        except Exception:
+            res = None
+    if res is None:
+        failed.append(pos.copy())
+        if len(failed) > 32:
+            failed.pop(0)
+        _log_tblite(folder, t0, False)
         return None
     recent.append((pos.copy(), res))
     if len(recent) > 32:
         recent.pop(0)
-    if folder:
-        try:
-            import json
-
-            with open(Path(folder) / f"{os.getpid()}.jsonl", "a") as fh:
-                fh.write(json.dumps({"t": round(t0, 3), "wall": round(time.time() - t0, 4), "cpu": 0, "ok": True,
-                                     "flags": ["--tblite", "--grad"], "site": _call_site()}) + "\n")
-        except OSError:
-            pass
+    _log_tblite(folder, t0, True)
     return energy, gradient
+
+
+def _log_tblite(folder, t0: float, ok: bool) -> None:
+    if not folder:
+        return
+    try:
+        import json
+
+        with open(Path(folder) / f"{os.getpid()}.jsonl", "a") as fh:
+            fh.write(json.dumps({"t": round(t0, 3), "wall": round(time.time() - t0, 4), "cpu": 0, "ok": ok,
+                                 "flags": ["--tblite", "--grad"], "site": _call_site()}) + "\n")
+    except OSError:
+        pass
 
 
 def _call_site() -> str:
