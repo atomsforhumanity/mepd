@@ -371,9 +371,20 @@ def run_seed(folder: Path, structure, expand_args: Sequence[str], workers: int) 
 def explore_mixture(feed: Sequence[tuple], output: Path, expand_args: Sequence[str], engine, *,
                     temperature: float, time_s: float, standard_state: str = "1M", copies: int = 2,
                     generations: int = 2, threshold: float = 0.01, workers: int = 4, seed_workers: int = 8,
-                    log: Callable[[str], None] = print) -> dict:
+                    continuous: bool = True, log: Callable[[str], None] = print) -> dict:
     """Explore `feed` [(name, Structure, concentration M), ...] (see the module
-    docstring); writes `output`/mixture.json and returns its record."""
+    docstring); writes `output`/mixture.json and returns its record.
+
+    `continuous`: no generation waits for the one before it to finish. Each
+    time a seed finishes, the seeds finished so far are merged and their
+    kinetics run; a product they populate is paired with each feed molecule
+    at once (generation = 1 + the lowest generation of a seed that found it).
+    Lower generations start first, and a queued seed starts only while its
+    product is still populated in the latest merge -- otherwise it is iced
+    and asked again after every merge, so a product that a later seed's
+    competing channel drains costs nothing. False: generation by generation."""
+    import concurrent.futures
+
     import mepd
     from mepd.discovery.free_energy import FreeEnergies
     from mepd.discovery.mirror import is_chiral, mirrored
@@ -388,32 +399,30 @@ def explore_mixture(feed: Sequence[tuple], output: Path, expand_args: Sequence[s
     best: dict = {k: s for k, (_, s, _) in zip(feed_keys, feed)}      # a geometry per molecule, for new seeds
     seeds: dict = {}
 
-    def add_seed(keys, generation):
+    def add_seed(keys, generation, product=None):
         name = _seed_name(keys)
-        if name not in seeds:
-            seeds[name] = {"molecules": list(keys), "generation": generation}
-        return name
+        new = name not in seeds
+        if new:
+            seeds[name] = {"molecules": list(keys), "generation": generation,
+                           **({"product": product} if product is not None else {})}
+        return name, new
 
     for comp in compositions(len(feed), copies):
         add_seed([feed_keys[i] for i in comp], 0)
-    record: dict = {}
-    for gen in range(generations):
-        todo = [n for n, s in seeds.items() if s["generation"] == gen]
-        per = max(1, min(seed_workers, workers))
-        width = max(1, workers // per)
-        log(f"Generation {gen}: {len(todo)} seed(s), {width} at a time, {per} workers each.")
+    per = max(1, min(seed_workers, workers))
+    width = max(1, workers // per)
 
-        def one(name):
-            s = seeds[name]
-            st = place([best[k] for k in s["molecules"]])
-            return name, run_seed(output / "seeds" / name, st, expand_args, per)
+    def one(name):
+        s = seeds[name]
+        st = place([best[k] for k in s["molecules"]])
+        return name, run_seed(output / "seeds" / name, st, expand_args, per)
 
-        with ThreadPoolExecutor(max_workers=width) as pool:
-            for name, res in pool.map(one, todo):
-                seeds[name].update(res)
-                log(f"  seed {name} ({' + '.join(seeds[name]['molecules'])}): {res['status']}")
+    def merge_finished(gen_done: int) -> tuple:
+        """Merge every finished seed; kinetics; write mixture.json. Returns (record, populated products,
+        {molecule: lowest generation of a seed that found it})."""
         found_molecules: dict = {}
         found_steps: list = []
+        mol_gen: dict = {}
         for name, s in seeds.items():
             folder = output / "seeds" / name
             if not (folder / "run" / "summary.json").is_file():
@@ -421,6 +430,7 @@ def explore_mixture(feed: Sequence[tuple], output: Path, expand_args: Sequence[s
             mols, steps = read_seed(folder, free.parts)
             for k, structs in mols.items():
                 found_molecules.setdefault(k, []).extend(structs)
+                mol_gen[k] = min(mol_gen.get(k, s["generation"]), s["generation"])
             found_steps += steps
         settled = settle(found_steps, engine, free.parts, output / "settled_ts", workers)
         energy = lambda structs: mepd.energies([StructureNode(structure=s) for s in structs], engine)
@@ -433,16 +443,12 @@ def explore_mixture(feed: Sequence[tuple], output: Path, expand_args: Sequence[s
         scale = max(c0.values())
         populated = [k for k, cm in zip(merged.names, cmax)
                      if k not in c0 and cm >= threshold * scale and k in found_molecules]
-        if gen + 1 < generations:
-            for k in populated:
-                for fk in dict.fromkeys(feed_keys):
-                    add_seed([k, fk], gen + 1)
         barriers = net.barriers()
         record = {
             "feed": [{"name": n, "molecule": k, "concentration": c} for (n, _, c), k in zip(feed, feed_keys)],
             "settings": {"temperature_K": temperature, "time_s": time_s, "standard_state": standard_state,
                          "copies": copies, "generations": generations, "threshold": threshold,
-                         "expand_args": list(expand_args)},
+                         "expand_args": list(expand_args), "continuous": bool(continuous)},
             "seeds": [{"name": n, **s} for n, s in seeds.items()],
             "molecules": [{"molecule": k, "g_kcal": float(gk), "max_concentration": float(cm),
                            "final_concentration": float(ce), "feed": k in c0,
@@ -454,8 +460,73 @@ def explore_mixture(feed: Sequence[tuple], output: Path, expand_args: Sequence[s
                            "net_extent": float(x), **st.info}
                           for st, (bf, br), x in zip(merged.steps, barriers, res.extent)],
             "notes": settled + merged.notes + free.notes,
-            "generation": gen}
+            "generation": gen_done}
         (output / "mixture.json").write_text(json.dumps(record, indent=1))
-        log(f"Generation {gen}: {len(merged.names)} molecules, {len(merged.steps)} steps; "
-            f"{len(populated)} product(s) populated.")
+        log(f"Merged {sum(1 for s in seeds.values() if s.get('status', '').startswith('done'))} seed(s): "
+            f"{len(merged.names)} molecules, {len(merged.steps)} steps; {len(populated)} product(s) populated.")
+        return record, populated, mol_gen
+
+    record: dict = {}
+    if not continuous:
+        for gen in range(generations):
+            todo = [n for n, s in seeds.items() if s["generation"] == gen]
+            log(f"Generation {gen}: {len(todo)} seed(s), {width} at a time, {per} workers each.")
+            with ThreadPoolExecutor(max_workers=width) as pool:
+                for name, res in pool.map(one, todo):
+                    seeds[name].update(res)
+                    log(f"  seed {name} ({' + '.join(seeds[name]['molecules'])}): {res['status']}")
+            record, populated, _ = merge_finished(gen)
+            if gen + 1 < generations:
+                for k in populated:
+                    for fk in dict.fromkeys(feed_keys):
+                        add_seed([k, fk], gen + 1, product=k)
+        return record
+
+    log(f"{len(seeds)} feed seed(s), {width} at a time, {per} workers each; products are seeded as the "
+        f"merged kinetics populate them (up to generation {generations - 1}).")
+    queued = list(seeds)              # not started yet, in the order they were added
+    populated_now: set = set()
+    running: dict = {}
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        while True:
+            # lowest generation first; a product's seed only while the latest merge still populates it
+            queued.sort(key=lambda n: seeds[n]["generation"])
+            for name in list(queued):
+                if len(running) >= width:
+                    break
+                prod = seeds[name].get("product")
+                if prod is not None and prod not in populated_now:
+                    seeds[name]["status"] = "iced (its product is not populated now)"
+                    continue
+                queued.remove(name)
+                seeds[name]["status"] = "running"
+                running[pool.submit(one, name)] = name
+            if not running:
+                break
+            done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
+            for fut in done:
+                name = running.pop(fut)
+                try:
+                    _, res = fut.result()
+                except Exception as exc:
+                    res = {"status": f"failed ({type(exc).__name__}: {exc})"}
+                seeds[name].update(res)
+                log(f"  seed {name} ({' + '.join(seeds[name]['molecules'])}, generation "
+                    f"{seeds[name]['generation']}): {res['status']}")
+            gen_done = max((s["generation"] for s in seeds.values() if s.get("status", "").startswith("done")),
+                           default=0)
+            record, populated, mol_gen = merge_finished(gen_done)
+            populated_now = set(populated)
+            for k in populated:
+                g = mol_gen.get(k, 0) + 1
+                if g < generations:
+                    for fk in dict.fromkeys(feed_keys):
+                        name, new = add_seed([k, fk], g, product=k)
+                        if new:
+                            queued.append(name)
+    for name in queued:   # never started: their products stayed unpopulated
+        seeds[name]["status"] = "not run (its product was not populated)"
+    if queued and record:
+        record["seeds"] = [{"name": n, **s} for n, s in seeds.items()]
+        (output / "mixture.json").write_text(json.dumps(record, indent=1))
     return record

@@ -489,6 +489,13 @@ def expand(
         "optimization from the peak of a geodesic interpolation per reaction, and where that fails a path search "
         "whose pieces are queued as it splits (no branch waits for another); IRCs only for steps the kinetics need. "
         "'full': recursive path search + TS + IRC for every reaction."),
+    schedule: str = typer.Option(
+        "rounds", "--schedule",
+        help="--steer access with --connect-mode fast: 'rounds' expands the species the kinetics populate "
+        "once per round. 'async': no rounds -- a species' proposals start the moment the live kinetics populate "
+        "it within reach, and their reactions join the same job queue as they come in; IRC checks and channel "
+        "sampling run each time the queue drains. --rounds then caps how many steps from the seed a species "
+        "may lie to be expanded, and --max-expand does not apply."),
     max_expand: int = typer.Option(
         10, "--max-expand",
         help="--steer access: at most this many species expanded per round (the most populated first, among "
@@ -828,6 +835,7 @@ def expand(
                 target=target_node, access_cutoff_kcal=access_cutoff if steer == "access" else None,
                 reroute_attempts=int(reroute_attempts) if isinstance(reroute_attempts, int) else 3,
                 max_expand_per_round=int(max_expand) if isinstance(max_expand, int) else 10,
+                schedule=str(schedule).lower() if isinstance(schedule, str) else "rounds",
                 checkpoint=checkpoint,
                 proposal_fmax=float(proposal_fmax) if isinstance(proposal_fmax, (int, float)) else 0.05,
                 refine=(_channels_refiner(run_inputs, output, workers,

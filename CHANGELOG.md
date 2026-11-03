@@ -12,6 +12,32 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Explorer: path-search pieces nothing reaches are iced, not dropped** (`mepd/discovery/horizontal.py`). A
+  piece below a split waits until the kinetics put material at one of its ends; one still unreached when the
+  connect queue runs dry is kept with its place in its pair's search, and every later connect call (each
+  round's, and calls with no pairs of their own) queues it again, so a step found later that sends flux its
+  way thaws it. Pieces the channel searches leave at their depth limit are kept the same way and asked again
+  every round. Both survive `--resume` (`expand_state.pkl`). Rounds record `iced_pieces` and the deferred
+  pieces still `iced`.
+- **Explorer without rounds** (`discovery expand --schedule async`, with `--steer access` and the fast
+  connect queue): a species' proposals are a job in the connect queue's pool, started the moment the live
+  kinetics populate it within reach, and the pairs to its products join the same queue as they come in. The
+  queue ends when nothing runs and nothing more can be reached; IRC checks and channel sampling then run on
+  what it found, and the queue runs again if they open anything (one `rounds` record per such cycle).
+  `--rounds` caps how many steps from the seed a species may lie to be expanded. Not yet for `--target`,
+  QM/MM systems or a products file. Formic acid (1500 K, collide): the same network and branching as rounds,
+  46 s instead of 58 s on 4 workers. The queue takes the caller's own jobs (`register`, `submit`) and new
+  pairs while it runs (`add_pairs`).
+- **Mixtures without generation barriers** (`discovery mixture --continuous`, the default; `--by-generation`
+  restores the old order): each finished seed is merged and its kinetics run at once, and a product they
+  populate is paired with each feed molecule right away. Lower generations start first; a queued product
+  seed starts only while the latest merge still populates its product, else it is iced and asked again after
+  each merge (never run if it stays unpopulated). Seeds run `--schedule async` unless `--target` is given.
+- **Explorer: the live gate that decides which waiting pieces run uses free energies** when the kinetics do
+  (quasi-RRHO at the explorer's level, not the steering level's single points); it used electronic energies.
+  Each TS's thermal correction is computed by the worker job that found it, so the gate doesn't stop the queue
+  for a Hessian each time a TS comes in.
+
 - **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
   searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
   steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -166,3 +167,68 @@ def test_a_proton_relay_partner_is_not_a_spectator(tmp_path):
     _, steps = mixture.read_seed(d, _parts)
     acid = mixture.molecule_key(smiles_to_structure("OC=O", 0, 1))
     assert steps[0].reactants == [acid] and steps[0].shuttles == [acid] and len(steps[0].ts.symbols) == 10
+
+
+def _stub_mixture(monkeypatch, finds, populated_after):
+    """explore_mixture with stand-ins: molecules are names; seed of molecules M finds finds[M]; after the
+    seeds in `done` have finished, the merge populates populated_after(done)."""
+    import json as _json
+
+    import numpy as _np
+
+    import mepd.discovery.mixture as mx
+
+    ran = []
+    monkeypatch.setattr(mx, "molecule_key", lambda s: s)
+    monkeypatch.setattr(mx, "place", lambda structs: tuple(sorted(structs)))
+
+    def run_seed(folder, st, args, per):
+        ran.append(st)
+        (folder / "run").mkdir(parents=True, exist_ok=True)
+        (folder / "run" / "summary.json").write_text("{}")
+        (folder / "mols.json").write_text(_json.dumps(list(st) + finds.get(st, [])))
+        return {"status": "done"}
+
+    monkeypatch.setattr(mx, "run_seed", run_seed)
+    monkeypatch.setattr(mx, "read_seed", lambda folder, parts: (
+        {k: [k] for k in _json.loads((folder / "mols.json").read_text())}, []))
+    monkeypatch.setattr(mx, "settle", lambda *a, **k: [])
+
+    def merge(found, steps, **kw):
+        names = sorted(found)
+        return SimpleNamespace(names=names, g=_np.zeros(len(names)), steps=[], geometry={k: k for k in names}, mirror_of={},
+                               added_mirrors=set(), notes=[])
+
+    monkeypatch.setattr(mx, "merge", merge)
+
+    def kinetics(merged, c0, temperature, time_s):
+        pop = populated_after(set(ran))
+        c = _np.array([[1.0 if (k in c0 or k in pop) else 0.0 for k in merged.names]] * 2)
+        return SimpleNamespace(barriers=lambda: []), SimpleNamespace(c=c, extent=[])
+
+    monkeypatch.setattr(mx, "kinetics", kinetics)
+    import mepd.discovery.free_energy as fe
+
+    monkeypatch.setattr(fe, "FreeEnergies", lambda *a, **k: SimpleNamespace(parts=None, corrections=None, notes=[]))
+    return mx, ran
+
+
+def test_continuous_mixture_seeds_a_product_as_soon_as_a_merge_populates_it(tmp_path, monkeypatch):
+    mx, ran = _stub_mixture(monkeypatch, {("A",): ["P"]}, lambda done: {"P"})
+    rec = mx.explore_mixture([("A", "A", 1.0)], tmp_path, [], None, temperature=300.0, time_s=1.0, copies=1,
+                             generations=2, workers=1, seed_workers=1, log=lambda m: None)
+    assert ran == [("A",), ("A", "P")]
+    assert {tuple(s["molecules"]): s["generation"] for s in rec["seeds"]} == {("A",): 0, ("P", "A"): 1}
+
+
+def test_a_queued_product_seed_is_iced_when_a_later_merge_drains_its_product(tmp_path, monkeypatch):
+    # A's seed makes P (populated); B's seed, a lower generation than P's, runs first and drains P
+    mx, ran = _stub_mixture(monkeypatch, {("A",): ["P"], ("B",): ["R"]},
+                            lambda done: {"P"} if ("B",) not in done else {"R"})
+    rec = mx.explore_mixture([("A", "A", 1.0), ("B", "B", 1.0)], tmp_path, [], None, temperature=300.0,
+                             time_s=1.0, copies=1, generations=2, workers=1, seed_workers=1, log=lambda m: None)
+    assert ran[:2] == [("A",), ("B",)]
+    assert ("A", "P") not in ran and ("B", "P") not in ran           # P's seeds never ran
+    status = {tuple(s["molecules"]): s["status"] for s in rec["seeds"]}
+    assert status[("P", "A")].startswith("not run") and status[("P", "B")].startswith("not run")
+    assert ("A", "R") in ran and ("B", "R") in ran                   # R, populated now, was seeded

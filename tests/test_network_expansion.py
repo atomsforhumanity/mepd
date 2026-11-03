@@ -912,3 +912,138 @@ def test_pieces_left_at_the_channel_depth_limit_are_searched_only_where_material
     searched = {tuple(p) for d in deferred for p in d["searched"]}
     assert searched == {(0, len(smiles) - 1)}     # the hot piece's far end joined the network as a species
     assert set(map(tuple, connect.calls[-1])) <= searched | {p[::-1] for p in searched}
+
+
+class _IcingConnector(_LiveConnector):
+    """A live connector that ices one piece on its first call and reports what it was handed later."""
+    ices = True
+
+    def __init__(self, kill_after=None):
+        super().__init__(kill_after)
+        self.iced, self.restored, self.free = [], None, None
+
+    def queue_state(self):
+        return {"iced": list(self.iced)}
+
+    def restore(self, state):
+        self.restored = state
+        self.iced = list((state or {}).get("iced", []))
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
+                 free_cache=None):
+        out = super().__call__(pairs, nodes, search, on_found, relevant, on_pair_done)
+        if not self.iced and len(self.calls) == 1:
+            self.iced.append(((0, 1), ("a piece", 1, 1)))
+        return out
+
+
+def test_iced_pieces_go_into_every_connect_call_and_survive_a_resume(tmp_path):
+    seed = _node("CCO")
+    first = _IcingConnector()
+    res = _expand_resumable(seed, first, tmp_path / "state.pkl")
+    assert len(first.calls) >= 2
+    assert any(r.get("iced_pieces") == 1 for r in res.rounds)
+    calls_before = len(first.calls)
+    import pickle
+
+    state = pickle.load(open(tmp_path / "state.pkl", "rb"))
+    assert state["queue"] == {"iced": [((0, 1), ("a piece", 1, 1))]}
+    again = _IcingConnector()
+    expand_network(seed.copy(), _GraphEngine(), rounds=3, steer="access", connect=again, access_cutoff_kcal=60.0,
+                   max_products=20, state_file=tmp_path / "state.pkl", resume=True, kinetics={"threshold": 1e-6})
+    assert again.restored == {"iced": [((0, 1), ("a piece", 1, 1))]}
+    assert calls_before >= 2
+
+
+def test_channel_pieces_nothing_reaches_are_kept_and_asked_again_next_round():
+    hot_end, cold = _node("[CH3].[OH]"), (_node("[CH2]O.[H]"), _node("[CH]O.[H][H]"))
+    rounds_seen = []
+
+    def refine(items):
+        rounds_seen.append(len(items))
+        return [{"direct": [], "other": [], "conformers": [],
+                 "deferred": [{"start": cold[0], "end": cold[1]}] if len(rounds_seen) == 1 else []}
+                for a, b, label in items]
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=2, steer="access", connect=_LiveConnector(),
+                         access_cutoff_kcal=60.0, max_products=20, refine=refine, kinetics={"threshold": 1e-6})
+    deferred = [(r["round"], d) for r in res.rounds for d in r.get("deferred", [])]
+    assert deferred and all(d["iced"] >= 1 for _, d in deferred)    # the cold piece is kept, not dropped
+    assert len({rnd for rnd, _ in deferred}) == 2                   # and asked again in the next round
+
+
+class _AsyncConnector(_IcingConnector):
+    """The HorizontalConnector's own-job interface, run in order in this process: registered jobs, pairs
+    added while a call runs, and the drain hook."""
+
+    def __init__(self):
+        super().__init__()
+        self._jobs, self.end_keywords, self.queue = {}, None, []
+        self.job_inputs = SimpleNamespace(engine=_GraphEngine())
+
+    def register(self, kind, fn, slots=1):
+        self._jobs[kind] = fn
+
+    def submit(self, kind, args, on_done):
+        self.queue.append(("own", kind, args, on_done))
+
+    def add_pairs(self, pairs, search=False):
+        self.queue.extend(("pair", p) for p in pairs)
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
+                 free_cache=None, start=None, on_drain=None):
+        self.calls.append(list(pairs))
+        self.queue.extend(("pair", p) for p in pairs)
+        if start is not None:
+            start()
+        while True:
+            while self.queue:
+                job = self.queue.pop(0)
+                if job[0] == "own":
+                    job[3](self._jobs[job[1]](*job[2]))
+                    continue
+                i, j = job[1]
+                self.pairs.append((i, j))
+                ts = nodes[i].copy()
+                ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+                on_found({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+                on_pair_done((i, j))
+            if not (on_drain is not None and on_drain()):
+                break
+        return []
+
+
+def test_async_schedule_expands_species_as_the_kinetics_reach_them_in_one_queue():
+    connect = _AsyncConnector()
+    res = expand_network(_node("CCO"), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6},
+                         schedule="async")
+    first = res.rounds[0]
+    assert first["schedule"] == "async"
+    assert 0 in first["sources"] and len(first["sources"]) > 1   # products expanded inside the same queue
+    assert connect.calls[0] == []                                 # nothing was waiting for a round to end
+    # --rounds caps the distance from the seed: only species one step away are expanded with rounds=2
+    from collections import deque
+
+    nbrs = {}
+    for st in res.steps:
+        nbrs.setdefault(st.a, set()).add(st.b)
+        nbrs.setdefault(st.b, set()).add(st.a)
+    dist, todo = {0: 0}, deque([0])
+    while todo:
+        u = todo.popleft()
+        for v in nbrs.get(u, ()):
+            if v not in dist:
+                dist[v] = dist[u] + 1
+                todo.append(v)
+    expanded = {s for r in res.rounds for s in r["sources"]}
+    assert max(dist[s] for s in expanded) <= 1
+    assert len(set(connect.pairs)) == len(connect.pairs)          # each reaction connected once
+
+
+def test_async_schedule_needs_access_steering_and_a_job_queue():
+    with pytest.raises(ValueError, match="HorizontalConnector"):
+        expand_network(_node("CO"), _GraphEngine(), steer="access", connect=_LiveConnector(),
+                       access_cutoff_kcal=60.0, schedule="async")
+    with pytest.raises(ValueError, match="steer='access'"):
+        expand_network(_node("CO"), _GraphEngine(), steer="flux", connect=_AsyncConnector(), schedule="async")

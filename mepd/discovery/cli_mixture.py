@@ -41,10 +41,15 @@ def mixture(
         "", "--expand-args",
         help="Further options for every seed's `mepd discovery expand`, as one string. Unless it says otherwise: "
              "--generator collide, --cutoff-temperature/--temperature = --temperature, --cutoff-time/--time = "
-             "--time, --standard-state, --rounds 2."),
+             "--time, --standard-state, --rounds 2, --schedule async (rounds with --target)."),
     workers: int = typer.Option(max(1, available_cpus()), "--workers", help="Processes for all seeds together."),
     seed_workers: int = typer.Option(
         8, "--seed-workers", help="Workers per seed; --workers / this many seeds run at once."),
+    continuous: bool = typer.Option(
+        True, "--continuous/--by-generation",
+        help="--continuous: each finished seed is merged at once and the products it populates are seeded "
+             "right away (a queued product seed starts only while the latest merge still populates it). "
+             "--by-generation: every seed of a generation finishes before the next is chosen."),
     output: Path = typer.Option(Path("mepd_mixture_output"), "--output", "-o", help="Directory to write into."),
 ) -> None:
     """Explore a reacting mixture: one explorer run per combination of the
@@ -68,6 +73,8 @@ def mixture(
     flags = {a.split("=")[0] for a in given if a.startswith("--")}
     defaults = {"--generator": "collide", "--cutoff-temperature": temperature, "--temperature": temperature,
                 "--cutoff-time": time_s, "--time": time_s, "--standard-state": standard_state, "--rounds": 2}
+    if "--target" not in flags:
+        defaults["--schedule"] = "async"   # no rounds inside a seed either
     args = given + [str(x) for k, v in defaults.items() if k not in flags for x in (k, v)]
     if inputs is not None and "--inputs" not in flags and "-i" not in flags:
         args += ["--inputs", str(Path(inputs).resolve())]
@@ -75,5 +82,5 @@ def mixture(
     typer.echo(f"Mixture of {len(feed)} feed molecule(s); seeds explored with: {' '.join(args)}")
     explore_mixture(molecules, output, args, run_inputs.engine, temperature=temperature, time_s=time_s,
                     standard_state=standard_state, copies=copies, generations=generations, threshold=threshold,
-                    workers=workers, seed_workers=seed_workers, log=typer.echo)
+                    workers=workers, seed_workers=seed_workers, continuous=continuous, log=typer.echo)
     typer.echo(f"Written: {output / 'mixture.json'}")

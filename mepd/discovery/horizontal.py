@@ -23,6 +23,18 @@ has no saddle to find) is kept as a step at its path's highest image
 `max_pieces_per_pair` caps one pair's search (a pathological pair can't
 take the round); what it cut is logged.
 
+A piece below a split runs only once the caller's kinetics put material at
+one of its ends (`relevant`). One that nothing reaches when the queue runs
+dry is iced, not dropped: it stays in `iced` with its place in its pair's
+search, and every later call queues it again, so a step found afterwards
+that sends flux its way thaws it (`ices`). `queue_state()` / `restore()`
+carry the iced pieces and each pair's piece numbering over a resumed run.
+
+The caller can run jobs of its own in the same pool (`register`, `submit`)
+and add pairs while a call runs (`add_pairs`): the explorer's proposals for
+a species start the moment its kinetics populate it, and their products'
+pairs join the queue as they come in, so nothing waits for a round.
+
 Jobs run in forked worker processes: as threads of one process they were
 held to about five busy cores whatever the worker count (each engine call's
 Python-side work is serial under the GIL). The connector reaches the
@@ -36,6 +48,7 @@ import copy
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 from mepd.network_aware import log_event
@@ -45,7 +58,10 @@ _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
 
 
 def _run_job(method: str, args):
-    return getattr(_CONNECTOR["self"], method)(*args)
+    self = _CONNECTOR["self"]
+    if method.startswith("own:"):    # a job kind the caller registered
+        return self._jobs[method[4:]][0](*args)
+    return getattr(self, method)(*args)
 
 
 class _CoreShare:
@@ -91,6 +107,7 @@ class _CoreShare:
 class HorizontalConnector:
     live = True    # takes on_found / relevant: the caller's network grows while the queue runs
     reports_pairs = True   # takes on_pair_done
+    ices = True    # keeps pieces nothing reaches (`iced`) and queues them again on every call
 
     def __init__(self, run_inputs, output: Path, workers: int, *, max_pieces_per_pair: int = 40,
                  max_depth: Optional[int] = 6, nimages: int = 11, fast_ts_steps: int = 300, say=print):
@@ -119,6 +136,40 @@ class HorizontalConnector:
         self._lock = threading.Lock()
         # optimizer keywords for a leaf TS's piece ends, minimized by its job (None: left to the caller)
         self.end_keywords: Optional[dict] = None
+        # pieces nothing reached yet: (pair, (chain, index, depth)), queued again by every call
+        self.iced: list = []
+        # per pair, across calls: pieces started (the cap) and the next piece index (its leaves' TS labels)
+        self._pieces: dict = {}
+        self._next_index: dict = {}
+        # the caller's FreeEnergies: a TS job also computes the TS's thermal correction (`free_cache`)
+        self.free = None
+        self._jobs: dict = {}     # the caller's own job kinds: kind -> (function, worker slots it takes)
+        self._live = None         # while a call runs: its add_pairs / submit
+
+    def register(self, kind: str, fn, slots: int = 1) -> None:
+        """A job kind of the caller's own: `fn(*args)` runs in a worker like the queue's jobs, taking `slots`
+        of the workers (a job that runs its own parallel processes). Register before the call whose
+        workers should run it: they fork with the function in place."""
+        self._jobs[kind] = (fn, max(1, min(int(slots), self.workers)))
+
+    def submit(self, kind: str, args: tuple, on_done) -> None:
+        """While a call runs (from one of its callbacks): queue a registered job; `on_done(result or None)` is
+        called in the caller's thread when it ends (None: it raised)."""
+        self._live.submit(kind, args, on_done)
+
+    def add_pairs(self, pairs, search: bool = False) -> None:
+        """While a call runs (from one of its callbacks): connect these pairs too (`nodes` must hold them)."""
+        self._live.add_pairs(pairs, search)
+
+    def queue_state(self) -> dict:
+        """What a resumed run needs to carry on: the iced pieces and the piece numbering."""
+        return {"iced": list(self.iced), "pieces": dict(self._pieces), "next_index": dict(self._next_index)}
+
+    def restore(self, state: Optional[dict]) -> None:
+        if state:
+            self.iced = list(state.get("iced", []))
+            self._pieces.update(state.get("pieces", {}))
+            self._next_index.update(state.get("next_index", {}))
 
     # --- jobs -------------------------------------------------------------
     def _write_ts(self, ts, label: str) -> str:
@@ -128,18 +179,34 @@ class HorizontalConnector:
         mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
         return str(fp)
 
+    def _ts_correction(self, ts, label: str):
+        """(cache key, thermal correction) of the TS as the caller's kinetics read it back from its file, or
+        None: computed here, in the worker, so the caller's free-energy kinetics don't stop the queue for
+        a Hessian each time a TS comes in."""
+        if self.free is None:
+            return None
+        from mepd.discovery.network_expansion import _open_structure
+
+        try:
+            st = _open_structure(self.ts_dir / f"{label}.xyz").model_copy(
+                update={"charge": ts.structure.charge, "multiplicity": ts.structure.multiplicity})
+            return self.free._key(st, True), float(self.free._correction(st, True))
+        except Exception:
+            return None   # the caller computes it, or keeps the electronic energy (said)
+
     def _fast_ts(self, i: int, j: int, a, b):
         import mepd
 
         label = f"fast_{i}_{j}"
         if (self.ts_dir / f"{label}.xyz").exists():
-            return mepd.load(self.ts_dir / f"{label}.xyz"), label
+            ts = mepd.load(self.ts_dir / f"{label}.xyz")
+            return ts, label, self._ts_correction(ts, label)
         path = mepd.interpolate(a, b, nimages=self.nimages)
         en = mepd.energies(list(path.nodes), self.job_inputs.engine)
         k = max(range(1, len(en) - 1), key=lambda m: en[m])
         ts = mepd.find_ts(path.nodes[k], self.job_inputs.engine, maxiter=self.fast_ts_steps, continue_unconverged=0)
         self._write_ts(ts, label)
-        return ts, label
+        return ts, label, self._ts_correction(ts, label)
 
     def _piece(self, chain, index: int, depth: int):
         from mepd.msmep import _parallel_recursive_step_worker
@@ -151,8 +218,9 @@ class HorizontalConnector:
 
         ts = mepd.find_ts(chain.get_ts_node(), self.job_inputs.engine)
         self._write_ts(ts, label)
+        corr = self._ts_correction(ts, label)
         if self.end_keywords is None:
-            return ts
+            return ("with_ends", ts, None, corr)
         # The piece's two ends minimized as the caller would (its `end_keywords`), here in the worker: done
         # by the caller as each TS comes in, they held up the queue (no job starts while it works).
         from mepd.nodes.node import StructureNode
@@ -163,8 +231,8 @@ class HorizontalConnector:
                 ends.append(self.job_inputs.engine.compute_geometry_optimization(
                     StructureNode(structure=node.structure), keywords=dict(self.end_keywords))[-1])
             except Exception:
-                return ts
-        return ("with_ends", ts, ends)
+                return ("with_ends", ts, None, corr)
+        return ("with_ends", ts, ends, corr)
 
     def _path_peak(self, chain, label: str):
         """The highest image of a finished elementary piece (written as
@@ -217,7 +285,7 @@ class HorizontalConnector:
 
     # --- the queue ----------------------------------------------------------
     def __call__(self, pairs, nodes, search: bool = False, on_found=None, relevant=None,
-                 on_pair_done=None) -> list[dict]:
+                 on_pair_done=None, free_cache: Optional[dict] = None, start=None, on_drain=None) -> list[dict]:
         """Connect `pairs` of `nodes`. `search`: start every pair's path search
         at once (its single TS was already tried and belonged to another step).
 
@@ -226,11 +294,19 @@ class HorizontalConnector:
         final)`: asked, each time a worker frees up, whether a waiting piece of
         a path search should run -- True: run it; anything else: it waits.
         When only waiting pieces are left, each is asked once more with
-        final=True and those still not relevant are dropped (logged). Pieces
+        final=True and those still not relevant are iced (`iced`, logged):
+        the next call queues them again, after the pieces of its own pairs. Pieces
         are taken best first: the order `relevant` is asked in is the order
         they were queued, the first relevant one runs. `on_pair_done(pair)`:
         called once a pair has nothing left queued or running (its TSs all
-        reported), so a caller that saves its progress can skip it on resume."""
+        reported), so a caller that saves its progress can skip it on resume.
+        `free_cache`: where each TS's thermal correction (computed by its job,
+        with `free` set) goes, as the caller's FreeEnergies cache keys it.
+        `start()`: called once the queue runs, to submit the caller's own jobs.
+        `on_drain()`: called when nothing runs and only pieces nothing reaches
+        wait, before they are iced; True if it queued more work (the call goes
+        on), so the call ends only when the caller has nothing left to add.
+        `nodes` may grow while the call runs (pairs added by index)."""
         from mepd.network_aware import resolve_cutoff
 
         self.ts_dir.mkdir(parents=True, exist_ok=True)
@@ -241,13 +317,13 @@ class HorizontalConnector:
                 self.job_inputs.engine.compute_energies([nodes[0]])
             pmi.network_floor_hartree = float(nodes[0].energy)
         found: list[dict] = []
-        pieces = {}            # pair -> pieces started
+        pieces = self._pieces            # pair -> pieces started
         counts = {"fast_ok": 0, "fast_failed": 0, "pieces": 0, "leaf_ts_ok": 0, "leaf_ts_failed": 0, "path_peak": 0,
                   "capped": 0,
-                  "searched": 0, "deferred": 0, "dropped": 0}
+                  "searched": 0, "deferred": 0, "iced": 0, "thawed": 0}
         running: dict = {}
         waiting: list = []     # (kind, pair, args) not started yet, in queue order
-        next_index = {}
+        next_index = self._next_index
         crashed: dict = {}     # id(job args) -> times its worker died under it
         outstanding: dict = {}  # pair -> its jobs queued or running
 
@@ -258,16 +334,22 @@ class HorizontalConnector:
 
         pool = self._pool()
         try:
+            def slots(kind) -> int:
+                return self._jobs[kind[4:]][1] if kind.startswith("own:") else 1
+
+            def busy() -> int:
+                return sum(slots(job[0]) for job in running.values())
+
             def run(kind, pair, args):
                 nonlocal pool
-                method = {"fast": "_fast_ts", "piece": "_piece", "ts": "_leaf_ts"}[kind]
+                method = {"fast": "_fast_ts", "piece": "_piece", "ts": "_leaf_ts"}.get(kind, kind)
                 try:
                     fut = pool.submit(_run_job, method, args)
                 except (concurrent.futures.process.BrokenProcessPool, RuntimeError):
                     pool = self._broken(pool)
                     fut = pool.submit(_run_job, method, args)
                 running[fut] = (kind, pair, args)
-                self._running.value = len(running)
+                self._running.value = busy()
 
             def queue(kind, pair, *args):
                 outstanding[pair] = outstanding.get(pair, 0) + 1
@@ -288,10 +370,12 @@ class HorizontalConnector:
                     if not outstanding.get(pair) and on_pair_done is not None:
                         on_pair_done(pair)    # nothing of it ever ran
                     return
-                pieces[pair] = 1
-                next_index[pair] = 1
+                # a pair searched again (after its single TS) numbers on from its earlier pieces
+                pieces[pair] = pieces.get(pair, 0) + 1
+                idx = next_index.get(pair, 0)
+                next_index[pair] = idx + 1
                 counts["pieces"] += 1
-                queue("piece", pair, root, 0, 0)
+                queue("piece", pair, root, idx, 0)
 
             def gated(job) -> bool:
                 """A piece below a split waits until material can reach one of its ends."""
@@ -300,21 +384,27 @@ class HorizontalConnector:
 
             def fill(final=False):
                 k = 0
-                while k < len(waiting) and len(running) < self.workers:
+                while k < len(waiting) and busy() < self.workers:
                     job = waiting[k]
+                    if running and busy() + slots(job[0]) > self.workers:
+                        k += 1      # a wide job waits for room; narrower ones behind it may start
+                        continue
                     if gated(job) and relevant(job[2][0], final) is not True:
                         k += 1
                         continue
                     waiting.pop(k)
                     run(*job)
+                if final and not running and on_drain is not None and on_drain():
+                    return fill()    # the caller added work (e.g. proposals for a species now populated)
                 if final and not running:
-                    # nothing runs and nothing waiting can be reached: drop them
+                    # nothing runs and nothing waiting can be reached yet: ice them for a later call
                     for job in waiting:
-                        counts["dropped"] += 1
-                        log_event({"event": "piece_dropped", "pair": list(job[1]), "depth": job[2][2]})
-                    dropped = [job[1] for job in waiting]
+                        counts["iced"] += 1
+                        self.iced.append((job[1], job[2]))
+                        log_event({"event": "piece_iced", "pair": list(job[1]), "depth": job[2][2]})
+                    iced = [job[1] for job in waiting]
                     waiting.clear()
-                    for pair in dropped:
+                    for pair in iced:
                         settle(pair)
 
             for i, j in pairs:
@@ -323,8 +413,29 @@ class HorizontalConnector:
                     start_search((i, j))
                 else:
                     queue("fast", (i, j), i, j, nodes[i], nodes[j])
+            # pieces earlier calls iced: gated like any waiting piece, so they run once material reaches them
+            thawing, self.iced = self.iced, []
+            for pair, args in thawing:
+                queue("piece", pair, *args)
+            own_done: dict = {}   # id(args) of a registered job -> its on_done
 
-            while running or waiting:
+            def add_pairs(new, search_=False):
+                for i, j in new:
+                    if search_:
+                        counts["searched"] += 1
+                        start_search((i, j))
+                    else:
+                        queue("fast", (i, j), i, j, nodes[i], nodes[j])
+
+            def submit(kind, args, on_done):
+                own_done[id(args)] = on_done
+                waiting.append(("own:" + kind, None, args))
+
+            self._live = SimpleNamespace(add_pairs=add_pairs, submit=submit)
+            if start is not None:
+                start()
+
+            while True:
                 fill()
                 if not running:
                     # only pieces nobody reaches yet: the network is as complete as this call makes it
@@ -335,10 +446,10 @@ class HorizontalConnector:
                 done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
                 for fut in done:
                     kind, pair, args = running.pop(fut)
-                    self._running.value = len(running)
+                    self._running.value = busy()
                     rerun = False
                     try:
-                        i, j = pair
+                        i, j = pair if pair is not None else (None, None)
                         try:
                             out = fut.result()
                         except concurrent.futures.process.BrokenProcessPool:
@@ -354,9 +465,16 @@ class HorizontalConnector:
                             out = None
                         except Exception:
                             out = None
+                        if kind.startswith("own:"):
+                            own_done.pop(id(args))(out)
+                            continue
+                        if kind == "piece" and args[2] > 0 and any(p == pair and a is args for p, a in thawing):
+                            counts["thawed"] += 1
                         if kind == "fast":
                             if out is not None:
-                                ts, label = out
+                                ts, label, corr = out
+                                if corr is not None and free_cache is not None:
+                                    free_cache[corr[0]] = corr[1]
                                 counts["fast_ok"] += 1
                                 record({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": label,
                                         "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False,
@@ -402,7 +520,9 @@ class HorizontalConnector:
                             counts["leaf_ts_ok"] += 1
                             ends = None
                             if isinstance(out, tuple) and out and out[0] == "with_ends":
-                                _, out, ends = out
+                                _, out, ends, corr = out
+                                if corr is not None and free_cache is not None:
+                                    free_cache[corr[0]] = corr[1]
                             rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
                                    "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
                             if ends is not None:
@@ -415,9 +535,10 @@ class HorizontalConnector:
                                 rec["files"]["peak"] = str(self.ts_dir / f"{label}_peak.xyz")
                             record(rec)
                     finally:
-                        if not rerun:
+                        if not rerun and pair is not None:
                             settle(pair)
         finally:
+            self._live = None
             pool.shutdown(wait=True, cancel_futures=True)
             _CONNECTOR.pop("self", None)
         log_event({"event": "horizontal_connect", "pairs": len(pairs), **counts})
@@ -427,5 +548,6 @@ class HorizontalConnector:
                  + (f", {counts['path_peak']} steps whose TS search failed kept at their path's highest image"
                     if counts["path_peak"] else "")
                  + (f", {counts['capped']} pieces over the per-pair cap not run" if counts["capped"] else "")
-                 + (f", {counts['dropped']} pieces nothing reaches dropped" if counts["dropped"] else "") + ").")
+                 + (f", {counts['thawed']} iced pieces thawed" if counts["thawed"] else "")
+                 + (f", {len(self.iced)} pieces nothing reaches yet iced" if self.iced else "") + ").")
         return found
