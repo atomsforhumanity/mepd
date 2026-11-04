@@ -1080,6 +1080,7 @@ def _reduce_chain_payload(data: dict, full: bool = False) -> dict:
         "status": data.get("status"),
         # Geometry minimizations (Hessian sampling candidates) vs path searches.
         "kind": data.get("kind", "path"),
+        "data": data.get("data"),   # a whole-state stream (write_live_state: the explorer's queue, kinetics)
         "label": data.get("label"),
         "outcome": data.get("outcome"),
         "reference": data.get("reference"),

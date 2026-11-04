@@ -12,6 +12,50 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Explorer, async: it stops when the kinetics converge or a budget runs out, not at a depth.** `--rounds` no
+  longer caps how far from the seed a species may be expanded: the queue ends when the live kinetics ask for
+  nothing more ("converged"), or when `--time-budget` (seconds), `--max-species` or a stop request (the web's
+  Stop & analyze) runs out -- then no new job starts, the running ones finish, and the network so far is
+  written with its kinetics. The round record's `stopped` says which. Web: "Time budget (h)" in the form.
+- **Explorer: IRC paths are kept whole and drawn.** An IRC check writes the full path through the TS
+  (minimized ends included) with its energies (`ts/<label>_irc.xyz` + `.energies`; it kept only the two
+  ends) and links it to its step, so the web shows each step's IRC, not only its TS. A running async
+  expansion writes its network so far (`summary_partial.json`) as it saves, and the web reads it.
+- **Web: the reactor generator's MD, live.** Each trajectory is written as it runs into
+  `<output>/reactor/run_kk` (segments, piston schedule, events), so the job's Reactor tab plays it.
+- **Web: run the async explorer live.** Network expansion has a "Reactor, live" method (the reactor
+  generator, access steering, `--schedule async`; cutoff temperature and time, standard state, and a saved
+  profile to steer with). Its Live tab shows the job queue (workers busy; running, waiting, done and failed
+  jobs of each kind; what each running job is) and the live kinetics (each species' population, which are
+  populated and expanded, how many steering single points are back), beside the species and steps that
+  already join Explore as they are found.
+- **Explorer, async: channel sampling is conformer pairs in the queue.** A step's sampling job only builds
+  conformers and atom-mapped conformer pairs (`run_channels` with `conformers_only` returns them); each pair
+  is then connected like any pair, a fast TS first and a path search (queue pieces) only if that fails.
+- **Explorer, `--schedule async`: no stage waits for another.** IRC checks, channel sampling, the pieces
+  channel searches leave at their depth limit and steering single points are jobs of the connector's one
+  queue, each queued the moment the live kinetics ask for it; the end-of-cycle stages (and the cycles)
+  are gone. The live kinetics that pick what runs next are steered by the single points back so far
+  (they were the explorer's own level until a cycle ended). Formic acid at 1500 K, 2 workers: 7 min.
+- **Generators tell diastereomers apart, and the reactor generator stops when its products converge.**
+  The reactor, nanoreactor and collide generators key products by bond graph plus stereo SMILES
+  (endo and exo were one product). The reactor generator runs batches of `n_seeds` trajectories until at
+  most `unseen` (5%) of its events gave a product seen only once (Good-Turing), at most `max_batches` (4).
+- **Explorer: the `reactor` generator, the interactive Reactor unattended** (`mepd/discovery/reactor_generator.py`).
+  Langevin MD on GFN2-xTB in the nanoreactor's wall with the piston swinging it (the Reactor's cycle), while
+  Collide pulls two atoms picked at random toward their moving midpoint every so often (200 fs apart on
+  average, 300 fs each). Nothing chooses the chemistry; events are read with the nanoreactor's detection,
+  and the structure after each is a proposal. Within one molecule any pair two or more bonds apart may be
+  pulled, H-H included (the Reactor's own rule left formic acid one pair, an H shift). `--generator reactor`;
+  formic acid at 1500 K: CO + H2O and CO2 + H2 from 16 trajectories of 5 ps in ~10 s.
+- **Explorer: channel sampling for every proposed product.** Each pair a generator proposes from a
+  populated species gets `mepd channels` (conformers of both ends, mechanisms), whatever its single TS
+  found. Formic acid: the single TS for HCOOH -> CO + H2O had landed on the carbene's step and the direct
+  four-centre TS was never searched; its channels find it.
+- **Explorer: channel searches ice the pieces of a split** (`path_min_inputs.defer_split_pieces` in MSMEP;
+  `--channels-max-depth` now defaults to 0). Each mechanism's path is minimized; where it splits, its pieces
+  come back unminimized and each is searched only once the kinetics put material at one of its ends, like
+  the connector's own pieces.
 - **Explorer: path-search pieces nothing reaches are iced, not dropped** (`mepd/discovery/horizontal.py`). A
   piece below a split waits until the kinetics put material at one of its ends; one still unreached when the
   connect queue runs dry is kept with its place in its pair's search, and every later connect call (each
@@ -300,6 +344,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **One Langevin integrator for the Reactor, collide and the reactor generator** (`mepd/discovery/langevin.py`).
+  The interactive Reactor's MD loop, each collision of the collide generator and the reactor generator's
+  trajectories had their own copy of the GFN2-xTB (tblite) BAOAB loop, wall and capped pulls; they now share
+  `LangevinMD`. A collision whose SCF fails is stepped back and continued as in the Reactor, instead of
+  failing.
 - **Explorer**: the connect queue (single TS optimizations, path-search pieces, leaf TSs) runs its jobs in
   worker processes, not threads of one process, which held it to about five busy cores whatever `--workers`
   was. Species proposed at once (collide, nanoreactor) share `--workers` instead of each taking all of them.

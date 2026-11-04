@@ -1034,6 +1034,7 @@ def expand_network(
     verify: Optional[Callable] = None, proposal_fmax: Optional[float] = 0.05,
     steer_engine=None, steer_save_dir: Optional[Path] = None,
     state_file: Optional[Path] = None, resume: bool = False, schedule: str = "rounds",
+    time_budget_s: Optional[float] = None,
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -1117,11 +1118,14 @@ def expand_network(
     HorizontalConnector) drops the rounds: a species' proposals are a job in
     the connector's queue, started the moment the live kinetics populate it
     within reach, and the pairs to its products join the same queue as they
-    come in. The queue ends when nothing runs and no species or iced piece
-    can be reached; the steps it found then get their IRC checks and channel
-    sampling, and if those open anything new, the queue runs again (each
-    such cycle is one record in `rounds`). `rounds` caps how far, in steps
-    from the seed, a species may lie to be expanded."""
+    come in. IRC checks, channel sampling, the pieces it leaves at its depth
+    limit and steering single points are jobs of the same queue too, each
+    queued the moment the live kinetics (steered by the single points back so
+    far) ask for it: no stage waits for another. No distance from the seed
+    caps the growth (`rounds` is not used): the queue ends when the kinetics
+    ask for nothing more ("converged"), or when `time_budget_s`, a stop
+    request or `max_species` runs out -- then no new job starts and the
+    running ones finish (one record in `rounds`, its "stopped" saying which)."""
     if schedule not in ("rounds", "async"):
         raise ValueError(f"schedule must be 'rounds' or 'async', got {schedule!r}.")
     if schedule == "async":
@@ -1333,6 +1337,9 @@ def expand_network(
     peak_fallback: dict = {}
     # species pairs whose TS failed its IRC check: channel sampling for them even before material gets there
     sample_more: set = set()
+    # species pairs a generator proposed: each gets channel sampling once its source is populated, whatever
+    # its single TS found
+    proposed_pairs: set = set()
 
     def _add_found(found) -> None:
         """One TS found: its ends as species (an IRC end no known species is a new intermediate), the step."""
@@ -1384,7 +1391,8 @@ def expand_network(
                 "barrier_kcal": [fwd, rev],
                 "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev)})
 
-    live_kin = {"n_steps": -1, "hot": set()}
+    live_kin = {"n_steps": -1, "hot": set(), "version": 0}
+    live_steer = [None]   # schedule async: queues a steering single point (the live kinetics are steered too)
     known_end: dict = {}
     # every structure counts with its mirror image (mepd.discovery.mirror): the twin of a chiral TS
     mirror_finder = None
@@ -1440,18 +1448,37 @@ def expand_network(
         # The kinetics of 400 species take ~5 s (mirror images included), and the connector waits for this
         # answer before it starts its next job: refreshed when steps were added, but at most once in three
         # times as long as the last refresh took (always for the final say), so the workers keep running.
-        stale = len(result.steps) != live_kin["n_steps"]
+        stale = (len(result.steps), live_kin["version"]) != live_kin["n_steps"]
         if stale and (final or time.monotonic() - live_kin.get("at", 0.0) >= 3.0 * live_kin.get("took", 0.0)):
             t0 = time.monotonic()
-            g, steps, basis = _explorer_view([float(s.node.energy) for s in result.species])
+            energies = [float(s.node.energy) for s in result.species]
+            g, steps, basis = (_free_energy_view(energies, live_steer[0]) if live_steer[0] is not None
+                               else _explorer_view(energies))
             k = _simulate(steps, g, basis.startswith("free"))
+            live_kin["k"] = k
             tau = float(kin["threshold"])
             live_kin["hot"] = {0} | {i for i in range(len(result.species))
                                      if k.max_concentration[i] >= tau or k.flux[i] >= tau}
             live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
-            live_kin["n_steps"] = len(result.steps)
+            _show_kinetics(k, basis)
+            live_kin["n_steps"] = (len(result.steps), live_kin["version"])
             live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         return live_kin["hot"]
+
+    def _show_kinetics(k, basis: str) -> None:
+        """The live kinetics as the web's live view shows them: each species' population, which ones are
+        populated (they decide what runs next) and expanded, and what energies they rest on."""
+        from mepd.progress import write_live_state
+
+        tau = float(kin["threshold"])
+        write_live_state("kinetics", "kinetics", {
+            "basis": basis, "threshold": tau, "steps": len(result.steps),
+            "steered": sum(v is not None for v in steer_delta.values()),
+            "species": [{"index": i, "smiles": sp.smiles, "rel_kcal": sp.rel_energy_kcal,
+                         "max_concentration": float(k.max_concentration[i]), "flux": float(k.flux[i]),
+                         "final": float(k.final_concentration[i]), "expanded": i in expanded,
+                         "populated": i == 0 or k.max_concentration[i] >= tau or k.flux[i] >= tau}
+                        for i, sp in enumerate(result.species)]})
 
     def _piece_relevant(chain, final: bool = False):
         """Run a waiting piece of a path search only if material reaches one of its ends: a known species
@@ -1496,9 +1523,10 @@ def expand_network(
         ref = result.species[0].node.structure
         return _open_structure(fp).model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity})
 
-    def _steer_shifts(structs: list) -> list:
+    def _steer_shifts(structs: list, queue=None) -> list:
         """E_high - E_low (Hartree) of each (structure, is_ts), the molecules of a species apart when the
-        free energies count them so; None where a single point failed."""
+        free energies count them so; None where a single point failed. `queue(key, item)`: the missing
+        single points are handed to it (jobs of the async queue) and are None until they come back."""
         import hashlib
 
         from mepd.cli_common import _fork_map
@@ -1521,6 +1549,10 @@ def expand_network(
                 continue
             parts = [s] if is_ts or free is None else _fragments(s, splitter.parts(s, False))
             todo[key] = Item("ts" if is_ts else "species", 0, s, parts)
+        if todo and queue is not None:
+            for key, item in todo.items():
+                queue(key, item)
+            return [steer_delta.get(k) for k in keys]
         if todo:
             _emit(on_event, "steer_single_points", round=rnd, total=len(todo))
             at_once = max(1, int(workers) // max(1, int(getattr(steer_engine, "threads", 1) or 1)))
@@ -1552,10 +1584,10 @@ def expand_network(
                 steer_delta[key] = r["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
         return [steer_delta[k] for k in keys]
 
-    def _free_energy_view(energies):
+    def _free_energy_view(energies, queue=None):
         """(species energies, steps, basis) for the kinetics: the explorer's
         (_explorer_view), moved by the steering level's single points when
-        there is one."""
+        there is one (`queue`: see _steer_shifts)."""
         from mepd.discovery.kinetics import Step
 
         g, steps, basis = _explorer_view(energies)
@@ -1569,8 +1601,10 @@ def expand_network(
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
         d = _steer_shifts([(result.species[k].node.structure, False) for k in sp_idx]
-                          + [(ts[m], True) for m in open_steps])
+                          + [(ts[m], True) for m in open_steps], queue)
         d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
+        if d_sp.get(0) is None and queue is not None:
+            return g, steps, basis     # the seed's single point is still running
         if d_sp.get(0) is None:
             _emit(on_event, "warning", message="the seed's steering single point failed: kinetics at the "
                                                "explorer's level this round")
@@ -1705,44 +1739,50 @@ def expand_network(
                  if st.files.get("verified") is False and st.files.get("ts") and (st.a in hot or st.b in hot)]
         if not items:
             return 0
-        drop = set()
-        fallback = []
         checked = list(verify(items))
         _minimize_ends([n for _, start, end in checked for n in (start, end)])
-        for idx, start, end in checked:
-            st = result.steps[idx]
-            asked = tuple(st.files.get("pair") or ())
-            piece = (st.a, st.b)
-            if start is None:
-                drop.add(idx)
-                missed = asked
-            else:
-                a, _ = _species_for(start)
-                b, _ = _species_for(end)
-                if a < 0 or b < 0 or a == b:
-                    drop.add(idx)
-                else:
-                    st.a, st.b = a, b
-                    st.files["verified"] = True
-                missed = asked if asked and set(asked) != {a, b} else ()
-            # The single TS optimization found a TS of some other step (kept,
-            # under its real ends) or none: the pair asked for still needs its
-            # path search -- the steps between them, intermediates included.
-            if len(missed) == 2 and tuple(missed) not in searched:
-                retry.append(tuple(missed))
-            # A path-search piece whose TS turned out to belong to another motion (both IRC ends one
-            # species, or other species) keeps its path's highest image, as when no TS is found at all.
-            fb = peak_fallback.pop(st.label, None)
-            if fb is not None and (idx in drop or {st.a, st.b} != set(piece)):
-                fallback.append(fb)
-                # ... and the pair gets all its paths sampled (conformers, mechanisms): the real TS between
-                # these two ends is what the kinetics need, not the bound
-                sample_more.add(frozenset(piece))
-        result.steps[:] = [st for n, st in enumerate(result.steps) if n not in drop]
-        for a, b, peak, fp in fallback:
-            _add_found({"pair": (a, b), "ts": peak, "label": f"{Path(fp).stem}",
-                        "files": {"ts": fp, "verified": True, "ts_kind": "path_peak"}})
+        stepped = [(result.steps[idx], start, end) for idx, start, end in checked]
+        for st, start, end in stepped:
+            _irc_checked(st, start, end)
         return len(items)
+
+    def _irc_checked(st, start, end) -> None:
+        """Step `st`'s IRC ends (None: its IRC failed): the step under its real ends, or dropped."""
+        asked = tuple(st.files.get("pair") or ())
+        piece = (st.a, st.b)
+        dropped = start is None
+        if dropped:
+            missed = asked
+        else:
+            a, _ = _species_for(start)
+            b, _ = _species_for(end)
+            if a < 0 or b < 0 or a == b:
+                dropped = True
+            else:
+                st.a, st.b = a, b
+                st.files["verified"] = True
+                irc_fp = Path(st.files["ts"]).with_name(f"{Path(st.files['ts']).stem}_irc.xyz") \
+                    if st.files.get("ts") else None
+                if irc_fp is not None and irc_fp.exists() and not st.files.get("irc"):
+                    st.files["irc"] = str(irc_fp)    # the path through the TS, for the web's step view
+            missed = asked if asked and set(asked) != {a, b} else ()
+        # The single TS optimization found a TS of some other step (kept,
+        # under its real ends) or none: the pair asked for still needs its
+        # path search -- the steps between them, intermediates included.
+        if len(missed) == 2 and tuple(missed) not in searched:
+            retry.append(tuple(missed))
+        if dropped:
+            result.steps[:] = [x for x in result.steps if x is not st]
+        # A path-search piece whose TS turned out to belong to another motion (both IRC ends one
+        # species, or other species) keeps its path's highest image, as when no TS is found at all.
+        fb = peak_fallback.pop(st.label, None)
+        if fb is not None and (dropped or {st.a, st.b} != set(piece)):
+            # ... and the pair gets all its paths sampled (conformers, mechanisms): the real TS between
+            # these two ends is what the kinetics need, not the bound
+            sample_more.add(frozenset(piece))
+            fa, fb_, peak, fp = fb
+            _add_found({"pair": (fa, fb_), "ts": peak, "label": f"{Path(fp).stem}",
+                        "files": {"ts": fp, "verified": True, "ts_kind": "path_peak"}})
 
     def _verify_and_search(kinetic) -> int:
         """IRC-check the steps the kinetics need; pairs a single TS didn't
@@ -1761,7 +1801,7 @@ def expand_network(
 
     def _refine_todo(kinetic) -> list:
         """(pair key, a, b) of every step the kinetics need sampled now (see `_refine_steps`)."""
-        if refine is None or not result.steps:
+        if refine is None or not (result.steps or proposed_pairs):
             return []
         from mepd.network_aware import accessibility
 
@@ -1782,6 +1822,13 @@ def expand_network(
             open_ = access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal
             if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot or key in sample_more):
                 todo.append((key, st.a, st.b))
+        # a proposed product of a populated species, whatever its single TS found: that one guess can land on
+        # another mechanism and leave the direct one unsearched (formic acid: the carbene's TS instead of the
+        # four-centre dehydration's)
+        for key in sorted(proposed_pairs - refined - {k for k, _, _ in todo}, key=sorted):
+            a, b = sorted(key)
+            if a in hot or b in hot:
+                todo.append((key, a, b))
         return todo
 
     def _prefetch_steps(kinetic) -> None:
@@ -1811,9 +1858,15 @@ def expand_network(
                        + [rec[k] for out in outs if out for rec in out.get("direct", []) + out.get("other", [])
                           if "pair" not in rec for k in ("start", "end")])
         for (key, a, b), out in zip(todo, outs):
-            refined.add(key)
-            if not out:
-                continue      # the search failed: the step keeps its single TS
+            _channels_done(key, a, b, out)
+        result.rounds[-1].setdefault("channels_sampled", []).extend([a, b] for _, a, b in todo)
+        _search_deferred([d for out in outs if out for d in out.get("deferred", [])])
+        return len(todo)
+
+    def _channels_done(key, a, b, out) -> None:
+        """Step (a, b)'s channel sampling is back (`out`; None: it failed and the step keeps its single TS)."""
+        refined.add(key)
+        if out:
             for node in out.get("conformers", []):
                 k, _ = _species_for(node)          # the lowest conformer of each end becomes the reference
             before = [st for st in result.steps if frozenset((st.a, st.b)) == key]
@@ -1830,9 +1883,6 @@ def expand_network(
                 "before": [{"label": st.label, "ts_energy": st.ts_energy, "kind": st.files.get("ts_kind", "ts"),
                             "ts": st.files.get("ts")} for st in before],
                 "after": [{"label": st.label, "ts_energy": st.ts_energy} for st in after]})
-        result.rounds[-1].setdefault("channels_sampled", []).extend([a, b] for _, a, b in todo)
-        _search_deferred([d for out in outs if out for d in out.get("deferred", [])])
-        return len(todo)
 
     def _search_deferred(pieces: list) -> None:
         """Pieces the channel searches left unsplit at their depth limit ({"start", "end"}): searched by the
@@ -1874,6 +1924,7 @@ def expand_network(
                     accessibility(result.steps, [float(s.node.energy) for s in result.species], e0)) if p not in pairs]
             ctx["pairs"], ctx["attempts"] = pairs, attempts
         pairs, attempts, skipped = ctx["pairs"], ctx["attempts"], ctx["skipped"]
+        proposed_pairs.update(map(frozenset, pairs))
         if _stage("connected"):
             _connect(pairs + attempts)
             _stage_done("connected")
@@ -1969,9 +2020,12 @@ def expand_network(
             "result": result, "pos": pos, "connected": connected, "retry": retry, "searched": searched,
             "expanded": expanded, "frontier": frontier, "t_idx": t_idx, "refined": refined,
             "sample_more": sample_more, "peak_fallback": peak_fallback, "steer_delta": steer_delta,
+            "proposed_pairs": proposed_pairs,
             "free_cache": dict(free._cache) if free is not None else {},
             "deferred_iced": deferred_iced, "pending": sorted(pending) if schedule == "async" else [],
             "queue": connect.queue_state() if hasattr(connect, "queue_state") else None})
+        if schedule == "async" and checkpoint is not None:
+            checkpoint(result)   # no rounds to wait for: the network so far (steps, their TS and IRC files) for viewers
 
     if saved is not None:
         connected |= saved["connected"]
@@ -1981,6 +2035,7 @@ def expand_network(
         frontier, t_idx = list(saved["frontier"]), saved["t_idx"]
         refined |= saved["refined"]
         sample_more |= saved["sample_more"]
+        proposed_pairs |= saved.get("proposed_pairs", set())
         peak_fallback.update(saved["peak_fallback"])
         steer_delta.update(saved["steer_delta"])
         if free is not None:
@@ -2084,33 +2139,17 @@ def expand_network(
         pending: set = set(map(tuple, (saved or {}).get("pending", ())))   # pairs queued, not finished
         expanding: set = set()                                             # proposals running
 
-        def _steps_from_seed() -> dict:
-            """Each species' distance from the seed in steps (what `rounds` caps in this schedule)."""
-            dist, todo = {0: 0}, [0]
-            nbrs: dict = {}
-            for st in result.steps:
-                nbrs.setdefault(st.a, set()).add(st.b)
-                nbrs.setdefault(st.b, set()).add(st.a)
-            while todo:
-                u = todo.pop(0)
-                for v in nbrs.get(u, ()):
-                    if v not in dist:
-                        dist[v] = dist[u] + 1
-                        todo.append(v)
-            return dist
-
         def _expandable(final: bool = False) -> list:
-            """Species to propose from now: populated in the live kinetics, within reach of the cutoff, at
-            most `rounds` - 1 steps from the seed, and not expanded yet -- the most populated first."""
+            """Species to propose from now: populated in the live kinetics, within reach of the cutoff, and not
+            expanded yet -- the most populated first. No distance from the seed caps it: the run ends when the
+            kinetics ask for nothing more, or a budget runs out (`_out_of_budget`)."""
             from mepd.network_aware import accessibility
 
             hot = _live_hot(final)
             acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
-            dist = _steps_from_seed()
             load = live_kin.get("load", {})
             picks = [k for k in hot if k not in expanded and k not in expanding and k < len(result.species)
-                     and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))
-                     and dist.get(k, rounds) < rounds]
+                     and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))]
             return sorted(picks, key=lambda k: -load.get(k, 1.0))
 
         def _proposed(src, out) -> None:
@@ -2147,13 +2186,14 @@ def expand_network(
                 if edge.outcome == "new_species":
                     rec["new_species"].append(edge.target)
             pairs = _new_pairs(edges, max_rel_kcal=access_cutoff_kcal)
+            proposed_pairs.update(map(frozenset, pairs))
             connected.update(pairs)
             pending.update(pairs)
             _phase("proposed", round=rnd, source=src, proposals=len(props), pairs=len(pairs))
             if pairs:
                 connect.add_pairs(pairs)
             _save()
-            _expand_now()
+            _follow_up()
 
         def _expand_now(final: bool = False) -> bool:
             picks = _expandable(final)
@@ -2161,56 +2201,178 @@ def expand_network(
                 expanding.add(k)
                 known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
                 connect.submit("propose", (k, result.species[k].node.structure, known_smiles),
-                               lambda out, k=k: _proposed(k, out))
+                               lambda out, k=k: _proposed(k, out), label=f"species {k}")
             if picks:
                 _emit(on_event, "expanding", round=rnd, species=picks)
             return bool(picks)
 
+        # Everything the rounds do between their connect calls -- IRC checks, channel sampling, steering
+        # single points -- runs here as jobs of the same queue, each queued the moment the live kinetics ask
+        # for it (`_follow_up`, after every result): no stage waits for another to finish. Channel sampling
+        # is its conformer pairs, each connected by the queue like any pair (a fast TS, a path search only
+        # if that fails).
+        def _minimized(nodes) -> list:
+            return _optimize(connect.job_inputs.engine, [StructureNode(structure=n.structure) for n in nodes],
+                             maxiter, None)
+
+        def _irc_job(ts_file):
+            """In a worker: a step's IRC, its two ends minimized."""
+            _, start, end = verify([(0, ts_file)])[0]
+            return None if start is None else (start, end, _minimized([start, end]))
+
+        def _channels_job(a, b, label):
+            """In a worker: a step's conformers and atom-mapped conformer pairs (`refine.pairs`)."""
+            return refine.pairs((a, b, label))
+
+        def _steer_job(item):
+            try:
+                return _single_point(item, engine, steer_engine)
+            except Exception as exc:
+                return f"{type(exc).__name__}: {exc}"
+
+        if verify is not None:
+            connect.register("irc", _irc_job)
+        if refine is not None:
+            if not hasattr(refine, "pairs"):
+                raise ValueError("schedule='async' needs a `refine` with `pairs` (its conformer pairs).")
+            connect.register("channels", _channels_job, slots=int(getattr(refine, "width", 1)))
+        if steer_engine is not None and not getattr(steer_engine, "holds_torch_model", False):
+            from mepd.discovery.energy_refine import _single_point
+
+            connect.register("steer", _steer_job, slots=int(getattr(steer_engine, "threads", 1) or 1))
+            live_steer[0] = lambda key, item: _queue_steer(key, item)
+        queued_irc: set = set()       # TS files whose IRC is queued or done
+        queued_channels: set = set()  # species pairs whose sampling is queued or done
+        queued_steer: set = set()     # steering single points queued
+
+        def _queue_steer(key, item) -> None:
+            if key in queued_steer:
+                return
+            queued_steer.add(key)
+
+            def back(r):
+                if r is None or isinstance(r, str):
+                    _emit(on_event, "warning", message=f"steering single point failed ({r}): explorer energy used")
+                    steer_delta[key] = None
+                else:
+                    steer_saved.put("single_points", key, r)
+                    steer_delta[key] = r["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
+                live_kin["version"] += 1
+                _follow_up()
+
+            connect.submit("steer", (item,), back, label=f"{item.kind} {key[:8]}")
+
+        def _irc_back(st, out) -> None:
+            if any(x is st for x in result.steps):     # (channel sampling may have replaced it meanwhile)
+                start = end = None
+                if out is not None:
+                    start, end, opts = out
+                    premin[id(start)], premin[id(end)] = (start, opts[0]), (end, opts[1])
+                _irc_checked(st, start, end)
+                result.rounds[-1]["irc_verified"] = result.rounds[-1].get("irc_verified", 0) + 1
+            _save()
+            _follow_up()
+
+        def _channels_back(key, a, b, out) -> None:
+            """A step's conformer pairs are back: the lowest conformer of each end becomes its species'
+            reference if lower, and every pair joins the queue (`ch_<a>_<b>_<k>`)."""
+            refined.add(key)
+            rec = result.rounds[-1]
+            rec.setdefault("channels_sampled", []).append([a, b])
+            rec["channels"] = len(rec["channels_sampled"])
+            if out:
+                for pool in (out["start"], out["end"]):
+                    with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
+                    if with_e:
+                        low = min(with_e, key=lambda n: float(n.energy))
+                        premin[id(low)] = (low, low)       # minimized by the job
+                        _species_for(low)
+                for k, (x, y) in enumerate(out["pairs"]):
+                    connect.add_channel((a, b), x, y, f"ch_{a}_{b}_{k}")
+                rec["channel_pairs"] = rec.get("channel_pairs", 0) + len(out["pairs"])
+            _save()
+            _follow_up()
+
+        def _follow_up(final: bool = False) -> bool:
+            """Queue whatever the live kinetics now ask for; True if anything was queued. Nothing once a budget
+            ran out: the queue then ends when the jobs running finish."""
+            if _out_of_budget():
+                return False
+            hot = _live_hot(final)          # (queues the steering single points they lack)
+            n = 0
+            if verify is not None:          # IRC checks of the steps that touch a populated species
+                for st in list(result.steps):
+                    fp = st.files.get("ts")
+                    if st.files.get("verified") is False and fp and fp not in queued_irc and (st.a in hot or st.b in hot):
+                        queued_irc.add(fp)
+                        connect.submit("irc", (fp,), lambda out, st=st: _irc_back(st, out),
+                                       label=f"{st.a}→{st.b} · {Path(fp).stem}")
+                        n += 1
+            todo = [p for p in dict.fromkeys(retry) if p not in searched]   # pairs an IRC check sent back
+            retry.clear()
+            if todo:
+                searched.update(todo)
+                connected.update(todo)
+                pending.update(todo)
+                connect.add_pairs(todo, search=True)
+                n += len(todo)
+            if refine is not None and live_kin.get("k") is not None:       # channel sampling
+                for key, a, b in _refine_todo(live_kin["k"]):
+                    if key not in queued_channels:
+                        queued_channels.add(key)
+                        connect.submit("channels", (result.species[a].node, result.species[b].node, f"{a}_{b}"),
+                                       lambda out, key=key, a=a, b=b: _channels_back(key, a, b, out),
+                                       label=f"{a}→{b}")
+                        n += 1
+            return _expand_now(final) or n > 0
+
         def _found_async(found) -> None:
             _add_found(found)
             _save()
-            _expand_now()
+            _follow_up()
 
         def _pair_done_async(pair) -> None:
             pending.discard(tuple(pair))
             _save()
 
-        def _more_to_do() -> bool:
-            """After a cycle's IRC checks and channel sampling: something new to expand, an iced piece now
-            reached, or a path search the IRC checks asked for."""
-            if retry or _expandable(final=True):
-                return True
-            return any(_piece_relevant(args[0], final=True) for _, args in getattr(connect, "iced", []))
+        import time as _time
 
+        from mepd import search_control
+
+        deadline = _time.monotonic() + float(time_budget_s) if time_budget_s else None
+        stopped = [None]
+
+        def _out_of_budget() -> bool:
+            """Out of time (`time_budget_s`), asked to stop (the web's Stop & analyze), or at `max_species`."""
+            if stopped[0] is None:
+                if deadline is not None and _time.monotonic() > deadline:
+                    stopped[0] = "time budget"
+                elif search_control.stop_requested():
+                    stopped[0] = "stop requested"
+                elif len(result.species) >= max_species:
+                    stopped[0] = "max species"
+            return stopped[0] is not None
+
+        connect.stop_when = _out_of_budget
         if connect.end_keywords is None:
             connect.end_keywords = {"coordsys": "cart", "maxiter": int(maxiter)}
-        cycle = int(pos["round"]) if saved is not None else 0
-        max_cycles = 50
-        while cycle < max_cycles:
-            cycle += 1
-            rnd = cycle
-            result.rounds.append({"round": cycle, "schedule": "async", "sources": [], "proposed": 0,
-                                  "new_species": [], "expanded_next": [], "generator_stats": []})
-            pos.update(round=cycle, stage="async", ctx={}, current=None, inflight=None)
-            _phase("cycle_start", round=cycle)
-            start_pairs = sorted(pending)
-            connect(start_pairs, _SpeciesNodes(), on_found=_found_async, relevant=_piece_relevant,
-                    on_pair_done=_pair_done_async, free_cache=free._cache if free is not None else None,
-                    start=_expand_now, on_drain=lambda: _expand_now(final=True))
-            result.rounds[-1]["iced_pieces"] = len(connect.iced)
-            kinetic = _kinetics_record([])
-            if verify is not None:
-                result.rounds[-1]["irc_verified"] = _verify_and_search(kinetic)
-            result.rounds[-1]["channels"] = _refine_steps(_kinetics_record([]))
-            _search_deferred([])
-            _kinetics_record([])
-            _save(force=True)
-            if checkpoint is not None:
-                checkpoint(result)
-            if not _more_to_do():
-                break
-        else:
-            _emit(on_event, "warning", message=f"stopped after {max_cycles} cycles with work left")
+        cycle = int(pos["round"]) if saved is not None else 1
+        rnd = cycle
+        result.rounds.append({"round": cycle, "schedule": "async", "sources": [], "proposed": 0,
+                              "new_species": [], "expanded_next": [], "generator_stats": []})
+        pos.update(round=cycle, stage="async", ctx={}, current=None, inflight=None)
+        _phase("cycle_start", round=cycle)
+        connect(sorted(pending), _SpeciesNodes(), on_found=_found_async, relevant=_piece_relevant,
+                on_pair_done=_pair_done_async, free_cache=free._cache if free is not None else None,
+                start=_follow_up, on_drain=lambda: _follow_up(final=True))
+        result.rounds[-1]["iced_pieces"] = len(connect.iced)
+        # why it ended: "converged" (the kinetics asked for nothing more), or the budget that ran out
+        result.rounds[-1]["stopped"] = stopped[0] or "converged"
+        _emit(on_event, "phase", round=cycle, phase=f"ended: {result.rounds[-1]['stopped']}")
+        _kinetics_record([])
+        _save(force=True)
+        if checkpoint is not None:
+            checkpoint(result)
         first, in_round = rounds + 1, False     # no rounds below
     else:
         first = int(pos["round"]) if saved is not None else 1

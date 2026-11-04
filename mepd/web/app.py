@@ -2062,6 +2062,30 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return Response(page, media_type="text/html; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{name}.html"'})
 
+    @app.get("/api/jobs/{jid}/reactor/runs")
+    def job_reactor_runs(jid: str):
+        """A network expansion's reactor trajectories (output/reactor/run_kk, in the order they started): each
+        one's seed, events so far, whether it has ended, and when it last grew -- for the Reactor tab's picker."""
+        job = J().get(jid)
+        out = Path(job["output_dir"]) / "reactor"
+        runs = sorted(out.glob("run_*")) if job.get("op") == "graph-enumeration" else []
+        items = []
+        for k, d in enumerate(runs):
+            md = d / "md"
+
+            def read(fp):
+                try:
+                    return json.loads(fp.read_text())
+                except Exception:
+                    return {}
+            sched, ev = read(md / "schedule.json"), read(d / "live_events.json")
+            items.append({"index": k, "name": d.name, "seed": sched.get("seed"), "time_ps": sched.get("time_ps"),
+                          "ps": ev.get("time_ps"), "events": len(ev.get("events") or []),
+                          # ended: marked so, or as long as it was to run (runs written before the marker)
+                          "done": (md / "done").exists() or (ev.get("time_ps") or 0) >= (sched.get("time_ps") or 1e9) - 0.01,
+                          "updated": max((f.stat().st_mtime for f in md.glob("segment_*.xyz")), default=0.0)})
+        return {"runs": items}
+
     @app.get("/api/jobs/{jid}/reactor")
     def job_reactor(jid: str, start: int = 0, run: Optional[int] = None):
         """A nanoreactor job's trajectory from raw frame `start` on, and its events (live view)."""

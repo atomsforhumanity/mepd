@@ -8,6 +8,7 @@ import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { JobControls, useTick } from './Jobs.js';
 import { NetworkLive } from './NetworkLive.js';
+import { AsyncLive } from './AsyncLive.js';
 import { ChannelsMap } from './ChannelsMap.js';
 import { OptTree } from './OptTree.js';
 import { ReactorLive } from './ReactorLive.js';
@@ -37,6 +38,7 @@ function livePaths(progress, now) {
   if (!Object.keys(streams).length && progress?.chain) streams.main = progress.chain;  // older jobs
   const out = [];
   for (const [name, st] of Object.entries(streams)) {
+    if (st.kind === 'queue' || st.kind === 'kinetics') continue;   // whole-state streams: AsyncLive shows them
     const age = st.updated ? now - st.updated : Infinity;
     const state = st.finished ? (st.status === 'failed' ? 'failed' : 'done') : age < 30 ? 'running' : 'idle';
     if (st.kind === 'morph') {
@@ -191,6 +193,7 @@ function LivePanel({ job }) {
       <div class="last-line mono">${progress?.last_line || job.last_line || (job.status === 'queued' ? 'Waiting for a free slot…' : '')}</div>
       ${nano && html`<${SpawnedSearches} job=${job} />`}
       ${fg && (fg.kind === 'minimization' || fg.kind === 'sampling') && html`<${MinimizationLive} job=${job} fg=${fg} />`}
+      <${AsyncLive} progress=${progress} />
       ${(reactions.length > 0 || job.op === 'graph-enumeration') && html`<${NetworkLive} job=${job} reactions=${reactions} />`}
       ${fg && fg.kind !== 'minimization' && fg.kind !== 'sampling' && html`
         <div class="card-block live-path">
@@ -1063,7 +1066,7 @@ export function JobView({ jobId: openedId }) {
     result_rev: family.reduce((n, j) => n + (j.result_rev || 0), 0) } : job;
   const hasOutput = job.status !== 'queued';
   // A network expansion whose products come from nanoreactor MD: it has a reactor to watch too.
-  const reactorGen = job.op === 'graph-enumeration' && job.params?.generator === 'nanoreactor';
+  const reactorGen = job.op === 'graph-enumeration' && ['nanoreactor', 'reactor'].includes(job.params?.generator);
   // An interactive reactor's analysis opens on its plain-words summary (ReactorStory).
   const story = job.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(job.params?.trajectory || '');
   const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'

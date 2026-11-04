@@ -1077,7 +1077,9 @@ def run_channels(
     so (with `minimize_ends`) they are minimized before anything else.
     Raises InputsError for settings that cannot work and ChannelSearchError
     when the search cannot run to the end. `read_channels(output)` reads what
-    it found."""
+    it found. With `conformers_only`, returns the conformers and the pairs a
+    search would run ({"start", "end", "pairs": [(start, end)]}, each pair
+    atom-mapped for its mechanism)."""
     options.validate()
     output = Path(output)
     sampled_sides = options.sampled_sides
@@ -1473,7 +1475,9 @@ def run_channels(
             f"--conformers-only: {len(start_confs)} x {len(end_confs)} conformers, "
             f"{len(candidates)} pair(s); stopping before path search."
         )
-        return
+        # what a caller that runs the searches itself needs (the explorer's queue)
+        return {"start": start_confs, "end": end_confs,
+                "pairs": [(structures[i], structures[j]) for i, j in candidates]}
 
     pairs_dir = output / "pairs"
     pairs_dir.mkdir(parents=True, exist_ok=True)

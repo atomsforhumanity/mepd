@@ -179,3 +179,25 @@ def test_legs_to_a_stereo_variant_of_an_endpoint_still_run():
     between_others = Chain.model_validate({"nodes": [other, node("C=C(C)C")], "parameters": ChainInputs()})
     kept, off = msmep._split_pieces_on_target(root_b, [between_others])
     assert kept == [] and len(off) == 2
+
+
+def test_defer_split_pieces_hands_a_splits_pieces_back_unminimized(monkeypatch, tmp_path):
+    """defer_split_pieces (the explorer's channel searches): at the depth limit a split's pieces are not run
+    but written out for the caller, who runs each once material reaches one of its ends."""
+    c = _other_species()
+    msmep = _msmep()
+    msmep.inputs.engine = _FakeMsmepEngine()
+    msmep.inputs.path_min_inputs.defer_split_pieces = True
+    minimized = []
+    monkeypatch.setattr(msmep, "run_minimize_chain",
+                        lambda input_chain: minimized.append(1) or (SimpleNamespace(chain_trajectory=[input_chain]),
+                                                                    _fake_elem_step_result([])))
+    monkeypatch.setattr(msmep, "make_sequence_of_chains",
+                        lambda chain, split_method, minimization_results: [
+                            _chain_from(_topology_structure("a"), c), _chain_from(c, _topology_structure("b"))])
+    tree = msmep.run_recursive_minimize(_chain_from(_topology_structure("a"), _topology_structure("b")), max_depth=0)
+    assert minimized == [1]                                 # the root's path only
+    assert tree.leaf_status == "deferred_split" and tree.children == [] and tree.data is None
+    tree.write_to_disk(tmp_path / "tree")
+    assert sorted(p.name for p in (tmp_path / "tree").glob("node_0_deferred_*.xyz")) == [
+        "node_0_deferred_0.xyz", "node_0_deferred_1.xyz"]

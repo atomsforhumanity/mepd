@@ -33,6 +33,9 @@ _LEAF = {
                                              "so none was run."),
     "max_depth_reached": ("elementary", "The split limit (recursive depth) was reached, so the path is not split; "
                                         "it was optimized to convergence and treated as one step."),
+    "deferred_split": ("deferred", "The path splits, but at the split limit its pieces are not searched here: "
+                                   "each is searched later, only once the kinetics put material at one of its "
+                                   "ends."),
     "same_pair_split_limit_reached": ("elementary", "The same endpoint pair kept splitting without finding anything "
                                                     "new, so it is not split again; the path was optimized to "
                                                     "convergence and treated as one step."),

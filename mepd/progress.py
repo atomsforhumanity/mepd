@@ -421,6 +421,21 @@ def write_morph(stream: str, frames: list, *, label: str = "", caption: str = ""
         return
 
 
+def write_live_state(stream: str, kind: str, data: dict) -> None:
+    """A live stream (kind `kind`) whose whole state is `data`, replaced on
+    every write (e.g. the explorer's job queue, its live kinetics). No-op
+    unless a live viewer is attached (MEPD_DRIVE_CHAIN_DIR)."""
+    fp = _stream_path(stream)
+    if fp is None:
+        return
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_json_write(fp, {"kind": kind, "stream": stream, "label": stream, "data": data,
+                                "updated": time.time(), "finished": False})
+    except Exception:
+        return
+
+
 def append_live_event(event: dict) -> None:
     """Append one JSON line to live/events.jsonl, for things a live viewer
     should act on as they happen (e.g. a new species found, which the web UI

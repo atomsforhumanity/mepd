@@ -109,6 +109,9 @@ class TreeNode:
                     fp=folder_name / f"node_{i}_rejected.xyz",
                     write_qcio=write_qcio,
                 )
+            # defer_split_pieces: the pieces of this node's split left to the caller, unminimized.
+            for k, piece in enumerate(getattr(node, "deferred_chains", None) or []):
+                piece.write_to_disk(fp=folder_name / f"node_{i}_deferred_{k}.xyz", write_qcio=write_qcio)
             # direct_only: the pieces of this node's split that were not run.
             for k, piece in enumerate(getattr(node, "rejected_chains", None) or []):
                 piece.write_to_disk(fp=folder_name / f"node_{i}_rejected_{k}.xyz", write_qcio=write_qcio)

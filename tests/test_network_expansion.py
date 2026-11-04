@@ -680,7 +680,8 @@ def test_explorer_channel_searches_sample_the_best_pairs_of_every_mechanism(monk
     monkeypatch.setattr(mepd, "channels", lambda a, b, profile=None, **kw: (seen.update(kw, profile=profile), fake(a, b)))
     _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 3
-    assert seen["profile"].path_min_inputs.recursive_split_max_depth == 6   # deeper pieces: deferred
+    pmi = seen["profile"].path_min_inputs      # each mechanism's path only; a split's pieces: deferred
+    assert pmi.recursive_split_max_depth == 0 and pmi.defer_split_pieces is True
     _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 0})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 0
 
@@ -978,17 +979,21 @@ class _AsyncConnector(_IcingConnector):
 
     def __init__(self):
         super().__init__()
-        self._jobs, self.end_keywords, self.queue = {}, None, []
+        self._jobs, self.end_keywords, self.queue, self.channel_labels = {}, None, [], []
         self.job_inputs = SimpleNamespace(engine=_GraphEngine())
 
     def register(self, kind, fn, slots=1):
         self._jobs[kind] = fn
 
-    def submit(self, kind, args, on_done):
+    def submit(self, kind, args, on_done, label=""):
         self.queue.append(("own", kind, args, on_done))
 
     def add_pairs(self, pairs, search=False):
         self.queue.extend(("pair", p) for p in pairs)
+
+    def add_channel(self, pair, a, b, label):
+        self.channel_labels.append(label)
+        self.queue.append(("pair", tuple(pair)))
 
     def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
                  free_cache=None, start=None, on_drain=None):
@@ -1022,7 +1027,8 @@ def test_async_schedule_expands_species_as_the_kinetics_reach_them_in_one_queue(
     assert first["schedule"] == "async"
     assert 0 in first["sources"] and len(first["sources"]) > 1   # products expanded inside the same queue
     assert connect.calls[0] == []                                 # nothing was waiting for a round to end
-    # --rounds caps the distance from the seed: only species one step away are expanded with rounds=2
+    assert first["stopped"] == "converged"                        # it ended because nothing more was asked for
+    # no distance from the seed caps it (rounds=2 is not used): species past one step are expanded too
     from collections import deque
 
     nbrs = {}
@@ -1037,8 +1043,16 @@ def test_async_schedule_expands_species_as_the_kinetics_reach_them_in_one_queue(
                 dist[v] = dist[u] + 1
                 todo.append(v)
     expanded = {s for r in res.rounds for s in r["sources"]}
-    assert max(dist[s] for s in expanded) <= 1
+    assert max(dist[s] for s in expanded) >= 2
     assert len(set(connect.pairs)) == len(connect.pairs)          # each reaction connected once
+
+
+def test_async_schedule_stops_on_a_budget_not_a_depth():
+    connect = _AsyncConnector()
+    res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=connect, access_cutoff_kcal=60.0,
+                         max_products=20, kinetics={"threshold": 1e-6}, schedule="async", max_species=4)
+    assert res.rounds[0]["stopped"] == "max species"
+    assert len(res.species) <= 4 + 20       # one batch of proposals may land after the cap is reached
 
 
 def test_async_schedule_needs_access_steering_and_a_job_queue():
@@ -1047,3 +1061,68 @@ def test_async_schedule_needs_access_steering_and_a_job_queue():
                        access_cutoff_kcal=60.0, schedule="async")
     with pytest.raises(ValueError, match="steer='access'"):
         expand_network(_node("CO"), _GraphEngine(), steer="flux", connect=_AsyncConnector(), schedule="async")
+
+
+def test_every_proposed_pair_gets_channel_sampling_whatever_its_single_ts_found():
+    """Formic acid -> CO + H2O: the single TS landed on the carbene's step. The pair's channels (conformers,
+    mechanisms) are sampled all the same, which is where the direct four-centre TS is found."""
+    asked = []
+
+    def connect(pairs, nodes, search=False):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}-{search}", "pair": (i, j),
+                        "files": {"verified": False, "ts": "x.xyz", "pair": [i, j]}})
+        return out
+
+    def verify(items):   # every single-TS step's IRC lands elsewhere: no step for the pair asked
+        for idx, _ in items:
+            yield idx, None, None
+
+    def refine(items):
+        asked.extend(tuple(sorted(map(int, label.split("_")))) for _, _, label in items)
+        return [{"direct": [], "other": [], "conformers": []} for _ in items]
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect, verify=verify,
+                         access_cutoff_kcal=30.0, max_products=20, refine=refine)
+    proposed = {tuple(sorted(p)) for e in res.edges if e.target is not None and e.target != e.source
+                for p in [(e.source, e.target)]}
+    assert proposed and proposed <= set(asked)
+
+
+def test_channel_pieces_handed_back_unminimized_are_read_as_deferred(tmp_path):
+    from mepd.discovery.cli_expand import _deferred_pieces
+
+    tree = tmp_path / "pairs" / "pair_0" / "tree"
+    tree.mkdir(parents=True)
+    frame = lambda x: f"2\n\nH {x} 0 0\nH {x + 0.74} 0 0\n"
+    for k in range(2):
+        (tree / f"node_0_deferred_{k}.xyz").write_text(frame(k) + frame(k + 5))
+    pieces = _deferred_pieces(tmp_path)
+    assert [round(float(p["start"].structure.geometry[0][0] * 0.529177), 2) for p in pieces] == [0.0, 1.0]
+
+
+def test_async_schedule_samples_channels_inside_the_one_queue_without_a_stage_barrier():
+    """Channel sampling hands back conformer pairs; each is connected by the same queue (a fast TS first),
+    not by a path search of its own, and nothing waits for a stage to end."""
+    connect = _AsyncConnector()
+    sampled = []
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    def pairs(item):
+        a, b, label = item
+        sampled.append(label)
+        assert len(connect.calls) == 1                                     # while the queue runs
+        return {"start": [a], "end": [b], "pairs": [(a.copy(), b.copy()), (a.copy(), b.copy())]}
+
+    refine.pairs, refine.width = pairs, 3
+    res = expand_network(_node("CCO"), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6},
+                         schedule="async", refine=refine)
+    assert sampled and len(connect.calls) == 1 and len(res.rounds) == 1   # one queue, no cycles after it
+    assert res.rounds[0]["channels"] == len(sampled) == len(set(sampled))  # each species pair sampled once
+    assert len(connect.channel_labels) == 2 * len(sampled) == len(set(connect.channel_labels))

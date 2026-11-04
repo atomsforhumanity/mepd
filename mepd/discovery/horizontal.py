@@ -144,6 +144,8 @@ class HorizontalConnector:
         # the caller's FreeEnergies: a TS job also computes the TS's thermal correction (`free_cache`)
         self.free = None
         self._jobs: dict = {}     # the caller's own job kinds: kind -> (function, worker slots it takes)
+        # the caller's budget: once it returns True no job starts; the ones running finish and the call ends
+        self.stop_when = None
         self._live = None         # while a call runs: its add_pairs / submit
 
     def register(self, kind: str, fn, slots: int = 1) -> None:
@@ -152,14 +154,19 @@ class HorizontalConnector:
         workers should run it: they fork with the function in place."""
         self._jobs[kind] = (fn, max(1, min(int(slots), self.workers)))
 
-    def submit(self, kind: str, args: tuple, on_done) -> None:
+    def submit(self, kind: str, args: tuple, on_done, label: str = "") -> None:
         """While a call runs (from one of its callbacks): queue a registered job; `on_done(result or None)` is
-        called in the caller's thread when it ends (None: it raised)."""
-        self._live.submit(kind, args, on_done)
+        called in the caller's thread when it ends (None: it raised). `label`: what the live view calls it."""
+        self._live.submit(kind, args, on_done, label)
 
     def add_pairs(self, pairs, search: bool = False) -> None:
         """While a call runs (from one of its callbacks): connect these pairs too (`nodes` must hold them)."""
         self._live.add_pairs(pairs, search)
+
+    def add_channel(self, pair, a, b, label: str) -> None:
+        """While a call runs: connect species `pair` once more, from structures `a` and `b` of its two
+        species (a conformer pair, atom-mapped) -- a fast TS as `label`, a path search if that fails."""
+        self._live.add_channel(pair, a, b, label)
 
     def queue_state(self) -> dict:
         """What a resumed run needs to carry on: the iced pieces and the piece numbering."""
@@ -194,10 +201,10 @@ class HorizontalConnector:
         except Exception:
             return None   # the caller computes it, or keeps the electronic energy (said)
 
-    def _fast_ts(self, i: int, j: int, a, b):
+    def _fast_ts(self, i: int, j: int, a, b, label: Optional[str] = None):
         import mepd
 
-        label = f"fast_{i}_{j}"
+        label = label or f"fast_{i}_{j}"
         if (self.ts_dir / f"{label}.xyz").exists():
             ts = mepd.load(self.ts_dir / f"{label}.xyz")
             return ts, label, self._ts_correction(ts, label)
@@ -361,10 +368,10 @@ class HorizontalConnector:
                 if outstanding[pair] == 0 and on_pair_done is not None:
                     on_pair_done(pair)
 
-            def start_search(pair):
+            def start_search(pair, a=None, b=None):
                 i, j = pair
                 try:
-                    root = self._root_chain(nodes[i], nodes[j])
+                    root = self._root_chain(nodes[i] if a is None else a, nodes[j] if b is None else b)
                 except Exception as exc:
                     log_event({"event": "pair_failed", "pair": [i, j], "why": f"{type(exc).__name__}: {exc}"})
                     if not outstanding.get(pair) and on_pair_done is not None:
@@ -383,6 +390,18 @@ class HorizontalConnector:
                 return kind == "piece" and args[2] > 0 and relevant is not None
 
             def fill(final=False):
+                if self.stop_when is not None and waiting and self.stop_when():
+                    counts["dropped"] = counts.get("dropped", 0) + len(waiting)
+                    log_event({"event": "queue_stopped", "dropped": len(waiting)})
+                    dropped = list(waiting)
+                    waiting.clear()
+                    for kind, pair, args in dropped:
+                        if kind.startswith("own:"):
+                            own_done.pop(id(args), None)
+                            own_label.pop(id(args), None)
+                        else:
+                            settle(pair)
+                    return
                 k = 0
                 while k < len(waiting) and busy() < self.workers:
                     job = waiting[k]
@@ -418,6 +437,36 @@ class HorizontalConnector:
             for pair, args in thawing:
                 queue("piece", pair, *args)
             own_done: dict = {}   # id(args) of a registered job -> its on_done
+            own_label: dict = {}  # ... and what the live view calls it
+            finished: dict = {}   # job kind -> (done, failed), for the live view
+            shown = [0.0]
+
+            def what(kind, pair, args) -> str:
+                if kind == "fast":
+                    return f"{pair[0]}→{pair[1]}" + (f" · {args[4]}" if len(args) > 4 and args[4] else "")
+                if kind == "piece":
+                    return f"{pair[0]}→{pair[1]} · depth {args[2]}"
+                if kind == "ts":
+                    return str(args[1])
+                return own_label.get(id(args), "")
+
+            def show(force=False):
+                """The queue as the live view shows it (at most once a second)."""
+                import time
+
+                from mepd.progress import write_live_state
+
+                if not force and time.monotonic() - shown[0] < 1.0:
+                    return
+                shown[0] = time.monotonic()
+                queued: dict = {}
+                for kind, _, _ in waiting:
+                    queued[kind.removeprefix("own:")] = queued.get(kind.removeprefix("own:"), 0) + 1
+                write_live_state("queue", "queue", {
+                    "workers": self.workers, "busy": busy(), "waiting": queued, "iced": len(self.iced),
+                    "running": [{"kind": k.removeprefix("own:"), "what": what(k, p, a)} for k, p, a in running.values()],
+                    "finished": {k: {"done": d, "failed": f} for k, (d, f) in finished.items()},
+                    "counts": dict(counts), "ended": force})
 
             def add_pairs(new, search_=False):
                 for i, j in new:
@@ -427,16 +476,21 @@ class HorizontalConnector:
                     else:
                         queue("fast", (i, j), i, j, nodes[i], nodes[j])
 
-            def submit(kind, args, on_done):
+            def submit(kind, args, on_done, label=""):
                 own_done[id(args)] = on_done
+                own_label[id(args)] = label
                 waiting.append(("own:" + kind, None, args))
 
-            self._live = SimpleNamespace(add_pairs=add_pairs, submit=submit)
+            def add_channel(pair, a, b, label):
+                queue("fast", tuple(pair), pair[0], pair[1], a, b, label)
+
+            self._live = SimpleNamespace(add_pairs=add_pairs, submit=submit, add_channel=add_channel)
             if start is not None:
                 start()
 
             while True:
                 fill()
+                show()
                 if not running:
                     # only pieces nobody reaches yet: the network is as complete as this call makes it
                     counts["deferred"] = max(counts["deferred"], len(waiting))
@@ -465,7 +519,10 @@ class HorizontalConnector:
                             out = None
                         except Exception:
                             out = None
+                        d, f = finished.get(kind.removeprefix("own:"), (0, 0))
+                        finished[kind.removeprefix("own:")] = (d + (out is not None), f + (out is None))
                         if kind.startswith("own:"):
+                            own_label.pop(id(args), None)
                             own_done.pop(id(args))(out)
                             continue
                         if kind == "piece" and args[2] > 0 and any(p == pair and a is args for p, a in thawing):
@@ -481,7 +538,7 @@ class HorizontalConnector:
                                                   "pair": [i, j]}})
                             else:
                                 counts["fast_failed"] += 1
-                                start_search(pair)
+                                start_search(pair, *args[2:4])   # from the structures it was given
                         elif kind == "piece":
                             if out is None:
                                 continue
@@ -539,6 +596,10 @@ class HorizontalConnector:
                             settle(pair)
         finally:
             self._live = None
+            try:
+                show(force=True)
+            except Exception:
+                pass
             pool.shutdown(wait=True, cancel_futures=True)
             _CONNECTOR.pop("self", None)
         log_event({"event": "horizontal_connect", "pairs": len(pairs), **counts})
@@ -549,5 +610,6 @@ class HorizontalConnector:
                     if counts["path_peak"] else "")
                  + (f", {counts['capped']} pieces over the per-pair cap not run" if counts["capped"] else "")
                  + (f", {counts['thawed']} iced pieces thawed" if counts["thawed"] else "")
-                 + (f", {len(self.iced)} pieces nothing reaches yet iced" if self.iced else "") + ").")
+                 + (f", {len(self.iced)} pieces nothing reaches yet iced" if self.iced else "")
+                 + (f"; out of budget, {counts['dropped']} queued jobs not run" if counts.get("dropped") else "") + ").")
         return found

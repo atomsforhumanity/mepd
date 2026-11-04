@@ -982,7 +982,8 @@ def _steering_note(steering: Optional[dict], steps: Optional[list], species: lis
 
 
 def collect_graph_enumeration(out: Path, charge: int, multiplicity: int) -> dict:
-    s = _read_json(out / "summary.json") or {}
+    # a running async expansion: the network so far (its steps' TS and IRC files) until summary.json is written
+    s = _read_json(out / "summary.json") or _read_json(out / "summary_partial.json") or {}
     species = s.get("species") or []
     outcomes = s.get("outcomes") or {}
     result = _minima_result(out, "species.xyz", charge, multiplicity, "Species", s.get("seed_energy"), [

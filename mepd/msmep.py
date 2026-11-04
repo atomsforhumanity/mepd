@@ -1069,7 +1069,8 @@ class MSMEP:
                 self._na_finish_leaf(leaf, input_chain, na_state_in, na_floor, na_cutoff)
             return leaf, []
 
-        if resolved_max_depth is not None and tree_depth >= resolved_max_depth:
+        defer = bool(getattr(self.inputs.path_min_inputs, "defer_split_pieces", False))
+        if resolved_max_depth is not None and tree_depth >= resolved_max_depth and not defer:
             leaf = self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
                                       "max_depth_reached")
             if na_cutoff is not None:
@@ -1124,6 +1125,14 @@ class MSMEP:
                 leaf.rejected_chains = history_node.rejected_chains
                 return leaf, []
             sequence_of_chains = kept
+        if defer and resolved_max_depth is not None and tree_depth >= resolved_max_depth:
+            # defer_split_pieces: at the depth limit the split's pieces are not run here but handed back
+            # unminimized (node_<i>_deferred_<k>.xyz), for a caller that runs each only once its kinetics
+            # put material at one of its ends (the explorer's channel searches)
+            leaf = _empty_leaf(tree_node_index, status="deferred_split")
+            leaf.rejected_chain = chain_trajectory[-1].copy()
+            leaf.deferred_chains = [p.copy() for p in sequence_of_chains]
+            return leaf, []
         self._set_child_same_pair_split_lineage(
             sequence_of_chains, input_chain, same_pair_split_count + 1
         )

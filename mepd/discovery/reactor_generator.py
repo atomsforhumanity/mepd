@@ -1,0 +1,260 @@
+"""The interactive Reactor, unattended, as a network-expansion product generator.
+
+What a person does in the Reactor (mepd.web.sandbox) with the piston on and
+"keep colliding" ticked: Langevin dynamics on GFN2-xTB (tblite) inside the
+nanoreactor's soft wall, which the piston swings between a wide and a
+squeezed radius, while Collide every so often pulls two atoms chosen at
+random toward their moving midpoint for a moment and lets go. Nothing picks
+the chemistry: the piston and the random pulls supply the energy, and the
+kinetics decide afterwards which of the reactions matter.
+
+The trajectory is read like the nanoreactor's (its bond hysteresis, minimum
+lifetime and event detection), and the structure right after each reaction
+event is one product: whole, in the input's atom order, one per distinct
+bond graph and stereochemistry, earliest first across `n_seeds`
+independent trajectories. Batches of `n_seeds` trajectories run until the
+products have converged: until the events whose product was seen only once
+(Good-Turing's estimate of the chance that the next event gives a product
+not yet seen) are at most `unseen` of all events, or `max_batches` ran.
+"""
+from __future__ import annotations
+
+import json
+import os
+from collections import Counter
+from typing import Optional
+
+import numpy as np
+from qcref.constants import ANGSTROM_TO_BOHR
+
+from mepd.cpus import available_cpus
+from mepd.discovery.langevin import BOHR, KCAL
+TRAJ_FS = 2.0                    # frame spacing read by the event detection (the Reactor's and nanoreactor's)
+
+OPTIONS = {"temperature": 800.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
+           "pull_fs": 300.0, "gap_fs": 200.0, "k": 100.0, "intra_hops": 2, "n_seeds": 0, "seed": 0,
+           "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": ""}
+LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
+
+
+def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[int, int]]:
+    """The Reactor's Collide pick (Sandbox.js collisionPair), with `rng`: two
+    heavy atoms of two different molecules (not both water when there is a
+    choice); or, 30% of the time and always with one molecule, two atoms of one
+    molecule at least `intra_hops` bonds apart. Unlike the Reactor's (3 bonds,
+    a heavy atom first, heavy pairs preferred), any such pair, two hydrogens
+    too: a person drags whatever looks promising, an unattended run must not
+    leave out the four-centre eliminations and H2 losses of a small molecule
+    (formic acid: the Reactor's rule leaves one pair, an H shift)."""
+    from mepd.discovery.collide_generator import _bonds, _hops
+
+    n = len(symbols)
+    bonds = _bonds(symbols, np.asarray(xyz_A))
+    hops = _hops(n, bonds)
+    mols, seen = [], set()
+    for a in range(n):
+        if a not in seen:
+            m = [b for b in range(n) if np.isfinite(hops[a, b])]
+            seen.update(m)
+            mols.append(m)
+    heavy = lambda i: symbols[i] != "H"
+    pool = [(a, b) for m in mols for a in m for b in m if b < a and hops[a, b] >= max(2, int(intra_hops))]
+    pick_intra = (lambda: tuple(int(x) for x in pool[rng.integers(len(pool))])) if pool else (lambda: None)
+    if len(mols) < 2 or (pool and rng.random() < 0.3):
+        return pick_intra()
+    water = lambda m: len(m) == 3 and sorted(symbols[i] for i in m) == ["H", "H", "O"]
+    pick = lambda xs: xs[rng.integers(len(xs))]
+    solutes = [m for m in mols if not water(m)]
+    a = pick(solutes or mols)
+    others = [m for m in solutes if m is not a]
+    b = pick(others if others and rng.random() < 0.6 else [m for m in mols if m is not a])
+    hv = lambda m: [i for i in m if heavy(i)] or m
+    return int(pick(hv(a))), int(pick(hv(b)))
+
+
+def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, compress, period_ps, duty, pull_fs,
+                gap_fs, k, intra_hops, seed, workdir: str = "") -> np.ndarray:
+    """One Reactor run: frames (Angstrom) every TRAJ_FS fs. With `workdir`, it is also written as it runs into
+    a new <workdir>/run_kk laid out like a nanoreactor job (md/segment_kkk.xyz every LIVE_FRAMES frames,
+    md/schedule.json, live_events.json): the web UI's Reactor view shows it live."""
+    from mepd.discovery.langevin import LangevinMD, pull_pairs
+    from mepd.discovery.nanoreactor import auto_radius
+    from mepd.web.sandbox import piston_radius
+
+    pos = np.asarray(xyz_A, dtype=float) / BOHR
+    pos = pos - pos.mean(axis=0)
+    # the wall: as the Reactor started from one geometry (2 A past the farthest atom), at least the nanoreactor's
+    wide = max(auto_radius(len(symbols)), float(np.linalg.norm(pos, axis=1).max()) * BOHR + 2.0)
+    piston = {"period_ps": float(period_ps), "compress": float(compress), "duty": float(duty), "t0": 0.0} \
+        if float(compress) < 1 else None
+    k_au = float(k) / KCAL * BOHR * BOHR
+    pair = [None]
+    md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature, wall=wide, seed=seed,
+                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au))
+    rng = md.rng
+    md.start()
+    frames, t_fs = [md.pos * BOHR], 0.0
+    live = _LiveRun(workdir, symbols, int(charge), float(time_ps), wide, piston, seed)
+    next_frame, pull_end = TRAJ_FS, 0.0
+    next_pull = float(rng.exponential(gap_fs)) if gap_fs > 0 else 0.0
+    while t_fs < float(time_ps) * 1000.0 - 1e-9:
+        if pair[0] is not None and t_fs >= pull_end:
+            pair[0] = None
+            next_pull = t_fs + (float(rng.exponential(gap_fs)) if gap_fs > 0 else 0.0)
+        elif pair[0] is None and t_fs >= next_pull:
+            pair[0] = collision_pair(symbols, md.pos * BOHR, rng, intra_hops)
+            pull_end = t_fs + float(pull_fs)
+            if pair[0] is None:             # nothing to pull: the piston alone
+                next_pull = float("inf")
+        md.wall = piston_radius(t_fs, wide, piston)
+        try:
+            if not md.step():               # an SCF that failed: stepped back, cooled down (as the Reactor)
+                continue
+        except Exception:
+            break
+        t_fs += md.dt
+        if t_fs >= next_frame - 1e-9:
+            frames.append(md.pos * BOHR)
+            next_frame += TRAJ_FS
+            live.add(frames)
+    live.add(frames, final=True)
+    return np.asarray(frames)
+
+
+class _LiveRun:
+    """A trajectory written for the web's Reactor view as it runs (nothing without a workdir)."""
+
+    def __init__(self, workdir: str, symbols, charge: int, time_ps: float, wide: float, piston, seed: int = 0):
+        import json
+
+        from mepd.discovery.nanoreactor_generator import run_dir
+        from mepd.web.sandbox import piston_radius
+
+        self.run = run_dir(workdir) if workdir else None
+        self.symbols, self.charge, self.written, self.k = list(symbols), charge, 0, 0
+        if self.run is not None:   # the wall radius every 50 fs, as the view reads a piston schedule
+            n = max(1, int(round(time_ps * 20)))
+            (self.run / "md" / "schedule.json").write_text(json.dumps({
+                "dump_fs": TRAJ_FS, "time_ps": time_ps, "seed": int(seed),
+                "segments": [[0.05, piston_radius(50.0 * i, wide, piston)] for i in range(n)]}))
+
+    def add(self, frames, final: bool = False) -> None:
+        if self.run is None:
+            return
+        from mepd.discovery.nanoreactor_generator import write_live_events
+
+        if final:   # (the view stops following a run once this is there)
+            self._write(frames)
+            (self.run / "md" / "done").write_text("")
+            write_live_events(self.run, total_charge=self.charge, dt_fs=TRAJ_FS)
+            return
+        if len(frames) - self.written >= LIVE_FRAMES:
+            self._write(frames)
+            write_live_events(self.run, total_charge=self.charge, dt_fs=TRAJ_FS)
+
+    def _write(self, frames) -> None:
+        if len(frames) <= self.written:
+            return
+        block = frames[self.written:]
+        text = "".join(f"{len(self.symbols)}\n\n" + "".join(f"{e} {x:.4f} {y:.4f} {z:.4f}\n"
+                                                           for e, (x, y, z) in zip(self.symbols, f)) for f in block)
+        fp = self.run / "md" / f"segment_{self.k:03d}.xyz"
+        fp.with_suffix(".tmp").write_text(text)
+        fp.with_suffix(".tmp").replace(fp)
+        self.written, self.k = len(frames), self.k + 1
+
+
+def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> list:
+    """One trajectory's reactor states, [(event frame, key, xyz Angstrom)] earliest
+    first, and every event's product key (repeats included); a key is [sorted bonds, stereo SMILES]."""
+    from qcdata import Structure
+
+    from mepd.discovery.nanoreactor import DetectSettings, bond_history, detect_events
+    from mepd.discovery.nanoreactor_generator import select_states
+
+    frames = _trajectory(symbols, xyz_A, charge, multiplicity, **options)
+    detect = DetectSettings()
+    hist = bond_history(symbols, frames, detect, TRAJ_FS)
+    events = detect_events(len(symbols), hist, detect, TRAJ_FS)
+    structure = Structure(symbols=list(symbols), geometry=np.asarray(xyz_A) * ANGSTROM_TO_BOHR,
+                          charge=int(charge), multiplicity=int(multiplicity))
+    out, torn, keys = select_states(structure, frames, hist, events, max_products, with_keys=True)
+    key = lambda k: [sorted(map(list, k[0])), k[1]]
+    return {"states": [(int(f), key(k), (np.asarray(x.geometry) / ANGSTROM_TO_BOHR).tolist()) for f, k, x in out],
+            "keys": [key(k) for k in keys], "events": len(events), "torn": torn}
+
+
+def reactor_products(structure, *, max_products: int = 20, temperature: float = 800.0, time_ps: float = 5.0,
+                     compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75, pull_fs: float = 300.0,
+                     gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2, n_seeds: int = 0, seed: int = 0,
+                     unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "") -> list:
+    """Product structures (input atom order) of batches of `n_seeds` Reactor
+    runs of `structure` (default: one per process), `parallel` at a time
+    (default: all CPUs), until converged (the module's docstring)."""
+    symbols = [str(s) for s in structure.symbols]
+    xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    width = max(1, int(parallel) or available_cpus())
+    n = max(1, int(n_seeds) or width)
+    options = dict(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
+                   period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
+                   k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""))
+    runs, errors = [], []
+    for batch in range(max(1, int(max_batches))):
+        jobs = [(symbols, xyz.tolist(), int(structure.charge), int(structure.multiplicity), int(max_products),
+                 {**options, "seed": int(seed) + batch * n + s}) for s in range(n)]
+        done = _run_in_processes(jobs, min(width, n))
+        errors += [r for r in done if isinstance(r, str)]
+        runs += [r for r in done if isinstance(r, dict)]
+        counts = Counter(json.dumps(k) for r in runs for k in r["keys"])
+        events = sum(counts.values())
+        f1 = sum(c == 1 for c in counts.values()) / events if events else 1.0
+        print(f"reactor: batch {batch + 1}: {len(counts)} distinct products in {events} events; "
+              f"{f1:.0%} of the events gave a product seen once (converged at {unseen:.0%}).", flush=True)
+        if f1 <= float(unseen):
+            break
+    pooled = sorted((f, s, json.dumps(k), x) for s, r in enumerate(runs) for f, k, x in r["states"])
+    out, seen = [], set()
+    for _, _, key, x in pooled:
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(out) < int(max_products):
+            out.append(structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR}))
+    print(f"reactor: {len(out)} distinct product(s) from {len(runs)} trajectories of {time_ps:g} ps at "
+          f"{temperature:g} K ({sum(r['events'] for r in runs)} events, "
+          f"{sum(r['torn'] for r in runs)} states with a loose atom skipped).", flush=True)
+    if errors:
+        print(f"reactor: {len(errors)} trajectory(ies) failed, the first: {errors[0]}", flush=True)
+    return out
+
+
+def _run_in_processes(jobs: list, width: int) -> list:
+    """`_states(*job)` for each job, in fresh Python processes `width` at a
+    time (started, not forked: the explorer calls generators from threads)."""
+    import json
+    import subprocess
+    import sys
+    from concurrent.futures import ThreadPoolExecutor
+
+    if width <= 1:
+        return [_states(*j) for j in jobs]
+
+    def run(job):
+        r = subprocess.run([sys.executable, "-c", "from mepd.discovery.reactor_generator import _worker; _worker()"],
+                           input=json.dumps(job), capture_output=True, text=True,
+                           env={**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+                                "OPENBLAS_NUM_THREADS": "1"})
+        if r.returncode != 0:
+            return f"reactor process failed: {r.stderr.strip()[-300:]}"
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        return list(pool.map(run, jobs))
+
+
+def _worker() -> None:
+    import json
+    import sys
+
+    symbols, xyz, q, m, max_products, options = json.loads(sys.stdin.read())
+    print(json.dumps(_states(symbols, np.asarray(xyz), q, m, max_products, options)))

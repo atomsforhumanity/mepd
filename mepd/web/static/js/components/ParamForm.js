@@ -1,7 +1,7 @@
 // Renders any operation's parameter form from its pydantic JSON schema.
 // Field extras from mepd.web.operations: group, advanced, cli, cli_kind.
 import { html, useEffect, useState } from '../lib.js';
-import { prefs } from '../store.js';
+import { prefs, useStore } from '../store.js';
 import { Why } from './Why.js';
 
 // A number field that lets you type: it keeps its own text while you edit
@@ -47,7 +47,19 @@ function Field({ name, prop, value, onChange, op }) {
   const t = fieldType(prop);
   const hint = [prop.description, prop.cli ? `CLI: ${prop.cli}` : ''].filter(Boolean).join('\n');
   const id = `f-${name}`;
+  const profiles = useStore((s) => s.profiles) || [];
   let control;
+  if (prop.choices_from === 'profiles') {   // one of the workspace's saved profiles, or none
+    control = html`<select id=${id} value=${value ?? ''} onChange=${(e) => onChange(e.target.value)}>
+      <option value="">none</option>
+      ${profiles.map((o) => html`<option value=${o}>${o}</option>`)}
+    </select>`;
+    return html`
+      <div class="field" title=${hint}>
+        <label class="field-label" for=${id}>${prop.title || name}${info}</label>
+        ${control}
+      </div>`;
+  }
   if (t.kind === 'boolean') {
     return html`
       <label class="field field-bool" title=${hint}>
