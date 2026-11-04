@@ -410,10 +410,9 @@ def run_geodesic(chain: Union[Chain, List[StructureNode]], chain_inputs=None, re
     path = path / to_a
     if len(frozen):
         hold_frozen(path, frozen)
-    if sub is None:
-        smoother.path = path
-    else:
-        smoother.path = smoother.path / to_a
+    # Callers build nodes from smoother.path: always the whole system's (the
+    # sub-system's lengths are the path's, its frozen rest does not move).
+    smoother.path = path
     xyz_coords = path
     charge = chain[0].structure.charge
     spinmult = chain[0].structure.multiplicity
