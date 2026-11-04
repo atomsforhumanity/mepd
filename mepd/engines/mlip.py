@@ -234,7 +234,7 @@ class MLIPEngine(ASEEngine):
         calculator: str | None = None,
         calculator_kwds: dict | None = None,
         options: dict | None = None,
-        geometry_optimizer: str = "LBFGSLineSearch",
+        geometry_optimizer: str = "LBFGS",
         transition_state_optimizer: str = "SELLA",
         ase_optimizer=None,
     ):

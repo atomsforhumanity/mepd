@@ -577,6 +577,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **MLIP endpoint minimizations in implicit solvent failed, and runs went on from unminimized endpoints**
+  ("Endpoint batch minimization failed (ElectronicStructureError: Electronic structure failed.)").
+  Two causes. The endpoints are optimized in threads that share one UMA model on the GPU, and torch's
+  lazy load of its CUDA linear algebra is not thread-safe ("lazy wrapper should be called at most
+  once"): FAIR-Chem forward passes now take turns. And the `LBFGSLineSearch` optimizer stalls on an MLIP's
+  float32 forces where the solvation correction cancels most of the force (`LineSearch failed!`): in ALPB
+  water, 6 small molecules x 2 repeats, 9 of 12 converged with UMA and 2 of 12 with AIMNet2, against 12
+  of 12 each with `LBFGS`. The FAIR-Chem and MLIP engines (and their Settings defaults) now use `LBFGS`.
 - **CPCM-X solvation energies were the same for every solvent.** With `--cpcmx`, xtb's `energy` file holds the
   conductor-like SCF energy CPCM-X starts from (on HCN: -7.0 kcal/mol in water, THF and hexane alike); mepd now
   reads the printed CPCM-X total (water -5.65, hexane -4.12, as xtb's own dG_solv). xtb also needs CPCM-X's

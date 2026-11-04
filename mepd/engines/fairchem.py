@@ -13,6 +13,7 @@ gated `facebook/UMA` weights for the named UMA models).
 """
 from __future__ import annotations
 
+import threading
 from typing import List, Union
 
 import numpy as np
@@ -29,6 +30,12 @@ from mepd.nodes.nodehelpers import update_node_cache
 from mepd.qcdata_structure_helpers import structure_to_ase_atoms
 
 _EV_PER_ANG_TO_HARTREE_PER_BOHR = 1.0 / (Hartree * ANGSTROM_TO_BOHR)
+
+# One forward pass at a time across threads (e.g. endpoints optimized in a
+# thread pool): torch's lazy load of its CUDA linear-algebra library is not
+# thread-safe ("lazy wrapper should be called at most once"), and the GPU
+# runs the passes one after another anyway.
+_PREDICT_LOCK = threading.Lock()
 
 
 def _inference_settings(name):
@@ -75,7 +82,7 @@ class FAIRChemEngine(ASEEngine):
         checkpoint: str | None = None,
         inference_settings: str = "default",
         batch_size: int = 32,
-        geometry_optimizer: str = "LBFGSLineSearch",
+        geometry_optimizer: str = "LBFGS",
         transition_state_optimizer: str = "SELLA",
         ase_optimizer=None,
     ):
@@ -178,7 +185,9 @@ class FAIRChemEngine(ASEEngine):
         calc = self.calculator
         for atoms in atoms_chunk:
             calc.predictor.validate_atoms_data(atoms, calc.task_name)
-        pred = calc.predictor.predict(atomicdata_list_to_batch([calc.a2g(atoms) for atoms in atoms_chunk]))
+        batch = atomicdata_list_to_batch([calc.a2g(atoms) for atoms in atoms_chunk])
+        with _PREDICT_LOCK:
+            pred = calc.predictor.predict(batch)
         return (pred["energy"].detach().cpu().numpy().reshape(-1),
                 pred["forces"].detach().cpu().numpy().reshape(-1, 3))
 
