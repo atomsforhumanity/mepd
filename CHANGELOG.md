@@ -358,6 +358,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **The reactor generator runs at 2200 K by default** (was 800 K; `reactor_generator.OPTIONS`, the web form's
+  "MD temperature"). Of the temperatures measured, 2200 K with 5 ps trajectories was the fastest to propose both
+  HCOOH channels (CO + H2O and CO2 + H2) reliably, from the monomer and the (HCOOH)4 cluster (98-100% of runs).
+  At 1800 K CO + H2O was missing from 12-16% of runs.
+
 - **One Langevin integrator for the Reactor, collide and the reactor generator** (`mepd/discovery/langevin.py`).
   The interactive Reactor's MD loop, each collision of the collide generator and the reactor generator's
   trajectories had their own copy of the GFN2-xTB (tblite) BAOAB loop, wall and capped pulls; they now share

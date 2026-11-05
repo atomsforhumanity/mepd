@@ -462,7 +462,7 @@ class ExpandParams(Params):
     reactor_compress: float = P(0.5, "Squeeze to (of the wall radius)", "The piston closes the wall to this "
                                 "fraction of its radius once per picosecond.", kind="custom", gt=0, le=1,
                                 requires="generator=nanoreactor", advanced=True, group="Nanoreactor")
-    rx_temperature: float = P(800.0, "MD temperature (K)", "The Reactor's Langevin MD: the piston and random "
+    rx_temperature: float = P(2200.0, "MD temperature (K)", "The Reactor's Langevin MD: the piston and random "
                               "Collide pulls supply the energy, so it runs far cooler than the nanoreactor.",
                               kind="custom", gt=0, requires="generator=reactor")
     rx_seeds: int = P(0, "Trajectories per batch", "Independent 5 ps trajectories. 0: one per worker.",

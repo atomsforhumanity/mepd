@@ -35,7 +35,7 @@ from mepd.cpus import available_cpus
 from mepd.discovery.langevin import BOHR, KCAL
 TRAJ_FS = 2.0                    # frame spacing read by the event detection (the Reactor's and nanoreactor's)
 
-OPTIONS = {"temperature": 800.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
+OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
            "pull_fs": 300.0, "gap_fs": 200.0, "k": 100.0, "intra_hops": 2, "n_seeds": 0, "seed": 0,
            "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": ""}
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
@@ -219,7 +219,7 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
     return {"states": states, "keys": keys, "events": len(events), "torn": torn}
 
 
-def reactor_products(structure, *, max_products: int = 20, temperature: float = 800.0, time_ps: float = 5.0,
+def reactor_products(structure, *, max_products: int = 20, temperature: float = 2200.0, time_ps: float = 5.0,
                      compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75, pull_fs: float = 300.0,
                      gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2, n_seeds: int = 0, seed: int = 0,
                      unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "") -> list:
