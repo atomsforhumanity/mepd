@@ -34,6 +34,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 PY = "/home/user/astera/mepd/.venv/bin/python"
 ORCA = "/home/user/.local/opt/orca-6.0.0/orca"
+# flux decisions on DFT single points (wB97X-D3BJ/def2-TZVP) where ORCA is installed
+STEER = ["--steer-energies", str(HERE / "orca_steer.toml")] if os.access(ORCA, os.X_OK) else []
 R_KCAL = 1.987204e-3
 
 COMMON = ["--charge", "0", "--multiplicity", "1", "--steer", "access", "--schedule", "async",
@@ -42,16 +44,15 @@ BENCHES = {
     # experiment: dehydration (CO + H2O) : decarboxylation (CO2 + H2) = 6.3-10
     "hcooh": dict(seed="hcooh.xyz", expt=(6.3, 10.0), args=[
         "--inputs", str(HERE / "hcooh_profile.toml"), "--standard-state", "1atm",
-        "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"]),
+        "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"] + STEER),
     # the same, from the (HCOOH)4 cluster seed of the user's run j_4e10ef7a (spectator molecules)
     "hcooh4": dict(seed="hcooh4.xyz", expt=(6.3, 10.0), args=[
         "--inputs", str(HERE / "hcooh_profile.toml"), "--standard-state", "1atm",
-        "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"]),
+        "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"] + STEER),
     # experiment: endo:exo = 77:23
     "f0007": dict(seed="f0007_start_complex.xyz", expt=(77 / 23, 77 / 23), args=[
         "--inputs", str(HERE / "f0007_mlpgi.toml"), "--standard-state", "1M",
-        "--cutoff-temperature", "353", "--cutoff-time", "23400", "--temperature", "353", "--time", "23400"]
-        + (["--steer-energies", str(HERE / "f0007_orca_steer.toml")] if os.access(ORCA, os.X_OK) else [])),
+        "--cutoff-temperature", "353", "--cutoff-time", "23400", "--temperature", "353", "--time", "23400"] + STEER),
 }
 
 
