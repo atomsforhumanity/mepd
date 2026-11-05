@@ -66,7 +66,7 @@ def test_batches_stop_once_few_reactions_of_the_seed_give_a_product_seen_once(mo
 
     def fake(jobs, width):            # every trajectory finds the same two products: converged after one batch
         batches.append(len(jobs))
-        return [{"states": [(1, "A", XYZ.tolist())], "keys": [["A", True]] * 10 + [["B", True]] * 10,
+        return [{"states": [(1, "A", XYZ.tolist())], "keys": [["A", True, 5.0]] * 10 + [["B", True, 5.0]] * 10,
                  "events": 20, "torn": 0} for _ in jobs]
 
     monkeypatch.setattr(rg, "_run_in_processes", fake)
@@ -75,15 +75,49 @@ def test_batches_stop_once_few_reactions_of_the_seed_give_a_product_seen_once(mo
 
     batches.clear()
     monkeypatch.setattr(rg, "_run_in_processes", lambda jobs, width: batches.append(1) or [
-        {"states": [], "keys": [[f"new{len(batches)}", True]], "events": 1, "torn": 0}])
+        {"states": [], "keys": [[f"new{len(batches)}", True, 5.0]], "events": 1, "torn": 0}])
     rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3)
     assert len(batches) == 3      # every event a new product: never converged, stops at max_batches
 
     batches.clear()                # one product, but too few reactions of the seed to tell (< 1/unseen)
     monkeypatch.setattr(rg, "_run_in_processes", lambda jobs, width: batches.append(1) or [
-        {"states": [], "keys": [["A", True], ["C", False]], "events": 2, "torn": 0}])
+        {"states": [], "keys": [["A", True, 5.0], ["C", False, 5.0]], "events": 2, "torn": 0}])
     rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3)
     assert len(batches) == 3
+
+
+
+def test_products_above_the_cutoff_are_proposed_but_dont_hold_up_convergence(monkeypatch):
+    import mepd.discovery.reactor_generator as rg
+    from qcdata import Structure
+
+    batches = []
+
+    def fake(jobs, width):   # one product within reach again and again, and a new one far above it every time
+        batches.append(1)
+        hi = f"high{len(batches)}"   # 2 of 22 events seen once: 9%
+        return [{"states": [(1, "A", XYZ.tolist()), (2, hi, (XYZ + 0.1).tolist())],
+                 "keys": [["A", True, 5.0]] * 20 + [[hi, True, 150.0], [hi + "b", True, 150.0]],
+                 "events": 22, "torn": 0}]
+
+    monkeypatch.setattr(rg, "_run_in_processes", fake)
+    s = Structure(symbols=SYM, geometry=XYZ / 0.529177210903)
+    rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3)
+    assert len(batches) == 3                       # without a cutoff: a new product every batch
+    batches.clear()
+    out = rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3, cutoff_kcal=80.0)
+    assert len(batches) == 1 and len(out) == 2     # converged at once; the high product still proposed
+
+
+def test_the_explorer_passes_the_reactor_what_is_left_of_the_access_cutoff():
+    from types import SimpleNamespace
+
+    from mepd.discovery.network_expansion import _generator_cutoff
+
+    sp = SimpleNamespace(rel_energy_kcal=20.0)
+    assert _generator_cutoff("reactor", {"n_seeds": 4}, 88.0, sp) == {"n_seeds": 4, "cutoff_kcal": 68.0}
+    assert _generator_cutoff("reactor", {}, None, sp) == {}
+    assert _generator_cutoff("collide", {}, 88.0, object()) == {}
 
 
 def test_an_event_that_only_renumbers_identical_atoms_is_no_product(monkeypatch):

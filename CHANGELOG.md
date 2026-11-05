@@ -406,6 +406,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Reactor generator: products the access cutoff can't reach don't hold up its convergence.** With `--steer access`,
+  the explorer passes the reactor what is left of the access cutoff above the species it expands; a product whose
+  quenched GFN2-xTB energy is further above that species (a step to it can't be lower than its reaction energy) is
+  still proposed but not counted by Good-Turing. No new option. (HCOOH)4 at 2200 K, 64 trajectories of 5 ps,
+  cutoff 87.9 kcal/mol: 8 of 70 reactions of the seed fall above it, and products seen once among those counted
+  drop from 29% to 19% -- still above 5%, as the low-lying tail is real (ring acetals, glyoxylic acid, ...). The
+  monomer has none above it: unchanged (converges after a median 28 trajectories).
+
 - **The reactor generator runs at 2200 K by default** (was 800 K; `reactor_generator.OPTIONS`, the web form's
   "MD temperature"). Of the temperatures measured, 2200 K with 5 ps trajectories was the fastest to propose both
   HCOOH channels (CO + H2O and CO2 + H2) reliably, from the monomer and the (HCOOH)4 cluster (98-100% of runs).
