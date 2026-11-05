@@ -62,7 +62,9 @@ def one(name: str, s: dict, spec: dict, base: Path) -> dict:
     opt = orca(spec["opt"])
     T, ss = float(spec["temperature"]), spec["standard_state"]
     try:
-        if "e_opt_at_input" not in rec:
+        if s["kind"] == "sp":       # single points only, at the given geometry (no optimization, no Hessian)
+            rec["opt_xyz"] = xyz_text(start, name)
+        if "e_opt_at_input" not in rec and s["kind"] != "sp":
             rec["e_opt_at_input"] = float(opt.compute_energies([StructureNode(structure=start)])[0])
             save()
         if "opt_xyz" not in rec:
@@ -83,7 +85,7 @@ def one(name: str, s: dict, spec: dict, base: Path) -> dict:
         (wd / f"{name}_opt.xyz").write_text(rec["opt_xyz"])
         sym, X = read_frames(wd / f"{name}_opt.xyz")[0]
         st = structure(sym, X, s.get("charge", 0), s.get("multiplicity", 1))
-        if "corr_kcal" not in rec:
+        if "corr_kcal" not in rec and s["kind"] != "sp":
             free = FreeEnergies(opt, T, ss)
             rec["corr_kcal"] = float(free._one(sym, X, int(st.charge), int(st.multiplicity), s["kind"] == "ts"))
             rec["corr_T"], rec["corr_ss"] = T, ss
