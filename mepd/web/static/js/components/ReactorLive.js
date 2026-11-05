@@ -218,14 +218,14 @@ function Transport({ p, children }) {
 // ------------------------------------------------------------ one event
 // An event at full time resolution with only its molecules, looping: bonds
 // that form dashed green, bonds that break dashed red.
-export function EventPlayer({ jobId, event, height = null, onData }) {
+export function EventPlayer({ jobId, event, height = null, onData, run = null }) {
   const host = useRef(null);
   const stage = useStage(host);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
     setData(null); setErr(null); stage.refit();
-    api.get(`/api/jobs/${jobId}/reactor/events/${event}`).then((x) => { setData(x); onData?.(x); })
+    api.get(`/api/jobs/${jobId}/reactor/events/${event}${run != null ? `?run=${run}` : ''}`).then((x) => { setData(x); onData?.(x); })
       .catch((e) => setErr(String(e.message || e)));
   }, [jobId, event]);
   const p = usePlayer(data ? data.frames.length : 0);
@@ -264,7 +264,7 @@ export function EventPlayer({ jobId, event, height = null, onData }) {
   </div>`;
 }
 
-function EventReplay({ jobId, ev, onClose }) {
+function EventReplay({ jobId, ev, onClose, run = null }) {
   const reaction = useStore((s) => (ev.reaction == null ? null : reactionOf(s.workspace, jobId, ev.reaction)));
   return html`<div class="rx-replay">
     <div class="rx-replay-head">
@@ -272,7 +272,7 @@ function EventReplay({ jobId, ev, onClose }) {
       <span class="rx-eq">${ev.label}</span>
     </div>
     ${reaction ? html`<${ReactionCard} r=${reaction} event=${ev.event} />`
-      : html`<${EventPlayer} jobId=${jobId} event=${ev.event} />
+      : html`<${EventPlayer} jobId=${jobId} event=${ev.event} run=${run} />
         <p class="small muted">${ev.reaction == null ? 'An exchange: the same molecules come out as went in.' : 'Its reaction is not in Explore (yet, or deleted).'}</p>`}
   </div>`;
 }
@@ -357,7 +357,56 @@ function activeAt(events, raw) {
   return events.filter((e) => raw >= e.reactant_frame && raw <= e.product_frame);
 }
 
+// A network expansion runs many reactor trajectories (output/reactor/run_kk, several at once): which
+// one the Reactor tab shows. You pick one and it stays; "follow" moves on to the newest running one
+// only when the one shown has ended.
+function useReactorRuns(job) {
+  const [runs, setRuns] = useState([]);
+  const [chosen, setChosen] = useState(null);
+  const [follow, setFollow] = useState(true);
+  const many = job.op === 'graph-enumeration';
+  useEffect(() => {
+    if (!many) return undefined;
+    let alive = true, timer;
+    const pull = async () => {
+      try {
+        const r = await api.get(`/api/jobs/${job.id}/reactor/runs`);
+        if (alive) setRuns(r.runs || []);
+      } catch { /* none yet */ }
+      if (alive && ['running', 'queued'].includes(job.status)) timer = setTimeout(pull, 2 * POLL_S * 1000);
+    };
+    pull();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [job.id, job.status, many]);
+  useEffect(() => {
+    if (!many || !runs.length) return;
+    const cur = chosen != null ? runs[chosen] : null;
+    if (cur && !(follow && cur.done)) return;
+    const live = runs.filter((r) => !r.done);
+    const pick = (live.length ? live : runs).reduce((a, b) => (b.updated > a.updated ? b : a));
+    if (!cur || pick.index !== cur.index) setChosen(pick.index);
+  }, [runs, follow, many]);
+  return { many, runs, run: many ? chosen : null, choose: (k) => { setFollow(false); setChosen(k); }, follow, setFollow };
+}
+
+function RunPicker({ runs, run, choose, follow, setFollow, running }) {
+  if (runs.length < 2) return null;
+  return html`<div class="rx-runs">
+    <div class="rx-runs-head small">
+      <b>Trajectories · ${runs.length}</b>
+      <span class="muted"> · ${runs.filter((r) => !r.done).length} running · click one to watch it</span>
+      ${running && html`<label class="check"><input type="checkbox" class="switch" checked=${follow}
+        onChange=${(e) => setFollow(e.target.checked)} /> follow the newest when this one ends</label>`}
+    </div>
+    <div class="rx-runs-list">${runs.map((r) => html`<button type="button" key=${r.index}
+        class=${`rx-run ${r.index === run ? 'on' : ''} ${r.done ? 'done' : 'live'}`} onClick=${() => choose(r.index)}
+        title=${`${r.name} · seed ${r.seed ?? '?'} · ${r.ps != null ? `${r.ps.toFixed(2)} ps` : 'starting'} · ${r.events} event(s)`}>
+      #${r.index + 1}<span class="rx-run-n">${r.events}</span></button>`)}</div>
+  </div>`;
+}
+
 export function ReactorLive({ job }) {
+  const pick = useReactorRuns(job);
   const host = useRef(null);
   const stage = useStage(host);
   const [d, setD] = useState(null);           // {symbols, frames, radius, stride, dump_fs, events, ...}
@@ -371,7 +420,7 @@ export function ReactorLive({ job }) {
   const iRef = useRef(0);
   const hud = useRef(null);
   const headEl = useRef(null);
-  const running = ['running', 'queued'].includes(job.status);
+  const running = ['running', 'queued'].includes(job.status) && !(pick.many && pick.runs[pick.run]?.done);
   const runningRef = useRef(running);
   runningRef.current = running;
   dRef.current = d;
@@ -384,7 +433,8 @@ export function ReactorLive({ job }) {
     let at = 0;
     const pull = async () => {
       try {
-        const r = await api.get(`/api/jobs/${job.id}/reactor?start=${next.current}`);
+        if (pick.many && pick.run == null) throw new Error('no run chosen yet');
+        const r = await api.get(`/api/jobs/${job.id}/reactor?start=${next.current}${pick.run != null ? `&run=${pick.run}` : ''}`);
         if (!alive) return;
         const now = performance.now();
         if (at && r.start > 0) {
@@ -397,11 +447,12 @@ export function ReactorLive({ job }) {
           ? { ...r, frames: old.frames.concat(r.frames), radius: old.radius.concat(r.radius) }
           : r));
       } catch (e) { /* not started yet */ }
-      if (alive && ['running', 'queued'].includes(job.status)) timer = setTimeout(pull, POLL_S * 1000);
+      const ended = pick.many && pick.run != null && pick.runs[pick.run]?.done;
+      if (alive && ['running', 'queued'].includes(job.status) && !ended) timer = setTimeout(pull, POLL_S * 1000);
     };
     pull();
     return () => { alive = false; clearTimeout(timer); };
-  }, [job.id, job.status]);
+  }, [job.id, job.status, pick.run, pick.run != null && !!pick.runs[pick.run]?.done]);
 
   const accent = cssVar('--accent', '#3868b8');
   const totalFs = d ? Math.max(d.total_ps * 1000, d.n_frames * d.dump_fs) : 1;
@@ -487,10 +538,11 @@ export function ReactorLive({ job }) {
     return () => cancelAnimationFrame(raf);
   }, [playing, speed, open]);
 
-  if (open) return html`<${EventReplay} jobId=${job.id} ev=${open} onClose=${() => { setOpen(null); stage.refit(); }} />`;
+  if (open) return html`<${EventReplay} jobId=${job.id} ev=${open} run=${pick.run} onClose=${() => { setOpen(null); stage.refit(); }} />`;
+  const picker = html`<${RunPicker} ...${pick} running=${['running', 'queued'].includes(job.status)} />`;
   if (d && !d.frames.length && d.prep) return html`<${PrepView} prep=${d.prep} running=${running} />`;
   if (!d || !d.frames.length) {
-    return html`<div class="empty-hint"><p>${running ? 'The reactor is being packed and relaxed; the MD shows here as it runs.' : 'No reactor trajectory in this output.'}</p></div>`;
+    return html`${picker}<div class="empty-hint"><p>${running ? 'The reactor is being packed and relaxed; the MD shows here as it runs.' : 'No reactor trajectory in this output.'}</p></div>`;
   }
   const n = d.frames.length;
   const pct = (fs) => `${Math.min(100, (100 * fs) / totalFs)}%`;
@@ -502,7 +554,7 @@ export function ReactorLive({ job }) {
   const on = new Set(activeIds ? activeIds.split(',').map(Number) : []);
   const active = d.events.filter((e) => on.has(e.event));
   const shown = [...d.events].sort((a, b) => a.start_fs - b.start_fs);
-  return html`<div class="rx-live">
+  return html`${picker}<div class="rx-live">
     <div class="rx-main">
       <div class="rx-stage-wrap">
         <div class="rx-stage" ref=${host}></div>
@@ -527,7 +579,7 @@ export function ReactorLive({ job }) {
       ${!running && !job.external && job.op !== 'graph-enumeration' && !job.params?.trajectory && html`<${RunLonger} job=${job} />`}
     </div>
     <aside class="rx-events">
-      <div class="section-title">Reaction events · ${shown.length}${d.final ? '' : ' so far'}</div>
+      <div class="section-title">Reaction events · ${shown.length}${d.final || !running ? '' : ' so far'}</div>
       ${!shown.length && html`<p class="small muted">None yet.</p>`}
       <ol>
         ${shown.map((e) => html`<li class=${on.has(e.event) ? 'on' : ''}>

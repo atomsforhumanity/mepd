@@ -231,8 +231,8 @@ def _reactor_states(structure, *, max_products: int, temperature: float, time_ps
              f"failed or jumped, at {settings.temperature:g} K); each time it went on from the last good frame.")
     hist = bond_history(symbols, frames, detect, settings.dump_fs)
     events = detect_events(len(symbols), hist, detect, settings.dump_fs)
-    out, torn, states = select_states(structure, frames, hist, events, max_products, with_keys=True)
-    report(len(events), states, torn, len(out), settings.temperature)
+    out, torn, keys = select_states(structure, frames, hist, events, max_products, with_keys=True)
+    report(len(events), len(set(keys)), torn, len(out), settings.temperature)
     return out
 
 
@@ -259,25 +259,42 @@ def piston_segments(settings) -> list:
 
 
 def select_states(structure, frames, hist, events, max_products: int, with_keys: bool = False):
-    """The structure after each event, one per distinct bond graph, earliest
-    first, skipping states with an atom that lost all its bonds. Returns
-    (products, number skipped as torn, number of distinct states); with
-    `with_keys`, each product is (event frame, bond set, structure)."""
-    seen = {frozenset(hist.initial)}
+    """The structure after each event, one per distinct bond graph and
+    stereochemistry (`stereo_key`), earliest first, skipping states with an
+    atom that lost all its bonds. Returns (products, number skipped as torn,
+    every other event's (bonds, stereo key), repeats included); with
+    `with_keys`, each product is (event frame, its key, structure)."""
+    start = (frozenset(hist.initial), stereo_key(structure))
+    seen = {start}
     bonded0 = {a for p in hist.initial for a in p}
-    out, torn = [], 0
+    out, torn, keys = [], 0, []
     for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
         bonds = frozenset(hist.bonds_at(ev.product_frame))
-        if bonds in seen:
-            continue
-        seen.add(bonds)
         # The hot MD eventually tears a structure into atoms: a state with an
         # atom that lost all its bonds (it had some) is no product guess.
-        bonded = {a for p in bonds for a in p}
-        if bonded0 - bonded:
+        if bonded0 - {a for p in bonds for a in p}:
             torn += 1
             continue
+        prod = structure.model_copy(update={"geometry": frames[ev.product_frame] * ANGSTROM_TO_BOHR})
+        key = (bonds, stereo_key(prod))
+        if key != start:
+            keys.append(key)
+        if key in seen:
+            continue
+        seen.add(key)
         if len(out) < int(max_products):
-            prod = structure.model_copy(update={"geometry": frames[ev.product_frame] * ANGSTROM_TO_BOHR})
-            out.append((int(ev.product_frame), bonds, prod) if with_keys else prod)
-    return out, torn, len(seen) - 1
+            out.append((int(ev.product_frame), key, prod) if with_keys else prod)
+    return out, torn, keys
+
+
+def stereo_key(structure) -> Optional[str]:
+    """The stereo SMILES of `structure` (mepd.compare's, stereochemistry from
+    3D), so two diastereomers with one bond graph (endo and exo) are two
+    products; None when it can't be built."""
+    from mepd.nodes.node import StructureNode
+    from mepd.nodes.nodehelpers import _stereo_smiles
+
+    try:
+        return _stereo_smiles(StructureNode(structure=structure))[0]
+    except Exception:
+        return None

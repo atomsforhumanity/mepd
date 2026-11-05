@@ -30,6 +30,113 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **A mepd agent skill** packaged as a Claude Code plugin (`plugin/`: SKILL.md, LESSONS.md) for the AFH
   research-skills catalog. (#16)
 
+- **Explorer, async: it stops when the kinetics converge or a budget runs out, not at a depth.** `--rounds` no
+  longer caps how far from the seed a species may be expanded: the queue ends when the live kinetics ask for
+  nothing more ("converged"), or when `--time-budget` (seconds), `--max-species` or a stop request (the web's
+  Stop & analyze) runs out -- then no new job starts, the running ones finish, and the network so far is
+  written with its kinetics. The round record's `stopped` says which. Web: "Time budget (h)" in the form.
+- **Explorer: IRC paths are kept whole and drawn.** An IRC check writes the full path through the TS
+  (minimized ends included) with its energies (`ts/<label>_irc.xyz` + `.energies`; it kept only the two
+  ends) and links it to its step, so the web shows each step's IRC, not only its TS. A running async
+  expansion writes its network so far (`summary_partial.json`) as it saves, and the web reads it.
+- **Web: the reactor generator's MD, live.** Each trajectory is written as it runs into
+  `<output>/reactor/run_kk` (segments, piston schedule, events), so the job's Reactor tab plays it.
+- **Web: run the async explorer live.** Network expansion has a "Reactor, live" method (the reactor
+  generator, access steering, `--schedule async`; cutoff temperature and time, standard state, and a saved
+  profile to steer with). Its Live tab shows the job queue (workers busy; running, waiting, done and failed
+  jobs of each kind; what each running job is) and the live kinetics (each species' population, which are
+  populated and expanded, how many steering single points are back), beside the species and steps that
+  already join Explore as they are found.
+- **Explorer, async: channel sampling is conformer pairs in the queue.** A step's sampling job only builds
+  conformers and atom-mapped conformer pairs (`run_channels` with `conformers_only` returns them); each pair
+  is then connected like any pair, a fast TS first and a path search (queue pieces) only if that fails.
+- **Explorer, `--schedule async`: no stage waits for another.** IRC checks, channel sampling, the pieces
+  channel searches leave at their depth limit and steering single points are jobs of the connector's one
+  queue, each queued the moment the live kinetics ask for it; the end-of-cycle stages (and the cycles)
+  are gone. The live kinetics that pick what runs next are steered by the single points back so far
+  (they were the explorer's own level until a cycle ended). Formic acid at 1500 K, 2 workers: 7 min.
+- **Generators tell diastereomers apart, and the reactor generator stops when its products converge.**
+  The reactor, nanoreactor and collide generators key products by bond graph plus stereo SMILES
+  (endo and exo were one product). The reactor generator runs batches of `n_seeds` trajectories until at
+  most `unseen` (5%) of its events gave a product seen only once (Good-Turing), at most `max_batches` (4).
+- **Explorer: the `reactor` generator, the interactive Reactor unattended** (`mepd/discovery/reactor_generator.py`).
+  Langevin MD on GFN2-xTB in the nanoreactor's wall with the piston swinging it (the Reactor's cycle), while
+  Collide pulls two atoms picked at random toward their moving midpoint every so often (200 fs apart on
+  average, 300 fs each). Nothing chooses the chemistry; events are read with the nanoreactor's detection,
+  and the structure after each is a proposal. Within one molecule any pair two or more bonds apart may be
+  pulled, H-H included (the Reactor's own rule left formic acid one pair, an H shift). `--generator reactor`;
+  formic acid at 1500 K: CO + H2O and CO2 + H2 from 16 trajectories of 5 ps in ~10 s.
+- **Explorer: channel sampling for every proposed product.** Each pair a generator proposes from a
+  populated species gets `mepd channels` (conformers of both ends, mechanisms), whatever its single TS
+  found. Formic acid: the single TS for HCOOH -> CO + H2O had landed on the carbene's step and the direct
+  four-centre TS was never searched; its channels find it.
+- **Explorer: channel searches ice the pieces of a split** (`path_min_inputs.defer_split_pieces` in MSMEP;
+  `--channels-max-depth` now defaults to 0). Each mechanism's path is minimized; where it splits, its pieces
+  come back unminimized and each is searched only once the kinetics put material at one of its ends, like
+  the connector's own pieces.
+- **Explorer: path-search pieces nothing reaches are iced, not dropped** (`mepd/discovery/horizontal.py`). A
+  piece below a split waits until the kinetics put material at one of its ends; one still unreached when the
+  connect queue runs dry is kept with its place in its pair's search, and every later connect call (each
+  round's, and calls with no pairs of their own) queues it again, so a step found later that sends flux its
+  way thaws it. Pieces the channel searches leave at their depth limit are kept the same way and asked again
+  every round. Both survive `--resume` (`expand_state.pkl`). Rounds record `iced_pieces` and the deferred
+  pieces still `iced`.
+- **Explorer without rounds** (`discovery expand --schedule async`, with `--steer access` and the fast
+  connect queue): a species' proposals are a job in the connect queue's pool, started the moment the live
+  kinetics populate it within reach, and the pairs to its products join the same queue as they come in. The
+  queue ends when nothing runs and nothing more can be reached; IRC checks and channel sampling then run on
+  what it found, and the queue runs again if they open anything (one `rounds` record per such cycle).
+  `--rounds` caps how many steps from the seed a species may lie to be expanded. Not yet for `--target`,
+  QM/MM systems or a products file. Formic acid (1500 K, collide): the same network and branching as rounds,
+  46 s instead of 58 s on 4 workers. The queue takes the caller's own jobs (`register`, `submit`) and new
+  pairs while it runs (`add_pairs`).
+- **Mixtures without generation barriers** (`discovery mixture --continuous`, the default; `--by-generation`
+  restores the old order): each finished seed is merged and its kinetics run at once, and a product they
+  populate is paired with each feed molecule right away. Lower generations start first; a queued product
+  seed starts only while the latest merge still populates its product, else it is iced and asked again after
+  each merge (never run if it stays unpopulated). Seeds run `--schedule async` unless `--target` is given.
+- **Explorer: the live gate that decides which waiting pieces run uses free energies** when the kinetics do
+  (quasi-RRHO at the explorer's level, not the steering level's single points); it used electronic energies.
+  Each TS's thermal correction is computed by the worker job that found it, so the gate doesn't stop the queue
+  for a Hessian each time a TS comes in.
+
+- **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
+  searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
+  steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and
+  outputs go through qccodec; ORCA runs by its full path. The executable is `executable`, `$MEPD_ORCA`,
+  `/opt/orca/orca` or `orca` on PATH, only with ORCA's own programs beside it (`orca` is also GNOME's screen
+  reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
+  licensed, so it is not in the public image.
+
+- **The explorer's kinetics count mirror images** (`discovery expand` and `refine-energies`,
+  `--mirror-images/--no-mirror-images`, on by default; `mepd/discovery/mirror.py`). A chiral transition state
+  has a twin of the same energy that the explorer finds by chance or not at all. Now every chiral TS whose
+  twin is not in the network gets one, between the mirror images of its ends: a second channel when both ends
+  are achiral, else a route to the enantiomer, which joins the kinetics as a species if it was not found. A
+  chiral conformer of an achiral molecule gets -RT ln 2. On Cp + methyl acrylate (F0007) the endo:exo ratio
+  stays 75:25 with DFT, but the enantiomers come out racemic (they were 88:12) and conversion goes from
+  49% to 74%. `summary.json` and `refined_energies.json` list what was added (`mirror_images`).
+
+- **A cut-off exploration resumes** (`discovery expand --resume`): the whole exploration is saved in
+  `expand_state.pkl` at every stage of a round, and as each pair finishes while connecting; a run stopped by a
+  time limit or a crash carries on from there, and only the path searches of the pairs it had not finished run
+  again. Each step's finished channel sampling is kept too. `--rounds` can be raised to grow a finished network.
+
+- **The explorer steers on a higher level's single points** (`discovery expand --steer-energies PROFILE`;
+  by default the `--refine-energies` profile): the kinetics that decide which species are expanded, and which
+  steps get channel sampling, use G = G_explorer + (E_high - E_low) on every species and TS they treat. Each
+  geometry is computed once and kept in `steer_single_points/`. The barrier cutoff's reach stays at the
+  explorer's level. An ML potential on the GPU (`engine_name = "fairchem"`, e.g. UMA with `device = "cuda"`)
+  steers from one process of its own, which loads the model once, so the explorer's other workers still fork
+  (CUDA does not survive a fork). On the Suzuki oxidative-addition pilot (89 atoms), UMA steering plus DFT
+  refinement gives the same major product as DFT steering, with no DFT during the exploration.
+
+- **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
+  expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
+  steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
+  re-minimized / have their TS re-found with an IRC check; the kinetics are rerun at both levels
+  (`refined_energies.json`, geometries and RMSDs under `refined/`). Every result is kept as it finishes and a
+  rerun picks up from what was kept at the same level of theory.
 - **`mepd qmmm reactor`**: the nanoreactor with QM/MM forces over several trajectories, one process per seed
   (`--seeds`, `--workers`). The QM region runs hot inside its protein or solvent, which stays near room
   temperature. Products are whole systems, pooled over seeds (one per distinct QM bond graph), for
@@ -70,20 +177,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `--irc` run on what was found. These are the profile's `recursive_split_max_depth` and `mepd channels`'s
   `--search-budget`, now on `mepd run` too. (#13)
 
-- **ORCA engine** (`engine_name = "orca"`, `orca_engine_kwds`; `mepd/engines/orca.py`): minimizations and TS
-  searches run in ORCA's own optimizers (OptTS from an analytic Hessian, renewed every `ts_hessian_every`
-  steps), Hessians are ORCA's analytic ones, and the IRC is mepd's (Sella) on ORCA gradients. Inputs and
-  outputs go through qccodec; ORCA runs by its full path. The executable is `executable`, `$MEPD_ORCA`,
-  `/opt/orca/orca` or `orca` on PATH, only with ORCA's own programs beside it (`orca` is also GNOME's screen
-  reader). A `[solvation]` table uses ORCA's CPCM. Default level wB97X-D3BJ/def2-TZVP with RIJCOSX. ORCA is
-  licensed, so it is not in the public image.
 
-- **Higher-level energies for an explored network** (`mepd discovery refine-energies RUN_DIR`, `discovery
-  expand --refine-energies PROFILE [--refine-energies-mode single-point|reoptimize]`): the species and open
-  steps the explorer's free-energy kinetics use get single points on the explorer's geometries, or are
-  re-minimized / have their TS re-found with an IRC check; the kinetics are rerun at both levels
-  (`refined_energies.json`, geometries and RMSDs under `refined/`). Every result is kept as it finishes and a
-  rerun picks up from what was kept at the same level of theory.
+- **xtb (GFN2/GFN1) as a QM level retries a failed SCC** with `--etemp 1000`, more iterations, then
+  `--etemp 5000` (as the solvation correction does), and says so in the log; `etemp` sets a fixed
+  electronic temperature instead.
 
 - **`mepd.minimize`, `mepd.frequencies`, `mepd.compare_structures`** (public API): a frequency-checked minimum
   that escapes saddles along their imaginary mode; harmonic frequencies and modes; a structure comparison that
@@ -332,6 +429,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   level than the TS (GFN2-xTB at a g-xTB TS) often has no negative mode; the soft mode then stayed in silently
   and G(TS) came out too low. The result now has `ts_mode_dropped` and a `warning`, `ts_mode=` names the mode
   to leave out, and Kinetics' free energies list such TSs in their warnings. (#12)
+- **One Langevin integrator for the Reactor, collide and the reactor generator** (`mepd/discovery/langevin.py`).
+  The interactive Reactor's MD loop, each collision of the collide generator and the reactor generator's
+  trajectories had their own copy of the GFN2-xTB (tblite) BAOAB loop, wall and capped pulls; they now share
+  `LangevinMD`. A collision whose SCF fails is stepped back and continued as in the Reactor, instead of
+  failing.
+- **Explorer**: the connect queue (single TS optimizations, path-search pieces, leaf TSs) runs its jobs in
+  worker processes, not threads of one process, which held it to about five busy cores whatever `--workers`
+  was. Species proposed at once (collide, nanoreactor) share `--workers` instead of each taking all of them.
 
 - **Explorer**: a path piece whose TS search fails, or whose TS belongs to another motion by its IRC, keeps its
   path's highest image as an upper-bound barrier (`ts_kind = "path_peak"`), so a barrierless association no
@@ -617,6 +722,23 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   3,951 atoms (it crashed after 3 s) and Lewis structures of the protein's fragments tried charge by charge for
   minutes, holding the browser's connections so every other page waited. `/api/orbitals` and
   `/api/fragment-orbitals` now refuse a whole QM/MM system at once.
+- **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
+  orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
+  parent's multiprocessing resource tracker. Together these hung a finished `discovery expand` with GPU
+  steering for 6 hours: Python waits for that tracker at exit, and the orphans kept it alive.
+
+- **Explorer**: labelling a steering level (which saved single points match it) no longer loads an ML
+  potential's model; it did, putting CUDA in the explorer's own process, and every later parallel step ran
+  serially. ML levels' labels now name their model. `discovery expand` sets `SELLA_DISABLE_GPU=1` unless set:
+  Sella's GPU eigensolves (>= 200 coordinates) had the same effect.
+
+- **Channels**: mechanisms whose chosen atom numbering is the input's own share one path search; run once
+  each, the copies wrote the same pair folder at once and failed (`OSError: Directory not empty`).
+
+- **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
+  the stiff solver for hours or create material through rounding (flux-form right-hand side).
+- Explorer element tables come from RDKit, so Pd and other metals work in collide, free energies and the
+  nanoreactor.
 - **QM/MM TS searches with a caged environment ran on the whole protein**: with no environment atom free
   to relax (`qmmm_environment = "cage"`), optimizations and TS searches skipped the microiterations and
   gave Sella every atom (3,951 atoms: ~4 min a step). They now see the QM region alone, as in a relaxed
@@ -625,6 +747,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   a mostly frozen system is interpolated as a small sub-system, and the geodesic smoother kept that
   sub-system's path, which FSM turned into whole-system nodes. The smoother now holds the whole system's
   path. FSM-TS used to fall back to NEB on every protein pair, and an NEB crashed when MSMEP split a branch.
+- **QM/MM nanoreactor in a protein stalled after its first segment**: the live events were found over the
+  whole system (bond detection and molecule labels over 3,900 protein and water atoms, the whole trajectory
+  again after every segment). They are now found among the QM atoms (indices still the system's), at most
+  every 30 s.
 - **QM side-chain charge from the residue's state**: a protonated Asp (ASH) or Glu (GLH), neutral Lys or
   doubly protonated His in the QM region was counted with its name's usual charge.
 - **One molecule with a metal centre no longer compares as two stereoisomers** (`mepd.compare_structures`,
@@ -727,8 +853,6 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   20-node, 20-atom search); those snapshots now carry none, and the one a stopped search analyzes gets them
   back. Results are unchanged.
 
-- **Network kinetics** (`mepd.discovery.kinetics.simulate`): rates spanning ~1e13 to ~1e-80 /s no longer stall
-  the stiff solver for hours or create material through rounding (flux-form right-hand side).
 - Explorer element tables come from RDKit, so Pd and other metals work in collide, free energies and the
   nanoreactor.
 

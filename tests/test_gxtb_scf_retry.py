@@ -65,3 +65,42 @@ def test_no_retry_for_runs_that_choose_their_own_settings(monkeypatch):
         gxtb.GXTBCalculator(executable="gxtb", extra_args=["--etemp", "500"]).compute_gradients(
             [StructureNode(structure=_water())])
     assert len(calls) == 2
+
+
+def test_tblite_failures_retry_fresh_then_skip_the_neighbourhood(monkeypatch, tmp_path):
+    """A failed in-process SCF is retried once without the neighbour's wavefunction; when that fails too,
+    nearby structures go straight to xtb instead of paying for another full set of SCF cycles."""
+    import json
+
+    import tblite.interface
+
+    calls = []
+
+    class Calc:
+        def __init__(self, *a, **k): pass
+        def set(self, *a): pass
+        def add(self, *a): pass
+        def update(self, pos): self.pos = pos
+
+        def singlepoint(self, guess=None, copy=False):
+            calls.append(guess is not None)
+            if self.pos[0, 0] > 0.5:                     # the "hard" region
+                raise RuntimeError("SCF not converged in 250 cycles")
+            return {"energy": -5.0, "gradient": np.zeros((3, 3))}
+
+    monkeypatch.setattr(tblite.interface, "Calculator", Calc)
+    monkeypatch.setenv("MEPD_CALL_LOG", str(tmp_path))
+    gxtb._TBLITE.__dict__.clear()
+
+    def node(x):
+        s = _water()
+        geom = s.geometry.copy()
+        geom[0, 0] = x
+        return StructureNode(structure=Structure(symbols=s.symbols, geometry=geom, charge=0, multiplicity=1))
+
+    assert gxtb._tblite_point(node(0.0), []) is not None and calls == [False]
+    assert gxtb._tblite_point(node(0.6), []) is None and calls[1:] == [True, False]   # guess, then fresh
+    assert gxtb._tblite_point(node(0.7), []) is None and len(calls) == 3              # next step: skipped
+    assert gxtb._tblite_point(node(-3.0), []) is not None                             # far enough away again
+    log = [json.loads(l) for f in tmp_path.glob("*.jsonl") for l in f.read_text().splitlines()]
+    assert [r["ok"] for r in log] == [True, False, True]

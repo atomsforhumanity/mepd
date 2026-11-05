@@ -1798,3 +1798,33 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .mo-bar .mo-groups summary::after { content: " ▾"; }
 .mo-bar .mo-groups-pop { position: absolute; z-index: 20; top: 100%; left: 0; margin-top: 4px; padding: 8px 10px; background: var(--panel, var(--bg)); border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 4px 14px rgba(0,0,0,0.12); display: grid; gap: 6px; min-width: 220px; }
 .mo-bar .mo-groups-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; white-space: nowrap; }
+
+/* async network expansion: its job queue and live kinetics (AsyncLive.js) */
+.aq-meter { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin: 4px 0 8px; }
+.aq-meter > div { height: 100%; background: var(--accent); transition: width .4s; }
+.aq-table, .ak-table { width: 100%; border-collapse: collapse; }
+.aq-table th, .aq-table td, .ak-table th, .ak-table td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--border); }
+.aq-table td:not(:first-child), .aq-table th:not(:first-child) { text-align: right; width: 70px; }
+.aq-run { color: var(--accent); font-weight: 700; }
+.aq-fail { color: var(--danger, #c33); }
+.aq-running { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; max-height: 140px; overflow-y: auto; }
+.aq-chip { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--accent-soft); color: var(--text); white-space: nowrap; }
+.ak-table { margin-top: 6px; }
+.ak-hot td { background: var(--accent-soft); }
+.ak-depict { height: 40px; display: block; }
+.ak-smiles { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ak-bar { height: 3px; background: var(--panel-2); margin-top: 2px; }
+.ak-bar > div { height: 100%; background: var(--accent); }
+@media (max-width: 700px) { .ak-depict { display: none; } .ak-smiles { max-width: 140px; } }
+
+/* the Reactor tab's trajectory picker (a network expansion runs many) */
+.rx-runs { margin-bottom: 8px; }
+.rx-runs-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.rx-runs-head .check { margin-left: auto; }
+.rx-runs-list { display: flex; flex-wrap: wrap; gap: 3px; max-height: 92px; overflow-y: auto; }
+.rx-run { font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; background: var(--panel); cursor: pointer; font-variant-numeric: tabular-nums; }
+.rx-run.live { border-color: var(--accent); }
+.rx-run.done { color: var(--muted); }
+.rx-run.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.rx-run-n { margin-left: 4px; opacity: .7; }
+.rx-run-n::before { content: '·'; margin-right: 3px; }

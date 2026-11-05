@@ -557,6 +557,11 @@ def test_relevant_steps_get_channel_sampling_that_replaces_the_single_ts_and_add
         assert labels and all(l.startswith(("ch_", "exit_")) for l in labels)   # single TS replaced
     assert any(st.label.startswith("exit_") for st in res.steps)           # off-target exit joined the network
     assert len(asked) == len(set(asked))                                   # once per pair
+    # the log keeps the TS each sampled step had before sampling, and what replaced it
+    assert {frozenset((r["a"], r["b"])) for r in res.channels_log} == sampled
+    for r in res.channels_log:
+        assert r["before"] and not any(b["label"].startswith("ch_") for b in r["before"])
+        assert any(x["label"].startswith("ch_") for x in r["after"])
 
 
 def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tightly(monkeypatch):
@@ -660,7 +665,7 @@ def test_a_pair_whose_ts_failed_its_irc_check_gets_its_paths_sampled():
     assert len(asked) == len(set(asked))
 
 
-def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypatch, tmp_path):
+def test_explorer_channel_searches_sample_the_best_pairs_of_every_mechanism(monkeypatch, tmp_path):
     import mepd
     from mepd.discovery.cli_expand import _channels_refiner
 
@@ -671,8 +676,453 @@ def test_explorer_channel_searches_sample_every_pair_of_every_mechanism(monkeypa
         raise RuntimeError("stop")
 
     monkeypatch.setattr(mepd, "channels", fake)
-    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    run_inputs = SimpleNamespace(engine=SimpleNamespace(), path_min_inputs=SimpleNamespace())
+    monkeypatch.setattr(mepd, "channels", lambda a, b, profile=None, **kw: (seen.update(kw, profile=profile), fake(a, b)))
     _channels_refiner(run_inputs, tmp_path, 1, {})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
-    assert seen["pairs_per_mechanism"] == 0
-    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 3})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
     assert seen["pairs_per_mechanism"] == 3
+    pmi = seen["profile"].path_min_inputs      # each mechanism's path only; a split's pieces: deferred
+    assert pmi.recursive_split_max_depth == 0 and pmi.defer_split_pieces is True
+    _channels_refiner(run_inputs, tmp_path, 1, {"pairs_per_mechanism": 0})([(_node("CO"), _node("C=O.[H][H]"), "0_1")])
+    assert seen["pairs_per_mechanism"] == 0
+
+
+def test_prefetched_channel_steps_are_sampled_once_and_again_if_their_species_changed(monkeypatch, tmp_path):
+    """`refine.prefetch` samples steps in the background while the explorer verifies; `refine` then reads
+    them, waits for one still running, samples the rest itself -- each step once -- and samples a step
+    again when its species' structures are not the ones it was sampled for."""
+    import os
+    import time
+
+    import mepd
+    from mepd.discovery.cli_expand import _channels_refiner
+
+    calls = tmp_path / "calls"
+    calls.mkdir()
+
+    def fake(a, b, output, **kw):
+        label = output.name
+        (calls / f"{label}-{os.getpid()}-{time.time()}").touch()
+        time.sleep(1.0 if label == "pair_0_1" else 0.2)
+        return SimpleNamespace(direct=[], multistep=[], offtarget=[], start_conformers=[a], end_conformers=[b])
+
+    monkeypatch.setattr(mepd, "channels", fake)
+    run_inputs = SimpleNamespace(engine=SimpleNamespace())
+    a, b, c = _node("CO"), _node("C=O.[H][H]"), _node("CCO")
+    refine = _channels_refiner(run_inputs, tmp_path, 2, {}, prefetch_steps=True)
+    refine.prefetch([(a, b, "0_1"), (b, c, "1_2")])
+    time.sleep(0.5)   # the background has started on step 0_1
+    outs = refine([(a, b, "0_1"), (b, c, "1_2"), (a, c, "0_2")])
+    assert all(out is not None for out in outs)
+    sampled = sorted(f.name.split("-")[0] for f in calls.iterdir())
+    assert sampled == ["pair_0_1", "pair_0_2", "pair_1_2"]
+    assert not list(tmp_path.glob("channels/*/explorer_prefetching"))
+
+    moved = a.update_coords(np.asarray(a.coords) + 0.05)
+    refine([(moved, b, "0_1"), (b, c, "1_2")])
+    sampled = sorted(f.name.split("-")[0] for f in calls.iterdir())
+    assert sampled == ["pair_0_1", "pair_0_1", "pair_0_2", "pair_1_2"]
+    assert (tmp_path / "channels" / "pair_0_1.stale-0").is_dir()
+
+
+class _SteerEngine(_GraphEngine):
+    """A 'higher level': like _GraphEngine, but structures pushed far along
+    +x (the TSs of _ts_file_connector) lie 55 kcal/mol lower."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def compute_energies(self, nodes):
+        self.calls += len(nodes)
+        out = super().compute_energies(nodes)
+        for n in nodes:
+            if float(np.asarray(n.coords)[0, 0]) > 40.0:
+                n._cached_energy -= 55.0 / 627.509
+        return [n._cached_energy for n in nodes]
+
+
+def _ts_file_connector(tmp_path, ts_kcal):
+    def connect(pairs, nodes):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts.structure = ts.structure.model_copy(update={"geometry": np.asarray(ts.coords) + [50.0, 0.0, 0.0]})
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + ts_kcal / 627.509
+            fp = tmp_path / f"ts_{i}_{j}.xyz"
+            ts.structure.save(fp)
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}", "files": {"ts": str(fp)}})
+        return out
+    return connect
+
+
+def test_a_higher_levels_single_points_steer_the_flux(tmp_path):
+    """HCN -> HNC with a TS 60 kcal/mol up at the explorer's level (no flux, no expansion) but 5 at the
+    steering level: HNC gets the flux and is expanded; each single point is kept and reused."""
+    alone = expand_network(_node("C#N"), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                           connect=_ts_file_connector(tmp_path, 60.0))
+    assert alone.rounds[0]["expanded_next"] == []
+    seed = _node("C#N")
+    high = _SteerEngine()
+    res = expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                         connect=_ts_file_connector(tmp_path, 60.0), steer_engine=high,
+                         steer_save_dir=tmp_path / "steer")
+    assert [r["sources"] for r in res.rounds][:2] == [[0], [1]]
+    assert res.kinetics.flux[1] > 0.01
+    assert "single points" in res.rounds[0]["kinetics"]["energies"]
+    assert len(list((tmp_path / "steer" / "single_points").glob("*.json"))) == 3   # 2 species + 1 TS
+    again = _SteerEngine()
+    expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                   connect=_ts_file_connector(tmp_path, 60.0), steer_engine=again, steer_save_dir=tmp_path / "steer")
+    assert again.calls == 0
+
+
+class _GPUSteerEngine(_SteerEngine):
+    """The same steering level, as a torch model would declare itself."""
+    holds_torch_model = True
+
+
+def test_a_gpu_steering_level_runs_in_a_process_of_its_own(tmp_path):
+    """Its single points are computed in one spawned process (this one never loads the model, so it can
+    still fork its workers), with the same result as in-process."""
+    seed = _node("C#N")
+    high = _GPUSteerEngine()
+    res = expand_network(seed.copy(), _GraphEngine(), rounds=3, allow_zwitterions=True, steer="flux",
+                         connect=_ts_file_connector(tmp_path, 60.0), steer_engine=high,
+                         steer_save_dir=tmp_path / "steer")
+    assert high.calls == 0                                   # nothing computed here
+    assert [r["sources"] for r in res.rounds][:2] == [[0], [1]] and res.kinetics.flux[1] > 0.01
+    assert len(list((tmp_path / "steer" / "single_points").glob("*.json"))) == 3
+
+
+class _Killed(BaseException):
+    """A time limit's SIGTERM, as far as the explorer can tell: nothing of it catches it."""
+
+
+class _LiveConnector:
+    """A live connector (on_found, on_pair_done) whose TSs lie 5 kcal/mol over the higher end; `kill_after`
+    pairs into the run it is 'killed'."""
+    live = True
+    reports_pairs = True
+
+    def __init__(self, kill_after=None):
+        self.kill_after, self.pairs, self.calls = kill_after, [], []
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None):
+        self.calls.append(list(pairs))
+        for i, j in pairs:
+            if self.kill_after is not None and len(self.pairs) >= self.kill_after:
+                raise _Killed()
+            self.pairs.append((i, j))
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            on_found({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+            on_pair_done((i, j))
+        return []
+
+
+def _expand_resumable(seed, connect, state, refine=None, resume=False, **kw):
+    return expand_network(seed.copy(), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                          access_cutoff_kcal=60.0, max_products=20, refine=refine, state_file=state, resume=resume,
+                          kinetics={"threshold": 1e-6}, **kw)
+
+
+def _network(res):
+    return sorted(s.smiles for s in res.species), sorted((st.a, st.b, round(st.ts_energy, 8)) for st in res.steps)
+
+
+def test_a_run_cut_off_while_connecting_resumes_with_the_pairs_it_had_not_finished(tmp_path):
+    seed = _node("CCO")
+    whole = _LiveConnector()
+    ref = _expand_resumable(seed, whole, tmp_path / "ref.pkl")
+    first_round = len(whole.calls[0])
+    assert len(whole.pairs) > first_round + 2      # round 2 connects pairs too
+    cut = _LiveConnector(kill_after=first_round + 2)
+    with pytest.raises(_Killed):
+        _expand_resumable(seed, cut, tmp_path / "state.pkl")
+    rest = _LiveConnector()
+    res = _expand_resumable(seed, rest, tmp_path / "state.pkl", resume=True)
+    assert not set(cut.pairs) & set(rest.pairs)              # nothing finished is connected again
+    assert sorted(cut.pairs + rest.pairs) == sorted(whole.pairs)
+    assert _network(res) == _network(ref)
+    assert [r["expanded_next"] for r in res.rounds] == [r["expanded_next"] for r in ref.rounds]
+
+
+def test_a_run_cut_off_in_channel_sampling_resumes_there(tmp_path):
+    seed = _node("CCO")
+    sampled = []
+
+    def refine(items, kill=None):
+        out = []
+        for a, b, label in items:
+            if kill is not None and len(sampled) >= kill:
+                raise _Killed()
+            sampled.append(label)
+            out.append({"direct": [], "other": [], "conformers": []})
+        return out
+
+    _expand_resumable(seed, _LiveConnector(), tmp_path / "ref.pkl", refine=refine)
+    n_ref, sampled[:] = len(sampled), []
+    assert n_ref > 1
+    with pytest.raises(_Killed):
+        _expand_resumable(seed, _LiveConnector(), tmp_path / "state.pkl", refine=lambda it: refine(it, kill=n_ref - 1))
+    again = _LiveConnector()
+    _expand_resumable(seed, again, tmp_path / "state.pkl", refine=refine, resume=True)
+    assert len(sampled) >= n_ref                 # the round's channel sampling ran again (each step: its record)
+    assert len(again.calls) < 2                  # round 1's connect did not (only round 2's, if any)
+
+
+def test_resuming_with_other_settings_is_refused(tmp_path):
+    seed = _node("CCO")
+    _expand_resumable(seed, _LiveConnector(), tmp_path / "state.pkl")
+    with pytest.raises(ValueError, match="other settings"):
+        expand_network(seed.copy(), _GraphEngine(), rounds=2, steer="access", connect=_LiveConnector(),
+                       access_cutoff_kcal=20.0, max_products=20, state_file=tmp_path / "state.pkl", resume=True,
+                       kinetics={"threshold": 1e-6})
+    with pytest.raises(ValueError, match="Nothing to resume"):
+        _expand_resumable(seed, _LiveConnector(), tmp_path / "none.pkl", resume=True)
+
+
+def test_a_gpu_levels_label_names_its_model_without_loading_it():
+    """Saved single points are keyed by the level's label; building it must not load the model (CUDA in the
+    explorer's own process would stop it forking its workers), and two models must not share a label."""
+    from mepd.discovery.energy_refine import _level
+    from mepd.engines.fairchem import FAIRChemEngine
+
+    small, medium = FAIRChemEngine(model="uma-s-1p2"), FAIRChemEngine(model="uma-m-1p1")
+    assert "uma-s-1p2" in _level(small) and _level(small) != _level(medium)
+    assert small._predictor is None and medium._predictor is None
+
+
+def test_pieces_left_at_the_channel_depth_limit_are_searched_only_where_material_reaches_them():
+    """A piece a step's channel searches left unsplit at their depth limit becomes a connector pair of its
+    own when the kinetics put material at one of its ends (here: the seed); one between two species nobody
+    reaches is not searched."""
+    hot_end, cold = _node("[CH3].[OH]"), (_node("[CH2]O.[H]"), _node("[CH]O.[H][H]"))
+
+    def refine(items):
+        return [{"direct": [], "other": [], "conformers": [],
+                 "deferred": [{"start": a, "end": hot_end}, {"start": cold[0], "end": cold[1]}]}
+                for a, b, label in items]
+
+    connect = _LiveConnector()
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, refine=refine, kinetics={"threshold": 1e-6})
+    smiles = [s.smiles for s in res.species]
+    deferred = [d for r in res.rounds for d in r.get("deferred", [])]
+    assert deferred and all(d["hot"] < d["pieces"] for d in deferred)
+    searched = {tuple(p) for d in deferred for p in d["searched"]}
+    assert searched == {(0, len(smiles) - 1)}     # the hot piece's far end joined the network as a species
+    assert set(map(tuple, connect.calls[-1])) <= searched | {p[::-1] for p in searched}
+
+
+class _IcingConnector(_LiveConnector):
+    """A live connector that ices one piece on its first call and reports what it was handed later."""
+    ices = True
+
+    def __init__(self, kill_after=None):
+        super().__init__(kill_after)
+        self.iced, self.restored, self.free = [], None, None
+
+    def queue_state(self):
+        return {"iced": list(self.iced)}
+
+    def restore(self, state):
+        self.restored = state
+        self.iced = list((state or {}).get("iced", []))
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
+                 free_cache=None):
+        out = super().__call__(pairs, nodes, search, on_found, relevant, on_pair_done)
+        if not self.iced and len(self.calls) == 1:
+            self.iced.append(((0, 1), ("a piece", 1, 1)))
+        return out
+
+
+def test_iced_pieces_go_into_every_connect_call_and_survive_a_resume(tmp_path):
+    seed = _node("CCO")
+    first = _IcingConnector()
+    res = _expand_resumable(seed, first, tmp_path / "state.pkl")
+    assert len(first.calls) >= 2
+    assert any(r.get("iced_pieces") == 1 for r in res.rounds)
+    calls_before = len(first.calls)
+    import pickle
+
+    state = pickle.load(open(tmp_path / "state.pkl", "rb"))
+    assert state["queue"] == {"iced": [((0, 1), ("a piece", 1, 1))]}
+    again = _IcingConnector()
+    expand_network(seed.copy(), _GraphEngine(), rounds=3, steer="access", connect=again, access_cutoff_kcal=60.0,
+                   max_products=20, state_file=tmp_path / "state.pkl", resume=True, kinetics={"threshold": 1e-6})
+    assert again.restored == {"iced": [((0, 1), ("a piece", 1, 1))]}
+    assert calls_before >= 2
+
+
+def test_channel_pieces_nothing_reaches_are_kept_and_asked_again_next_round():
+    hot_end, cold = _node("[CH3].[OH]"), (_node("[CH2]O.[H]"), _node("[CH]O.[H][H]"))
+    rounds_seen = []
+
+    def refine(items):
+        rounds_seen.append(len(items))
+        return [{"direct": [], "other": [], "conformers": [],
+                 "deferred": [{"start": cold[0], "end": cold[1]}] if len(rounds_seen) == 1 else []}
+                for a, b, label in items]
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=2, steer="access", connect=_LiveConnector(),
+                         access_cutoff_kcal=60.0, max_products=20, refine=refine, kinetics={"threshold": 1e-6})
+    deferred = [(r["round"], d) for r in res.rounds for d in r.get("deferred", [])]
+    assert deferred and all(d["iced"] >= 1 for _, d in deferred)    # the cold piece is kept, not dropped
+    assert len({rnd for rnd, _ in deferred}) == 2                   # and asked again in the next round
+
+
+class _AsyncConnector(_IcingConnector):
+    """The HorizontalConnector's own-job interface, run in order in this process: registered jobs, pairs
+    added while a call runs, and the drain hook."""
+
+    def __init__(self):
+        super().__init__()
+        self._jobs, self.end_keywords, self.queue, self.channel_labels = {}, None, [], []
+        self.job_inputs = SimpleNamespace(engine=_GraphEngine())
+
+    def register(self, kind, fn, slots=1):
+        self._jobs[kind] = fn
+
+    def submit(self, kind, args, on_done, label=""):
+        self.queue.append(("own", kind, args, on_done))
+
+    def add_pairs(self, pairs, search=False):
+        self.queue.extend(("pair", p) for p in pairs)
+
+    def add_channel(self, pair, a, b, label):
+        self.channel_labels.append(label)
+        self.queue.append(("pair", tuple(pair)))
+
+    def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
+                 free_cache=None, start=None, on_drain=None):
+        self.calls.append(list(pairs))
+        self.queue.extend(("pair", p) for p in pairs)
+        if start is not None:
+            start()
+        while True:
+            while self.queue:
+                job = self.queue.pop(0)
+                if job[0] == "own":
+                    job[3](self._jobs[job[1]](*job[2]))
+                    continue
+                i, j = job[1]
+                self.pairs.append((i, j))
+                ts = nodes[i].copy()
+                ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+                on_found({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+                on_pair_done((i, j))
+            if not (on_drain is not None and on_drain()):
+                break
+        return []
+
+
+def test_async_schedule_expands_species_as_the_kinetics_reach_them_in_one_queue():
+    connect = _AsyncConnector()
+    res = expand_network(_node("CCO"), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6},
+                         schedule="async")
+    first = res.rounds[0]
+    assert first["schedule"] == "async"
+    assert 0 in first["sources"] and len(first["sources"]) > 1   # products expanded inside the same queue
+    assert connect.calls[0] == []                                 # nothing was waiting for a round to end
+    assert first["stopped"] == "converged"                        # it ended because nothing more was asked for
+    # no distance from the seed caps it (rounds=2 is not used): species past one step are expanded too
+    from collections import deque
+
+    nbrs = {}
+    for st in res.steps:
+        nbrs.setdefault(st.a, set()).add(st.b)
+        nbrs.setdefault(st.b, set()).add(st.a)
+    dist, todo = {0: 0}, deque([0])
+    while todo:
+        u = todo.popleft()
+        for v in nbrs.get(u, ()):
+            if v not in dist:
+                dist[v] = dist[u] + 1
+                todo.append(v)
+    expanded = {s for r in res.rounds for s in r["sources"]}
+    assert max(dist[s] for s in expanded) >= 2
+    assert len(set(connect.pairs)) == len(connect.pairs)          # each reaction connected once
+
+
+def test_async_schedule_stops_on_a_budget_not_a_depth():
+    connect = _AsyncConnector()
+    res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=connect, access_cutoff_kcal=60.0,
+                         max_products=20, kinetics={"threshold": 1e-6}, schedule="async", max_species=4)
+    assert res.rounds[0]["stopped"] == "max species"
+    assert len(res.species) <= 4 + 20       # one batch of proposals may land after the cap is reached
+
+
+def test_async_schedule_needs_access_steering_and_a_job_queue():
+    with pytest.raises(ValueError, match="HorizontalConnector"):
+        expand_network(_node("CO"), _GraphEngine(), steer="access", connect=_LiveConnector(),
+                       access_cutoff_kcal=60.0, schedule="async")
+    with pytest.raises(ValueError, match="steer='access'"):
+        expand_network(_node("CO"), _GraphEngine(), steer="flux", connect=_AsyncConnector(), schedule="async")
+
+
+def test_every_proposed_pair_gets_channel_sampling_whatever_its_single_ts_found():
+    """Formic acid -> CO + H2O: the single TS landed on the carbene's step. The pair's channels (conformers,
+    mechanisms) are sampled all the same, which is where the direct four-centre TS is found."""
+    asked = []
+
+    def connect(pairs, nodes, search=False):
+        out = []
+        for i, j in pairs:
+            ts = nodes[i].copy()
+            ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+            out.append({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}-{search}", "pair": (i, j),
+                        "files": {"verified": False, "ts": "x.xyz", "pair": [i, j]}})
+        return out
+
+    def verify(items):   # every single-TS step's IRC lands elsewhere: no step for the pair asked
+        for idx, _ in items:
+            yield idx, None, None
+
+    def refine(items):
+        asked.extend(tuple(sorted(map(int, label.split("_")))) for _, _, label in items)
+        return [{"direct": [], "other": [], "conformers": []} for _ in items]
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="access", connect=connect, verify=verify,
+                         access_cutoff_kcal=30.0, max_products=20, refine=refine)
+    proposed = {tuple(sorted(p)) for e in res.edges if e.target is not None and e.target != e.source
+                for p in [(e.source, e.target)]}
+    assert proposed and proposed <= set(asked)
+
+
+def test_channel_pieces_handed_back_unminimized_are_read_as_deferred(tmp_path):
+    from mepd.discovery.cli_expand import _deferred_pieces
+
+    tree = tmp_path / "pairs" / "pair_0" / "tree"
+    tree.mkdir(parents=True)
+    frame = lambda x: f"2\n\nH {x} 0 0\nH {x + 0.74} 0 0\n"
+    for k in range(2):
+        (tree / f"node_0_deferred_{k}.xyz").write_text(frame(k) + frame(k + 5))
+    pieces = _deferred_pieces(tmp_path)
+    assert [round(float(p["start"].structure.geometry[0][0] * 0.529177), 2) for p in pieces] == [0.0, 1.0]
+
+
+def test_async_schedule_samples_channels_inside_the_one_queue_without_a_stage_barrier():
+    """Channel sampling hands back conformer pairs; each is connected by the same queue (a fast TS first),
+    not by a path search of its own, and nothing waits for a stage to end."""
+    connect = _AsyncConnector()
+    sampled = []
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    def pairs(item):
+        a, b, label = item
+        sampled.append(label)
+        assert len(connect.calls) == 1                                     # while the queue runs
+        return {"start": [a], "end": [b], "pairs": [(a.copy(), b.copy()), (a.copy(), b.copy())]}
+
+    refine.pairs, refine.width = pairs, 3
+    res = expand_network(_node("CCO"), _GraphEngine(), rounds=2, steer="access", connect=connect,
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6},
+                         schedule="async", refine=refine)
+    assert sampled and len(connect.calls) == 1 and len(res.rounds) == 1   # one queue, no cycles after it
+    assert res.rounds[0]["channels"] == len(sampled) == len(set(sampled))  # each species pair sampled once
+    assert len(connect.channel_labels) == 2 * len(sampled) == len(set(connect.channel_labels))

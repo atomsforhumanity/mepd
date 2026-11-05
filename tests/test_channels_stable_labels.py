@@ -46,3 +46,22 @@ def test_more_pairs_per_mechanism_keeps_earlier_labels(tmp_path, monkeypatch):
     _expand(tmp_path, monkeypatch, 1)
     table = json.loads((tmp_path / "pair_mechanisms.json").read_text())
     assert {r["pair"] for r in table} >= set(second.values())
+
+
+def test_mechanisms_on_the_input_numbering_share_one_search(tmp_path, monkeypatch):
+    # Seen in a Suzuki explorer run: three mechanisms' chosen numberings were all the input's own,
+    # and the three identical searches of pair_0_1 wrote its folder at once (Directory not empty).
+    s = _load_structure_from_smiles_or_xyz("CCO", None, None)
+    structures = [StructureNode(structure=s), StructureNode(structure=s)]
+
+    def choices(start, end, metric, run_inputs, max_variants_per_mechanism=None):
+        return [SimpleNamespace(key=f"mech {k}", score=1.0, n_variants=1,
+                                winner=SimpleNamespace(end_structure=end, atom_map=None)) for k in "ABC"]
+
+    monkeypatch.setattr("mepd.atom_mapping_selection.select_per_mechanism", choices)
+    run_inputs = SimpleNamespace(atom_mapping_inputs=SimpleNamespace(metric="endpoint-rmsd", n_candidates=4))
+    _, cands, _ = cli_channels._expand_pairs_by_mechanism(structures, [(0, 1)], True, run_inputs,
+                                                           workers=1, output=tmp_path)
+    assert cands == [(0, 1)]
+    table = json.loads((tmp_path / "pair_mechanisms.json").read_text())
+    assert [r["pair"] for r in table] == ["pair_0_1"] * 3                # every mechanism still listed

@@ -48,6 +48,7 @@ from mepd.engines.engine import Engine
 from mepd.engines.modified import ModifiedEngine, fresh as _fresh
 from mepd.errors import ElectronicStructureError
 from mepd.nodes.node import StructureNode
+from mepd.cpus import available_cpus
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ class SolvationCorrection:
             # One bad geometry fails the whole batch: redo node by node.
             from concurrent.futures import ThreadPoolExecutor
 
-            width = max(1, min(len(nodes), self.n_parallel or os.cpu_count() or 1))
+            width = max(1, min(len(nodes), self.n_parallel or available_cpus()))
             with ThreadPoolExecutor(max_workers=width) as pool:
                 out = list(pool.map(lambda item: self._robust(item[1], item[0]), enumerate(nodes)))
             dg = np.array([d for d, _ in out])

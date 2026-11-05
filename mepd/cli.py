@@ -1950,6 +1950,7 @@ try:
     from mepd.discovery.cli import discovery_app  # noqa: E402
     import mepd.discovery.cli_expand  # noqa: E402,F401  (registers `discovery expand`)
     import mepd.discovery.cli_nanoreactor  # noqa: E402,F401  (registers `discovery nanoreactor`)
+    import mepd.discovery.cli_mixture  # noqa: E402,F401  (registers `discovery mixture`)
 except ImportError:
     discovery_app = None
 

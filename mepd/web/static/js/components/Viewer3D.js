@@ -124,8 +124,15 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
     }
     applyStyle(v);
     const n = atomCount(first);
-    if (n === lastAtoms.current) v.setView(view);
-    else if (qmmm) v.zoomTo({ index: region.qm_atoms }); else v.zoomTo();
+    if (qmmm) v.zoomTo({ index: region.qm_atoms }); else v.zoomTo();
+    if (n === lastAtoms.current) {
+      // The same molecule again (another of its structures or paths): keep the rotation and zoom you had,
+      // but turn about these coordinates' centre -- the old view's centre was the previous structure's,
+      // which sits elsewhere (an IRC and its TS, two species from different runs), so the molecule spun
+      // about an empty point. getView: [centre x, y, z, zoom, rotation quaternion x, y, z, w].
+      const c = v.getView();
+      v.setView([c[0], c[1], c[2], view[3], view[4], view[5], view[6], view[7]]);
+    }
     lastAtoms.current = n;
     drawLabels(v);
     v.render();

@@ -42,6 +42,7 @@ from mepd.pathminimizers.fneb import FreezingNEB
 from mepd.pathminimizers.geometric_neb import GeometricNEB
 from mepd.pathminimizers.nebdlf import DLFindNEB
 from mepd.inputs import DEFAULT_PATH_METHOD, RunInputs
+from mepd.cpus import available_cpus
 from mepd.progress import (
     get_progress_printer,
     preserve_chain_snapshot,
@@ -1071,7 +1072,8 @@ class MSMEP:
                 self._na_finish_leaf(leaf, input_chain, na_state_in, na_floor, na_cutoff)
             return leaf, []
 
-        if resolved_max_depth is not None and tree_depth >= resolved_max_depth:
+        defer = bool(getattr(self.inputs.path_min_inputs, "defer_split_pieces", False))
+        if resolved_max_depth is not None and tree_depth >= resolved_max_depth and not defer:
             leaf = self._keep_unsplit(history_node, root_neb_obj, input_chain, attempt_payload,
                                       "max_depth_reached")
             if na_cutoff is not None:
@@ -1126,6 +1128,14 @@ class MSMEP:
                 leaf.rejected_chains = history_node.rejected_chains
                 return leaf, []
             sequence_of_chains = kept
+        if defer and resolved_max_depth is not None and tree_depth >= resolved_max_depth:
+            # defer_split_pieces: at the depth limit the split's pieces are not run here but handed back
+            # unminimized (node_<i>_deferred_<k>.xyz), for a caller that runs each only once its kinetics
+            # put material at one of its ends (the explorer's channel searches)
+            leaf = _empty_leaf(tree_node_index, status="deferred_split")
+            leaf.rejected_chain = chain_trajectory[-1].copy()
+            leaf.deferred_chains = [p.copy() for p in sequence_of_chains]
+            return leaf, []
         self._set_child_same_pair_split_lineage(
             sequence_of_chains, input_chain, same_pair_split_count + 1
         )
@@ -1152,7 +1162,7 @@ class MSMEP:
             self._set_attempted_pairs_payload(attempted_pairs_payload)
         resolved_max_depth = self._resolve_recursive_split_max_depth()
         if max_workers is None:
-            bounded_workers = min(4, max(1, int(os.cpu_count() or 1)))
+            bounded_workers = min(4, available_cpus())
         else:
             # Honor explicit user-requested parallelism. `os.cpu_count()` can
             # under-report available capacity in constrained launch contexts.
@@ -1193,7 +1203,7 @@ class MSMEP:
         if getattr(self.inputs.engine, "n_parallel", None) == 0:
             branch_inputs = _clone_run_inputs_for_worker(self.inputs)
             branch_inputs.engine.n_parallel = max(
-                1, int(os.cpu_count() or 1) // bounded_workers
+                1, available_cpus() // bounded_workers
             )
 
         def _submit(executor: concurrent.futures.Executor, job: SimpleNamespace) -> None:

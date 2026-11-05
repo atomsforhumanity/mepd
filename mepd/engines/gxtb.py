@@ -40,6 +40,7 @@ from mepd.nodes.node import StructureNode
 from mepd.nodes.nodehelpers import update_node_cache
 from mepd.programs import standalone_gxtb
 from mepd.qcdata_structure_helpers import ase_atoms_to_structure
+from mepd.cpus import available_cpus
 
 
 _TOTAL_ENERGY_RE = re.compile(r"TOTAL ENERGY\s+(-?\d+(?:\.\d+)?(?:[Ee][+-]?\d+)?)\s+Eh")
@@ -181,8 +182,163 @@ def _scf_not_converged(output: str) -> bool:
     return bool(re.search(r"SCF not converged|did not converge|cannot be satisfied", output))
 
 
+_TBLITE = threading.local()
+_TBLITE_SOLVENTS = {"--alpb": "alpb-solvation", "--gbsa": "gbsa-solvation"}
+
+
+def _tblite_options(extra_args: list) -> dict | None:
+    """The tblite settings for an xtb command line's options, or None when it has one tblite isn't given
+    here (anything but --gfn 1/2, --alpb/--gbsa <solvent>, --etemp, --acc)."""
+    opts = {"method": "GFN2-xTB", "solvation": None, "etemp": 300.0, "acc": 1.0}
+    args = [str(a) for a in extra_args]
+    k = 0
+    while k < len(args):
+        a = args[k]
+        value = args[k + 1] if k + 1 < len(args) else None
+        if a == "--gfn" and value in ("1", "2"):
+            opts["method"] = f"GFN{value}-xTB"
+        elif a in _TBLITE_SOLVENTS and value and not value.startswith("-"):
+            opts["solvation"] = (_TBLITE_SOLVENTS[a], value)
+        elif a == "--etemp" and value:
+            opts["etemp"] = float(value)
+        elif a == "--acc" and value:
+            opts["acc"] = float(value)
+        else:
+            return None
+        k += 2
+    return opts
+
+
+def _tblite_point(node, extra_args) -> tuple[float, np.ndarray] | None:
+    """(energy in Hartree, gradient in Hartree/Bohr) for `node` from tblite, restarting from the stored
+    wavefunction of the nearest of this thread's recent structures with the same atoms; None when tblite
+    isn't installed, doesn't take these options or fails (the caller then runs xtb).
+
+    A failed SCF runs all its cycles (~0.85 s at 24 atoms, xtb itself then converges in ~35 ms), and the
+    next steps of an optimization sit right next to it: so a failure is retried once from a fresh guess,
+    and structures within 1 Bohr RMS of one that failed both ways skip tblite (Suzuki run 34: one TS
+    optimization spent 12 min in ~800 failed attempts while 95 cores idled)."""
+    opts = _tblite_options(extra_args)
+    if opts is None:
+        return None
+    try:
+        from tblite.interface import Calculator
+    except ImportError:
+        return None
+    folder = os.environ.get("MEPD_CALL_LOG")
+    t0 = time.time()
+    numbers = np.array([int(z) for z in node.structure.atomic_numbers])
+    pos = np.asarray(node.structure.geometry, dtype=float)   # Bohr
+    charge, uhf = int(node.structure.charge), max(0, int(node.structure.multiplicity) - 1)
+    key = (tuple(numbers.tolist()), charge, uhf, opts["method"], opts["solvation"], opts["etemp"], opts["acc"])
+    cache = _TBLITE.__dict__.setdefault("cache", {})
+    if os.getpid() != _TBLITE.__dict__.get("pid"):          # a forked child: its parent's objects aren't its own
+        cache.clear()
+        _TBLITE.pid = os.getpid()
+    entry = cache.get(key)
+    if entry is not None and any(float(np.sqrt(((p - pos) ** 2).sum(axis=1).mean())) <= 1.0 for p in entry[2]):
+        return None
+    try:
+        if entry is None:
+            calc = Calculator(opts["method"], numbers, pos, charge=float(charge), uhf=uhf)
+            calc.set("verbosity", 0)
+            calc.set("temperature", opts["etemp"] * 3.166808578545117e-06)
+            calc.set("accuracy", opts["acc"])
+            if opts["solvation"]:
+                calc.add(*opts["solvation"])
+            entry = cache[key] = (calc, [], [])
+            if len(cache) > 8:
+                cache.pop(next(iter(cache)))
+        calc, recent, failed = entry
+        calc.update(pos)
+    except Exception:
+        return None
+    guess = None
+    if recent:
+        dist, guess = min(((float(np.sqrt(((p - pos) ** 2).sum(axis=1).mean())), r) for p, r in recent),
+                          key=lambda t: t[0])
+        if dist > 1.0:   # Bohr RMS: too far for its wavefunction to help
+            guess = None
+    res = None
+    for start in ([guess, None] if guess is not None else [None]):
+        try:
+            # copy: tblite otherwise overwrites the guess in place, leaving the stored structure with another one's
+            res = calc.singlepoint(start, copy=True) if start is not None else calc.singlepoint()
+            energy, gradient = float(res.get("energy")), np.array(res.get("gradient"))
+            break
+        except Exception:
+            res = None
+    if res is None:
+        failed.append(pos.copy())
+        if len(failed) > 32:
+            failed.pop(0)
+        _log_tblite(folder, t0, False)
+        return None
+    recent.append((pos.copy(), res))
+    if len(recent) > 32:
+        recent.pop(0)
+    _log_tblite(folder, t0, True)
+    return energy, gradient
+
+
+def _log_tblite(folder, t0: float, ok: bool) -> None:
+    if not folder:
+        return
+    try:
+        import json
+
+        with open(Path(folder) / f"{os.getpid()}.jsonl", "a") as fh:
+            fh.write(json.dumps({"t": round(t0, 3), "wall": round(time.time() - t0, 4), "cpu": 0, "ok": ok,
+                                 "flags": ["--tblite", "--grad"], "site": _call_site()}) + "\n")
+    except OSError:
+        pass
+
+
+def _call_site() -> str:
+    """The mepd functions (outside the engines) that led to this call, innermost first."""
+    import traceback
+
+    names = []
+    for frame in reversed(traceback.extract_stack(limit=40)[:-3]):
+        f = frame.filename.replace(os.sep, "/")
+        if "/mepd/" in f and "/mepd/engines/" not in f:
+            names.append(frame.name)
+            if len(names) == 4:
+                break
+    return "<".join(names)
+
+
 def _run_gxtb_process(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float,
                       watch: Callable[[], None] | None = None) -> subprocess.CompletedProcess[str]:
+    """`_run_gxtb_process_` with, when MEPD_CALL_LOG names a folder, one JSON line per run in
+    <folder>/<pid>.jsonl: start time, wall and CPU seconds, the run's flags and where in mepd it came from
+    (for finding what a long run spends its time on)."""
+    folder = os.environ.get("MEPD_CALL_LOG")
+    if not folder:
+        return _run_gxtb_process_(cmd, cwd=cwd, env=env, timeout_s=timeout_s, watch=watch)
+    import json
+    import resource
+
+    t0, c0 = time.time(), resource.getrusage(resource.RUSAGE_CHILDREN)
+    ok = False
+    try:
+        done = _run_gxtb_process_(cmd, cwd=cwd, env=env, timeout_s=timeout_s, watch=watch)
+        ok = done.returncode == 0
+        return done
+    finally:
+        c1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        rec = {"t": round(t0, 3), "wall": round(time.time() - t0, 4),
+               "cpu": round(c1.ru_utime + c1.ru_stime - c0.ru_utime - c0.ru_stime, 4), "ok": ok,
+               "flags": [a for a in cmd[1:] if a.startswith("-")], "site": _call_site()}
+        try:
+            with open(Path(folder) / f"{os.getpid()}.jsonl", "a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+
+
+def _run_gxtb_process_(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float,
+                       watch: Callable[[], None] | None = None) -> subprocess.CompletedProcess[str]:
     """Run one g-xTB command and return its CompletedProcess.
 
     * On Linux the process gets a parent-death signal (`setpriv --pdeathsig
@@ -285,6 +441,12 @@ class GXTBCalculator(Engine):
     # hangs (e.g. an SCF that never settles) fails with an error instead of
     # blocking its path search forever.
     timeout_s: float = 3600.0
+    # GFN-xTB gradients (not g-xTB) through the tblite library in this process instead of an xtb run each:
+    # no process start or files, and each SCF starts from the wavefunction of the nearest structure this
+    # thread computed (a path's image one step earlier): ~12 against ~45 ms for 24 atoms, the same energies
+    # to ~3e-6 Eh. Hessians and xtb's own optimizations still run xtb. Runs whose options tblite doesn't
+    # take (or that fail there) run xtb as before.
+    in_process: bool = False
 
     def __post_init__(self) -> None:
         # Nothing configured: $GXTB_EXECUTABLE, else `gxtb`, which (if not on
@@ -370,6 +532,12 @@ class GXTBCalculator(Engine):
         return node_list
 
     def _compute_node(self, node: StructureNode) -> FakeQCIOOutput:
+        if self.in_process and not self.add_gxtb_flag and Path(self.executable).name != "gxtb":
+            out = _tblite_point(node, self.extra_args)
+            if out is not None:
+                energy, gradient = out
+                res = FakeQCIOResults.model_validate({"energy": energy, "gradient": gradient})
+                return FakeQCIOOutput.model_validate({"results": res})
         with tempfile.TemporaryDirectory(prefix="gxtb-") as tmp:
             workdir = Path(tmp)
             xyz_path = workdir / "structure.xyz"
@@ -718,6 +886,18 @@ class GXTBCalculator(Engine):
                     progress_callback(done[0], len(nodes))
             return traj
 
+        kwds = dict(keywords or {})
+        python_driven = ("fmax" in kwds or "optimizer" in kwds
+                         or (self.minimizer or self.DEFAULT_MINIMIZER) != "xtb")
+        width = min(len(nodes), int(self.n_parallel) or max(1, available_cpus() // max(1, int(self.n_threads))))
+        if python_driven and width > 1 and progress_callback is None:
+            # Optimizers driven from Python (Sella, LBFGS) as threads of one process share its interpreter
+            # lock: 450 proposal minimizations on 48 threads kept 3-6 g-xTB runs going. Forked processes
+            # each have their own (xtb's own optimizer runs in its process either way).
+            from mepd.cli_common import _fork_map
+
+            return _fork_map(lambda node: self.compute_geometry_optimization(node=node, keywords=keywords),
+                             list(nodes), width)
         return self._map(_optimize, list(nodes))
 
     def _minimize_to_fmax(self, node: StructureNode, kwds: dict[str, Any]) -> list[StructureNode]:
@@ -748,7 +928,7 @@ class GXTBCalculator(Engine):
 
     def _map(self, fn, items: list) -> list:
         """`[fn(x) for x in items]`, with up to `n_parallel` running at once."""
-        width = int(self.n_parallel) or max(1, (os.cpu_count() or 1) // max(1, int(self.n_threads)))
+        width = int(self.n_parallel) or max(1, available_cpus() // max(1, int(self.n_threads)))
         width = min(width, len(items))
         if width <= 1:
             return [fn(x) for x in items]

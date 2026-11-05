@@ -92,6 +92,15 @@ def _nanoreactor(structure, *, max_products, options):
     return reactor_products(structure, max_products=max_products, **options)
 
 
+def _reactor(structure, *, max_products, options):
+    from mepd.discovery.reactor_generator import OPTIONS, reactor_products
+
+    unknown = set(options) - set(OPTIONS)
+    if unknown:
+        raise ValueError(f"reactor options are {', '.join(sorted(OPTIONS))} (got {', '.join(sorted(unknown))}).")
+    return reactor_products(structure, max_products=max_products, **options)
+
+
 def _collide(structure, *, max_products, options):
     from mepd.discovery.collide_generator import OPTIONS, collide_products
 
@@ -129,6 +138,21 @@ GENERATORS: dict[str, Generator] = {
             "method": "steered Langevin MD (a capped harmonic pull between two atoms, then a free run and a quench) "
                       "on GFN2-xTB (tblite)",
             "cite": ["C. Bannwarth, S. Ehlert, S. Grimme, J. Chem. Theory Comput. 15, 1652-1671 (2019), "
+                     "doi:10.1021/acs.jctc.8b01176"]}}),
+    "reactor": Generator(
+        "reactor", "The Reactor, unattended (piston and random collisions)",
+        "The interactive Reactor with the piston on and Collide repeating: Langevin MD on GFN2-xTB in a wall that "
+        "periodically squeezes the structure, while two atoms picked at random are pulled together for a moment "
+        "every so often. Nothing chooses the chemistry; the kinetics sort out what matters.",
+        _reactor, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
+        options={k: v for k, v in __import__("mepd.discovery.reactor_generator", fromlist=["OPTIONS"]).OPTIONS.items()
+                 if k != "workdir"},
+        references={"reactor": {
+            "method": "piston-compressed Langevin MD with random steered collisions on GFN2-xTB (tblite); events "
+                      "detected as in mepd's reimplementation of the ab initio nanoreactor",
+            "cite": ["L.-P. Wang, A. Titov, R. McGibbon, F. Liu, V. S. Pande, T. J. Martinez, Nat. Chem. 6, 1044-1048 "
+                     "(2014), doi:10.1038/nchem.2099",
+                     "C. Bannwarth, S. Ehlert, S. Grimme, J. Chem. Theory Comput. 15, 1652-1671 (2019), "
                      "doi:10.1021/acs.jctc.8b01176"]}}),
     "nanoreactor": Generator(
         "nanoreactor", "Nanoreactor MD (hot, squeezed)",

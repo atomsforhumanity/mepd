@@ -421,6 +421,21 @@ def write_morph(stream: str, frames: list, *, label: str = "", caption: str = ""
         return
 
 
+def write_live_state(stream: str, kind: str, data: dict) -> None:
+    """A live stream (kind `kind`) whose whole state is `data`, replaced on
+    every write (e.g. the explorer's job queue, its live kinetics). No-op
+    unless a live viewer is attached (MEPD_DRIVE_CHAIN_DIR)."""
+    fp = _stream_path(stream)
+    if fp is None:
+        return
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_json_write(fp, {"kind": kind, "stream": stream, "label": stream, "data": data,
+                                "updated": time.time(), "finished": False})
+    except Exception:
+        return
+
+
 def append_live_event(event: dict) -> None:
     """Append one JSON line to live/events.jsonl, for things a live viewer
     should act on as they happen (e.g. a new species found, which the web UI
@@ -1302,6 +1317,11 @@ def _labels_for_chain(chain):
     return [str(i) for i, _ in enumerate(chain.nodes)]
 
 
+# endpoint SMILES by structure: a band's ends rarely move, and perceiving them again (rdkit bond orders, ~7 ms
+# each, four per printed step) was ~15% of a path search and on the critical path of every band step
+_ENDPOINT_SMILES: dict = {}
+
+
 def _endpoint_smiles_for_chain(chain):
     if structure_to_smiles is None or len(chain.nodes) == 0:
         return "N/A", "N/A"
@@ -1326,6 +1346,24 @@ def _endpoint_smiles_for_chain(chain):
             natom = len(node.coords)
         except Exception:
             natom = 0
+        try:
+            key = (np.asarray(node.coords).tobytes(), tuple(node.structure.symbols),
+                   int(node.structure.charge), int(node.structure.multiplicity))
+        except Exception:
+            key = None
+        if key is not None and key in _ENDPOINT_SMILES:
+            return _ENDPOINT_SMILES[key]
+        smiles = _node_smiles(node, natom)
+        if key is not None:
+            try:
+                if len(_ENDPOINT_SMILES) >= 256:
+                    _ENDPOINT_SMILES.pop(next(iter(_ENDPOINT_SMILES)), None)
+            except RuntimeError:   # another thread changed it meanwhile
+                pass
+            _ENDPOINT_SMILES[key] = smiles
+        return smiles
+
+    def _node_smiles(node, natom) -> str:
         if natom < 100:
             try:
                 smiles = str(structure_to_smiles(node.structure))

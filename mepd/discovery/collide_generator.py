@@ -19,25 +19,18 @@ the collisions ran.
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
+from mepd.cpus import available_cpus
 
 BOHR = 0.529177210903            # Angstrom
 KCAL = 627.509474
 AUTO_MAX = 96                    # n_collisions 0: every move up to this many
-MAX_PULL = 0.08                  # Hartree/bohr cap on the pull's force, as the Reactor's (~100 kcal/mol/A)
 
 OPTIONS = {"n_collisions": 0, "temperature": 1000.0, "pull_fs": 300.0, "relax_fs": 300.0, "k": 100.0,
            "min_hops": 2, "seed": 0, "parallel": 0}
-
-def _atomic_number(symbol: str) -> int:
-    from rdkit import Chem
-
-    return Chem.GetPeriodicTable().GetAtomicNumber(symbol)
-
 
 def _bonds(symbols, xyz_A, scale: float = 1.3) -> frozenset:
     from rdkit import Chem
@@ -184,17 +177,10 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
              pull2=None):
     """One collision: pull `pair` (and `pull2`) together, and drag the bond
     `push` apart until it lets go; between two molecules, from a random
-    orientation of the partner. The quenched end geometry (Angstrom), or None
-    if the dynamics failed."""
-    import os
-
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    from tblite.interface import Calculator
-
-    from mepd.discovery.nanoreactor import _masses, _wall
-
-    Z = np.array([_atomic_number(s) for s in symbols])
+    orientation of the partner. The quenched end geometry (Angstrom), or the
+    error if the dynamics failed."""
     from mepd.discovery.free_energy import molecules
+    from mepd.discovery.langevin import MAX_PULL, LangevinMD, pull_pairs
 
     pulls = [tuple(pair)] + ([tuple(pull2)] if pull2 is not None else [])
     mols = molecules(symbols, np.asarray(xyz_A), scale=1.3)
@@ -202,76 +188,41 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
         xyz_A = _turn_partner(symbols, xyz_A, pair[1], np.random.default_rng(seed + 7919))
     pos = np.asarray(xyz_A, dtype=float) / BOHR
     pos = pos - pos.mean(axis=0)
-    masses = _masses(symbols)
-    radius = float(np.max(np.linalg.norm(pos, axis=1))) + 4.0 / BOHR
-    calc = Calculator("GFN2-xTB", Z, pos, charge=float(charge), uhf=int(multiplicity) - 1)
-    calc.set("verbosity", 0)
-    calc.set("temperature", 3000.0 * 3.166811563e-6)   # Fermi smearing, as the Reactor: bonds break cleanly
-    wall = 20.0 / KCAL * BOHR
     k = float(k_kcal) / KCAL * BOHR * BOHR
     if push is not None:
         from rdkit import Chem
 
         rc = Chem.GetPeriodicTable()
         let_go = 1.5 * (rc.GetRcovalent(symbols[push[0]]) + rc.GetRcovalent(symbols[push[1]])) / BOHR
-    res = [None]
+    pulling = [True]
 
-    def forces(x, pulling):
-        calc.update(x)
-        try:
-            r = calc.singlepoint(res[0]) if res[0] is not None else calc.singlepoint()
-        except Exception:
-            r = calc.singlepoint()
-        res[0] = r
-        g = np.array(r.get("gradient"))
-        g = g + _wall(x, radius, wall)[1]
-        if pulling:
-            for i, j in pulls:
-                mid = 0.5 * (x[i] + x[j])
-                for a in (i, j):
-                    f = k * (x[a] - mid)
-                    norm = np.linalg.norm(f)
-                    if norm > MAX_PULL:
-                        f *= MAX_PULL / norm
-                    g[a] += f
-            if push is not None:
-                a, b = push
-                d = x[a] - x[b]
-                r = np.linalg.norm(d)
-                if r < let_go:          # drag apart with the capped force until the bond has let go
-                    f = MAX_PULL * d / max(r, 1e-9)
-                    g[a] -= f
-                    g[b] += f
+    def bias(x):
+        if not pulling[0]:
+            return np.zeros_like(x)
+        g = pull_pairs(x, pulls, k)
+        if push is not None:
+            a, b = push
+            d = x[a] - x[b]
+            r = np.linalg.norm(d)
+            if r < let_go:          # drag apart with the capped force until the bond has let go
+                f = MAX_PULL * d / max(r, 1e-9)
+                g[a] -= f
+                g[b] += f
         return g
 
-    kB = 3.166811563e-6 / 1.066551
-    acc = 0.93766
-    dt, gamma = 0.5, 0.02
-    rng = np.random.default_rng(seed)
-    vel = rng.normal(size=pos.shape) * np.sqrt(kB * temperature / masses)[:, None]
-    c1 = math.exp(-gamma * dt)
-    c2 = np.sqrt((1 - c1 * c1) * kB * temperature / masses)[:, None]
     try:
-        grad = forces(pos, True)
-        n_pull, n_all = int(pull_fs / dt), int((pull_fs + relax_fs) / dt)
-        for step in range(n_all):
-            pulling = step < n_pull
-            vel -= 0.5 * dt * acc * grad / masses[:, None]
-            pos = pos + 0.5 * dt * vel
-            vel = c1 * vel + c2 * rng.normal(size=vel.shape)
-            pos = pos + 0.5 * dt * vel
-            grad = forces(pos, pulling)
-            vel -= 0.5 * dt * acc * grad / masses[:, None]
-            if not np.all(np.isfinite(pos)):
-                return None
-        for _ in range(200):          # quench: steepest descent, steps capped (no new chemistry)
-            step = -grad / masses[:, None] * 20.0
-            norm = np.linalg.norm(step, axis=1, keepdims=True)
-            pos = pos + np.where(norm > 0.1, step * 0.1 / np.maximum(norm, 1e-12), step)
-            grad = forces(pos, False)
+        md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature,
+                        wall=(float(np.max(np.linalg.norm(pos, axis=1))) + 4.0 / BOHR) * BOHR, seed=seed, bias=bias)
+        md.start()
+        n_pull, n_all = int(pull_fs / md.dt), int((pull_fs + relax_fs) / md.dt)
+        done = 0
+        while done < n_all:
+            pulling[0] = done < n_pull
+            done += md.step()
+        md.relax(200)                 # quench: no new chemistry
     except Exception as exc:     # reported (the first one) by collide_products
         return f"{type(exc).__name__}: {exc}"
-    return pos * BOHR
+    return md.pos * BOHR
 
 
 def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0, temperature: float = 1000.0,
@@ -297,26 +248,31 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
     # 0 (default): every move once, at most AUTO_MAX (small molecules: all of them, a fraction of a second each)
     n = int(n_collisions) or min(len(order), AUTO_MAX)
     jobs = [(order[m % len(order)], int(seed) + m) for m in range(max(n, 1))]
-    width = max(1, int(parallel) or os.cpu_count() or 1)
+    width = max(1, int(parallel) or available_cpus())
     args = [(symbols, xyz, int(structure.charge), int(structure.multiplicity), (mv[0], mv[1]), float(temperature),
              float(pull_fs), float(relax_fs), float(k), s, mv[2], mv[3] if len(mv) > 3 else None) for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
-    out, seen, failed, torn, same = [], {start}, 0, 0, 0
+    from mepd.discovery.nanoreactor_generator import stereo_key
+
+    start_key = (start, stereo_key(structure))
+    out, seen, failed, torn, same = [], {start_key}, 0, 0, 0
     errors = [e for e in ends if isinstance(e, str)]
     for end in ends:
         if end is None or isinstance(end, str):
             failed += 1
             continue
         b = _bonds(symbols, end)
-        if b in seen:
-            same += b == start
-            continue
         if any(not any(i in p for p in b) for i in range(len(symbols))):
             torn += 1           # an atom on its own: no product guess (as the nanoreactor)
             continue
-        seen.add(b)
+        prod = structure.model_copy(update={"geometry": end * ANGSTROM_TO_BOHR})
+        key = (b, stereo_key(prod))     # diastereomers (endo, exo) are two products
+        if key in seen:
+            same += key == start_key
+            continue
+        seen.add(key)
         if len(out) < int(max_products):
-            out.append(structure.model_copy(update={"geometry": end * ANGSTROM_TO_BOHR}))
+            out.append(prod)
     print(f"collide: {len(out)} distinct product(s) from {len(jobs)} collisions of "
           f"{len(moves)} possible moves ({same} back to the start, {torn} with a lone atom, {failed} failed).", flush=True)
     if errors:
@@ -325,10 +281,10 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
 
 
 def _run_in_processes(args: list, width: int) -> list:
-    """`_collide(*a)` for each of `args`, in `width` fresh Python processes
-    (started, not forked: the explorer calls generators from threads, and a
-    fork of a threaded process can deadlock). Each process gets its share as
-    JSON on stdin and answers in JSON."""
+    """`_collide(*a)` for each of `args`, in fresh Python processes, `width`
+    at a time (started, not forked: the explorer calls generators from
+    threads, and a fork of a threaded process can deadlock). Each process
+    gets its collision as JSON on stdin and answers in JSON."""
     import json
     import subprocess
     import sys
@@ -336,7 +292,10 @@ def _run_in_processes(args: list, width: int) -> list:
 
     if width <= 1:
         return [_collide(*a) for a in args]
-    chunks = [list(range(k, len(args), width)) for k in range(width)]
+    # one collision per process, `width` at a time: fixed shares of ~10 left a round's proposals waiting on the
+    # process with the slowest collisions while the others' cores idled (a process starts in ~0.1 s, a
+    # collision takes ~25 s)
+    chunks = [[i] for i in range(len(args))]
 
     def run(idx):
         payload = [[a[0], np.asarray(a[1]).tolist(), *a[2:4], list(a[4]), *a[5:10],

@@ -50,15 +50,21 @@ MODES = ("single-point", "reoptimize")
 
 
 def kinetic_reach(steps: Sequence[Step], energies: Sequence[float], e0: float,
-                  cutoff_kcal: Optional[float]) -> tuple[set[int], list[int]]:
+                  cutoff_kcal: Optional[float], mirror_of: Optional[Sequence[int]] = None
+                  ) -> tuple[set[int], list[int]]:
     """(species, step indices) the kinetics treat: reached from species 0
-    climbing at most `cutoff_kcal` (all of them without a cutoff)."""
+    climbing at most `cutoff_kcal` (all of them without a cutoff).
+    `mirror_of`: each species' mirror image (-1: not in the network,
+    mepd.discovery.mirror); a species is reached when its mirror image is,
+    through the twins of the steps that reach that one."""
     if cutoff_kcal is None:
         return set(range(len(energies))), list(range(len(steps)))
     from mepd.network_aware import accessibility
 
     acc = accessibility(steps, energies, e0)
     reach = {k for k, st in acc.items() if st.span <= cutoff_kcal} | {0}
+    if mirror_of is not None:
+        reach |= {mirror_of[k] for k in reach if mirror_of[k] >= 0}
     open_steps = [m for m, st in enumerate(steps) if st.a in reach and st.b in reach
                   and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= cutoff_kcal]
     return reach, open_steps
@@ -106,11 +112,24 @@ def _level(engine) -> str:
     threads, memory or paths): a saved result is reused only at the same level."""
     import dataclasses
 
-    skip = {"threads", "memory", "maxcore", "python", "executable", "timeout", "keep_workdirs"}
+    import inspect
+
+    skip = {"threads", "memory", "maxcore", "python", "executable", "timeout", "keep_workdirs",
+            "disable_molecular_graphs"}
+    simple = (str, int, float, bool, tuple, list, dict)
+
+    def value(name):
+        # read without running a property: an MLIP engine's `calculator` loads the model (CUDA in this process)
+        if name in vars(engine):
+            return vars(engine)[name]
+        return None if isinstance(inspect.getattr_static(engine, name, None), property) else getattr(engine, name, None)
+
     if dataclasses.is_dataclass(engine):
-        fields = {f.name: getattr(engine, f.name, None) for f in dataclasses.fields(engine)}
+        fields = {f.name: value(f.name) for f in dataclasses.fields(engine)}
+        # settings an engine keeps outside its dataclass fields (an MLIP's model name)
+        fields.update({k: v for k, v in vars(engine).items() if k not in fields and isinstance(v, simple)})
     else:
-        fields = {k: v for k, v in vars(engine).items() if isinstance(v, (str, int, float, bool, tuple, list, dict))}
+        fields = {k: v for k, v in vars(engine).items() if isinstance(v, simple)}
     fields = {k: v for k, v in fields.items() if k not in skip and not k.startswith("_")}
     return f"{type(engine).__name__}{sorted((k, repr(v)) for k, v in fields.items())}"
 
@@ -192,11 +211,13 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
                     temperature: float, time_s: float, cutoff_kcal: Optional[float] = None,
                     mode: str = "single-point", free_energy: bool = True, standard_state: str = "1M",
                     workers: int = 1, on_note: Optional[Callable[[str], None]] = None,
-                    save_dir: Optional[Path] = None) -> dict:
+                    save_dir: Optional[Path] = None, mirror_images: bool = True) -> dict:
     """`species`: Structures at the explorer's level (index 0 the seed);
     `steps`: its verified steps, each with files["ts"] (the TS geometry).
     Returns the low- and high-level energies of every refined species and
-    TS, and the kinetics on both (see the module docstring)."""
+    TS, and the kinetics on both (see the module docstring). `mirror_images`:
+    the kinetics count every structure with its mirror image, as the
+    explorer's do (mepd.discovery.mirror)."""
     from mepd.cli_common import _fork_map
     from qcdata import Structure
 
@@ -212,7 +233,14 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     e_low = [_energy(s, low_engine) for s in species]
     e0 = e_low[0]
     steps = list(steps)
-    reach, open_steps = kinetic_reach(steps, e_low, e0, cutoff_kcal)
+    finder = mirror_of = None
+    if mirror_images:
+        from mepd.discovery.mirror import MirrorFinder
+        from mepd.nodes.node import StructureNode
+
+        finder = MirrorFinder()
+        mirror_of = finder.species_mirrors([StructureNode(structure=s) for s in species])
+    reach, open_steps = kinetic_reach(steps, e_low, e0, cutoff_kcal, mirror_of)
     ref = species[0]
     ts_structs = {}
     for m in open_steps:
@@ -345,8 +373,21 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
 
     low_steps = [Step(st.a, st.b, closed(m, ts_low, 0.0), st.label, st.files) for m, st in enumerate(steps)]
     high_steps = [Step(st.a, st.b, closed(m, ts_high, shift), st.label, st.files) for m, st in enumerate(steps)]
-    kin_low = simulate(len(species), low_steps, g_low, temperature=temperature, time_s=time_s)
-    kin_high = simulate(len(species), high_steps, g_high, temperature=temperature, time_s=time_s)
+    mirrors = None
+    n_low = n_high = len(species)
+    g_low_k, g_high_k = g_low, g_high
+    if finder is not None:
+        from mepd.nodes.node import StructureNode
+
+        mirrors = finder([StructureNode(structure=s) for s in species], steps,
+                                 [ts_structs.get(m) for m in range(len(steps))],
+                                 (lambda s: [g for g, _, _ in splitter.parts(s, False)]) if free_energy else None)
+        for msg in dict.fromkeys(mirrors.undecided):
+            say(f"mirror images: {msg}")
+        n_low, low_steps, g_low_k = mirrors.extend(low_steps, g_low, temperature)
+        n_high, high_steps, g_high_k = mirrors.extend(high_steps, g_high, temperature)
+    kin_low = simulate(n_low, low_steps, g_low_k, temperature=temperature, time_s=time_s)
+    kin_high = simulate(n_high, high_steps, g_high_k, temperature=temperature, time_s=time_s)
 
     def rel(x):
         return (x - g_high[0]) * HARTREE_TO_KCAL_PER_MOL
@@ -366,6 +407,10 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     return {"mode": mode, "basis": "free energy" if free_energy else "electronic", "temperature_K": temperature,
             "time_s": time_s, "standard_state": standard_state, "cutoff_kcal": cutoff_kcal,
             "refined": rows, "notes": notes,
+            **({"mirror_images": {**mirrors.record(), "virtual_species": [
+                {**v, "final_low": kin_low.final_concentration[v["index"]],
+                 "final_high": kin_high.final_concentration[v["index"]]}
+                for v in mirrors.record()["virtual_species"]]}} if mirrors is not None else {}),
             "kinetics": {"low": {"final_concentration": kin_low.final_concentration,
                                  "max_concentration": kin_low.max_concentration, "flux": kin_low.flux},
                          "high": {"final_concentration": kin_high.final_concentration,
@@ -389,7 +434,8 @@ def _resolve(fp, run_dir: Path) -> Optional[Path]:
 
 
 def refine_run(run_dir: Path, *, low_engine, high_engine, mode: str = "single-point", workers: int = 1,
-               standard_state: Optional[str] = None, on_note: Optional[Callable[[str], None]] = None) -> dict:
+               standard_state: Optional[str] = None, on_note: Optional[Callable[[str], None]] = None,
+               mirror_images: bool = True) -> dict:
     """refine_energies on a `mepd discovery expand` output folder."""
     import json
 
@@ -415,7 +461,7 @@ def refine_run(run_dir: Path, *, low_engine, high_engine, mode: str = "single-po
         temperature=float(steer.get("temperature_K", 298.15)), time_s=float(steer.get("time_s", 3600.0)),
         cutoff_kcal=steer.get("cutoff_kcal"), mode=mode,
         standard_state=standard_state or steer.get("standard_state", "1M"), workers=workers, on_note=on_note,
-        save_dir=run_dir / "refined")
+        save_dir=run_dir / "refined", mirror_images=mirror_images)
     for row in out["refined"]:
         if row["kind"] == "species":
             row["smiles"] = summary["species"][row["index"]].get("smiles")

@@ -11,13 +11,14 @@ import typer
 
 from mepd.chain import Chain
 from mepd.discovery.cli import _progress, _validation_kwargs, discovery_app
+from mepd.cpus import available_cpus
 
 
 def _generator_options(generator: str, values: List[str], output: Path) -> dict:
-    """--generator-option values; the nanoreactor's MD goes into
+    """--generator-option values; the nanoreactor's and the reactor's MD go into
     <output>/reactor/run_kk (the web UI's Reactor view reads it there)."""
     out = _parse_options(values)
-    if str(generator).strip().lower() == "nanoreactor":
+    if str(generator).strip().lower() in ("nanoreactor", "reactor"):
         out.setdefault("workdir", str((Path(output) / "reactor").resolve()))
     return out
 
@@ -165,65 +166,273 @@ def _horizontal(run_inputs, output: Path, workers: int, fast_ts_steps: int = 300
     return HorizontalConnector(run_inputs, output, workers, fast_ts_steps=fast_ts_steps, say=typer.echo)
 
 
-def _channels_refiner(run_inputs, output: Path, workers: int, options: dict):
+def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max_depth: int = 0,
+                      prefetch_steps: bool = False):
     """`refine` for the explorer: `mepd channels` (conformers of both ends, `explore_mechanisms` atom
     mappings, a TS + IRC per distinct path) between the two species of each step. The steps' searches run
     at once, `workers` shared between them (one step's slowest path search would otherwise idle the rest).
     Per step: {"direct": [...], "other": [...], "conformers": [...]} (records like connect's), or None if
-    the search failed."""
+    the search failed.
+
+    `prefetch_steps`: `refine.prefetch(items)` starts sampling steps early, in a background process at a lower priority
+    (the explorer calls it while it verifies the round's steps, whose tail leaves most cores idle);
+    `refine` then reads what it finished, waits for what it is still sampling, and samples a step again
+    if its species changed in between.
+
+    `max_depth` (a profile's own recursive_split_max_depth wins): how many levels of a step's path searches
+    split here. The pieces of a split at that depth come back unminimized under "deferred" ({"start",
+    "end"}): the explorer searches each only once the kinetics put material at one of its ends (0: every
+    piece past a mechanism's first split)."""
     import copy
+    import multiprocessing
+    import time
 
     import mepd
+    from mepd import cli_common
     from mepd.cli_common import _fork_map
+    from mepd.discovery.horizontal import _CoreShare
 
-    def refine(items):
-        items = list(items)
-        at_once = max(1, min(len(items), int(workers)))
-        each = max(1, int(workers) // at_once)
+    ctx = multiprocessing.get_context("fork")
+    # path searches running in all the steps, prefetched or not (shared with the forked step processes): a
+    # step starts more of its searches, and a search runs its images on more threads, when others leave
+    # cores idle
+    searches = ctx.Value("i", 0)
+    background_searches = ctx.Value("i", 0)
+    background = {"proc": None, "stop": None}
 
-        def one(item):
+    def fingerprint(a, b) -> str:
+        import hashlib
+
+        import numpy as np
+
+        h = hashlib.sha1()
+        for n in (a, b):
+            h.update(np.round(np.asarray(n.coords, dtype=float), 6).tobytes())
+            h.update(f"{tuple(n.structure.symbols)}{n.structure.charge}{n.structure.multiplicity}".encode())
+        h.update(repr(sorted(options.items())).encode())
+        h.update(f"depth={max_depth}".encode())
+        return h.hexdigest()
+
+    def widths(n: int, total: int) -> tuple[int, int]:
+        # a step's path searches (one per mechanism; ~3 with explore_mechanisms 2) at once and fewer steps
+        # at a time: with one worker per step its searches ran in turn, and the round waited on the slowest
+        # step's three in a row
+        each = max(min(3, total), total // max(1, n))
+        return each, max(1, min(n, total // each))
+
+    def sampler(each: int, stop=None):
+        def sample(item):
+            import pickle
+
             a, b, label = item
             folder = output / "channels" / f"pair_{label}"
-            profile = copy.deepcopy(run_inputs)
-            if getattr(profile.engine, "n_parallel", None) is not None:
-                profile.engine.n_parallel = each
+            done_fp = folder / "explorer_record.pkl"   # this step's finished sampling, for a resumed run
+            busy_fp = folder / "explorer_prefetching"
+            key = fingerprint(a, b)
+            if stop is None:   # the explorer's own call: a step the background is still sampling, it waits for
+                while busy_fp.is_file() and _alive(background_pid(folder)):
+                    time.sleep(5)
+                busy_fp.unlink(missing_ok=True)
+            if done_fp.is_file():
+                try:
+                    rec = pickle.loads(done_fp.read_bytes())
+                except Exception:
+                    rec = False
+                if rec is not False and rec.get("key", key) == key:
+                    return rec
+                if rec is not False:   # sampled for other structures of these species: start over
+                    k = 0
+                    while folder.with_name(f"{folder.name}.stale-{k}").exists():
+                        k += 1
+                    folder.rename(folder.with_name(f"{folder.name}.stale-{k}"))
+            if stop is not None:   # background: take a step only while the explorer hasn't asked for them
+                with stop.get_lock():
+                    if stop.value:
+                        return None
+                    folder.mkdir(parents=True, exist_ok=True)
+                    busy_fp.write_text(str(os.getpid()))
             try:
-                # every conformer pair of every mechanism (pairs_per_mechanism=0, what "Sample more paths"
-                # adds in the web UI): the kinetics need each step's lowest TS, and a capped search misses it
-                res = mepd.channels(a, b, output=folder, profile=profile,
-                                    **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 0,
-                                       **options})
-            except Exception as exc:
-                typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
-                           "it keeps its single TS.")
-                return None
-            rec = {"direct": [], "other": [], "conformers": []}
-            for kind, chans in (("direct", res.direct), ("other", res.multistep + res.offtarget)):
-                for ch in chans:
-                    for st in ch.steps:
-                        if st.irc is None or st.ts is None:
-                            continue
-                        if st.ts._cached_energy is None:
-                            profile.engine.compute_energies([st.ts])
-                        rec[kind].append({"start": st.irc.path[0], "end": st.irc.path[-1], "ts": st.ts,
-                                          "label": f"ch_{label}_{st.folder.parent.name}_{st.folder.name}",
-                                          "files": {"ts": str(st.folder / "ts.xyz"), "verified": True,
-                                                    "channels": str(folder)}})
-            for pool in (res.start_conformers, res.end_conformers):
-                with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
-                if with_e:
-                    rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
-            typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
-                       f"{len(res.offtarget)} off-target exit(s).")
-            return rec
+                return _sample(a, b, label, folder, done_fp, key, each, background=stop is not None)
+            finally:
+                if stop is not None:
+                    busy_fp.unlink(missing_ok=True)
+        return sample
 
-        return _fork_map(one, items, at_once)
+    def background_pid(folder) -> int:
+        try:
+            return int((folder / "explorer_prefetching").read_text())
+        except (OSError, ValueError):
+            return 0
 
+    def _sample(a, b, label, folder, done_fp, key, each, background=False):
+        import pickle
+
+        profile = copy.deepcopy(run_inputs)
+        if getattr(profile.engine, "n_parallel", None) is not None:
+            profile.engine.n_parallel = _CoreShare(int(workers), background_searches if background else searches)
+        path_min = getattr(profile, "path_min_inputs", None)
+        if path_min is not None:
+            # a split's pieces at the depth limit go back to the explorer unminimized, which runs each once
+            # material reaches it (some searches recursed 39 levels through bands peaking hundreds of
+            # kcal/mol up and held a round for an hour)
+            path_min.defer_split_pieces = True
+            if getattr(path_min, "recursive_split_max_depth", None) is None:
+                path_min.recursive_split_max_depth = int(max_depth)
+        try:
+            # the 3 best-scoring conformer pairs of each mechanism (`mepd channels`' own default): every pair
+            # (pairs_per_mechanism=0) searched 140 pairs on each of two Cp + methyl acrylate side steps nothing
+            # reaches (174 min vs 47 min), with the same endo:exo (33:67 vs 36:64) and Suzuki product either way
+            extra = {"parallel_workers": BACKGROUND_BRANCHES} if background else {}
+            res = mepd.channels(a, b, output=folder, profile=profile,
+                                **{"workers": each, "explore_mechanisms": 2, "pairs_per_mechanism": 3,
+                                   **extra, **options})
+        except Exception as exc:
+            typer.echo(f"WARNING: channel sampling of step {label} failed ({type(exc).__name__}: {exc}); "
+                       "it keeps its single TS.")
+            return None
+        rec = {"direct": [], "other": [], "conformers": [], "key": key, "deferred": _deferred_pieces(
+            folder, int(a.structure.charge), int(a.structure.multiplicity))}
+        for kind, chans in (("direct", res.direct), ("other", res.multistep + res.offtarget)):
+            for ch in chans:
+                for st in ch.steps:
+                    if st.irc is None or st.ts is None:
+                        continue
+                    if st.ts._cached_energy is None:
+                        profile.engine.compute_energies([st.ts])
+                    rec[kind].append({"start": st.irc.path[0], "end": st.irc.path[-1], "ts": st.ts,
+                                      "label": f"ch_{label}_{st.folder.parent.name}_{st.folder.name}",
+                                      "files": {"ts": str(st.folder / "ts.xyz"), "verified": True,
+                                                "channels": str(folder)}})
+        for pool in (res.start_conformers, res.end_conformers):
+            with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
+            if with_e:
+                rec["conformers"].append(min(with_e, key=lambda n: float(n.energy)))
+        typer.echo(f"Channels of step {label}: {len(res.direct)} direct, {len(res.multistep)} multistep, "
+                   f"{len(res.offtarget)} off-target exit(s), {len(rec['deferred'])} piece(s) left at the "
+                   "depth limit.")
+        tmp = done_fp.with_name(done_fp.name + ".tmp")
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(pickle.dumps(rec))
+        tmp.replace(done_fp)
+        return rec
+
+    def run(items, stop=None):
+        total = max(1, int(workers) // 2) if stop is not None else int(workers)
+        each, at_once = widths(len(items), total)
+        # the background (beside the explorer's own verification) gets half the lanes, counted apart: with all
+        # of them, and each search's branch pool forking ~cores/3 processes, it held 57 GiB in ~1300
+        # processes and the run was killed at its memory limit
+        cli_common._SEARCH_SHARE = (total, background_searches if stop is not None else searches)
+        try:
+            return _fork_map(sampler(each, stop), items, at_once)
+        finally:
+            cli_common._SEARCH_SHARE = None
+
+    def stop_background(end: bool) -> None:
+        """No new steps for the background; `end`: also end it (its steps the explorer asked for are done by
+        then, so what it still runs is a step the kinetics no longer need: left to resume from its folder)."""
+        proc = background["proc"]
+        if proc is None:
+            return
+        with background["stop"].get_lock():
+            background["stop"].value = 1
+        if end:
+            if proc.is_alive():
+                proc.terminate()   # its workers follow it (parent-death signal)
+            proc.join()
+            background["proc"] = None
+
+    def prefetch(items):
+        stop_background(end=True)
+        items = list(items)
+        if not items:
+            return
+        stop = ctx.Value("i", 0)
+
+        def body():
+            cli_common._fork_worker_init(os.getppid())
+            os.nice(10)   # the explorer's own work first: this fills the cores it leaves idle
+            run(items, stop)
+
+        proc = ctx.Process(target=body, name="channels-prefetch")
+        proc.start()
+        if not background.get("atexit"):
+            import atexit
+
+            # not a daemon (those can't start the pools it runs), so Python would wait for it at exit: an
+            # explorer that ends early (an error) ends it instead
+            atexit.register(stop_background, True)
+            background["atexit"] = True
+        background.update(proc=proc, stop=stop)
+
+    def refine(items):
+        stop_background(end=False)
+        try:
+            return run(list(items))
+        finally:
+            stop_background(end=True)
+
+    def pairs(item):
+        """For the explorer's queue (schedule async): a step's conformers (minimized) and the atom-mapped
+        conformer pairs of its mechanisms, no path search -- the queue runs each pair as a fast TS, and a
+        path search only where that fails. {"start", "end", "pairs"}."""
+        from mepd.channel_search import ChannelsOptions, run_channels
+
+        a, b, label = item
+        profile = copy.deepcopy(run_inputs)
+        if getattr(profile.engine, "n_parallel", None) is not None:
+            profile.engine.n_parallel = refine.width
+        opts = ChannelsOptions(**{"workers": refine.width, "explore_mechanisms": 2, "pairs_per_mechanism": 3,
+                                  **options, "conformers_only": True})
+        return run_channels(a, b, profile, opts, output / "channels" / f"pair_{label}")
+
+    refine.pairs, refine.width = pairs, min(3, max(1, int(workers)))
+    if prefetch_steps:
+        # off by default: the steps it guesses from the kinetics before the IRC checks are mostly not the
+        # ones asked for after them (Suzuki run 30: 114 sampled, 41 asked for), and it took two thirds of
+        # the cores while the verification waited for them
+        refine.prefetch = prefetch
     return refine
 
 
+BACKGROUND_BRANCHES = 4
+
+
+def _deferred_pieces(folder: Path, charge: int = 0, multiplicity: int = 1) -> list:
+    """The pieces the path searches under a channels `folder` handed back unminimized at their depth limit
+    (defer_split_pieces), as {"start", "end"} nodes (each piece's band ends)."""
+    from mepd.nodes.node import StructureNode
+    from mepd.qcdata_structure_helpers import read_multiple_structure_from_file
+
+    out = []
+    for fp in sorted(Path(folder).glob("pairs/*/tree/node_*_deferred_*.xyz")):
+        frames = read_multiple_structure_from_file(fp, charge=charge, spinmult=multiplicity)
+        if len(frames) >= 2:
+            out.append({"start": StructureNode(structure=frames[0]), "end": StructureNode(structure=frames[-1])})
+    return out   # branch processes per path search the channels background runs (see `run`)
+
+
+def _alive(pid: int) -> bool:
+    """Whether process `pid` is running (a zombie, dead but not yet reaped, is not)."""
+    if pid <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
 def _irc_verifier(run_inputs, output: Path, workers: int):
-    """IRCs of unverified steps' TSs, in parallel: [(step index, start, end) or None]."""
+    """IRCs of unverified steps' TSs, in parallel: [(step index, start, end) or None]. Each IRC is kept
+    whole, minimized ends included, with its energies (ts/<label>_irc.xyz + .energies): the path through
+    the TS is what the web draws for the step."""
     import mepd
     from mepd.cli_common import _fork_map
 
@@ -238,8 +447,12 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
             fp = ts_dir / f"{label}_irc.xyz"
             if not fp.exists():
                 try:
-                    res = mepd.irc(mepd.load(ts_file), eng)
-                    mepd.write_xyz(fp, [res.path.nodes[0], res.path.nodes[-1]])
+                    path = mepd.irc(mepd.load(ts_file), eng).path
+                    missing = [n for n in path.nodes if n._cached_energy is None]
+                    if missing:
+                        eng.compute_energies(missing)
+                    mepd.write_xyz(fp, path.nodes)
+                    path.write_ene_info_to_disk(fp)
                 except Exception as exc:
                     (ts_dir / f"{label}_irc.failed").write_text(f"{type(exc).__name__}: {exc}\n")
                     return None
@@ -250,7 +463,8 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
             if fp is None:
                 out.append((idx, None, None))
                 continue
-            a, b = mepd.read_frames(fp)
+            frames = mepd.read_frames(fp)
+            a, b = frames[0], frames[-1]
             eng.compute_energies([a, b])
             out.append((idx, a, b))
         return out
@@ -266,7 +480,8 @@ def expand(
     charge: Optional[int] = typer.Option(None, "--charge", help="Override the seed's molecular charge."),
     multiplicity: Optional[int] = typer.Option(None, "--multiplicity", help="Override the seed's spin multiplicity."),
     rounds: int = typer.Option(
-        1, "--rounds", help="Expansion depth: round 2 proposes products of round 1's new species, and so on."),
+        1, "--rounds", help="Expansion depth: round 2 proposes products of round 1's new species, and so on. "
+        "Not used by --schedule async, which grows until the kinetics ask for nothing more or a budget runs out."),
     steer: str = typer.Option(
         "auto", "--steer",
         help="Which species the next round expands. 'flux': find a verified TS (path search, TS opt, IRC) for "
@@ -293,6 +508,17 @@ def expand(
         "optimization from the peak of a geodesic interpolation per reaction, and where that fails a path search "
         "whose pieces are queued as it splits (no branch waits for another); IRCs only for steps the kinetics need. "
         "'full': recursive path search + TS + IRC for every reaction."),
+    schedule: str = typer.Option(
+        "rounds", "--schedule",
+        help="--steer access with --connect-mode fast: 'rounds' expands the species the kinetics populate "
+        "once per round. 'async': no rounds -- a species' proposals start the moment the live kinetics populate "
+        "it within reach, and their reactions, IRC checks, channel sampling and steering single points join the "
+        "same job queue as they are asked for. It ends when the kinetics ask for nothing more (converged) or a "
+        "budget runs out (--time-budget, --max-species, a stop request); --rounds and --max-expand do not apply."),
+    time_budget: float = typer.Option(
+        0.0, "--time-budget",
+        help="--schedule async: seconds of wall time; then no new job starts, the running ones finish and the "
+        "network found so far is written with its kinetics. 0 (default): no limit."),
     max_expand: int = typer.Option(
         10, "--max-expand",
         help="--steer access: at most this many species expanded per round (the most populated first, among "
@@ -311,15 +537,31 @@ def expand(
     refine_mode: str = typer.Option(
         "channels", "--refine",
         help="--steer access: 'channels' (default) runs `mepd channels` -- conformers of both ends and 2 atom "
-             "mappings (mechanisms), every conformer pair of each searched (pairs_per_mechanism=0) -- on every "
+             "mappings (mechanisms), the 3 best conformer pairs of each searched (--channels-option "
+             "pairs_per_mechanism=0 searches all) -- on every "
              "step the kinetics need and every pair whose TS failed its IRC check; its channels replace the "
              "step's single TS and its off-target exits and multistep routes join the network. 'none' keeps "
              "single TSs."),
     channels_option: List[str] = typer.Option(
         [], "--channels-option", help="key=value for the channel searches (`mepd channels` option names with "
                                       "underscores, e.g. n_conformers=20). Repeatable."),
+    channels_prefetch: bool = typer.Option(
+        False, "--channels-prefetch/--no-channels-prefetch",
+        help="Start sampling the channels of the steps the kinetics need already while their IRCs are checked "
+             "(in the background, half the cores). Off: the IRC checks change which steps are needed."),
+    channels_max_depth: int = typer.Option(
+        0, "--channels-max-depth",
+        help="How many levels the channel searches split a path themselves (a profile's "
+             "recursive_split_max_depth wins). The pieces of a split at that depth are searched later by the "
+             "connector, each only once the kinetics put material at one of its ends (0: every piece past a "
+             "mechanism's first split)."),
     standard_state: str = typer.Option("1M", "--standard-state",
                                        help="With --kinetics-energy free: '1M' (solution) or '1atm' (gas)."),
+    mirror_images: bool = typer.Option(
+        True, "--mirror-images/--no-mirror-images",
+        help="Count every species and transition state with its mirror image (x -> -x, same energy): a chiral TS "
+        "whose twin was not found gets one, leading to the mirror images of its ends; a chiral conformer of an achiral "
+        "molecule gets -RT ln 2. The explorer finds one twin or both by chance; this removes that bias."),
     flux_threshold: float = typer.Option(
         0.01, "--flux-threshold",
         help="--steer flux: expand a species once the material that flowed into it (fraction of the seed) "
@@ -345,7 +587,8 @@ def expand(
         "(built in: the ZStruct/YARP break-and-form enumeration, reimplemented), or 'package.module:function' for "
         "your own: function(structure, **options) returning product Structures (or xyz paths) in the same atom "
         "order; 'collide' (the Reactor's Collide: steered GFN2 MD pulling atom pairs together, with a bond dragged "
-        "apart). 'auto' (default): with --steer access, collide for one molecule and nanoreactor for several; "
+        "apart); 'reactor' (the Reactor unattended: piston MD with random collisions, 800 K, one 5 ps trajectory per "
+        "worker). 'auto' (default): with --steer access, collide for one molecule and nanoreactor for several; "
         "else bond-rules."),
     generator_option: List[str] = typer.Option(
         [], "--generator-option", help="key=value passed to a custom --generator (values parsed as JSON). Repeatable."),
@@ -373,9 +616,16 @@ def expand(
         help="'single-point' (default): the explorer's geometries and thermal corrections, the higher level's "
         "electronic energies. 'reoptimize': minima and TSs re-converged at the higher level (each TS with an IRC "
         "that must reach the same species) and its own Hessians -- much more expensive."),
+    steer_energies: str = typer.Option(
+        "auto", "--steer-energies",
+        help="--steer flux/access: a profile (.toml) of a higher level of theory whose single points steer the "
+        "exploration: the kinetics that decide which species are expanded (and which steps get channel "
+        "sampling) use G = G_explorer + (E_high - E_low) on every species and TS they treat, each geometry "
+        "computed once (kept in steer_single_points/). 'auto' (default): the --refine-energies profile when "
+        "given; 'none': the explorer's own energies."),
     max_species: int = typer.Option(200, "--max-species", help="Stop adding species beyond this many."),
     workers: int = typer.Option(
-        min(4, max(1, (os.cpu_count() or 1) // 2)), "--workers",
+        min(4, max(1, available_cpus() // 2)), "--workers",
         help="Processes at once: product guesses, the web live view's animations, path-search jobs, and "
         "engine calculations (g-xTB) unless the engine's own n_parallel is set."),
     validate_minima_with_hessian: bool = typer.Option(
@@ -393,6 +643,12 @@ def expand(
     parallel: bool = typer.Option(False, "--parallel", help="--connect: evaluate MSMEP branches in parallel."),
     parallel_workers: Optional[int] = typer.Option(None, "--parallel-workers", help="Workers for --parallel."),
     output: Path = typer.Option(Path("mepd_expand_output"), "--output", "-o", help="Directory to write results into."),
+    resume: bool = typer.Option(
+        False, "--resume",
+        help="Carry on an exploration that stopped (a time limit, a crash) from what it saved in --output "
+        "(expand_state.pkl, written at every stage of a round and every couple of minutes while connecting): "
+        "only the path searches of pairs it had not finished run again. Give the same settings; --rounds can "
+        "be raised to grow a finished network further."),
 ) -> None:
     """Reaction network expansion: propose products of the seed by breaking
     and forming bonds (no Hessian sampling), optimize them, and repeat from
@@ -456,7 +712,7 @@ def expand(
             defaults = {"n_seeds": "8", "time_ps": "5", "temperature": "2500", "parallel": str(max(1, workers))}
             generator_option = list(generator_option or []) + [f"{k}={v}" for k, v in defaults.items() if k not in given]
 
-    if str(generator).strip().lower() == "collide":
+    if str(generator).strip().lower() in ("collide", "reactor"):
         # its processes follow --workers (a pod's os.cpu_count() is the node's, not the pod's)
         given = {o.partition("=")[0].strip() for o in (generator_option or [])}
         if "parallel" not in given:
@@ -475,12 +731,28 @@ def expand(
     from mepd.network_aware import resolve_cutoff
 
     num = lambda v, default=None: float(v) if isinstance(v, (int, float)) else default  # OptionInfo when called directly
+    # Sella moves its large eigensolves to the GPU whenever torch sees one (dimension >= 200: ~70+ atoms). In this
+    # process that initialises CUDA, after which it can't fork its workers and every path search runs one at a
+    # time (a 48-core pod at ~3 cores). Off unless the user set it; a GPU steering level has a process of its own.
+    os.environ.setdefault("SELLA_DISABLE_GPU", "1")
+    from mepd import stackdump
+
+    stackdump.start()
     steer = steer.strip().lower()
     if steer not in ("auto", "window", "flux", "access"):
         raise typer.BadParameter("--steer must be auto, window, flux or access.")
     if str(refine_energies_mode) not in ("single-point", "reoptimize"):
         raise typer.BadParameter("--refine-energies-mode must be single-point or reoptimize.")
     high_engine = _open_run_inputs(refine_energies).engine if isinstance(refine_energies, Path) else None
+    steer_with = str(steer_energies).strip() if isinstance(steer_energies, str) else "auto"
+    if steer_with.lower() == "auto":
+        steer_engine = high_engine
+    elif steer_with.lower() == "none":
+        steer_engine = None
+    else:
+        if not Path(steer_with).is_file():
+            raise typer.BadParameter(f"{steer_with} is not a file.", param_hint="--steer-energies")
+        steer_engine = _open_run_inputs(Path(steer_with)).engine
     run_inputs = _open_run_inputs(inputs)
     pmi = run_inputs.path_min_inputs
     if num(barrier_cutoff) is not None:
@@ -502,7 +774,19 @@ def expand(
         os.environ.setdefault("MEPD_NETWORK_AWARE_LOG", str(Path(output) / "network_aware.jsonl"))
         Path(output).mkdir(parents=True, exist_ok=True)
         typer.echo(f"Network-aware exploration: barrier cutoff {access_cutoff:.1f} kcal/mol.")
+    state_fp = Path(output) / "expand_state.pkl"
+    if resume is True and not state_fp.is_file():
+        raise typer.BadParameter(f"nothing to resume: {state_fp} doesn't exist.", param_hint="--resume")
+    if resume is not True and state_fp.is_file():
+        typer.echo(f"Note: {output} holds a saved exploration; this run starts over (--resume carries it on).")
     _echo_run_inputs_summary(run_inputs)
+    if getattr(run_inputs.engine, "holds_torch_model", False) and hasattr(run_inputs.engine, "server"):
+        # A GPU model as the explorer's own level: one process of its own holds it, and this process and its
+        # workers send it their structures (CUDA here would stop every parallel stage from forking).
+        from mepd.engines.fairchem import serve
+
+        serve(run_inputs.engine)
+        typer.echo(f"Model server for {run_inputs.engine!r} started.")
     seed = StructureNode(structure=_load_structure_from_smiles_or_xyz(structure, charge, multiplicity))
     target_node = (StructureNode(structure=_load_structure_from_smiles_or_xyz(target, charge, multiplicity))
                    if isinstance(target, str) and target else None)
@@ -527,8 +811,18 @@ def expand(
                                                total=payload["total"] or None)
             elif event == "candidate_done" and task["id"] is not None:
                 progress.update(task["id"], completed=payload["index"])
+            elif event == "steer_single_points":
+                progress.console.print(f"Round {payload['round']}: {payload['total']} steering single point(s)",
+                                       highlight=False)
             elif event == "warning":
                 progress.console.print(f"[bold red]WARNING[/bold red] {payload['message']}", highlight=False)
+            elif event == "resumed":
+                progress.console.print(f"Resuming round {payload['round']} ({payload['stage']}): "
+                                       f"{payload['species']} species, {payload['steps']} steps saved.",
+                                       highlight=False)
+            elif event == "resumed_connect":
+                progress.console.print(f"Resuming the connect call it was cut off in: {payload['pairs']} pair(s) "
+                                       f"left, {payload['finished']} finished.", highlight=False)
             elif event == "species_found":
                 progress.console.print(f"[green]✓ species {payload['index']}[/green] {payload['smiles']}  "
                                        f"ΔE={payload['rel_energy_kcal']:+.1f} kcal/mol", highlight=False)
@@ -566,21 +860,31 @@ def expand(
                 target=target_node, access_cutoff_kcal=access_cutoff if steer == "access" else None,
                 reroute_attempts=int(reroute_attempts) if isinstance(reroute_attempts, int) else 3,
                 max_expand_per_round=int(max_expand) if isinstance(max_expand, int) else 10,
+                schedule=str(schedule).lower() if isinstance(schedule, str) else "rounds",
+                time_budget_s=float(time_budget) if isinstance(time_budget, (int, float)) and time_budget > 0 else None,
                 checkpoint=checkpoint,
                 proposal_fmax=float(proposal_fmax) if isinstance(proposal_fmax, (int, float)) else 0.05,
                 refine=(_channels_refiner(run_inputs, output, workers,
-                                          _parse_options(channels_option) if isinstance(channels_option, list) else {})
+                                          _parse_options(channels_option) if isinstance(channels_option, list) else {},
+                                          int(channels_max_depth) if isinstance(channels_max_depth, int) else 0,
+                                          channels_prefetch is True)
                         if steer == "access" and str(refine_mode).lower() == "channels" else None),
                 kinetics={"temperature": temperature, "time_s": time_s, "threshold": flux_threshold,
                           "free_energy": str(kinetics_energy).lower() == "free" if isinstance(kinetics_energy, str)
                           else True,
-                          "standard_state": standard_state if isinstance(standard_state, str) else "1M"},
+                          "standard_state": standard_state if isinstance(standard_state, str) else "1M",
+                          "mirror_images": mirror_images is not False},
+                steer_engine=steer_engine if steer in ("flux", "access") else None,
+                steer_save_dir=output / "steer_single_points",
+                state_file=output / "expand_state.pkl", resume=resume is True,
                 validate_minima={"frequency_cutoff": validation["hessian_minimum_frequency_cutoff"],
                                  "rescue_displacement": validation["hessian_minima_rescue_displacement"]}
                 if validation else None,
             )
         except Exception as exc:
             typer.echo(f"Network expansion failed: {type(exc).__name__}: {exc}")
+            if state_fp.is_file():
+                typer.echo(f"What it had done is saved: rerun with --resume to carry on from {state_fp}.")
             raise typer.Exit(code=1)
 
     output.mkdir(parents=True, exist_ok=True)
@@ -631,7 +935,8 @@ def expand(
                                         {"cutoff_kcal": access_cutoff, "temperature_K": temperature, "time_s": time_s}
                                         if steer == "access" else {"energy_window_kcal": energy_window}),
                      **({"kinetics_energy": str(kinetics_energy).lower() if isinstance(kinetics_energy, str) else "free",
-                         "standard_state": standard_state if isinstance(standard_state, str) else "1M"}
+                         "standard_state": standard_state if isinstance(standard_state, str) else "1M",
+                         "mirror_images": mirror_images is not False}
                         if steer in ("flux", "access") else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
         # kinetics_barrier_kcal: what the rates used (the TS never below an end).
@@ -641,6 +946,8 @@ def expand(
                   for st, bar, raw in zip(result.steps, result.kinetics.barriers_kcal if result.kinetics else [],
                                           raw_barriers(result.steps, [float(s.node.energy) for s in result.species]))],
         "connections": [list(p) for p in pairs],
+        # each step channel sampling ran on: its TSs before and after (how far a first TS overestimated)
+        "channels_log": getattr(result, "channels_log", []),
         "output_files": files,
     }
     counts = {}
@@ -655,6 +962,12 @@ def expand(
         for rec, f, cmax, cend in zip(summary["species"], result.kinetics.flux, result.kinetics.max_concentration,
                                       result.kinetics.final_concentration):
             rec.update(flux=f, max_concentration=cmax, final_concentration=cend)
+        if result.kinetics.mirrors is not None:
+            # the mirror images the explorer did not find (mepd.discovery.mirror), after its own species
+            k = result.kinetics
+            summary["mirror_images"] = {**k.mirrors, "virtual_species": [
+                {**v, "flux": k.flux[v["index"]], "max_concentration": k.max_concentration[v["index"]],
+                 "final_concentration": k.final_concentration[v["index"]]} for v in k.mirrors["virtual_species"]]}
     network_note = ""
     if steer in ("flux", "access"):
         connect = True   # the pair trees exist already: network.json is built from them below
@@ -686,7 +999,7 @@ def expand(
         typer.echo(f"Refining energies ({refine_energies_mode}) with {refine_energies}...")
         try:
             _write_refined(output, run_inputs.engine, high_engine, str(refine_energies_mode), workers,
-                           level=str(refine_energies))
+                           level=str(refine_energies), mirror_images=mirror_images is not False)
         except Exception as exc:
             typer.echo(f"Energy refinement failed: {type(exc).__name__}: {exc}")
 
@@ -696,7 +1009,8 @@ def expand(
                   highlight=False)
 
 
-def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: int, level: str = "") -> dict:
+def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: int, level: str = "",
+                   mirror_images: bool = True) -> dict:
     """refine_run on an expand output; writes refined_energies.json and
     prints what changed."""
     from rich.console import Console
@@ -705,6 +1019,7 @@ def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: i
     from mepd.discovery.energy_refine import refine_run
 
     out = refine_run(run_dir, low_engine=low_engine, high_engine=high_engine, mode=mode, workers=workers,
+                     mirror_images=mirror_images,
                      on_note=lambda m: typer.echo(f"WARNING: {m}"))
     out["level"] = level
     (Path(run_dir) / "refined_energies.json").write_text(json.dumps(out, indent=2, default=str))
@@ -722,6 +1037,10 @@ def _write_refined(run_dir: Path, low_engine, high_engine, mode: str, workers: i
         else:
             table.add_row("TS", f"{row['a']} -> {row['b']}", f"{row['g_low_kcal']:.1f}", f"{row['g_high_kcal']:.1f}",
                           "", "")
+    for v in (out.get("mirror_images") or {}).get("virtual_species", []):
+        if max(v["final_low"], v["final_high"]) >= 0.01:
+            table.add_row(str(v["index"]), f"mirror image of {v['mirror_of']}", "", "",
+                          f"{v['final_low']:.3f}", f"{v['final_high']:.3f}")
     Console().print(table)
     typer.echo(f"Refined energies in {Path(run_dir) / 'refined_energies.json'}")
     return out
@@ -739,6 +1058,9 @@ def refine_energies_cmd(
     mode: str = typer.Option("single-point", "--mode", help="single-point or reoptimize (see `expand --refine-energies-mode`)."),
     workers: int = typer.Option(1, "--workers", help="Processes at once; each higher-level calculation uses the "
                                                      "profile's own threads."),
+    mirror_images: bool = typer.Option(True, "--mirror-images/--no-mirror-images", help="Count every species and transition state with its mirror image (x -> -x, same energy): a chiral TS "
+        "whose twin was not found gets one, leading to the mirror images of its ends; a chiral conformer of an achiral "
+        "molecule gets -RT ln 2. The explorer finds one twin or both by chance; this removes that bias."),
 ):
     """Energies of an explored network at a higher level of theory, and the
     kinetics on them: the explorer's level finds the species and TSs, the
@@ -751,4 +1073,4 @@ def refine_energies_cmd(
     low = explorer_inputs or (Path(summary["inputs"]) if summary.get("inputs") and Path(summary["inputs"]).exists()
                               else None)
     _write_refined(run_dir, _open_run_inputs(low).engine, _open_run_inputs(inputs).engine, mode, workers,
-                   level=str(inputs))
+                   level=str(inputs), mirror_images=mirror_images)

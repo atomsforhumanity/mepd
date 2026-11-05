@@ -27,6 +27,8 @@ from typing import Optional
 
 import numpy as np
 
+from mepd.discovery.langevin import capped
+
 BOHR = 0.529177210903            # Angstrom
 KCAL = 627.509474                # kcal/mol per Hartree
 IDLE_STOP_S = 900.0              # nobody has looked at it for this long: stop (15 min)
@@ -34,7 +36,6 @@ TRAJ_FS = 2.0                    # the event trajectory: one frame this often (a
 EVENT_EVERY_S = 1.5              # look for reaction events this often
 EVENT_WINDOW = 15000             # ...in at most this many frames (30 ps); earlier settled events are kept
 FRAME_EVERY_S = 0.04             # stream a frame at most this often
-MAX_PULL = 0.08                  # Hartree/bohr cap on a pull's force (~100 kcal/mol/A)
 # The piston's cycle, as the nanoreactor's (ReactorSettings): 1 ps, wide 75% of it, 0.7 x the radius narrow.
 PISTON = {"period_ps": 1.0, "compress": 0.7, "duty": 0.75}
 PISTON_RAMP_FS = 100.0           # the wall closes over this long (no shock)
@@ -91,41 +92,19 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
 
     die_with_parent(parent_pid)
 
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    from tblite.interface import Calculator
-
-    from mepd.discovery.nanoreactor import _masses, _wall
+    from mepd.discovery.langevin import LangevinMD
 
     n = len(symbols)
-    Z = np.array([_Z[s] for s in symbols])
-    pos = np.asarray(coords_A, dtype=float) / BOHR
-    masses = _masses(symbols)
-    calc = Calculator("GFN2-xTB", Z, pos, charge=float(charge), uhf=int(multiplicity) - 1)
-    calc.set("verbosity", 0)
-    calc.set("temperature", 3000.0 * 3.166811563e-6)   # Fermi smearing: bonds break without SCF failures
-    state = {"radius": float(radius_A), "r_now": float(radius_A), "piston": None, "T": float(temperature),
-             "pulls": {}, "paused": False, "dt": 0.5,
-             "friction": 0.02, "wall": 20.0 / KCAL * BOHR}   # 20 kcal/mol/A, in Eh/bohr
-    res = [None]
+    state = {"radius": float(radius_A), "r_now": float(radius_A), "piston": None, "pulls": {}, "paused": False}
 
-    def forces(x):
-        calc.update(x)
-        try:
-            r = calc.singlepoint(res[0]) if res[0] is not None else calc.singlepoint()
-        except Exception:
-            r = calc.singlepoint()          # without the previous wavefunction
-        res[0] = r
-        e, g = float(r.get("energy")), np.array(r.get("gradient"))
-        ew, gw = _wall(x, state["r_now"] / BOHR, state["wall"])
-        e, g = e + ew, g + gw
+    def drags(x):
+        g = np.zeros_like(x)
         for atom, (target, k) in state["pulls"].items():
-            d = x[atom] - target
-            f = k * d
-            norm = np.linalg.norm(f)
-            if norm > MAX_PULL:
-                f *= MAX_PULL / norm
-            g[atom] += f
-        return e, g
+            g[atom] += capped(k * (x[atom] - target))
+        return g
+
+    md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
+                    temperature=temperature, wall=float(radius_A), bias=drags)
 
     def send(kind, **payload):
         try:
@@ -135,21 +114,13 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
 
     # Take the strain out of the packing before any dynamics (else it turns into heat).
     try:
-        for _ in range(60):
-            _, g = forces(pos)
-            step = -g / masses[:, None] * 20.0
-            norm = np.linalg.norm(step, axis=1, keepdims=True)
-            pos = pos + np.where(norm > 0.1, step * 0.1 / np.maximum(norm, 1e-12), step)
+        md.relax(60)
+        md.start()
     except Exception as exc:
         send("error", message=f"GFN2-xTB failed on the packed reactor: {type(exc).__name__}: {exc}")
         return
-    kB = 3.166811563e-6 / 1.066551       # amu bohr^2/fs^2 per K
-    acc = 0.93766                         # (Eh/bohr)/amu -> bohr/fs^2
-    rng = np.random.default_rng(0)
-    vel = rng.normal(size=pos.shape) * np.sqrt(kB * state["T"] / masses)[:, None]
-    energy, grad = forces(pos)
-    e0 = energy
-    t_fs, steps, last_frame, failures = 0.0, 0, 0.0, 0
+    e0 = md.energy
+    t_fs, steps, last_frame = 0.0, 0, 0.0
     traj, next_traj = [], 0.0          # evenly spaced frames for event detection (sent losslessly)
     started = time.time()
     while True:
@@ -173,7 +144,7 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
             elif op == "radius":
                 state["radius"] = float(min(max(cmd["value"], 3.0), 60.0))
             elif op == "temperature":
-                state["T"] = float(min(max(cmd["value"], 0.0), 5000.0))
+                md.T = float(min(max(cmd["value"], 0.0), 5000.0))
             elif op == "pause":
                 state["paused"] = bool(cmd.get("value", True))
             elif op == "piston":
@@ -181,40 +152,25 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 state["piston"] = piston_settings(cmd, was)
                 if state["piston"]:   # a new cycle starts now, wide; a change of settings keeps its phase
                     state["piston"]["t0"] = was["t0"] if was else t_fs
-        state["r_now"] = piston_radius(t_fs, state["radius"], state["piston"])
+        state["r_now"] = md.wall = piston_radius(t_fs, state["radius"], state["piston"])
+        pos = md.pos
         if state["paused"]:
             time.sleep(0.03)
             if time.time() - last_frame > 0.2:
                 last_frame = time.time()
                 send("frame", pos=np.round(pos * BOHR, 3).tolist(), t_fs=t_fs, radius=state["radius"],
                      wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
-                     T=state["T"], e_rel=(energy - e0) * KCAL, paused=True, rate=0.0,
+                     T=md.T, e_rel=(md.energy - e0) * KCAL, paused=True, rate=0.0,
                      pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
             continue
-        dt, gamma = state["dt"], state["friction"]
-        c1 = math.exp(-gamma * dt)
-        c2 = np.sqrt((1 - c1 * c1) * kB * state["T"] / masses)[:, None]
-        old = (pos.copy(), vel.copy(), grad.copy())
         try:
-            vel -= 0.5 * dt * acc * grad / masses[:, None]
-            pos = pos + 0.5 * dt * vel
-            vel = c1 * vel + c2 * rng.normal(size=vel.shape)
-            pos = pos + 0.5 * dt * vel
-            energy, grad = forces(pos)
-            vel -= 0.5 * dt * acc * grad / masses[:, None]
-            if not np.all(np.isfinite(pos)):
-                raise FloatingPointError("non-finite positions")
-            failures = 0
-        except Exception as exc:          # an SCF that failed: step back, cool down, go on
-            pos, vel, grad = old
-            vel *= 0.5
-            res[0] = None
-            failures += 1
-            if failures > 20:
-                send("error", message=f"the dynamics keeps failing: {type(exc).__name__}: {exc}")
-                return
-            continue
-        t_fs += dt
+            if not md.step():           # an SCF that failed: stepped back, cooled down; go on
+                continue
+        except Exception as exc:
+            send("error", message=f"the dynamics keeps failing: {type(exc).__name__}: {exc}")
+            return
+        pos = md.pos
+        t_fs += md.dt
         steps += 1
         if t_fs >= next_traj - 1e-9:
             traj.append(np.round(pos * BOHR, 3).tolist())
@@ -225,11 +181,11 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
             if traj:
                 traj_q.put(traj)
                 traj = []
-            ekin = 0.5 * float((masses[:, None] * vel * vel).sum()) * 1.066551
+            ekin = 0.5 * float((md.masses[:, None] * md.vel * md.vel).sum()) * 1.066551
             send("frame", pos=np.round(pos * BOHR, 3).tolist(), t_fs=round(t_fs, 1), radius=state["radius"],
                  wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
-                 T=state["T"], T_inst=round(2 * ekin / (3 * n * 3.166811563e-6), 0),
-                 e_rel=round((energy - e0) * KCAL, 1), paused=False, rate=round(t_fs / max(now - started, 1e-6), 1),
+                 T=md.T, T_inst=round(2 * ekin / (3 * n * 3.166811563e-6), 0),
+                 e_rel=round((md.energy - e0) * KCAL, 1), paused=False, rate=round(t_fs / max(now - started, 1e-6), 1),
                  pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
 
 

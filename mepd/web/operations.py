@@ -54,6 +54,8 @@ def P(default, title: str, help: str = "", *, cli: Optional[str] = None, kind: s
     extra = {"cli": cli, "cli_kind": kind, "group": group, "advanced": advanced, "requires": requires}
     if "labels" in kw:   # {value: what the form shows for it}
         extra["labels"] = kw.pop("labels")
+    if "choices_from" in kw:   # "profiles": the form offers the workspace's saved profiles
+        extra["choices_from"] = kw.pop("choices_from")
     return Field(default, title=title, description=help, json_schema_extra=extra, **kw)
 
 
@@ -405,20 +407,44 @@ def _build_conformers(ctx: JobContext, p: ConformersParams) -> list[str]:
 
 class ExpandParams(Params):
     # Chosen by the method switch (Bond rules / CREST msreact), not in the form.
-    generator: Literal["bond-rules", "crest-msreact", "nanoreactor"] = P("bond-rules", "Product generator", kind="custom",
-                                                          group="Hidden")
-    rounds: int = P(1, "Rounds", "Round 2 proposes products of round 1's new species, and so on.", cli="--rounds", ge=1)
-    steer: Literal["auto", "flux", "window"] = P(
+    generator: Literal["bond-rules", "crest-msreact", "nanoreactor", "reactor"] = P(
+        "bond-rules", "Product generator", kind="custom", group="Hidden")
+    rounds: int = P(1, "Rounds", "Round 2 proposes products of round 1's new species, and so on.", cli="--rounds", ge=1,
+                    requires="schedule=rounds")
+    steer: Literal["auto", "flux", "access", "window"] = P(
         "auto", "Grow the network by", "flux: find a verified TS for every reaction, simulate the kinetics from "
         "the seed, and expand only species that enough material flows into (the network stops growing on its "
-        "own). window: expand every new species within the energy window. auto: flux when rounds > 1.",
-        cli="--steer")
-    temperature: float = P(298.15, "Temperature (K)", cli="--temperature", gt=0, requires="steer=auto|flux",
+        "own). access: the same, with a barrier cutoff from the cutoff temperature and time; only species some "
+        "route reaches within it are expanded. window: expand every new species within the energy window. "
+        "auto: flux when rounds > 1.", cli="--steer")
+    schedule: Literal["rounds", "async"] = P(
+        "rounds", "Schedule", "async: one queue of jobs, no rounds -- a species is expanded the moment the live "
+        "kinetics populate it, and IRC checks, channel sampling and steering single points run as soon as they "
+        "are asked for; watch it grow in the live view. rounds: expand, connect, check, sample, repeat.",
+        cli="--schedule", requires="steer=access", group="Kinetics")
+    time_budget_h: Optional[float] = P(
+        None, "Time budget (h)", "The async network grows until its kinetics ask for nothing more; this stops it "
+        "earlier: no new job starts, the running ones finish, and the network so far is kept. Empty: no limit "
+        "(Stop & analyze ends it too).", kind="custom", gt=0, requires="schedule=async", group="Kinetics")
+    cutoff_temperature: Optional[float] = P(
+        None, "Cutoff temperature (K)", "The barrier cutoff is the barrier that reacts within the cutoff time at "
+        "this temperature (plus a 10 kcal/mol margin). Empty: the kinetics' temperature.", kind="custom",
+        gt=0, requires="steer=access", group="Kinetics")
+    cutoff_time: Optional[float] = P(None, "Cutoff time (s)", "Empty: the kinetics' simulated time.", kind="custom",
+                                     gt=0, requires="steer=access", group="Kinetics")
+    standard_state: Literal["1M", "1atm"] = P("1M", "Standard state", "1M for solution, 1atm for the gas phase.",
+                                              cli="--standard-state", requires="steer=access", group="Kinetics")
+    steer_profile: str = P(
+        "", "Steer with the profile", "A saved profile of a higher level (e.g. DFT) whose single points on the "
+        "explorer's geometries steer the kinetics that decide what is expanded and sampled. Empty: the run's "
+        "own level.", kind="custom", requires="steer=access", group="Kinetics", choices_from="profiles")
+    temperature: float = P(298.15, "Temperature (K)", cli="--temperature", gt=0, requires="steer=auto|flux|access",
                            group="Kinetics")
-    time_s: float = P(3600.0, "Simulated time (s)", cli="--time", gt=0, requires="steer=auto|flux", group="Kinetics")
+    time_s: float = P(3600.0, "Simulated time (s)", cli="--time", gt=0, requires="steer=auto|flux|access",
+                      group="Kinetics")
     flux_threshold: float = P(0.01, "Flux threshold", "Expand a species once the material that flowed into it "
                               "(as a fraction of the seed) reaches this.", cli="--flux-threshold", gt=0,
-                              requires="steer=auto|flux", group="Kinetics")
+                              requires="steer=auto|flux|access", group="Kinetics")
     n_break: int = P(2, "Bonds broken (max)", cli="--n-break", ge=0, requires="generator=bond-rules")
     n_form: int = P(2, "Bonds formed (max)", cli="--n-form", ge=0, requires="generator=bond-rules")
     msreact_mode: Literal["all", "fragments", "isomers"] = P(
@@ -443,6 +469,14 @@ class ExpandParams(Params):
     reactor_compress: float = P(0.5, "Squeeze to (of the wall radius)", "The piston closes the wall to this "
                                 "fraction of its radius once per picosecond.", kind="custom", gt=0, le=1,
                                 requires="generator=nanoreactor", advanced=True, group="Nanoreactor")
+    rx_temperature: float = P(800.0, "MD temperature (K)", "The Reactor's Langevin MD: the piston and random "
+                              "Collide pulls supply the energy, so it runs far cooler than the nanoreactor.",
+                              kind="custom", gt=0, requires="generator=reactor")
+    rx_seeds: int = P(0, "Trajectories per batch", "Independent 5 ps trajectories. 0: one per worker.",
+                      kind="custom", ge=0, requires="generator=reactor")
+    rx_max_batches: int = P(4, "Batches at most", "Batches run until few events give a product seen only "
+                            "once (5%), or this many ran.", kind="custom", ge=1, requires="generator=reactor",
+                            advanced=True, group="Reactor")
     max_products: int = P(50, "Proposals per species", "Bond rules: fewest bond changes first. CREST msreact: "
                           "lowest GFN2-xTB energy first.", cli="--max-products", ge=1)
     energy_window: float = P(60.0, "Expand species within (kcal/mol)", "Only species this close to the seed "
@@ -933,6 +967,24 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
                          "--generator-option", f"compress={p.reactor_compress:g}"]
         if p.reactor_embedded:
             argv[out:out] = ["--generator-option", "embedded=true"]
+    elif p.generator == "reactor":
+        out = argv.index("--output")
+        argv[out:out] = ["--generator", "reactor", "--generator-option", f"temperature={p.rx_temperature:g}",
+                         "--generator-option", f"n_seeds={p.rx_seeds}",
+                         "--generator-option", f"max_batches={p.rx_max_batches}"]
+    if p.schedule == "async" and p.time_budget_h:
+        out = argv.index("--output")
+        argv[out:out] = ["--time-budget", f"{3600.0 * p.time_budget_h:g}"]
+    if p.steer == "access":   # the cutoff: the kinetics' conditions unless given
+        out = argv.index("--output")
+        argv[out:out] = ["--cutoff-temperature", f"{p.cutoff_temperature or p.temperature:g}",
+                         "--cutoff-time", f"{p.cutoff_time or p.time_s:g}"]
+    if p.steer == "access" and p.steer_profile.strip():
+        steer = ctx.job_dir / "inputs" / "steer.toml"
+        steer.parent.mkdir(parents=True, exist_ok=True)
+        steer.write_text(ctx.ws.read_profile(p.steer_profile.strip()))
+        out = argv.index("--output")
+        argv[out:out] = ["--steer-energies", str(steer)]
     return argv
 
 
@@ -1825,10 +1877,11 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "graph-enumeration", "Reaction network expansion", "Propose products by breaking and forming up to two "
         "bonds on the molecular graph, keep those with a valid Lewis structure, optimize them, and grow the network "
         "from the species the kinetics reach. (`mepd discovery expand`)",
-        "structure", EXPLORE, ExpandParams, _build_expand,
+        "structure", EXPLORE, ExpandParams, _build_expand, stoppable=True,
         produces=["product species", "proposed reactions", "network edges (with path search)"],
         cli_path=("discovery", "expand"),
-        cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--generator", "--generator-option"),
+        cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--generator", "--generator-option",
+                         "--steer-energies"),
         family=NETWORK, methods=(
             {"label": "Bond rules", "rank": 0, "fixed": {"generator": "bond-rules"},
              "summary": "Break and form up to n bonds on the molecular graph, keep products with a valid Lewis "
@@ -1839,6 +1892,13 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
                         "isomers the molecule can reach, e.g. likely precursors (read backwards) or nearby products. "
                         "They are re-optimized at your level of theory and grown like any other species. One molecule at a "
                         "time: a cluster of several gets no products."},
+            {"label": "Reactor, live", "rank": 2,
+             "fixed": {"generator": "reactor", "steer": "access", "schedule": "async"},
+             "summary": "The interactive Reactor, unattended: Langevin MD with the piston and random Collide pulls "
+                        "proposes products, and one queue of jobs grows the network with no rounds -- each "
+                        "species is expanded the moment the live kinetics (steered by a higher level's single "
+                        "points, if you pick a profile) populate it; its TSs, IRC checks and channel sampling "
+                        "run as soon as they are asked for. Watch the queue and the populations live."},
             {"label": "Nanoreactor", "rank": -1, "fixed": {"generator": "nanoreactor"}, "qmmm_only": True,
              "summary": "Hot molecular dynamics of the QM region (capped with its link hydrogens) in a periodically "
                         "squeezing wall: its state after each reaction event is put back into the environment, "

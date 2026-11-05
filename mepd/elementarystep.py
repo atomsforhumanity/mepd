@@ -1684,8 +1684,8 @@ def pseudo_irc(chain: Chain, engine: Engine, geodesic_kwargs: dict | None = None
     try:
         if (
             getattr(engine, "compute_program", "").lower() == "chemcloud"
-            and hasattr(engine, "compute_geometry_optimizations")
-        ):
+            or getattr(engine, "holds_torch_model", False)   # a GPU model minimizes both ends in one batch
+        ) and hasattr(engine, "compute_geometry_optimizations"):
             update_status("Submitting pseudo-IRC endpoint optimizations to Chemcloud")
             r_traj, p_traj = _run_geom_opts([candidate_r, candidate_p], engine=engine)
         else:
