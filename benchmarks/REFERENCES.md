@@ -22,7 +22,7 @@ HCOOH → CO + H2O (k1) and HCOOH → CO2 + H2 (k2); gas, Ar bath.
 ### The source of the target
 Elwardany, Nasir, Es-sebbar, Farooq, *Proc. Combust. Inst.* 35, 429–436 (2015), [doi:10.1016/j.proci.2014.06.141](https://doi.org/10.1016/j.proci.2014.06.141).
 Read in full: the accepted manuscript ("revised v7"), from the KAUST repository copy archived by the Wayback Machine on 2018-07-23. Exponents were checked against the page images.
-- Method: simultaneous laser absorption of CO (4.56 µm), CO2 (4.18 µm) and H2O (2.93 µm) behind reflected shocks. It is the only formic acid study that measures CO2 directly.
+- Method: simultaneous laser absorption of CO (4.56 µm), CO2 (4.18 µm) and H2O (2.93 µm) behind reflected shocks. It is the only formic acid study that measures CO2 by absorption. Saito 2005 monitored CO2 by IR emission, as Elwardany's introduction says: *"by monitoring the IR emission of formic acid monomer (5.66 µm), CO (4.63 µm) and CO2 (4.23 µm)"*. Hsu monitored CO only.
 - Abstract: *"These two decomposition channels were found to be in the fall-off region and have a branching ratio, k1/k2, of approximately 20 over the range of pressures studied here."*
 - §3.1: *"Comparing Fig. 4(a) and Fig. 4(b), it can be concluded that the k1/k2 ≅ 20 over the entire temperature range studied here."*
 - §3: *"For formic acid, the experiments were performed at temperatures of 1234 - 1821 K, pressures of 1.0 and 6.5 atm and initial concentration of 0.5% in argon."*
@@ -119,12 +119,14 @@ Fair comparison:
 
 ## 4. Cyclopentadiene + methyl acrylate, endo:exo (`f0007`, tune)
 
-**Target: endo:exo = 77:23 (3.35), benzene, 1 M each, 80 °C, 6.5 h.** RT ln 3.35 = 0.848 kcal/mol at 353.15 K. No uncertainty is stated, so the point value is scored.
+**Target: endo:exo = 77:23 ± 0.5 % (3.26–3.44), benzene, 1:1 about 0.9 M each, 80 °C, 6.5 h.** RT ln = 0.848 kcal/mol (range 0.828–0.868) at 353.15 K.
 
 Source: Lording, Fallon, Sherburn, Paddon-Row, *Chem. Sci.* 11, 11915–11926 (2020), [doi:10.1039/d0sc04553e](https://doi.org/10.1039/d0sc04553e). Read in full (PMC8162770).
 - Table 1, methyl acrylate 7 + CPD 2: temperature 80 °C, time 6.5 h, isolated yield 86 %, **endo:exo (exp.) 77 : 23**, endo:exo (CBS-QB3, benzene) 76 : 24.
 - *"Thus, a 1 : 1 molar ratio of CPD and dienophile (1 M concentration solutions of both diene and dienophile in benzene) were heated at 80 °C in the majority of cases, ... and the DA reactions of the three least reactive dienophiles employing 3 molar equivalents of CPD."* The three are not named in the main text; the ESI was not read.
 - *"Experimental endo : exo ratios were determined by quantitative 800 MHz 1H NMR spectroscopy."*
+- ESI, general methods: *"Quoted endo:exo ratios refer to values obtained from 800 MHz 1H NMR spectroscopic analysis of crude reaction mixtures and were recorded in duplicate (maximum difference between runs = +/- 0.5%)."* This is the ±0.5 % used for the range. No systematic error is stated.
+- ESI procedure: *"Methyl acrylate (7) (0.18 mL, 1.0 mmol) was added to an ampule followed a solution of cyclopentadiene (2) in benzene (2.0 mL of a 1.0M solution in PhH, 2.0 mmol). The ampule was sealed and placed in a heating bath at 80 °C for 6.5 h."* ... *"(total yield 261 mg, 86%)"*. 0.18 mL of methyl acrylate is 2.0 mmol, and 261 mg is 86 % of 2.0 mmol of adduct, so "1.0 mmol" is a typo. The run is 1:1 at about 0.92 M each. The endo:exo ratio was recorded *"from equivalent runs conducted in benzene-d6"*.
 - *"For representative DA reactions involving BD and CPD, different endo : exo ratios of selected products were exposed to the reaction conditions under which they were formed. An unchanged ratio was returned in each case, confirming the kinetic control of these reactions."*
 
 Solvent dependence:
@@ -141,11 +143,49 @@ Fair comparison:
 
 ## 5. Cyclopentadiene + α-methylene-γ-butyrolactone, endo:exo (`cp_mbl`, held-out)
 
-**Target: endo:exo = 12:88**, scored as exo:endo = 7.33. Benzene, 1 M, 80 °C, 4 h, 72 % yield. RT ln 7.33 = 1.398 kcal/mol at 353.15 K.
+**Target: endo:exo = 12:88 ± 0.5 %**, scored as exo:endo = 7.33 (range 7.0–7.7). Benzene, 1:1 (1.0 mmol each, about 0.92 M), 80 °C, 4 h, 72 % yield. RT ln 7.33 = 1.398 kcal/mol at 353.15 K (range 1.366–1.432).
 
 Source: Lording et al. 2020, Table 1, α-methylene γ-butyrolactone 11 + CPD 2: *"2 | 11CPD-n, 11CPD-x | 80 | 4 h | 72 | 12 : 88 | 10 : 90 | 5.3 : 0.0 | 4.5"* (diene | adducts | °C | time | yield % | endo:exo exp. | calc. | ...). Endo/exo refers to the lactone carbonyl. The product is a spiro compound.
 
 It is held out because it is the same reaction class and protocol as F0007, with the opposite selectivity: a method tuned toward endo on F0007 fails here.
+
+## 6. Isoprene + methyl acrylate, para:meta (`isoprene_ma`, tune)
+
+Uncatalysed Diels-Alder.
+- para = methyl 4-methylcyclohex-3-ene-1-carboxylate, `COC(=O)C1CC=C(C)CC1`.
+- meta = methyl 3-methylcyclohex-3-ene-1-carboxylate, `COC(=O)C1CCC=C(C)C1`.
+
+**Target: para:meta = 71:29 (2.45), window 68:32–75:25 (2.13–3.0), toluene, 145 °C (418.15 K), 15 h.** RT ln = 0.744 kcal/mol (window 0.626–0.913).
+
+Source: A.R. Renslo, PhD thesis, MIT (1998), hdl:1721.1/47485, Part II, Table 6 ("Regioselectivity of Diels-Alder Reactions in Carbon Dioxide and Conventional Solvents"). Read via the DSpace@MIT text; page 148 was checked as an image. 270 is drawn as the 1,4 adduct and 271 as the 1,3 adduct. Ratios are 270:271 by ¹H NMR, with GC in brackets:
+
+| Entry | Conditions | Yield (%) | 270:271 NMR (GC) |
+|---|---|---|---|
+| 1 | PhCH3, 145 °C, 15 h | 78 | **71:29 (71:29)** |
+| 2 | PhCH3, 50 °C, 3 d | (7) | 69:31 (72:28) |
+| 3 | CO2 49.5 bar, 50 °C, 4 d | (11) | 69:31 (73:27) |
+| 4 | CO2 74.5 bar, 50 °C, 4 d | (5) | 67:33 (73:27) |
+| 5 | CO2 95.2 bar, 50 °C, 7 d | (4) | 71:29 (73:27) |
+| 6 | CO2 117 bar, 50 °C, 3 d | (3) | 70:30 (72:28) |
+
+Footnotes: *"a Isolated yield or (estimated by 1H NMR). b Ratio of isomers determined by 1H NMR and (GC) analysis."* The text: *"...cycloadducts 270 and 271 in a ratio very similar to that obtained in toluene (entries 1 and 2); i.e., no deviation from normal Diels-Alder regioselectivity had occurred."*
+
+The peer-reviewed version is Renslo, Weinstein, Tester, Danheiser, *J. Org. Chem.* 62, 4530 (1997), [doi:10.1021/jo9704523](https://doi.org/10.1021/jo9704523). Not read; that its numbers match the thesis is UNCONFIRMED.
+
+**Other primary values:**
+- Treu, Huber, Pleßow, Studt, Saraçi, *Catal. Sci. Technol.* 12, 7439 (2022), [doi:10.1039/d2cy01337a](https://doi.org/10.1039/d2cy01337a), CC BY. Read in full. *"the para : meta-ratio for the uncatalyzed reaction is 3"*. Cyclohexane, 70 °C, 5 h, isoprene:MA 3:1, about 6 % yield, GC-FID. This sets the window's upper edge.
+- US 9,061,989 B1, Comparative Example 2 (after Nazarov et al. 1959). Read in full. Neat with hydroquinone, 120 °C, 6 h: *"74% yield of the crude product and the 79% selectivity of the para product"*. The analysis method is not stated for this example. It lies above the window and is not used.
+
+**Catalysed, not a target:** AlCl3 gives about 95:5. This is Inukai & Kojima, *J. Org. Chem.* 31, 1121 (1966), [doi:10.1021/jo01342a031](https://doi.org/10.1021/jo01342a031), not read. The 95:5 is cited by Vermeeren et al. 2020 (PMC7187354), and the patent's Comparative Example 1 reproduces it (benzene, 10–20 °C, 95 % para).
+
+**Leads:**
+- Hennis, *J. Org. Chem.* 28, 2570 (1963), [doi:10.1021/jo01045a020](https://doi.org/10.1021/jo01045a020): "The Independence of Reaction Temperature and Mode of Addition in the Isoprene–Methyl Acrylate Diels-Alder Reaction". Title only.
+- Cativiela et al. 1994 (abstract): *"Regioselectivity almost exclusively depends on the hydrogen bond donor ability of the solvent."*
+
+**Fair comparison:**
+- Toluene has no H-bond donors, so a gas-phase model is fair here.
+- Each regioisomer has one stereocentre and forms as a racemate. All TSs of one regiochemistry (endo/exo, dienophile s-cis/s-trans, both faces) give the same product: sum them.
+- 0.74 kcal/mol selectivity is as demanding as F0007.
 
 <!-- PENDING-SYSTEMS -->
 

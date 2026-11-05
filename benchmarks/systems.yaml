@@ -264,7 +264,8 @@ systems:
       temperature_range_K: [353.15, 353.15]
       score_temperature_K: 353.15
       solvent: benzene
-      concentration_M: 1.0
+      concentration_M: 0.92
+      concentration_note: "1:1, 2.0 mmol each in about 2.2 mL (ESI: 0.18 mL methyl acrylate + 2.0 mL of 1.0 M Cp in benzene); main text says 1 M"
       time_scale_s: 23400
       score_time_s: 23400
       standard_state: 1M
@@ -278,9 +279,9 @@ systems:
       numerator: [endo]
       denominator: [exo]
       value: 3.348
-      range: [3.348, 3.348]
-      range_basis: "77:23 as reported; the paper states no uncertainty (quantitative 800 MHz 1H NMR, baseline-separated signals)."
-      rt_ln_kcal_mol: {at_K: 353.15, value: 0.848, range: [0.848, 0.848]}
+      range: [3.255, 3.444]
+      range_basis: "77:23 +- 0.5 % (ESI: duplicate runs, maximum difference +-0.5 %), i.e. 76.5:23.5-77.5:22.5. Systematic NMR error not stated."
+      rt_ln_kcal_mol: {at_K: 353.15, value: 0.848, range: [0.828, 0.868]}
       status: CONFIRMED
     references:
       - doi: 10.1039/d0sc04553e
@@ -296,6 +297,11 @@ systems:
             text: "For representative DA reactions involving BD and CPD, different endo : exo ratios of selected products were exposed to the reaction conditions under which they were formed. An unchanged ratio was returned in each case, confirming the kinetic control of these reactions."
           - where: Results
             text: "Experimental endo : exo ratios were determined by quantitative 800 MHz 1H NMR spectroscopy."
+          - where: ESI, general methods
+            text: "Quoted endo:exo ratios refer to values obtained from 800 MHz 1H NMR spectroscopic analysis of crude reaction mixtures and were recorded in duplicate (maximum difference between runs = +/- 0.5%)."
+          - where: ESI, procedure for 7CPD-n/7CPD-x
+            text: "Methyl acrylate (7) (0.18 mL, 1.0 mmol) was added to an ampule followed a solution of cyclopentadiene (2) in benzene (2.0 mL of a 1.0M solution in PhH, 2.0 mmol). The ampule was sealed and placed in a heating bath at 80 °C for 6.5 h. ... At this stage the endo:exo ratio was recorded from equivalent runs conducted in benzene-d6 as solvent and observed using quantitative 1H NMR spectroscopy at 800 MHz. ... (total yield 261 mg, 86%)."
+            note: "0.18 mL methyl acrylate = 2.0 mmol, and 261 mg adduct = 1.72 mmol = 86 % of 2.0 mmol, so '1.0 mmol' is a typo: 1:1, 2.0 mmol each."
         status: CONFIRMED
       - doi: 10.1039/p29940000847
         citation: "C. Cativiela, J.I. García, J.A. Mayoral, L. Salvatella, J. Chem. Soc. Perkin Trans. 2 (1994) 847-851"
@@ -335,7 +341,8 @@ systems:
       temperature_range_K: [353.15, 353.15]
       score_temperature_K: 353.15
       solvent: benzene
-      concentration_M: 1.0
+      concentration_M: 0.92
+      concentration_note: "1:1, 1.0 mmol each (ESI: 98 mg lactone + 1.0 mL of 1.0 M Cp in benzene)"
       time_scale_s: 14400
       score_time_s: 14400
       standard_state: 1M
@@ -348,9 +355,9 @@ systems:
       numerator: [exo]
       denominator: [endo]
       value: 7.333
-      range: [7.333, 7.333]
-      range_basis: "endo:exo 12:88 as reported (no uncertainty stated); scored as exo:endo."
-      rt_ln_kcal_mol: {at_K: 353.15, value: 1.398, range: [1.398, 1.398]}
+      range: [7.0, 7.696]
+      range_basis: "endo:exo 12:88 +- 0.5 % (ESI duplicate precision), scored as exo:endo 87.5:12.5-88.5:11.5."
+      rt_ln_kcal_mol: {at_K: 353.15, value: 1.398, range: [1.366, 1.432]}
       status: CONFIRMED
     references:
       - doi: 10.1039/d0sc04553e
@@ -360,7 +367,104 @@ systems:
         passages:
           - where: Table 1, alpha-methylene gamma-butyrolactone 11 + CPD 2
             text: "2 | 11CPD-n, 11CPD-x | 80 | 4 h | 72 | 12 : 88 | 10 : 90 | 5.3 : 0.0 | 4.5"
+          - where: ESI, procedure for 11CPD-n/11CPD-x
+            text: "To 3-methylenedihydrofuran-2(3H)-one (11) (98 mg, 1.0 mmol) was added to an ampule followed by a solution of cyclopentadiene in benzene (1.0 mL of a 1.0M solution in PhH, 1.0 mmol). The ampule was sealed and placed in a heating bath at 80 °C for 4 h. ... At this stage the endo:exo ratio was recorded from equivalent runs conducted in benzene-d6 as solvent and observed using quantitative 1H NMR spectroscopy at 800 MHz."
         status: CONFIRMED
     fair_comparison:
-      - "Same conditions and caveats as f0007 (benzene, 1 M, 80 °C, kinetic control, racemic adducts)."
+      - "Same conditions and caveats as f0007 (benzene, 1:1 about 0.9 M, 80 °C, kinetic control, racemic adducts)."
       - "Held out: same reaction class as f0007 with the opposite selectivity; a method tuned toward endo on f0007 fails here."
+
+  # ------------------------------------------------------------------ 6
+  - id: isoprene_ma
+    name: Isoprene + methyl acrylate Diels-Alder, para:meta regioselectivity (uncatalysed)
+    chemistry: bimolecular pericyclic [4+2], regioselectivity
+    split: tune
+    phase: solution
+    scorable: true
+    atoms: 25
+    reactants:
+      - {name: isoprene, smiles: "C=CC(=C)C", charge: 0, multiplicity: 1}
+      - {name: methyl acrylate, smiles: "C=CC(=O)OC", charge: 0, multiplicity: 1}
+    conditions:
+      temperature_range_K: [323.15, 418.15]
+      score_temperature_K: 418.15
+      solvent: toluene
+      concentration_M: null
+      concentration_note: "toluene concentrations not found in the thesis text; the CO2 runs used 2 equiv isoprene (29.2 mmol isoprene, 14.6 mmol methyl acrylate)"
+      time_scale_s: 54000
+      score_time_s: 54000
+      standard_state: 1M
+      conversion: "78 % isolated yield after 15 h at 145 °C"
+    channels:
+      para: {products: ["COC(=O)C1CC=C(C)CC1"], racemic: true, radical: false, note: "1,4-adduct, methyl 4-methylcyclohex-3-ene-1-carboxylate (Renslo 270)"}
+      meta: {products: ["COC(=O)C1CCC=C(C)C1"], racemic: true, radical: false, note: "1,3-adduct, methyl 3-methylcyclohex-3-ene-1-carboxylate (Renslo 271)"}
+    target:
+      quantity: isomer-ratio
+      numerator: [para]
+      denominator: [meta]
+      value: 2.448
+      range: [2.125, 3.0]
+      range_basis: >-
+        71:29 in toluene at 145 °C, with NMR and GC agreeing (Renslo Table 6, entry 1). The window 68:32-75:25 spans
+        Renslo's six runs (67:33-73:27 over 50-145 °C, toluene and CO2, NMR vs GC 0-4 points apart) and Treu 2022's
+        uncatalysed 3:1 in cyclohexane at 70 °C. A neat 120 °C patent run (79 % para, method not stated) lies above it.
+      rt_ln_kcal_mol: {at_K: 418.15, value: 0.744, range: [0.626, 0.913]}
+      status: CONFIRMED
+    references:
+      - doi: "hdl:1721.1/47485"
+        citation: "A.R. Renslo, PhD thesis, Massachusetts Institute of Technology (1998), Part II: Organic synthesis in supercritical carbon dioxide"
+        read: full text (DSpace@MIT OCR text) and page 148 rendered as an image
+        used_for: target value, conditions, scatter
+        passages:
+          - where: Table 6 (p. 148), "Regioselectivity of Diels-Alder Reactions in Carbon Dioxide and Conventional Solvents"
+            text: "1 | PhCH3, 145 °, 15 h | 78 | 71:29 (71:29); 2 | PhCH3, 50 °, 3 d | (7) | 69:31 (72:28); 3 | CO2 49.5 bar, 50 °, 4 d | (11) | 69:31 (73:27); 4 | CO2 74.5 bar, 50 °, 4 d | (5) | 67:33 (73:27); 5 | CO2 95.2 bar, 50 °, 7 d | (4) | 71:29 (73:27); 6 | CO2 117 bar, 50 °, 3 d | (3) | 70:30 (72:28)   [entry | conditions | yield (%) | ratio 270:271]"
+          - where: Table 6 footnotes
+            text: "a Isolated yield or (estimated by 1H NMR). b Ratio of isomers determined by 1H NMR and (GC) analysis."
+          - where: Results text
+            text: "the formation of cycloadducts 270 and 271 in a ratio very similar to that obtained in toluene (entries 1 and 2); i.e., no deviation from normal Diels-Alder regioselectivity had occurred."
+        status: CONFIRMED
+      - doi: 10.1021/jo9704523
+        citation: "A.R. Renslo, R.D. Weinstein, J.W. Tester, R.L. Danheiser, J. Org. Chem. 62 (1997) 4530-4533"
+        read: not read (paywalled); the thesis cites it for the same work
+        used_for: the peer-reviewed version of the thesis data
+        status: UNCONFIRMED (that its numbers equal the thesis's)
+      - doi: 10.1039/d2cy01337a
+        citation: "J. Treu, P. Huber, P.N. Plessow, F. Studt, E. Saraçi, Catal. Sci. Technol. 12 (2022) 7439-7447 (CC BY 3.0)"
+        read: full text (publisher PDF, KITopen copy)
+        used_for: independent uncatalysed value (upper edge of the window)
+        passages:
+          - where: Results
+            text: "This is also observed in our experimental data, where the para : meta-ratio for the uncatalyzed reaction is 3, while for the Sn-Beta catalyzed reactions this is increased to 3.8–4.3."
+          - where: Experimental
+            text: "In a Teflon-lined steel autoclave, 100 μl of methyl acrylate and 300 μl of isoprene were added to 10 ml of cyclohexane. Subsequently, 100 mg of catalyst were added and 6 bar of N2 was applied. ... the mixture was stirred for 5 h before the reaction was quenched, using an ice bath."
+          - where: Figure caption
+            text: "70 °C, 5 h, nisoprene : nmethyl acrylate = 3, 100 mg cat."
+          - where: Results (yields without catalyst and with dealuminated Beta)
+            text: "similar low yields of cycloadducts (5.7% and 5.8%,"
+            note: "product analysis by GC with a flame ionization detector"
+        status: CONFIRMED
+      - doi: "US 9,061,989 B1"
+        citation: "Far Eastern New Century Corp., Method for producing terephthalic acid, US patent 9,061,989 B1 (2015), Comparative Examples 1 and 2"
+        read: full text (Google Patents)
+        used_for: neat thermal data point (outside the window) and the AlCl3-catalysed ratio (not a target)
+        passages:
+          - where: Comparative Example 2
+            text: "Methyl acrylate, hydroquinone, and isoprene (in a molar ratio of 0.3485:0.0009:0.2936) were reacted in the absence of a solvent at 120° C. for 6 hours."
+          - where: Discussion of Table 1
+            text: "in Comparative Example 2, the Diels-Alder reaction was performed at a relatively high temperature of 120° C. for a relatively long period of 6 hours to obtain the 74% yield of the crude product and the 79% selectivity of the para product."
+        status: CONFIRMED (patent example; analysis method for this example not stated)
+      - doi: 10.1021/jo01342a031
+        citation: "T. Inukai, T. Kojima, J. Org. Chem. 31 (1966) 1121-1123"
+        read: not read (paywalled)
+        used_for: AlCl3-catalysed 95:5 (cited by Vermeeren et al. Angew. Chem. 2020, PMC7187354; reproduced in the patent's Comparative Example 1, 95 % para)
+        status: UNCONFIRMED (primary not read); not a target
+      - doi: 10.1021/jo01045a020
+        citation: "H.E. Hennis, J. Org. Chem. 28 (1963) 2570-2572, 'The Independence of Reaction Temperature and Mode of Addition in the Isoprene-Methyl Acrylate Diels-Alder Reaction'"
+        read: title only (paywalled)
+        used_for: lead; the title supports the weak temperature dependence seen in Renslo (71:29 at 145 °C, 69:31 at 50 °C)
+        status: UNCONFIRMED
+    fair_comparison:
+      - "Solvent: toluene (nonpolar). Regioselectivity depends mainly on solvent hydrogen-bond donation (Cativiela 1994 abstract), which toluene lacks; the gas-phase model is a fair comparison here."
+      - "Both regioisomers carry one stereocentre and form as racemates; endo and exo TSs (and s-cis/s-trans dienophile, s-cis diene) all lead to the same product of a given regiochemistry: sum them."
+      - "Kinetic control assumed (no retro-Diels-Alder at 145 °C for this adduct is reported in the sources read)."
+      - "0.74 kcal/mol selectivity, window 0.63-0.91 kcal/mol: as demanding as f0007."
