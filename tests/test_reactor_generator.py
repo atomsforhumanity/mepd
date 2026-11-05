@@ -58,7 +58,7 @@ def test_two_diastereomers_of_one_bond_graph_are_two_products():
     assert stereo_key(cis) != stereo_key(trans)
 
 
-def test_batches_stop_once_few_events_give_a_product_seen_once(monkeypatch):
+def test_batches_stop_once_few_reactions_of_the_seed_give_a_product_seen_once(monkeypatch):
     import mepd.discovery.reactor_generator as rg
     from qcdata import Structure
 
@@ -66,7 +66,7 @@ def test_batches_stop_once_few_events_give_a_product_seen_once(monkeypatch):
 
     def fake(jobs, width):            # every trajectory finds the same two products: converged after one batch
         batches.append(len(jobs))
-        return [{"states": [(1, [[[0, 1]], "A"], XYZ.tolist())], "keys": [[[[0, 1]], "A"]] * 10 + [[[[0, 2]], "B"]] * 10,
+        return [{"states": [(1, "A", XYZ.tolist())], "keys": [["A", True]] * 10 + [["B", True]] * 10,
                  "events": 20, "torn": 0} for _ in jobs]
 
     monkeypatch.setattr(rg, "_run_in_processes", fake)
@@ -75,6 +75,25 @@ def test_batches_stop_once_few_events_give_a_product_seen_once(monkeypatch):
 
     batches.clear()
     monkeypatch.setattr(rg, "_run_in_processes", lambda jobs, width: batches.append(1) or [
-        {"states": [], "keys": [[[[0, len(batches)]], f"new{len(batches)}"]], "events": 1, "torn": 0}])
+        {"states": [], "keys": [[f"new{len(batches)}", True]], "events": 1, "torn": 0}])
     rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3)
     assert len(batches) == 3      # every event a new product: never converged, stops at max_batches
+
+    batches.clear()                # one product, but too few reactions of the seed to tell (< 1/unseen)
+    monkeypatch.setattr(rg, "_run_in_processes", lambda jobs, width: batches.append(1) or [
+        {"states": [], "keys": [["A", True], ["C", False]], "events": 2, "torn": 0}])
+    rg.reactor_products(s, n_seeds=1, parallel=1, max_batches=3)
+    assert len(batches) == 3
+
+
+def test_an_event_that_only_renumbers_identical_atoms_is_no_product(monkeypatch):
+    pytest.importorskip("tblite")
+    import mepd.discovery.reactor_generator as rg
+
+    # formic acid's two hydrogens trade places: new bonds by atom number, the same molecule
+    swapped = XYZ.copy()
+    swapped[[3, 4]] = swapped[[4, 3]]
+    frames = np.array([XYZ] * 100 + [swapped] * 100)
+    monkeypatch.setattr(rg, "_trajectory", lambda *a, **k: frames)
+    out = rg._states(SYM, XYZ, 0, 1, 20, {})
+    assert out["events"] >= 1 and out["keys"] == [] and out["states"] == []
