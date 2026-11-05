@@ -33,6 +33,7 @@ import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
 import { prefs } from '../store.js';
 import { drawLinks, ENV_MODES, parseXyz, styleRegion, useAutoSystem, useRegion } from '../qmmm.js';
+import { Why } from './Why.js';
 
 function themeBackground() {
   return getComputedStyle(document.documentElement).getPropertyValue('--viewer-bg').trim() || '#ffffff';
@@ -77,6 +78,7 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   useEffect(() => {
     if (!window.$3Dmol || !host.current) return undefined;
     viewer.current = window.$3Dmol.createViewer(host.current, { backgroundColor: themeBackground(), antialias: true });
+    host.current._v = viewer.current;   // (for tests)
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const onTheme = () => { viewer.current?.setBackgroundColor(themeBackground()); viewer.current?.render(); };
     mq.addEventListener('change', onTheme);
@@ -183,11 +185,13 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
       : bonds ? [bmo.current, isoFor(bmo.current, mo.pct), bmo.sign] : [mo.current, mo.iso, mo.sign];
     drawOrbital(viewer.current, surfaces, one, iso, sign);
     drawOrbital(viewer.current, surfaces2, frag ? fmo.virt : null, isoFor(fmo.virt, mo.pct), fmo.virtSign, PALE);
-    drawArrows(viewer.current, arrows, bonds ? bmo.arrows : null, moIndex);
+    drawArrows(viewer.current, arrows, bonds ? bmo.arrows : null, moIndex,
+      (a) => arrowName(bmo.followed, a.id, mo.symbols, labelBase || 1, moIndex));
     if (host.current) {   // for tests
       host.current._orbital = { surfaces: surfaces.current.length, fresh: mo.fresh, sign: mo.sign, orb: mo.current };
       host.current._fragments = { surfaces: surfaces2.current.length + (frag ? surfaces.current.length : 0), pair: fmo.pair, fresh: fmo.fresh, sign: fmo.sign };
-      host.current._bonds = { surfaces: bonds ? surfaces.current.length : 0, arrows: arrows.current.length, id: bmo.id, local: bmo.local, sign: bmo.sign, fresh: bmo.fresh };
+      host.current._bonds = { surfaces: bonds ? surfaces.current.length : 0, arrows: arrows.current.length, id: bmo.id, local: bmo.local, sign: bmo.sign, fresh: bmo.fresh,
+        dots: bonds && bmo.arrows ? bmo.arrows.map((a) => a.points[Math.min(moIndex, a.points.length - 1)]) : [] };
     }
   }, [mo.current, mo.iso, mo.sign, mo.frag, mo.bonds, mo.on, mo.pct, fmo.occ, fmo.virt, fmo.sign, bmo.current, bmo.sign, bmo.arrows, xyz, frames, frame]);
 
@@ -718,10 +722,12 @@ export function useBondOrbitals(chem, source, index, enabled) {
     choose: setPick };
 }
 
-// The active orbitals' charge centres along the path, as curly arrows (the chosen one thicker),
-// each with a dot where it is at the frame shown.
-function drawArrows(v, shapes, arrows, frame) {
-  (shapes.current || []).forEach((sh) => { try { v.removeShape(sh); } catch { /* gone with the model */ } });
+// The active orbitals' centroids along the path, as curly arrows (the chosen one thicker), each
+// with a dot where it is at the frame shown. Hovering one tags it with its name (`describe`).
+function drawArrows(v, shapes, arrows, frame, describe = () => '') {
+  (shapes.current || []).forEach((sh) => {
+    try { if (sh._tag) v.removeLabel(sh._tag); v.removeShape(sh); } catch { /* gone with the model */ }
+  });
   shapes.current = [];
   for (const a of arrows || []) {
     const pts = [];
@@ -740,10 +746,28 @@ function drawArrows(v, shapes, arrows, frame) {
     if (pts.length < 2) continue;
     if (pts.length === 2) pts.splice(1, 0, { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, z: (pts[0].z + pts[1].z) / 2 });
     const radius = a.chosen ? 0.07 : 0.045;
+    const head = pts[pts.length - 1];
+    const tag = {
+      hoverable: true,
+      hover_callback: (shape, viewer) => {
+        if (shape._tag) return;
+        const text = describe(a);
+        shape._tag = viewer.addLabel(text, { position: head, backgroundColor: a.color, backgroundOpacity: 0.92, fontColor: 'white',
+          fontSize: 12, inFront: true, borderRadius: 4, padding: 3 });
+        viewer._mepdHover = text;   // (for tests)
+        viewer.render();
+      },
+      unhover_callback: (shape, viewer) => {
+        if (!shape._tag) return;
+        viewer.removeLabel(shape._tag);
+        shape._tag = null;
+        viewer.render();
+      },
+    };
     try {
-      shapes.current.push(v.addCurve({ points: pts, radius, color: a.color, toArrow: true, smooth: 4 }));
+      shapes.current.push(v.addCurve({ points: pts, radius, color: a.color, toArrow: true, smooth: 4, ...tag }));
       const at = a.points[Math.min(frame, a.points.length - 1)];
-      if (at) shapes.current.push(v.addSphere({ center: { x: at[0], y: at[1], z: at[2] }, radius: a.chosen ? 0.15 : 0.1, color: a.color }));
+      if (at) shapes.current.push(v.addSphere({ center: { x: at[0], y: at[1], z: at[2] }, radius: a.chosen ? 0.15 : 0.1, color: a.color, ...tag }));
     } catch { /* a degenerate curve: skip it */ }
   }
   v.render();
@@ -758,6 +782,27 @@ function bondLabel(o, symbols, base) {
   if (names.length === 1) return `${names[0]} ${o.spin === 'single' ? 'radical' : 'lone pair'}${spin}`;
   return `${names.join('–')}${names.length > 2 ? ` (${names.length}c)` : ''}${o.spin === 'single' ? ' (1e)' : ''}${spin}`;
 }
+
+// A followed orbital as "C1–C2 → C1–C6" (where it starts → where it ends).
+function pathLabel(F, t, symbols, base) {
+  const x = F.orbitals[t];
+  const a = bondLabel({ ...x, atoms: x.start }, symbols, base);
+  const b = bondLabel({ ...x, atoms: x.end }, symbols, base);
+  if (a !== b) return `${a} → ${b}`;
+  return F.active.includes(t) ? `${a} (polarizes)` : a;   // changing, but in the same bond: shifts toward one atom
+}
+
+// What an arrow's hover tag says: the electron pair, and how far it has moved by this frame.
+function arrowName(F, t, symbols, base, frame) {
+  if (!F?.orbitals[t]) return '';
+  const o = F.orbitals[t];
+  const now = o.moved[frame];
+  return `${pathLabel(F, t, symbols, base)} · electron pair, ${now == null ? '' : `${Math.round(now * 100)} % moved here, `}${Math.round(o.max_moved * 100)} % in all`;
+}
+
+// A little arrow in a colour (the legend's key to the arrows in the view).
+const Swatch = ({ color }) => html`<svg class="mo-swatch" width="20" height="8" viewBox="0 0 20 8" aria-hidden="true">
+  <line x1="1" y1="4" x2="13" y2="4" stroke=${color} stroke-width="2.4" /><path d="M12 0.5 L19 4 L12 7.5 Z" fill=${color} /></svg>`;
 
 // How much of each active orbital has moved between atoms at every frame (its colour as its
 // arrow's), the chosen one thicker, a dot at the frame shown.
@@ -787,12 +832,7 @@ function BondBar({ bmo, index, path, symbols, labelBase }) {
   if (path && F) {
     const o = F.orbitals[bmo.id];
     if (!o) return null;
-    const label = (t) => {
-      const x = F.orbitals[t];
-      const a = bondLabel({ ...x, atoms: x.start }, symbols, labelBase);
-      const b = bondLabel({ ...x, atoms: x.end }, symbols, labelBase);
-      return a === b ? a : `${a} → ${b}`;
-    };
+    const label = (t) => pathLabel(F, t, symbols, labelBase);
     const quiet = F.orbitals.filter((x) => !F.active.includes(x.id));
     const series = F.active.map((t) => ({ values: F.orbitals[t].moved, color: bmo.colorOf(t), chosen: t === bmo.id }));
     const q0 = F.charges.find(Boolean), q = F.charges[index];
@@ -803,12 +843,18 @@ function BondBar({ bmo, index, path, symbols, labelBase }) {
         title="The whole system's filled orbitals as bonds and lone pairs (intrinsic bond orbitals), each followed along the path. The ones that change are the curly arrows of the mechanism, drawn as the path of each one's charge centre; the rest stay put.">
         ${F.active.length > 0 && html`<optgroup label="Changing (arrows)">${F.active.map((t) => html`<option value=${t}>${label(t)} · ${Math.round(F.orbitals[t].max_moved * 100)} %</option>`)}</optgroup>`}
         <optgroup label="Unchanged">${quiet.map((x) => html`<option value=${x.id}>${label(x.id)}</option>`)}</optgroup>
-      </select>
+      </select><${Why} id="other.bond-orbitals" label="Bond orbitals" />
       <span class="mo-numbers" title="How much of this orbital has moved to other atoms since the first frame: half the sum over atoms of the change in its share">moved <b>${moved == null ? '–' : `${Math.round(moved * 100)} %`}</b></span>
       ${series.length > 0 && html`<${ChangePlot} series=${series} index=${index} />`}
       ${o.matched < 0.8 && html`<span class="warn-text" title=${`Followed from frame to frame with an overlap as low as ${o.matched.toFixed(2)} (IboView warns below 0.8): the frames are far apart, or it mixes with an equivalent orbital (lone pairs around a bond axis).`}>⚠ loosely followed</span>`}
-      ${dq.length > 0 && html`<span class="mo-sites" title=${`Charge on each atom (IAO charges) at this frame minus the first frame's (+: electrons lost, −: gained):\n${dq.map(([d, a]) => `${name(a)} ${fmtq(d)}`).join('\n')}`}>Δq ${dq.slice(0, 3).map(([d, a]) => `${name(a)} ${fmtq(d)}`).join(', ')}</span>`}
-      ${F.failed?.length > 0 && html`<span class="warn-text" title=${`No orbitals at frame${F.failed.length > 1 ? 's' : ''} ${F.failed.map((i) => i + 1).join(', ')}`}>⚠ ${F.failed.length} frame${F.failed.length > 1 ? 's' : ''} missing</span>`}`;
+      ${dq.length > 0 && html`<span class="mo-sites" title=${`Charge on each atom (IAO charges) at this frame minus the first frame's (+: electrons lost, −: gained):\n${dq.map(([d, a]) => `${name(a)} ${fmtq(d)}`).join('\n')}`}>Δq ${dq.slice(0, 3).map(([d, a]) => `${name(a)} ${fmtq(d)}`).join(', ')}<${Why} id="other.bond-charges" label="Δq" /></span>`}
+      ${F.failed?.length > 0 && html`<span class="warn-text" title=${`No orbitals at frame${F.failed.length > 1 ? 's' : ''} ${F.failed.map((i) => i + 1).join(', ')}`}>⚠ ${F.failed.length} frame${F.failed.length > 1 ? 's' : ''} missing</span>`}
+      <span class="mo-legend">${F.active.length > 0
+        ? html`<span class="muted" title="Each arrow is one electron pair that moves along the path: from where it sits at the first frame (tail) to where it sits at the last (head); the dot is where it is now">Arrows</span>
+          ${F.active.slice(0, 6).map((t) => html`<button type="button" class=${t === bmo.id ? 'on' : ''} onClick=${() => bmo.choose(t)}
+            title=${`${label(t)}: this electron pair moves ${Math.round(F.orbitals[t].max_moved * 100)} % onto other atoms along the path. Click to draw it.`}>
+            <${Swatch} color=${bmo.colorOf(t)} />${label(t)}</button>`)}`
+        : html`<span class="muted">No bond or lone pair changes along this path</span>`}<${Why} id="other.bond-arrows" label="The arrows" /></span>`;
   }
   if (!r) return bmo.following ? html`<span class="muted" title="Every frame's bond orbitals are built and each is followed from frame to frame">following the orbitals along the path…</span>` : null;
   const order = r.orbitals.map((x, i) => [x, i]).sort(([a], [b]) => (b.atoms.length > 2) - (a.atoms.length > 2) || b.energy_ev - a.energy_ev);
@@ -816,7 +862,7 @@ function BondBar({ bmo, index, path, symbols, labelBase }) {
   return html`
     <select class="tiny" value=${r.drawn.index} onChange=${(e) => bmo.choose(+e.target.value)} disabled=${bmo.following}
       title="The whole system's filled orbitals as bonds and lone pairs (intrinsic bond orbitals): those spread over three or more atoms first (a transition state's forming and breaking bonds), then from the highest energy down">
-      ${order.map(([x, i]) => html`<option value=${i}>${bondLabel(x, symbols, labelBase)}</option>`)}</select>
+      ${order.map(([x, i]) => html`<option value=${i}>${bondLabel(x, symbols, labelBase)}</option>`)}</select><${Why} id="other.bond-orbitals" label="Bond orbitals" />
     ${drawn && html`<span class="mo-sites" title=${`Its share on each atom (IAO populations); orbital energy ${drawn.energy_ev.toFixed(2)} eV (the canonical energies it mixes, weighted)`}>on ${drawn.atoms.map(([a, w]) => `${name(a)} ${Math.round(w * 100)}%`).join(', ')}</span>`}
     ${r.charges && html`<span class="mo-sites" title=${`Partial charges (IAO): ${r.charges.map((v, a) => `${name(a)} ${fmtq(v)}`).join(', ')}`}>charges</span>`}
     ${bmo.following && html`<span class="muted" title="Every frame's bond orbitals are built and each is followed from frame to frame; until then, this frame's own are shown">following the path…</span>`}`;

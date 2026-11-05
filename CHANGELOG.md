@@ -31,6 +31,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   much each has moved frame by frame and the atoms' charge change (Knizia & Klein's electron flow). Kept in
   `<workspace>/orbitals/bonds/`. `POST /api/bond-orbitals`, `POST /api/bond-orbitals/path`,
   `mepd.bond_orbitals`; manual: /manual/orbitals#bond-orbitals.
+- **Bond orbitals explained in place**: a colour-keyed "Arrows" legend under the viewer (click an entry to draw
+  that orbital), hover tags naming each arrow and how far its pair has moved, and "?" explanations of the bond
+  orbitals, the arrows and Δq, each linking to the manual and to the References tab. The manual's new
+  "What the arrows mean" section has a labelled diagram (tail, head, dot) and a table of every part. A "?"
+  explanation (static/explain.json) can now link its manual section (`manual`: "page#anchor"; checked by
+  tests/test_manual.py).
 - **Harmonic distance restraints** (`[[restraints]]` in a profile: `atoms = [i, j]`, `distance` in Å,
   `force_constant` in kcal/mol/Å², 500 by default) on any engine; on QM/MM inside the QM/MM energy, so
   microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a

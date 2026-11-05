@@ -3927,5 +3927,88 @@
    "mepd/web/nanoreactor.py:adopt_retry"
   ],
   "refs": "Solvation"
+ },
+ "other.bond-orbitals": {
+  "title": "Bond orbitals",
+  "does": "The whole system's filled orbitals rewritten as its bonds and lone pairs (Knizia's intrinsic bond orbitals): one orbital per bond (a double bond as a σ and a π orbital) and one per lone pair. Where no single Lewis structure fits, as for a transition state's forming and breaking bonds, an orbital spreads over three or more atoms; these are listed first and marked 3c. These are the same electrons as Whole, written as a different but equally valid set of orbitals.",
+  "how": [
+   "Takes the whole system's orbitals at this geometry: the calculation's own SCF when it computed this frame, else a single point at the session's level (as Whole does).",
+   "Builds intrinsic atomic orbitals (IAOs): a minimal set of atomic orbitals, polarized by the molecule, that holds the filled orbitals exactly. The reference minimal basis is xtb's own valence shells, or MINAO for all-electron files (TeraChem).",
+   "Localizes the filled orbitals: rotates them two at a time to maximize the sum over orbitals and atoms of (population on the atom)², so that each sits on as few atoms as possible (exponent 2, IboView's default).",
+   "'on C3 47 %' is the drawn orbital's IAO population on each atom. 'charges' gives the atoms' IAO partial charges."
+  ],
+  "default": "Orbitals over three or more atoms are listed first, then the rest from the highest energy down. The first one is drawn.",
+  "swap": [
+   {
+    "option": "Canonical orbitals (HOMO, LUMO) of the whole system",
+    "where": "Orbitals › Whole"
+   },
+   {
+    "option": "Each molecule's own orbitals and how they overlap",
+    "where": "Orbitals › Fragments"
+   },
+   {
+    "option": "Exponent 4 (Knizia 2013): flipped between localizations along aromatic transition states",
+    "where": "not exposed: EXPONENT in mepd/bond_orbitals.py"
+   }
+  ],
+  "caveats": [
+   "With xtb's minimal basis the IAO step has nothing to correct, so the orbitals are Pipek–Mezey orbitals on Löwdin populations. They come out as the textbook bonds and lone pairs, but no published work validates them from tight-binding wavefunctions. Check a conclusion that matters in a TeraChem session.",
+   "An orbital's energy (in its tooltip) is the canonical energies it mixes, weighted. It is a guide to which bond or lone pair is most reactive, not a measurable energy."
+  ],
+  "code": [
+   "mepd/bond_orbitals.py",
+   "mepd/web/bond_store.py"
+  ],
+  "refs": "Bond orbitals",
+  "manual": "orbitals#bond-orbitals"
+ },
+ "other.bond-arrows": {
+  "title": "Arrows: electron pairs that move",
+  "does": "Each arrow is one electron pair (one bond orbital) that changes along the path. It is a curly arrow of the mechanism, computed from the wavefunction instead of drawn by hand. The tail is where the pair sits at the first frame: in a lone pair's lobe, or along a bond. The head is where it sits at the last frame: between the atoms of a new bond, or on the atom of a new lone pair. The line is the route of the pair's centre, frame by frame, and the dot is where the pair is at the frame on screen. The thick arrow is the orbital chosen in the menu, drawn as surfaces. Each colour matches the legend and the plot. Hover an arrow to see its name.",
+  "how": [
+   "Builds every frame's bond orbitals and follows each one to the next frame by the largest overlap. The sign is kept, so the colours do not flip.",
+   "An orbital's change at a frame is √Σ_A (n_A − n_A at the first frame)², summed over atoms, with n_A its population on atom A (Klein & Knizia; IboView). Orbitals whose change reaches 0.1 get arrows, largest first. Every other bond and lone pair stays put.",
+   "A pair's centre is its centroid ⟨φ|r|φ⟩, computed exactly from the basis at every frame (Vidossich & Lledós). The arrow joins these points.",
+   "'moved' is the share of the pair that has shifted onto other atoms since the first frame. The plot shows it frame by frame for every arrow, so you can see which pairs move together and which go first."
+  ],
+  "default": "Every orbital whose change reaches 0.1 gets an arrow (at most six). The one that changes most is drawn first.",
+  "swap": [
+   {
+    "option": "Which molecule's filled orbital gives into which one's empty orbital (overlap and gap)",
+    "where": "Orbitals › Fragments"
+   }
+  ],
+  "caveats": [
+   "They are short: a pair's centre moves about 0.5–1 Å. Zoom in.",
+   "A head ends between two atoms (the new bond), not on an atom as hand-drawn arrows do.",
+   "Near the transition state an orbital is briefly spread over three atoms, so its line can bend.",
+   "A short arrow inside one bond is polarization: the pair shifts toward one atom, and no bond forms or breaks.",
+   "A ring of arrows (Diels–Alder and other pericyclic steps) could be drawn either way round. The orbitals pick one direction.",
+   "'⚠ loosely followed' means an overlap below 0.8 between frames: the frames are far apart, or equivalent lone pairs mix."
+  ],
+  "code": [
+   "mepd/bond_orbitals.py (follow)",
+   "Viewer3D.js (drawArrows)"
+  ],
+  "refs": "Bond orbitals",
+  "manual": "orbitals#what-the-arrows-mean"
+ },
+ "other.bond-charges": {
+  "title": "Δq: where charge builds up",
+  "does": "The atoms whose IAO partial charge at this frame differs most from the first frame's: + means the atom lost electrons, − means it gained them. At the transition state, this shows where the reaction draws electrons from and where it pushes them.",
+  "how": [
+   "An atom's IAO charge is its nuclear charge (valence charge, for xtb) minus the electrons that every filled orbital puts on its IAOs.",
+   "Lists atoms with |Δq| of 0.05 or more, largest first. The tooltip lists all of them."
+  ],
+  "caveats": [
+   "It is a guide for design, not a prediction. An electron-withdrawing group on an atom that gains electrons, or a donor on one that loses them, stabilizes the transition state (the reasoning behind Hammett-type substituent effects). A Lewis acid or a hydrogen-bond donor helps where a lone pair builds up. Check a suggestion by computing the substituted path.",
+   "These are gas-phase charges at the session's level; with xtb they come from a minimal basis."
+  ],
+  "code": [
+   "mepd/bond_orbitals.py (BondOrbitals.charges)"
+  ],
+  "refs": "Bond orbitals",
+  "manual": "orbitals#reading-them-for-design"
  }
 }

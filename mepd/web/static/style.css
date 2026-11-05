@@ -1788,6 +1788,11 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .mo-bar .mo-pct input { width: 56px; }
 .mo-bar .mo-help { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--muted); text-decoration: none; font-size: 12px; }
 .mo-bar .mo-help:hover { color: var(--accent); border-color: var(--accent); }
+.mo-bar .mo-legend { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+.mo-bar .mo-legend > button { display: inline-flex; align-items: center; gap: 5px; background: none; border: 1px solid transparent; border-radius: var(--radius); padding: 1px 6px; color: var(--text); font: inherit; cursor: pointer; }
+.mo-bar .mo-legend > button:hover { border-color: var(--border-strong); }
+.mo-bar .mo-legend > button.on { border-color: var(--border-strong); background: var(--accent-soft); font-weight: 600; }
+.mo-bar .mo-swatch { flex: none; }
 .topbar .manual-link { color: var(--muted); text-decoration: none; margin-right: 12px; }
 .topbar .manual-link:hover { color: var(--accent); }
 .po-routes { margin: 0 0 8px; }
