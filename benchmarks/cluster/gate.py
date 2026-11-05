@@ -15,6 +15,8 @@ marked); a system run on one side only fails ("not run"). Per system, all three 
    fails the gate; its counts are printed);
 3. speed: median settle time of the candidate <= 1.2 x the base's (a replicate that never settled
    counts as +inf; both +inf passes, base finite and candidate +inf fails).
+The verdicts follow these rules as the brief states them; a failure that is a single replicate (recall) or
+within the larger interquartile range of the two sides (settle) is marked so, for a human to judge.
 
 Exit 0 when every system passes, 1 otherwise.
 """
@@ -77,15 +79,20 @@ def compare(base: dict, cand: dict) -> dict:
             why.append(f"full recall {c['full_recall_fraction']:.0%} of {c['n']} < base {b['full_recall_fraction']:.0%} "
                        f"of {b['n']}")
         for ch in drops:
-            why.append(f"{ch} connected in {c['recall'][ch]['connected']:.0%} < base {b['recall'][ch]['connected']:.0%}")
+            why.append(f"{ch} connected in {c['recall'][ch]['connected']:.0%} < base {b['recall'][ch]['connected']:.0%}"
+                       + (" (one replicate)" if b['recall'][ch]['connected'] - c['recall'][ch]['connected']
+                          <= 1.0 / max(1, c['n']) + 1e-9 else ""))
         # 3. speed
         bs, cs = b["settle_s"]["median"], c["settle_s"]["median"]
         bs = math.inf if bs is None else bs
         cs = math.inf if cs is None else cs
         ok_s = cs <= SETTLE_GROWTH * bs if math.isfinite(bs) else True
-        checks["settle"] = {"pass": ok_s, "base_median_s": bs, "cand_median_s": cs}
+        s_spread = max([x for x in (b["settle_s"].get("iqr"), c["settle_s"].get("iqr")) if x is not None] or [0.0])
+        checks["settle"] = {"pass": ok_s, "base_median_s": bs, "cand_median_s": cs, "spread_s": s_spread}
         if not ok_s:
-            why.append(f"settle median {_fmt(cs, '.0f')} s > 1.2 x base {_fmt(bs, '.0f')} s")
+            noise = (math.isfinite(cs) and cs - bs <= s_spread)
+            why.append(f"settle median {_fmt(cs, '.0f')} s > 1.2 x base {_fmt(bs, '.0f')} s"
+                       + (f" (within the replicate spread, IQR {s_spread:.0f} s)" if noise else ""))
         out[system] = {"pass": not why, "held_out": bool(b.get("held_out") or c.get("held_out")), "why": why,
                        "checks": checks, "n": [b["n"], c["n"]]}
     return out
