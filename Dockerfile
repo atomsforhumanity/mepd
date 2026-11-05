@@ -19,6 +19,8 @@
 #             (solvation). The g-xTB build's CPCM-X gives other values (HCN in
 #             hexane +0.5 vs -2.2 kcal/mol) and conda-forge's ignores the solvent.
 #   pybase    uv and its managed Pythons (3.12 for mepd, 3.11 for AiZynthFinder)
+#   axtb      the axtb wheel (g-xTB in process), built from its private repo with
+#             a deploy key (build secret axtb_key); empty with AXTB_COMMIT=
 #   retro     retrosynthesis data (deploy/docker/retro-data.txt, from our mirror
 #             or Zenodo/figshare) and AiZynthFinder's env. Depends only on
 #             pybase, the manifest and mepd/retro/{data,aizynth,stock}.py.
@@ -43,6 +45,13 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.5
 #   docker build --secret id=hf_token,env=HF_TOKEN -t mepd .
 # `--build-arg FAIRCHEM_MODELS=` builds without them.
 ARG FAIRCHEM_MODELS="uma-s-1p2p1"
+# axtb (atomsforhumanity/axtb, AFH's Rust g-xTB 2.0.1) for [gxtb_engine_kwds]
+# backend = "axtb". Its repository is private: a build reads it with a
+# read-only deploy key, as a build secret:
+#   docker build --secret id=axtb_key,src=<private key file> -t mepd .
+# `--build-arg AXTB_COMMIT=` builds without it (backend = "axtb" then says
+# axtb isn't installed). The commit is the one mepd's tests and benchmarks ran.
+ARG AXTB_COMMIT=59cc1a4c82c85e28743a1d4a5f3f5e3415090aaa
 
 FROM ${MICROMAMBA_IMAGE} AS micromamba
 FROM ${UV_IMAGE} AS uv
@@ -134,6 +143,36 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/python \
     UV_LINK_MODE=copy
 # 3.12 for mepd; 3.11 for AiZynthFinder's own env (it needs Python < 3.13).
 RUN uv python install 3.12 3.11
+
+# ---------------------------------------------------------------------- axtb
+FROM pybase AS axtb
+ARG AXTB_COMMIT
+ARG AXTB_REPO=ssh://git@ssh.github.com:443/atomsforhumanity/axtb.git
+ARG RUST_VERSION=1.99.1
+ARG MATURIN_VERSION=1.16.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+# Port 443 (ssh.github.com) with github.com's own host key. The key is copied
+# (with the final newline ssh wants) to a file removed in the same step; only
+# the wheel leaves this stage. A secret is not part of BuildKit's cache key:
+# AXTB_COMMIT is, so a build without the key (AXTB_COMMIT=) caches apart.
+RUN --mount=type=secret,id=axtb_key,required=false --mount=type=cache,target=/root/.cargo/registry \
+    set -e; mkdir -p /wheels; \
+    if [ -z "$AXTB_COMMIT" ]; then echo "AXTB_COMMIT is empty: building without axtb" >&2; exit 0; fi; \
+    if [ ! -s /run/secrets/axtb_key ]; then \
+      echo "axtb's repository is private: pass its deploy key, --secret id=axtb_key,src=<file>" \
+           "(or env=VAR), or --build-arg AXTB_COMMIT= to build without axtb" >&2; exit 1; fi; \
+    key="$(mktemp)"; printf '%s\n' "$(cat /run/secrets/axtb_key)" > "$key"; chmod 600 "$key"; \
+    echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > /tmp/known_hosts; \
+    GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o HostKeyAlias=github.com -o UserKnownHostsFile=/tmp/known_hosts" \
+      git clone -q "$AXTB_REPO" /src/axtb || { rm -f "$key"; exit 1; }; \
+    rm -f "$key"; \
+    git -C /src/axtb checkout -q "$AXTB_COMMIT"; \
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain "$RUST_VERSION"; \
+    PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build --release \
+      -m /src/axtb/crates/axtb-py/Cargo.toml -i "$(uv python find 3.12)" -o /wheels; \
+    ls /wheels/axtb-*.whl
 
 # --------------------------------------------------------------------- retro
 FROM pybase AS retro
@@ -247,6 +286,7 @@ print(load(['zinc', 'paroutes-n1', 'paroutes-n5']).describe())"
 # ------------------------------------------------------------------- runtime
 FROM ${UBUNTU_IMAGE} AS runtime
 ARG FAIRCHEM_MODELS
+ARG AXTB_COMMIT
 # Links the image to its repository on GHCR (and its access to the repo's).
 LABEL org.opencontainers.image.source=https://github.com/atomsforhumanity/mepd \
       org.opencontainers.image.description="mepd web app with its chemistry programs, models and data" \
@@ -282,6 +322,10 @@ COPY --from=models --chown=mepd:mepd /home/mepd /home/mepd
 COPY --from=uma --chown=mepd:mepd /home/mepd/.cache/fairchem /home/mepd/.cache/fairchem
 COPY --from=reactiont5 --chown=mepd:mepd /home/mepd/.cache/huggingface /home/mepd/.cache/huggingface
 COPY --from=deps /opt/mepd/venv /opt/mepd/venv
+# axtb into the same venv, when the build had it (numpy, its one dependency, is there).
+RUN --mount=type=bind,from=axtb,source=/wheels,target=/tmp/axtb \
+    if ls /tmp/axtb/*.whl >/dev/null 2>&1; then \
+      uv pip install --no-deps --no-cache --python /opt/mepd/venv/bin/python /tmp/axtb/*.whl; fi
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
 COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
 
@@ -299,6 +343,7 @@ ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     TORCHDYNAMO_DISABLE=1 \
     PYTHONUNBUFFERED=1 \
     MEPD_FAIRCHEM_MODELS=${FAIRCHEM_MODELS} \
+    MEPD_AXTB_COMMIT=${AXTB_COMMIT} \
     MEPD_MODE=demo MEPD_PORT=8765 MEPD_MAX_JOBS=4
 
 # mepd itself, into the venv above (its dependencies are all there already):

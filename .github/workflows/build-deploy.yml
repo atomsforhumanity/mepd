@@ -54,9 +54,16 @@ jobs:
       - name: Build (the image checks itself at the end)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}    # UMA weights; a build secret, never in a layer
+          AXTB_DEPLOY_KEY: ${{ secrets.AXTB_DEPLOY_KEY }}    # read-only key of the private axtb repo; likewise
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          docker build --secret id=hf_token,env=HF_TOKEN \
+          # Without the key the image has no axtb (g-xTB backend = "axtb" then says so).
+          axtb=(--secret id=axtb_key,env=AXTB_DEPLOY_KEY)
+          if [ -z "$AXTB_DEPLOY_KEY" ]; then
+            echo "::warning::no AXTB_DEPLOY_KEY secret: building without axtb"
+            axtb=(--build-arg AXTB_COMMIT=)
+          fi
+          docker build --secret id=hf_token,env=HF_TOKEN "${axtb[@]}" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" \
             --label org.opencontainers.image.version="$TAG" \
             -t "$IMAGE:$TAG" .

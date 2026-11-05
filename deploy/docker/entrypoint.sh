@@ -71,6 +71,25 @@ pretrained_mlip.get_predict_unit(sys.argv[1], device='cpu')" "$m" 2>&1)"; then
       fail fairchem "$m does not load offline: $(tail -1 <<<"$out")"
     fi
   done
+  # axtb (g-xTB in process, backend = "axtb"), when the build had its deploy key:
+  # the same g-xTB energy as the program.
+  if [ -n "${MEPD_AXTB_COMMIT:-}" ]; then
+    if out="$(python -c "
+from qcdata import Structure
+from mepd.engines.gxtb import GXTBCalculator
+from mepd.nodes.node import StructureNode
+xyz = '3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n'
+e = [GXTBCalculator(backend=b, n_parallel=1).compute_energies([StructureNode(structure=Structure.from_xyz(xyz))])[0]
+     for b in ('axtb', 'xtb')]
+assert abs(e[0] - e[1]) < 1e-8, e
+print(f'{e[0]:.8f}')" 2>&1)"; then
+      ok axtb "${MEPD_AXTB_COMMIT:0:7}, water $(tail -1 <<<"$out") Eh as the g-xTB program"
+    else
+      fail axtb "$(tail -1 <<<"$out")"
+    fi
+  else
+    ok axtb "not in this image (built without its deploy key): backend = \"axtb\" unavailable"
+  fi
   # Installed is not enough: AiZynthFinder's own env must import (it broke on
   # a NumPy 1/2 mismatch once while `aizynthcli` was still there).
   local az="$MEPD_RETRO_DATA/aizynth-env/bin/python" err

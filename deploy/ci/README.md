@@ -82,6 +82,10 @@ this node with Docker access, which amounts to root, and root can read this file
 - **Repository → Settings → Secrets and variables → Actions → New repository secret → `HF_TOKEN`.** This is
   the fine-grained Hugging Face token of `huggingface@atomsforhumanity.org`, with read access to gated repos.
   The build needs it for the UMA weights.
+- **`AXTB_DEPLOY_KEY`**: the private half of a read-only deploy key of `atomsforhumanity/axtb` (that repository
+  → Settings → Deploy keys, added by one of its admins). The build clones axtb at the commit in the
+  Dockerfile (`AXTB_COMMIT`) and builds its wheel, for the g-xTB engine's `backend = "axtb"`. Without the
+  secret the image is built without axtb and the run warns.
 - **The GHCR package** (https://github.com/orgs/atomsforhumanity/packages/container/package/mepd → **Package
   settings → Manage Actions access → Add repository → `mepd`, role *Write***). The first images were pushed by
   hand, so the workflow's built-in token can't push to the package until the repository has access here.

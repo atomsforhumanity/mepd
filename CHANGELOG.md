@@ -22,6 +22,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     from 282 s to 176 s.
   - Needs the `axtb` package (a wheel; not a mepd dependency). It takes only `--etemp/--acc/--iterations` in
     `extra_args` and doesn't run the program's own optimizer (`minimizer = "xtb"`).
+  - The Docker image builds axtb (at `AXTB_COMMIT`) when the build has the read-only deploy key of its private
+    repository (`--secret id=axtb_key`; CI's `AXTB_DEPLOY_KEY`), and leaves it out without one;
+    `mepd-entrypoint check` then compares its g-xTB energy with the program's.
   - The default backend is still the program (`"xtb"`). In the web app: Profiles › g-xTB › Backend (with a "?"
     explanation), and a note when axtb isn't installed. A workspace counts both backends as one g-xTB level.
   - A job's kept orbitals (the viewer's Whole, Fragments and Bonds) are axtb's own Molden files, kept as method
