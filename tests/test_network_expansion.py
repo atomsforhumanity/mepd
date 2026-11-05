@@ -11,7 +11,8 @@ import mepd.cli_common as cli_common
 from mepd.cli import app
 from mepd.cli_common import _load_structure_from_smiles_or_xyz
 from mepd.discovery.network_expansion import (
-    _perceived_edges, embed_product, enumerate_bond_changes, expand_network, graph_edges, lewis_smiles,
+    _perceived_edges, _structure_with, embed_product, enumerate_bond_changes, expand_network, graph_edges,
+    lewis_smiles, ts_rotamer_guesses,
 )
 from mepd.inputs import RunInputs
 from mepd.nodes.node import StructureNode
@@ -1055,18 +1056,22 @@ class _AsyncConnector(_IcingConnector):
         super().__init__()
         self._jobs, self.end_keywords, self.queue, self.channel_labels = {}, None, [], []
         self.job_inputs = SimpleNamespace(engine=_GraphEngine())
+        self.ranks, self.priorities = {}, []     # what the explorer asked of the real queue's order
 
     def register(self, kind, fn, slots=1, rank=2):
         self._jobs[kind] = fn
+        self.ranks[kind] = rank
 
-    def submit(self, kind, args, on_done, label=""):
+    def submit(self, kind, args, on_done, label="", priority=0.0):
+        self.priorities.append((kind, label, priority))
         self.queue.append(("own", kind, args, on_done))
 
     def add_pairs(self, pairs, search=False):
         self.queue.extend(("pair", p) for p in pairs)
 
-    def add_channel(self, pair, a, b, label):
+    def add_channel(self, pair, a, b, label, priority=0.0):
         self.channel_labels.append(label)
+        self.priorities.append(("channel pair", label, priority))
         self.queue.append(("pair", tuple(pair)))
 
     def __call__(self, pairs, nodes, search=False, on_found=None, relevant=None, on_pair_done=None,
@@ -1087,13 +1092,16 @@ class _AsyncConnector(_IcingConnector):
                     continue
                 i, j = job[1]
                 self.pairs.append((i, j))
-                ts = nodes[i].copy()
-                ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
-                on_found({"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"})
+                on_found(self._found(i, j, nodes))
                 on_pair_done((i, j))
             if not (on_drain is not None and on_drain()):
                 break
         return []
+
+    def _found(self, i, j, nodes):
+        ts = nodes[i].copy()
+        ts._cached_energy = max(nodes[i].energy, nodes[j].energy) + 5.0 / 627.509
+        return {"start": nodes[i], "end": nodes[j], "ts": ts, "label": f"{i}-{j}"}
 
     def _own(self, kind, args):
         return self._jobs[kind](*args)
@@ -1345,3 +1353,131 @@ def test_async_schedule_samples_channels_inside_the_one_queue_without_a_stage_ba
     assert sampled and len(connect.calls) == 1 and len(res.rounds) == 1   # one queue, no cycles after it
     assert res.rounds[0]["channels"] == len(sampled) == len(set(sampled))  # each species pair sampled once
     assert len(connect.channel_labels) == 2 * len(sampled) == len(set(connect.channel_labels))
+
+
+def _butadiene_acrylate():
+    """Butadiene + methyl acrylate (the seed's atom order) and its Diels-Alder adduct (bonds 0-5 and 3-4 formed)."""
+    reactant = _node("C=CC=C.C=CC(=O)OC")
+    symbols = [str(s) for s in reactant.structure.symbols]
+    edges = graph_edges(reactant) | {(0, 5), (3, 4)}
+    adduct = StructureNode(structure=_structure_with(reactant.structure, embed_product(symbols, _ang(reactant), edges)))
+    assert graph_edges(adduct) == edges
+    return reactant, adduct
+
+
+def test_ts_rotamers_turn_the_bonds_outside_the_reacting_core():
+    """A TS's rotamers: its rotatable bonds outside the reacting core (the bonds its two IRC ends don't share)
+    turned one at a time and two together. A Diels-Alder TS of methyl acrylate: the acrylate C-C(=O) and the ester
+    C(=O)-O bonds turn (s-cis/s-trans, Z/E); bonds of the forming ring and the methyl (a symmetric top) don't, and
+    every core distance and bond stays as it was."""
+    reactant, adduct = _butadiene_acrylate()
+    guesses, core = ts_rotamer_guesses(adduct.structure, (reactant.structure, adduct.structure))
+    assert core == [(0, 5), (3, 4)]
+    assert [what for _, what in guesses] == ["5-6 180", "6-8 180", "5-6 180, 6-8 180"]
+    x0 = _ang(adduct)
+    for guess, what in guesses:
+        x = _ang(StructureNode(structure=guess))
+        assert all(np.linalg.norm(x[i] - x[j]) == pytest.approx(np.linalg.norm(x0[i] - x0[j]), abs=1e-9) for i, j in core)
+        assert graph_edges(StructureNode(structure=guess)) == graph_edges(adduct)
+        moved = set(np.where(np.abs(x - x0).sum(axis=1) > 1e-6)[0])
+        assert moved and moved <= {7, 8, 9, 19, 20, 21}      # the ester's atoms only (6 is on the first axis)
+
+
+class _TSFileAsyncConnector(_ForkedAsyncConnector):
+    """As _ForkedAsyncConnector, with each pair's TS written to `ts_dir` as the real queue's fast TSs are
+    (fast_<i>_<j>.xyz, unverified, the pair it was asked for)."""
+
+    def __init__(self, ts_dir):
+        super().__init__()
+        self.ts_dir = ts_dir
+
+    def _found(self, i, j, nodes):
+        import mepd
+
+        rec = super()._found(i, j, nodes)
+        fp = self.ts_dir / f"fast_{i}_{j}.xyz"
+        mepd.write_xyz(fp, rec["ts"], comments=[f"E={rec['ts'].energy:.10f}"])
+        rec.update(pair=(i, j), label=fp.stem, files={"ts": str(fp), "verified": False, "pair": [i, j]})
+        return rec
+
+
+def test_async_rotamers_of_an_irc_checked_ts_join_its_step_from_a_forked_worker(monkeypatch, tmp_path):
+    """F0007: each adduct's single TS is the conformer its proposal happened to be in (endo s-trans, exo with the
+    ester E). Once a TS the kinetics use has its IRC, its rotamers are TS searches of the queue (ahead of channel
+    sampling and later proposals), run in its forked workers: each that keeps the reacting core is one more TS of
+    the step, IRC-checked like any; a rotamer's own rotamers are not searched."""
+    import mepd
+    from mepd.discovery import generators
+
+    reactant, adduct = _butadiene_acrylate()
+
+    def diels_alder(structure, *, max_products, options):      # the seed's one proposal: the adduct
+        return [adduct.structure] if len(graph_edges(StructureNode(structure=structure))) == 20 else []
+
+    def find_ts(node, engine, **kw):                           # the guess is a TS; each rotamer its own energy
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.012 + 1e-3 * (float(np.abs(np.asarray(node.structure.geometry)).sum()) % 1.0)
+        return ts
+
+    def verify(items):                                         # every TS connects the seed and the adduct
+        for idx, fp in items:
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [reactant, adduct])
+        return [(idx, reactant.copy(), adduct.copy()) for idx, _ in items]
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", diels_alder, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    from pathlib import Path
+
+    forked = _TSFileAsyncConnector(tmp_path)
+    try:
+        res = expand_network(reactant.copy(), _GraphEngine(), connect=forked, verify=verify, refine=refine,
+                             steer="access", access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+                             schedule="async", generator="reactor", generator_options={"n_seeds": 1})
+    finally:
+        forked.close()
+    rotamers = [st for st in res.steps if st.files.get("rotamer_of")]
+    assert {(st.a, st.b) for st in res.steps} == {(0, 1)}
+    assert len(rotamers) == 3 and {st.files["rotamer_of"] for st in rotamers} == {"fast_0_1"}
+    assert all(st.files["verified"] is True and Path(st.files["ts"]).is_file() for st in rotamers)
+    jobs = [(label, p) for kind, label, p in forked.priorities if kind == "rotamer"]
+    assert len(jobs) == 3                                      # none for the rotamers' own TSs
+    parent = next(st for st in res.steps if not st.files.get("rotamer_of"))
+    assert all(p == pytest.approx((parent.ts_energy - res.species[0].node.energy) * 627.509474) for _, p in jobs)
+    assert forked.ranks["rotamer"] < forked.ranks["channels"] < forked.ranks["propose"]
+
+
+def test_async_channel_sampling_is_queued_lowest_step_first():
+    """Each step's conformer-pair job, and the TS searches of its pairs, take as their priority in the queue the
+    height above the seed of the lowest TS found between its species so far (asked whenever the queue orders its
+    jobs: the seed's channel jobs are queued with its proposals, before any of their TSs is found), so the steps
+    the flux runs through are sampled first (F0007: the endo and exo steps waited 4-12 minutes behind the
+    conformer pairs of 35-42 steps that carry no flux)."""
+    connect = _AsyncConnector()
+    first = {}
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    def pairs(item):
+        first.update({lbl: p() for kind, lbl, p in connect.priorities if kind == "channels" and lbl not in first})
+        return {"start": [item[0]], "end": [item[1]], "pairs": [(item[0].copy(), item[1].copy())]}
+
+    refine.pairs, refine.width = pairs, 3
+    res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=connect, access_cutoff_kcal=60.0,
+                         max_products=20, kinetics={"threshold": 1e-6}, schedule="async", refine=refine)
+    e0 = res.species[0].node.energy
+    height = {}
+    for st in res.steps:
+        key = tuple(sorted((st.a, st.b)))
+        height[key] = min(height.get(key, np.inf), (st.ts_energy - e0) * 627.509474)
+    asked = [(kind, label, p) for kind, label, p in connect.priorities if kind in ("channels", "channel pair")]
+    assert asked and len({p() for _, _, p in asked}) > 1
+    for kind, label, p in asked:
+        a, b = (map(int, label.split("→")) if kind == "channels" else map(int, label.split("_")[1:3]))
+        assert p() == pytest.approx(height[tuple(sorted((a, b)))])
+    assert np.inf in first.values()        # queued before its pair had a TS: last until it has one

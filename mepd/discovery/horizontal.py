@@ -56,8 +56,8 @@ from mepd.network_aware import log_event
 from mepd.cpus import available_cpus
 
 _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
-# Which waiting job starts first (lower first; queue order within a rank): a TS search before a path
-# search's next piece. The caller ranks its own kinds (`register`).
+# Which waiting job starts first (lower first; within a rank, the lower priority given at submit, then queue
+# order): a TS search before a path search's next piece. The caller ranks its own kinds (`register`).
 _RANK = {"fast": 2, "ts": 2, "piece": 3}
 
 
@@ -168,19 +168,22 @@ class HorizontalConnector:
         workers should run it: they fork with the function in place."""
         self._jobs[kind] = (fn, max(1, min(int(slots), self.workers)), int(rank))
 
-    def submit(self, kind: str, args: tuple, on_done, label: str = "") -> None:
+    def submit(self, kind: str, args: tuple, on_done, label: str = "", priority=0.0) -> None:
         """While a call runs (from one of its callbacks): queue a registered job; `on_done(result or None)` is
-        called in the caller's thread when it ends (None: it raised). `label`: what the live view calls it."""
-        self._live.submit(kind, args, on_done, label)
+        called in the caller's thread when it ends (None: it raised). `label`: what the live view calls it.
+        `priority`: among the waiting jobs of one rank, lower starts first (then queue order; 0 by default) --
+        a number, or a function returning one, asked each time the queue orders its waiting jobs."""
+        self._live.submit(kind, args, on_done, label, priority)
 
     def add_pairs(self, pairs, search: bool = False) -> None:
         """While a call runs (from one of its callbacks): connect these pairs too (`nodes` must hold them)."""
         self._live.add_pairs(pairs, search)
 
-    def add_channel(self, pair, a, b, label: str) -> None:
+    def add_channel(self, pair, a, b, label: str, priority=0.0) -> None:
         """While a call runs: connect species `pair` once more, from structures `a` and `b` of its two
-        species (a conformer pair, atom-mapped) -- a fast TS as `label`, a path search if that fails."""
-        self._live.add_channel(pair, a, b, label)
+        species (a conformer pair, atom-mapped) -- a fast TS as `label`, a path search if that fails.
+        `priority`: as `submit`'s, for its fast TS."""
+        self._live.add_channel(pair, a, b, label, priority)
 
     def queue_state(self) -> dict:
         """What a resumed run needs to carry on: the iced pieces and the piece numbering."""
@@ -355,6 +358,7 @@ class HorizontalConnector:
         outstanding: dict = {}  # pair -> its jobs queued or running
         queued_at: dict = {}    # id(job args) -> when it was queued; started: future -> when it started
         started: dict = {}
+        priority: dict = {}     # id(job args) -> its priority within its rank, while it waits (0 if not given)
         main_s = [0.0]          # seconds spent in the caller's callbacks (no job starts meanwhile)
 
         def record(rec):
@@ -382,9 +386,11 @@ class HorizontalConnector:
                 started[fut] = time.monotonic()
                 self._running.value = busy()
 
-            def queue(kind, pair, *args):
+            def queue(kind, pair, *args, prio=0.0):
                 outstanding[pair] = outstanding.get(pair, 0) + 1
                 queued_at[id(args)] = time.monotonic()
+                if prio:
+                    priority[id(args)] = prio
                 waiting.append((kind, pair, args))
 
             def settle(pair):
@@ -418,9 +424,10 @@ class HorizontalConnector:
                 """A wide job that waited long enough: it starts on whatever workers are free."""
                 return now - queued_at.get(id(job[2]), now) > self.wide_wait_s
 
-            def rank(job) -> int:
+            def rank(job) -> tuple:
                 kind = job[0]
-                return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind]
+                p = priority.get(id(job[2]), 0.0)
+                return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind], p() if callable(p) else p
 
             def halted() -> bool:
                 return self.stop_when is not None and bool(self.stop_when())
@@ -434,6 +441,7 @@ class HorizontalConnector:
                 counts["cancelled"] = len(running)
                 log_event({"event": "queue_stopped", "dropped": len(waiting), "cancelled": len(running)})
                 waiting.clear()
+                priority.clear()
                 now = time.monotonic()
                 for fut, (kind, pair, args) in running.items():
                     log_event({"event": "job", "kind": kind.removeprefix("own:"), "what": what(kind, pair, args),
@@ -469,6 +477,7 @@ class HorizontalConnector:
                         if self.workers - busy() < (slots(job[0]) + 1) // 2:
                             break       # ... until it waited wide_wait_s: then they wait for half its room
                     waiting.pop(k)
+                    priority.pop(id(job[2]), None)
                     run(*job)
                 if final and not running and on_drain is not None and on_drain():
                     return fill()    # the caller added work (e.g. proposals for a species now populated)
@@ -480,6 +489,7 @@ class HorizontalConnector:
                         log_event({"event": "piece_iced", "pair": list(job[1]), "depth": job[2][2]})
                     iced = [job[1] for job in waiting]
                     waiting.clear()
+                    priority.clear()
                     for pair in iced:
                         settle(pair)
 
@@ -533,14 +543,16 @@ class HorizontalConnector:
                     else:
                         queue("fast", (i, j), i, j, nodes[i], nodes[j])
 
-            def submit(kind, args, on_done, label=""):
+            def submit(kind, args, on_done, label="", prio=0.0):
                 own_done[id(args)] = on_done
                 own_label[id(args)] = label
                 queued_at[id(args)] = time.monotonic()
+                if prio:
+                    priority[id(args)] = prio
                 waiting.append(("own:" + kind, None, args))
 
-            def add_channel(pair, a, b, label):
-                queue("fast", tuple(pair), pair[0], pair[1], a, b, label)
+            def add_channel(pair, a, b, label, prio=0.0):
+                queue("fast", tuple(pair), pair[0], pair[1], a, b, label, prio=prio)
 
             self._live = SimpleNamespace(add_pairs=add_pairs, submit=submit, add_channel=add_channel)
             if start is not None:

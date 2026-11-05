@@ -12,6 +12,20 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Explorer, async: the rotamers of every TS the kinetics use.** Once a step's TS has its IRC (open within the
+  cutoff, touching a populated species), its rotatable bonds outside the reacting core (the bonds its IRC ends
+  don't share) are turned -- 180 degrees, or 120 and 240 when both atoms are saturated; each bond alone and each
+  pair together -- and each guess is a TS search of the queue (`rotamer` jobs, rank 1, in its forked workers).
+  A rotamer TS that keeps the core's distances (0.3 A, as `mepd conformers --ts`) is one more TS of the step,
+  IRC-checked like any; it gets no rotamers of its own, and a failed IRC drops it without a path search.
+  `mepd.discovery.network_expansion.ts_rotamer_guesses`.
+  - Why: an adduct's single TS is the conformer its proposal happened to be in. In the F0007 baseline (Cp +
+    methyl acrylate, 10 runs) the endo step went through endo s-trans (1.5 kcal/mol over endo s-cis) and the exo
+    step through the ester-E conformer (7 kcal/mol over exo s-cis): +5.5 kcal/mol on endo:exo. Turning those
+    two TSs' acrylate and ester bonds (6 TS searches, ~3 s each with axtb) gives endo s-cis, exo s-cis and exo
+    s-trans, the four conformers of the tracing ceiling; conformer-pair channel sampling of the same steps
+    gave endo s-cis once in 16 pairs.
+
 - **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
   reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
   energies and gradients come from this process with no program start per call, and Hessians are analytic.
@@ -483,6 +497,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     back onto CO2). (HCOOH)4 at 2200 K: 3.1 events per 5 ps instead of 4.6; CO + H2O proposed from 16 trajectories in
     84% of resamplings (before 100%), from 32 in 98%; the seed's reactions now nearly converge (10% seen once, before
     ~30%). Cost per trajectory unchanged.
+- **Explorer, async: the queue refines the steps the flux runs through first.** Channel sampling of a step and
+  the TS searches of its conformer pairs wait in order of the height above the seed of the step's lowest TS so
+  far (asked each time the queue orders its jobs: `HorizontalConnector.submit/add_channel(..., priority=)`, a
+  number or a function); proposals of species after the seed wait behind them (rank 3, with path-search
+  pieces). In the F0007 baseline the seed's 35-42 channel jobs were queued with its proposals, before any of
+  their TSs existed, and ran in species order: the endo and exo ones waited 4-12 minutes; and in 9 of 10 runs
+  the reactor for the most populated product then took all 32 workers for the budget's last 6-13 minutes,
+  while the TS searches of 213-396 conformer pairs never ran.
 
 - **Reactor generator: products the access cutoff can't reach don't hold up its convergence.** With `--steer access`,
   the explorer passes the reactor what is left of the access cutoff above the species it expands; a product whose
