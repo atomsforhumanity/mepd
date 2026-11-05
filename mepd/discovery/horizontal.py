@@ -56,6 +56,9 @@ from mepd.network_aware import log_event
 from mepd.cpus import available_cpus
 
 _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
+# Which waiting job starts first (lower first; queue order within a rank): a TS search before a path
+# search's next piece. The caller ranks its own kinds (`register`).
+_RANK = {"fast": 2, "ts": 2, "piece": 3}
 
 
 def _run_job(method: str, args):
@@ -145,15 +148,17 @@ class HorizontalConnector:
         # the caller's FreeEnergies: a TS job also computes the TS's thermal correction (`free_cache`)
         self.free = None
         self._jobs: dict = {}     # the caller's own job kinds: kind -> (function, worker slots it takes)
-        # the caller's budget: once it returns True no job starts; the ones running finish and the call ends
+        # the caller's budget: once it returns True no job starts, the ones running are cancelled (their
+        # workers killed) and the call ends
         self.stop_when = None
         self._live = None         # while a call runs: its add_pairs / submit
 
-    def register(self, kind: str, fn, slots: int = 1) -> None:
+    def register(self, kind: str, fn, slots: int = 1, rank: int = 2) -> None:
         """A job kind of the caller's own: `fn(*args)` runs in a worker like the queue's jobs, taking `slots`
-        of the workers (a job that runs its own parallel processes). Register before the call whose
+        of the workers (a job that runs its own parallel processes). `rank`: waiting jobs start lowest rank
+        first (the queue's own: TS searches 2, path-search pieces 3). Register before the call whose
         workers should run it: they fork with the function in place."""
-        self._jobs[kind] = (fn, max(1, min(int(slots), self.workers)))
+        self._jobs[kind] = (fn, max(1, min(int(slots), self.workers)), int(rank))
 
     def submit(self, kind: str, args: tuple, on_done, label: str = "") -> None:
         """While a call runs (from one of its callbacks): queue a registered job; `on_done(result or None)` is
@@ -395,28 +400,49 @@ class HorizontalConnector:
                 kind, _, args = job
                 return kind == "piece" and args[2] > 0 and relevant is not None
 
+            def rank(job) -> int:
+                kind = job[0]
+                return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind]
+
+            def halted() -> bool:
+                return self.stop_when is not None and bool(self.stop_when())
+
+            def halt():
+                """Out of budget: drop what waits and cancel what runs (its workers killed, and with them
+                the processes they started); no callback hears of either."""
+                nonlocal pool
+                dropped = list(waiting) + list(running.values())
+                counts["dropped"] = counts.get("dropped", 0) + len(waiting)
+                counts["cancelled"] = len(running)
+                log_event({"event": "queue_stopped", "dropped": len(waiting), "cancelled": len(running)})
+                waiting.clear()
+                if running:
+                    for proc in list((getattr(pool, "_processes", None) or {}).values()):
+                        proc.kill()   # (a thread pool can't be: its jobs run on, unheard)
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    running.clear()
+                    self._running.value = 0
+                for kind, pair, args in dropped:
+                    if kind.startswith("own:"):
+                        own_done.pop(id(args), None)
+                        own_label.pop(id(args), None)
+                    else:
+                        settle(pair)
+
             def fill(final=False):
-                if self.stop_when is not None and waiting and self.stop_when():
-                    counts["dropped"] = counts.get("dropped", 0) + len(waiting)
-                    log_event({"event": "queue_stopped", "dropped": len(waiting)})
-                    dropped = list(waiting)
-                    waiting.clear()
-                    for kind, pair, args in dropped:
-                        if kind.startswith("own:"):
-                            own_done.pop(id(args), None)
-                            own_label.pop(id(args), None)
-                        else:
-                            settle(pair)
+                if halted():
                     return
+                waiting.sort(key=rank)   # (stable: queue order within a rank)
                 k = 0
                 while k < len(waiting) and busy() < self.workers:
                     job = waiting[k]
-                    if running and busy() + slots(job[0]) > self.workers:
-                        k += 1      # a wide job waits for room; narrower ones behind it may start
-                        continue
                     if gated(job) and relevant(job[2][0], final) is not True:
                         k += 1
                         continue
+                    if running and busy() + slots(job[0]) > self.workers:
+                        # a wide job waits for room, and the jobs behind it wait with it: started in its
+                        # place, they kept it waiting while any were left (channel sampling, 3 of 4 workers)
+                        break
                     waiting.pop(k)
                     run(*job)
                 if final and not running and on_drain is not None and on_drain():
@@ -496,6 +522,9 @@ class HorizontalConnector:
                 start()
 
             while True:
+                if halted():
+                    halt()
+                    break
                 fill()
                 show()
                 if not running:
@@ -503,8 +532,12 @@ class HorizontalConnector:
                     counts["deferred"] = max(counts["deferred"], len(waiting))
                     fill(final=True)
                     if not running:
+                        if halted():
+                            halt()
                         break
-                done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
+                # (woken every few seconds to check the budget: a job can run for many minutes)
+                done, _ = concurrent.futures.wait(tuple(running), timeout=None if self.stop_when is None else 5.0,
+                                                  return_when=concurrent.futures.FIRST_COMPLETED)
                 t_main, done_kinds = time.monotonic(), set()
                 for fut in done:
                     kind, pair, args = running.pop(fut)
@@ -618,7 +651,7 @@ class HorizontalConnector:
                 show(force=True)
             except Exception:
                 pass
-            pool.shutdown(wait=True, cancel_futures=True)
+            pool.shutdown(wait=not counts.get("cancelled"), cancel_futures=True)
             _CONNECTOR.pop("self", None)
         log_event({"event": "horizontal_connect", "pairs": len(pairs), "main_s": round(main_s[0], 1), **counts})
         self.say(f"Connected {len(pairs)} pair(s): " + (f"{counts['searched']} by path search only, " if search else "")
@@ -629,5 +662,6 @@ class HorizontalConnector:
                  + (f", {counts['capped']} pieces over the per-pair cap not run" if counts["capped"] else "")
                  + (f", {counts['thawed']} iced pieces thawed" if counts["thawed"] else "")
                  + (f", {len(self.iced)} pieces nothing reaches yet iced" if self.iced else "")
-                 + (f"; out of budget, {counts['dropped']} queued jobs not run" if counts.get("dropped") else "") + ").")
+                 + (f"; out of budget, {counts['dropped']} queued jobs not run" if counts.get("dropped") else "")
+                 + (f", {counts['cancelled']} running jobs cancelled" if counts.get("cancelled") else "") + ").")
         return found

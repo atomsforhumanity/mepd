@@ -24,6 +24,7 @@ def _connector(tmp_path):
     hc._root_chain = lambda a, b: [a, b]
     hc._leaf_ts = lambda chain, label: SimpleNamespace(energy=-1.0)
     hc.iced, hc._pieces, hc._next_index, hc.free, hc._jobs, hc._live = [], {}, {}, None, {}, None
+    hc.stop_when = None
     return hc
 
 
@@ -165,3 +166,46 @@ def test_core_share_follows_the_running_jobs_and_stays_a_number_where_it_is_writ
     assert copy.deepcopy(share) is share
     assert pickle.loads(pickle.dumps(share)) == 8
     assert json.dumps({"engine_parallel": int(share)}) == '{"engine_parallel": 8}'
+
+
+def test_a_wide_job_is_not_starved_by_narrow_ones_queued_behind_it(tmp_path):
+    """A job that takes every worker starts once the running ones end: the narrow jobs queued after it
+    wait (started in its place, they kept channel sampling waiting for most of an hour)."""
+    hc = _connector(tmp_path)
+    order = []
+    hc.register("narrow", lambda k: k, rank=1)
+    hc.register("wide", lambda: "wide", slots=2, rank=1)
+
+    def start():
+        hc.submit("narrow", (0,), order.append)
+        hc.submit("wide", (), order.append)
+        for k in range(1, 4):
+            hc.submit("narrow", (k,), order.append)
+
+    hc([], [Node(name="A")], start=start)
+    assert order.index("wide") == 1
+
+
+def test_lower_rank_jobs_start_first(tmp_path):
+    """The explorer's proposals (rank 0) start before the queue's TS searches queued earlier."""
+    hc = _connector(tmp_path)
+    hc.workers = 1
+    started = []
+    hc._fast_ts = lambda i, j, a, b: started.append("fast") or (SimpleNamespace(energy=-1.0), f"fast_{i}_{j}", None)
+    hc.register("propose", lambda: "propose", rank=0)
+    nodes = [Node(name=n) for n in "ABCD"]
+    hc([(0, 1), (0, 2), (0, 3)], nodes, start=lambda: hc.submit("propose", (), started.append))
+    assert started[0] == "propose"
+
+
+def test_the_budget_cancels_running_jobs(tmp_path):
+    """Out of budget, a running job is cancelled (its worker killed), not waited for, and no callback
+    hears of it."""
+    import time
+
+    hc = _connector(tmp_path)
+    hc.register("slow", lambda: time.sleep(120), rank=1)
+    t0, heard = time.monotonic(), []
+    hc.stop_when = lambda: time.monotonic() - t0 > 1.0
+    hc([], [Node(name="A")], start=lambda: hc.submit("slow", (), heard.append))
+    assert time.monotonic() - t0 < 30 and heard == []

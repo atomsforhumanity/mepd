@@ -982,7 +982,7 @@ class _AsyncConnector(_IcingConnector):
         self._jobs, self.end_keywords, self.queue, self.channel_labels = {}, None, [], []
         self.job_inputs = SimpleNamespace(engine=_GraphEngine())
 
-    def register(self, kind, fn, slots=1):
+    def register(self, kind, fn, slots=1, rank=2):
         self._jobs[kind] = fn
 
     def submit(self, kind, args, on_done, label=""):
@@ -1053,6 +1053,32 @@ def test_async_schedule_stops_on_a_budget_not_a_depth():
                          max_products=20, kinetics={"threshold": 1e-6}, schedule="async", max_species=4)
     assert res.rounds[0]["stopped"] == "max species"
     assert len(res.species) <= 4 + 20       # one batch of proposals may land after the cap is reached
+
+
+def test_async_schedule_out_of_time_ends_with_what_it_has(monkeypatch):
+    """Stopped (time budget, or Stop & analyze), an async run doesn't go on to sample the channels of the
+    steps it found after the queue (unbudgeted: 48 min past a 1 h budget in j_4e10ef7a)."""
+    from mepd import search_control
+
+    calls = []
+
+    def stop_requested():   # once the seed's proposals are in
+        calls.append(1)
+        return len(calls) > 1
+
+    monkeypatch.setattr(search_control, "stop_requested", stop_requested)
+    asked = []
+
+    def refine(items):
+        asked.extend(items)
+        return [{"direct": [], "other": [], "conformers": []} for _ in items]
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=_AsyncConnector(),
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6}, schedule="async",
+                         refine=refine)
+    assert res.rounds[0]["stopped"] == "stop requested" and res.steps
+    assert asked == []
 
 
 def test_async_schedule_needs_access_steering_and_a_job_queue():

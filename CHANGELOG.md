@@ -15,7 +15,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Explorer, async: it stops when the kinetics converge or a budget runs out, not at a depth.** `--rounds` no
   longer caps how far from the seed a species may be expanded: the queue ends when the live kinetics ask for
   nothing more ("converged"), or when `--time-budget` (seconds), `--max-species` or a stop request (the web's
-  Stop & analyze) runs out -- then no new job starts, the running ones finish, and the network so far is
+  Stop & analyze) runs out -- then no new job starts, the running ones are cancelled, and the network so far is
   written with its kinetics. The round record's `stopped` says which. Web: "Time budget (h)" in the form.
 - **Explorer: IRC paths are kept whole and drawn.** An IRC check writes the full path through the TS
   (minimized ends included) with its energies (`ts/<label>_irc.xyz` + `.energies`; it kept only the two
@@ -616,6 +616,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Explorer, async: the time budget is a real limit, and the jobs the kinetics need start first.** At the
+  budget (or Stop & analyze) the running jobs are cancelled, their worker processes killed with what they
+  started, instead of awaited, and the run goes straight to its analysis: the final IRC pass and the final
+  channel sampling (full path searches) no longer run after the queue, unbudgeted (they ran 50 min past a
+  1 h budget in a (HCOOH)4 run). Waiting jobs start by rank: proposals for a newly populated species and
+  steering single points first, then IRC checks and channel sampling, then TS searches, then path-search
+  pieces. A job that needs several workers (channel sampling 3, proposals 2) no longer waits while
+  narrower jobs queued after it take each free worker. IRC checks minimize their ends without the
+  frequency check (a fifth of their time). `network_aware.jsonl` logs each job's wait and run time.
 - **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
   orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
   parent's multiprocessing resource tracker. Together these hung a finished `discovery expand` with GPU

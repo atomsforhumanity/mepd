@@ -447,7 +447,9 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
             fp = ts_dir / f"{label}_irc.xyz"
             if not fp.exists():
                 try:
-                    path = mepd.irc(mepd.load(ts_file), eng).path
+                    # ends minimized without the frequency check: its two Hessians were a fifth of an IRC
+                    # check's time (7-10 s of 30-50 s, 20-atom TSs) and the connectivity is what it decides
+                    path = mepd.irc(mepd.load(ts_file), eng, end_keywords={"check_frequencies": False}).path
                     missing = [n for n in path.nodes if n._cached_energy is None]
                     if missing:
                         eng.compute_energies(missing)
@@ -517,7 +519,7 @@ def expand(
         "budget runs out (--time-budget, --max-species, a stop request); --rounds and --max-expand do not apply."),
     time_budget: float = typer.Option(
         0.0, "--time-budget",
-        help="--schedule async: seconds of wall time; then no new job starts, the running ones finish and the "
+        help="--schedule async: seconds of wall time; then no new job starts, the running ones are cancelled and the "
         "network found so far is written with its kinetics. 0 (default): no limit."),
     max_expand: int = typer.Option(
         10, "--max-expand",
