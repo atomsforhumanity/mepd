@@ -39,7 +39,8 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
 The invariant audit (flags, never fixes): duplicate species, duplicate TS steps, mirror-image TS pairs
 whose free energies differ by > 0.2 kcal/mol (spread reported), channel products found but not
 connected, barriers reported for closed steps, time budget overrun > 2 %, negative barriers, IRC ends
-that are not their step's species. Structure comparisons use mepd from this branch (develop 53c68d4):
+that are not their step's species, species whose proposals failed, and queue jobs that failed (with the
+`why` network_aware.jsonl gives since develop 4683ee7; jobs the time budget cancelled are only counted). Structure comparisons use mepd from this branch (develop 53c68d4):
 `nanoreactor_generator.stereo_key`, `mirror.superimposable`, `compare.same_molecule`.
 """
 from __future__ import annotations
@@ -437,7 +438,24 @@ def _frames(fp):
     return Structure.open_multi(str(fp))
 
 
-def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict) -> dict:
+def queue_jobs(na_path, budget_s) -> tuple[list, list]:
+    """(failed job events, those cancelled by the time budget) from network_aware.jsonl: a failed job that
+    ended within 1 s of the deadline (cycle_start + budget) or after it was cancelled by the budget."""
+    events = []
+    if na_path and Path(na_path).is_file():
+        for line in Path(na_path).read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                pass
+    t_cycle = next((e["t"] for e in events if e.get("event") == "phase" and e.get("phase") == "cycle_start"), None)
+    deadline = t_cycle + float(budget_s) if t_cycle is not None and budget_s else None
+    failed = [e for e in events if e.get("event") == "job" and not e.get("ok")]
+    cancelled = [e for e in failed if deadline is not None and e["t"] >= deadline - 1.0]
+    return [e for e in failed if e not in cancelled], cancelled
+
+
+def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict, na_path=None) -> dict:
     """The invariant audit of one run: {check: [flags]} plus a few counts (see module docstring)."""
     from mepd.compare import same_molecule
     from mepd.discovery.mirror import _angstrom, mirrored, superimposable
@@ -448,7 +466,8 @@ def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict) ->
     steps = summary.get("steps") or []
     n = len(sp)
     flags: dict = {k: [] for k in ("duplicate_species", "duplicate_ts", "mirror_ts", "found_not_connected",
-                                   "closed_with_barrier", "budget_overrun", "negative_barrier", "irc_mismatch")}
+                                   "closed_with_barrier", "budget_overrun", "negative_barrier", "irc_mismatch",
+                                   "proposals_failed", "failed_jobs")}
     info: dict = {}
     structs = {}
     for k, s in enumerate(sp):
@@ -597,6 +616,25 @@ def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict) ->
             flags["irc_mismatch"].append({"step": st["label"], "pair": [st["a"], st["b"]],
                                           "smiles": [sp[st["a"]]["smiles"], sp[st["b"]]["smiles"]]})
     info["irc_checked"] = checked
+    # 9. queue jobs that failed (network_aware.jsonl; `why` since develop 4683ee7), except those the time budget
+    # cancelled, and species whose proposals failed (the rounds' proposals_failed since 4683ee7, else the failed
+    # propose jobs)
+    failed, cancelled = queue_jobs(na_path, result.get("budget_s"))
+    flags["failed_jobs"] = [{"kind": e.get("kind"), "what": e.get("what"), "why": e.get("why"), "run_s": e.get("run_s")}
+                            for e in failed]
+    by_kind: dict = {}
+    for e in failed:
+        key = f"{e.get('kind')}: {(e.get('why') or 'no why logged').split(':')[0]}"
+        by_kind[key] = by_kind.get(key, 0) + 1
+    info["failed_jobs_by_kind"] = by_kind
+    info["jobs_cancelled_at_budget"] = len(cancelled)
+    why_of = {str(e.get("what")): e.get("why") for e in failed if e.get("kind") == "propose"}
+    pf = [k for r in summary.get("rounds") or [] for k in r.get("proposals_failed") or []]
+    if not pf:
+        pf = [int(str(e["what"]).split()[-1]) for e in failed if e.get("kind") == "propose"
+              and str(e.get("what", "")).startswith("species ")]
+    flags["proposals_failed"] = [{"species": k, "smiles": sp[k]["smiles"] if k < n else None,
+                                  "why": why_of.get(f"species {k}")} for k in pf]
     return {"flags": flags, "n_flags": {k: len(v) for k, v in flags.items()}, "info": info}
 
 
@@ -654,7 +692,7 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
     else:
         out["settle"] = {"settle_s": None, "quick": False, "note": "no snapshots"}
     if do_audit:
-        out["audit"] = audit(sysdef, s, paths, rec, result)
+        out["audit"] = audit(sysdef, s, paths, rec, result, run_dir.parent / "network_aware.jsonl")
     return out
 
 
