@@ -386,7 +386,9 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max
                                   **options, "conformers_only": True})
         return run_channels(a, b, profile, opts, output / "channels" / f"pair_{label}")
 
-    refine.pairs, refine.width = pairs, min(3, max(1, int(workers)))
+    # at most half the workers: two sampling jobs fit the queue at once (3 of 4 workers left the 4th idle or
+    # oversubscribed behind each of them, (HCOOH)4)
+    refine.pairs, refine.width = pairs, min(3, max(1, int(workers) // 2))
     if prefetch_steps:
         # off by default: the steps it guesses from the kinetics before the IRC checks are mostly not the
         # ones asked for after them (Suzuki run 30: 114 sampled, 41 asked for), and it took two thirds of

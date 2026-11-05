@@ -114,9 +114,11 @@ class HorizontalConnector:
     ices = True    # keeps pieces nothing reaches (`iced`) and queues them again on every call
     stop_when = None   # the caller's budget (set per instance; see __init__)
     # A job that needs more workers than are free lets narrower ones behind it start in its place for this
-    # long; then it starts on the workers free (the cores briefly oversubscribed). Narrower jobs started in
-    # its place for good kept channel sampling (3 of 4 workers) and proposals (all 4) waiting while any were
-    # queued; holding them back instead left workers idle for minutes behind each wide job.
+    # long; then the jobs behind it wait until half its workers are free, and it starts on those (the cores
+    # oversubscribed by at most the other half while the running jobs end). Narrower jobs started in its
+    # place for good kept channel sampling (3 of 4 workers) and proposals (all 4) waiting while any were
+    # queued; holding them back until all its workers were free left workers idle for minutes; starting it on
+    # any one free worker ran two 3-worker channel jobs on 4 workers for minutes on end.
     wide_wait_s = 60.0
 
     def __init__(self, run_inputs, output: Path, workers: int, *, max_pieces_per_pair: int = 40,
@@ -454,9 +456,12 @@ class HorizontalConnector:
                     if gated(job) and relevant(job[2][0], final) is not True:
                         k += 1
                         continue
-                    if running and busy() + slots(job[0]) > self.workers and not overdue(job, now):
-                        k += 1      # a wide job waits for room; narrower ones behind it may start meanwhile
-                        continue
+                    if running and busy() + slots(job[0]) > self.workers:
+                        if not overdue(job, now):
+                            k += 1      # a wide job waits for room; narrower ones behind it may start meanwhile
+                            continue
+                        if self.workers - busy() < (slots(job[0]) + 1) // 2:
+                            break       # ... until it waited wide_wait_s: then they wait for half its room
                     waiting.pop(k)
                     run(*job)
                 if final and not running and on_drain is not None and on_drain():

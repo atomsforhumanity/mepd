@@ -623,8 +623,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   1 h budget in a (HCOOH)4 run). Waiting jobs start by rank, in queue order within one: steering single
   points, then IRC checks, then proposals, TS searches and channel sampling, then path-search pieces. A
   job that needs several workers (proposals: all of them; channel sampling 3) no longer waits while
-  narrower jobs queued after it take each free worker: after 60 s (`wide_wait_s`) it starts on the
-  workers free. Proposals for species the kinetics populate never ran in a 15-min (HCOOH)2 run for that. IRC checks minimize their ends without the
+  narrower jobs queued after it take each free worker: after 60 s (`wide_wait_s`) the jobs behind it wait
+  until half its workers are free, and it starts on those. A channel-sampling job takes at most half the
+  workers (it took 3 of 4, so one sat idle beside it). Proposals for species the kinetics populate never ran in a 15-min (HCOOH)2 run for that. IRC checks minimize their ends without the
   frequency check (a fifth of their time). `network_aware.jsonl` logs each job's wait and run time.
 - **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
   orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
