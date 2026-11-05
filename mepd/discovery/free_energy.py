@@ -32,9 +32,12 @@ TS's, the TS counts as one molecule.
 A TS with spectators is also counted bound, the whole complex as one
 molecule: a molecule whose bonds don't change can still lower the TS (an
 H-bond, an ion pair, a dative contact -- a catalyst), and apart that
-stabilization is lost. Bound and apart are two parallel channels, so their
-rates add: the TS's correction is -RT ln(exp(-G_apart/RT) + exp(-G_bound/RT))
-(both_channels), and FreeEnergies.ts_channels gives the two for anything
+stabilization is lost. The TS takes the lower of the two (both_channels):
+not their rates added, since the apart free energy already lets each
+spectator roam the whole standard-state volume, the positions next to the TS
+included -- a sum would count a spectator that does nothing for the TS twice
+(up to RT ln 2). Bound counts only where binding lowers the TS by more than
+it costs in entropy. FreeEnergies.ts_channels gives the two for anything
 that moves them (the steering single points).
 
 The rotational symmetry number and linearity come from xtb's analysis of the
@@ -52,11 +55,10 @@ R_KCAL = 1.987204259e-3   # kcal/mol/K
 
 
 def both_channels(apart: float, bound: float, temperature: float) -> float:
-    """One correction (or free energy, kcal/mol) for a TS's two parallel channels, spectators apart and bound:
-    the rates add, so -RT ln(exp(-apart/RT) + exp(-bound/RT))."""
-    rt = R_KCAL * float(temperature)
-    low = min(apart, bound)
-    return low - rt * float(np.log(np.exp(-(apart - low) / rt) + np.exp(-(bound - low) / rt)))
+    """One correction (or free energy, kcal/mol) for a TS counted with its spectators apart and bound: the
+    lower. Not the two rates added: apart already holds the configurations with a spectator next to the TS
+    (module docstring). `temperature` is kept for the callers' signature."""
+    return min(float(apart), float(bound))
 
 
 def channels_shift(apart: float, bound: float, d_apart: float, d_bound: float, temperature: float) -> float:

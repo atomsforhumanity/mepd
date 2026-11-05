@@ -1651,7 +1651,7 @@ def expand_network(
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
         ends = {m: _ts_ends(result.steps[m]) for m in open_steps}
-        # a TS with spectators is two channels, apart and bound (free_energy.both_channels): each its own shift
+        # a TS with spectators is counted apart and bound, the lower kept (free_energy.both_channels): each its own shift
         channels = {m: c for m in open_steps
                     if free is not None and (c := free.ts_channels(ts[m], ends[m])) is not None}
         bound = list(channels)

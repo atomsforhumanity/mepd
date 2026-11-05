@@ -282,7 +282,7 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
               for m in open_steps]
     for n in dict.fromkeys(splitter.notes):
         say(f"free energies: {n}")
-    # a TS with spectators is two channels, apart and bound (free_energy.both_channels): the bound one its own item
+    # a TS with spectators is counted apart and bound, the lower kept (free_energy.both_channels): the bound one its own item
     channels = {m: c for m in open_steps
                 if free_low is not None and (c := free_low.ts_channels(ts_structs[m], ts_ends[m])) is not None}
     bound_items = [Item("ts_bound", m, ts_structs[m], [ts_structs[m]]) for m in channels]

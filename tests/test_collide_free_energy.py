@@ -108,14 +108,14 @@ def test_step_ends_come_from_the_irc_then_the_ts_job_then_the_species(tmp_path):
     assert np.allclose(e0.geometry, a.geometry, atol=1e-5) and np.allclose(e1.geometry, b.geometry, atol=1e-5)
 
 
-def test_a_ts_with_spectators_is_two_channels_whose_rates_add(monkeypatch):
-    """Apart (spectators at the standard state) and bound (the whole complex: an H-bond, ion pair or dative
-    contact that lowers the TS) are parallel channels: the correction is -RT ln(sum of exp(-G/RT))."""
-    from mepd.discovery.free_energy import R_KCAL, both_channels
+def test_a_ts_with_spectators_takes_the_lower_of_apart_and_bound(monkeypatch):
+    """Apart (spectators at the standard state) or bound (the whole complex: an H-bond, ion pair or dative
+    contact that lowers the TS), whichever is lower -- not the rates added, which would count a spectator that
+    does nothing for the TS twice (apart already holds the configurations with it next to the TS)."""
+    from mepd.discovery.free_energy import both_channels
 
     T = 1000.0
-    rt = R_KCAL * T
-    assert both_channels(-50.0, -50.0, T) == pytest.approx(-50.0 - rt * np.log(2.0))
+    assert both_channels(-50.0, -50.0, T) == -50.0                              # no rate doubling
     assert both_channels(-50.0, -80.0, T) == pytest.approx(-80.0, abs=1e-5)     # a bound catalyst wins
     assert both_channels(-80.0, -50.0, T) == pytest.approx(-80.0, abs=1e-5)     # spectators apart win
 

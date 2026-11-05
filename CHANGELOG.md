@@ -695,14 +695,16 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
-- **Explorer free energies: a TS's spectators also count bound -- the two are parallel channels.** Counting a
+- **Explorer free energies: a TS's spectators also count bound, when that is lower.** Counting a
   molecule whose bonds don't change apart (at the standard state) drops whatever it does to the TS
   electronically, so a catalyst acting only through an H-bond, an ion pair or a dative contact lost its
   catalysis. A TS with spectators now also gets its correction bound (the whole complex, one molecule, as
-  before 9bdac62), and the two channels' rates add: G = -RT ln(exp(-G_apart/RT) + exp(-G_bound/RT))
-  (`free_energy.both_channels`). One extra Hessian per TS with spectators, cached with the TS (and in the TS
+  before 9bdac62), and the TS takes the lower of the two (`free_energy.both_channels`). Not the two rates
+  added: the apart free energy already lets a spectator roam the whole standard-state volume, the positions
+  next to the TS included, so a sum would count a spectator that does nothing for the TS twice (a rate up to
+  2x too high where the two are close: RT ln 2, 1.4 kcal/mol at 1000 K). One extra Hessian per TS with spectators, cached with the TS (and in the TS
   job's precomputed correction). The steering single points (and `refine_energies`) move each channel by its
-  own single point -- reacting complex and spectators apart, or the whole TS -- before combining
+  own single point -- reacting complex and spectators apart, or the whole TS -- before taking the lower
   (`channels_shift`). On j_4e10ef7a (g-xTB, 1 M, recomputed offline): at 1000 K, apart wins on all 40 steps
   with spectators (by 5.7-51.7 kcal/mol), so nothing changes; at 500 K, bound wins on 15 of them (by up to
   20.6 kcal/mol, e.g. `pair_0_9_leaf_3` 0->1: 70.6 apart -> 51.5). Unimolecular formic acid is unchanged.
