@@ -1127,16 +1127,25 @@ class _ForkedAsyncConnector(_AsyncConnector):
             there.close()
             self._pipe, self._pid = here, pid
         self._pipe.send((kind, args))
+        if not self._pipe.poll(self.timeout_s):     # a hung worker fails the test instead of hanging the suite
+            self.close(kill=True)
+            raise RuntimeError(f"the {kind} job got no answer from the worker in {self.timeout_s:g} s")
         status, out = self._pipe.recv()
         if status == "error":
             raise RuntimeError(f"the {kind} job failed in the worker: {out}")
         return out
 
-    def close(self):
+    timeout_s = 300.0
+
+    def close(self, kill=False):
         import os
+        import signal
 
         if self._pipe is not None:
-            self._pipe.send(None)
+            if kill:
+                os.kill(self._pid, signal.SIGKILL)
+            else:
+                self._pipe.send(None)
             os.waitpid(self._pid, 0)
             self._pipe = None
 
