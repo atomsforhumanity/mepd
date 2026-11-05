@@ -68,7 +68,7 @@ def main() -> int:
     snap = Path("snapshots")
     for d in (out, snap, Path("tmp"), Path("live")):
         d.mkdir(exist_ok=True)
-    shutil.copytree(run_dir / "code", "code")                 # imports from local scratch, not NFS
+    shutil.copytree(run_dir / task.get("code", "code"), "code")   # imports from local scratch, not NFS
     shutil.copy(run_dir / task["seed_xyz"], "seed.xyz")
     argv = [a.replace("{RUN_DIR}", str(run_dir)) for a in task["argv"]]
     cmd = [sys.executable, "-m", "mepd.cli", "discovery", "expand", "seed.xyz", *argv,

@@ -93,23 +93,31 @@ def seed_argv(replicate: int) -> tuple[dict, list]:
 
 
 def build(run: str, commit: str, groups: list, replicates: int, budget: float, threads: int,
-          parallelism: int, memory: str, control: bool, hard_factor: float = 3.0, image: str = IMAGE) -> Path:
-    """`groups`: [(systems, [(config name, args)], replicates or None)] in priority order (pods start in
-    task order); None = `replicates`."""
+          parallelism: int, memory: str, control: bool, hard_factor: float = 3.0, image: str = IMAGE,
+          interleave: bool = False) -> Path:
+    """`groups`: [(systems, [(config name, args)], replicates or None, commit or None)] in priority order (pods
+    start in task order); None = `replicates` / `commit`. A group with its own commit runs from code-<sha7>/ and
+    labels its configurations <config>-<sha7>, so several commits share one run (and its queue)."""
     suite = score.load_systems()
+    groups = [tuple(g) + (None,) * (4 - len(g)) for g in groups]
+    sha = _git("rev-parse", commit)
+    shas = {g[3]: _git("rev-parse", g[3]) for g in groups if g[3]}
+    label = lambda c, g: c if not g[3] else f"{c}-{shas[g[3]][:7]}"
+    groups = [(g[0], [(label(c, g), a) for c, a in g[1]], g[2], g[3]) for g in groups]
     systems = list(dict.fromkeys(n for g in groups for n in g[0]))
     configs = list({c: a for g in groups for c, a in g[1]}.items())
-    groups = [g if len(g) == 3 else (*g, None) for g in groups]
-    sha = _git("rev-parse", commit)
     harness = _git("rev-parse", "HEAD") + ("+dirty" if _git("status", "--porcelain", "--", "benchmarks") else "")
     d = AFH_DIR / run
     if d.exists():
         raise SystemExit(f"{d} exists: pick another run name")
     (d / "inputs").mkdir(parents=True)
     (d / "code").mkdir()
-    archive = subprocess.run(["git", "-C", str(REPO), "archive", sha, "mepd"], capture_output=True, check=True).stdout
-    subprocess.run(["tar", "-x", "-C", str(d / "code")], input=archive, check=True)
-    (d / "code" / "COMMIT").write_text(sha + "\n")
+    for dirname, full in [("code", sha)] + [(f"code-{x[:7]}", x) for x in sorted(set(shas.values()))]:
+        (d / dirname).mkdir(exist_ok=True)
+        archive = subprocess.run(["git", "-C", str(REPO), "archive", full, "mepd"], capture_output=True,
+                                 check=True).stdout
+        subprocess.run(["tar", "-x", "-C", str(d / dirname)], input=archive, check=True)
+        (d / dirname / "COMMIT").write_text(full + "\n")
     shutil.copy(HERE / "task.py", d / "task.py")
     for name in systems:
         sd = suite[name]
@@ -120,16 +128,22 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
     # pods start in task order: group by group (priority), and in a group replicate by replicate, every system
     # (as given: long ones first) and configuration in each, so all arms meet the same cluster load and a run
     # cut short has every arm
-    order = [(r, name, c) for g_systems, g_configs, g_reps in groups for r in range(g_reps or replicates)
-             for name in g_systems for c in g_configs]
-    for r, name, (cname, cargs) in order:
+    if interleave:   # replicate by replicate, system by system, every group's configurations side by side
+        order = [(r, name, c, g[3]) for r in range(max(g[2] or replicates for g in groups)) for name in systems
+                 for g in groups if name in g[0] and r < (g[2] or replicates) for c in g[1]]
+    else:
+        order = [(r, name, c, g_commit) for g_systems, g_configs, g_reps, g_commit in groups
+                 for r in range(g_reps or replicates) for name in g_systems for c in g_configs]
+    for r, name, (cname, cargs), g_commit in order:
         seeds, sargs = seed_argv(r)
         tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
                       "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                       "hard_timeout": hard_factor * budget,
                       "argv": system_argv(name, suite[name], budget) + cargs + sargs,
-                      "harness_commit": harness})
+                      "harness_commit": harness,
+                      **({"code": f"code-{shas[g_commit][:7]}"} if g_commit else {})})
     if control:   # replicate 0 again: what the seeds don't fix (queue timing); the first group, last in order
+        assert not groups[0][3], "controls for a group with its own commit: not supported"
         cname, cargs = groups[0][1][0]
         for name in groups[0][0]:
             seeds, sargs = seed_argv(0)
@@ -148,7 +162,7 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
     (d / "tasks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in tasks))
     timeout = int(hard_factor * budget + 900)
     what = "; then ".join(f"{','.join(gs)} x {','.join(c for c, _ in gc)}" + (f" x {gr}" if gr else "")
-                          for gs, gc, gr in groups)
+                          for gs, gc, gr, _ in groups)
     desc = (f"scoreboard {run}: discovery expand on explorer {sha[:7]}, {what}, {replicates} replicates each"
             f"{' + controls' if control else ''}, {threads} threads, budget {budget:g} s "
             f"(explorer-team phase 0, benchmarks/cluster/bench.py)")
@@ -158,7 +172,9 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
         f"shards: {len(tasks)}\nparallelism: {parallelism}\ntask_timeout: {timeout}\npriority: batch\n"
         "notify: auto\nenv: {SELLA_DISABLE_GPU: 1, OMP_NUM_THREADS: 1, MKL_NUM_THREADS: 1, OPENBLAS_NUM_THREADS: 1}\n")
     (d / "manifest.json").write_text(json.dumps(
-        {"run": run, "commit": sha, "harness_commit": harness, "image": image, "configs": dict(configs),
+        {"run": run, "commit": sha if not shas else sorted({sha, *shas.values()} if any(
+            not g[3] for g in groups) else set(shas.values())), "harness_commit": harness, "image": image,
+         "configs": dict(configs),
          "systems": {n: suite[n] for n in systems}, "replicates": replicates, "budget_s": budget,
          "threads": threads, "control": control, "tasks": len(tasks), "suite_source": score.SUITE_SOURCE},
         indent=1))
@@ -218,7 +234,7 @@ def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
         for o in _score_tasks(run, suite, rescore, manifests):
             by_id[o["id"]] = o
     scores = list(by_id.values())
-    commits = sorted({m["commit"] for m in manifests})
+    commits = sorted({c for m in manifests for c in (m["commit"] if isinstance(m["commit"], list) else [m["commit"]])})
     agg = score.aggregate(scores, suite)
     agg["commits_by_system"] = {sy: sorted({str(o.get("code_commit"))[:7] for o in scores if o["system"] == sy})
                                 for sy in sorted({o["system"] for o in scores})}
@@ -369,9 +385,11 @@ def main(argv: list) -> int:
     b.add_argument("--config", action="append", default=[])
     b.add_argument("--systems", default="")
     b.add_argument("--group", action="append", default=[],
-                   help="SYSTEMS:CONFIGS[:REPLICATES] (comma-separated lists), repeatable, in priority order; "
-                        "replaces --systems/--config")
+                   help="SYSTEMS:CONFIGS[:REPLICATES[:COMMIT]] (comma-separated lists), repeatable, in priority "
+                        "order; replaces --systems/--config. A COMMIT of its own labels the configurations <config>-<sha7>")
     b.add_argument("--image", default=IMAGE)
+    b.add_argument("--interleave", action="store_true",
+                   help="order tasks replicate by replicate and system by system across all groups")
     b.add_argument("--replicates", type=int, default=5)
     b.add_argument("--budget", type=float, default=1800.0)
     b.add_argument("--threads", type=int, default=32)
@@ -395,12 +413,13 @@ def main(argv: list) -> int:
     if a.cmd == "build":
         if a.group:
             groups = [([x for x in g.split(":")[0].split(",") if x], [_config(c) for c in g.split(":")[1].split(",")],
-                       int(g.split(":")[2]) if len(g.split(":")) > 2 else None) for g in a.group]
+                       int(g.split(":")[2]) if len(g.split(":")) > 2 and g.split(":")[2] else None,
+                       g.split(":")[3] if len(g.split(":")) > 3 else None) for g in a.group]
         else:
             groups = [([x for x in a.systems.split(",") if x] or list(score.load_systems()),
                        [_config(c) for c in (a.config or ["default"])])]
         build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control,
-              image=a.image)
+              image=a.image, interleave=a.interleave)
     elif a.cmd == "submit":
         afh("push", str(AFH_DIR / a.run), a.run)
         afh("submit", a.run)
