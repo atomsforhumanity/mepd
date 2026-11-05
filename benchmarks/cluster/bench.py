@@ -204,17 +204,23 @@ def afh(*args, check=True):
 
 def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
     """Unpack and score every finished task of the run(s); aggregate per (system, configuration) into
-    results/<name> (default: the run's own name; several runs of one commit = one result set)."""
+    results/<name> (default: the run's own name). Several runs = one result set; a later run's task replaces an
+    earlier one's of the same id, and `commits_by_system` says which commit each system's runs used."""
     import tarfile
 
     runs = [runs] if isinstance(runs, str) else list(runs)
     name = name or runs[0]
     suite = score.load_systems()
     manifests, scores = [], []
-    for run in runs:
-        scores += _score_tasks(run, suite, rescore, manifests)
+    by_id: dict = {}
+    for run in runs:     # a later run's task replaces an earlier run's task of the same id (a rerun at a fix)
+        for o in _score_tasks(run, suite, rescore, manifests):
+            by_id[o["id"]] = o
+    scores = list(by_id.values())
     commits = sorted({m["commit"] for m in manifests})
     agg = score.aggregate(scores, suite)
+    agg["commits_by_system"] = {sy: sorted({str(o.get("code_commit"))[:7] for o in scores if o["system"] == sy})
+                                for sy in sorted({o["system"] for o in scores})}
     agg["run"], agg["runs"], agg["commit"] = name, runs, commits[0] if len(commits) == 1 else commits
     agg["harness_commit"] = sorted({m["harness_commit"] for m in manifests})
     agg["suite_source"] = score.SUITE_SOURCE
