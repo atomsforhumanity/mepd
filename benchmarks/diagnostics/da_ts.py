@@ -43,8 +43,16 @@ def main(argv):
     cids = AllChem.EmbedMultipleConfs(m, numConfs=seeds, randomSeed=7)
     AllChem.MMFFOptimizeMoleculeConfs(m)
     syms = [a.GetSymbol() for a in m.GetAtoms()]
+    # the new sigma bonds of a [4+2] adduct join an allylic ring carbon (next to the new ring C=C) to a ring carbon that
+    # is neither allylic nor in that C=C; a formula split alone also matched other bond pairs (meta isoprene adduct)
+    dbl = {a for b in m.GetBonds() if b.IsInRing() and b.GetBondType() == Chem.BondType.DOUBLE
+           for a in (b.GetBeginAtomIdx(), b.GetEndAtomIdx())}
+    allyl = {n.GetIdx() for a in dbl for n in m.GetAtomWithIdx(a).GetNeighbors()
+             if n.IsInRing() and n.GetIdx() not in dbl and n.GetSymbol() == "C"}
     ring_cc = [b for b in m.GetBonds() if b.IsInRing() and b.GetBondType() == Chem.BondType.SINGLE
-               and b.GetBeginAtom().GetSymbol() == "C" and b.GetEndAtom().GetSymbol() == "C"]
+               and b.GetBeginAtom().GetSymbol() == "C" and b.GetEndAtom().GetSymbol() == "C"
+               and len({b.GetBeginAtomIdx(), b.GetEndAtomIdx()} & allyl) == 1
+               and not ({b.GetBeginAtomIdx(), b.GetEndAtomIdx()} & dbl)]
     pair = None
     for b1, b2 in itertools.combinations(ring_cc, 2):
         if {b1.GetBeginAtomIdx(), b1.GetEndAtomIdx()} & {b2.GetBeginAtomIdx(), b2.GetEndAtomIdx()}:

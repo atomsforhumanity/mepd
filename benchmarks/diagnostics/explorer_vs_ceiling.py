@@ -66,6 +66,36 @@ def norbornene_class(fp) -> str:
     return "endo" if np.linalg.norm(e - x[cc].mean(0)) < np.linalg.norm(e - x[bridge[0]]) else "exo"
 
 
+def bicyclic_class(fp) -> str:
+    """endo/exo of a [4+2] bicyclic adduct (norbornene or 7-oxanorbornene) with the dienophile's carbonyl carbons as
+    the substituent: their centroid nearer the ring C=C midpoint than the one-atom bridge (CH2 or O) = endo."""
+    import numpy as np
+    from rdkit import Chem
+    from rdkit.Chem import rdDetermineBonds
+
+    try:
+        m = Chem.MolFromXYZFile(str(fp))
+        rdDetermineBonds.DetermineBonds(m, charge=0)
+    except Exception:
+        return ""
+    x = m.GetConformer().GetPositions()
+    cc = [a for b in m.GetBonds() if b.GetBondType() == Chem.BondType.DOUBLE and b.IsInRing()
+          and b.GetBeginAtom().GetSymbol() == "C" and b.GetEndAtom().GetSymbol() == "C"
+          for a in (b.GetBeginAtomIdx(), b.GetEndAtomIdx())]
+    if len(cc) != 2:
+        return ""
+    heads = {n.GetIdx() for a in cc for n in m.GetAtomWithIdx(a).GetNeighbors() if n.GetIdx() not in cc and n.IsInRing()}
+    bridge = [a.GetIdx() for a in m.GetAtoms() if a.IsInRing() and a.GetIdx() not in heads
+              and {n.GetIdx() for n in a.GetNeighbors()} >= heads and len(heads) == 2]
+    carbonyl = [a.GetIdx() for a in m.GetAtoms() if a.GetSymbol() == "C" and any(
+        n.GetSymbol() == "O" and m.GetBondBetweenAtoms(a.GetIdx(), n.GetIdx()).GetBondType() == Chem.BondType.DOUBLE
+        for n in a.GetNeighbors())]
+    if len(bridge) != 1 or not carbonyl:
+        return ""
+    e = x[carbonyl].mean(0)
+    return "endo" if np.linalg.norm(e - x[cc].mean(0)) < np.linalg.norm(e - x[bridge[0]]) else "exo"
+
+
 def species_file(sp: dict, run_dir: Path):
     fp = Path(sp.get("file") or "")
     if fp.exists():
@@ -117,7 +147,8 @@ def analyse(ceiling: dict, chdef: dict, run_dir: Path) -> dict:
             if c == sorted(canon(".".join(prods))):
                 if lab in geo_class:
                     fp = species_file(sp, run_dir)
-                    if fp is None or norbornene_class(fp) != geo_class[lab]:
+                    cls = norbornene_class if chdef.get("classifier", "norbornene") == "norbornene" else bicyclic_class
+                    if fp is None or cls(fp) != geo_class[lab]:
                         continue
                 species_ch[sp["index"]] = lab
     connected = reach(len(s["species"]), s["steps"])
