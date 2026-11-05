@@ -37,7 +37,7 @@ TRAJ_FS = 2.0                    # frame spacing read by the event detection (th
 
 OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
            "pull_fs": 300.0, "gap_fs": 200.0, "k": 100.0, "intra_hops": 2, "n_seeds": 0, "seed": 0,
-           "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": ""}
+           "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": "", "cutoff_kcal": None}
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
 
 
@@ -168,22 +168,23 @@ class _LiveRun:
         self.written, self.k = len(frames), self.k + 1
 
 
-def _quench(symbols, xyz_A, charge, multiplicity) -> np.ndarray:
-    """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on GFN2-xTB, no new chemistry), Angstrom;
-    the snapshot itself if the SCF fails."""
+def _quench(symbols, xyz_A, charge, multiplicity) -> tuple[np.ndarray, Optional[float]]:
+    """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on GFN2-xTB, no new chemistry), Angstrom,
+    and its GFN2-xTB energy (kcal/mol); the snapshot itself and None if the SCF fails."""
     from mepd.discovery.langevin import LangevinMD
 
     try:
         md = LangevinMD(symbols, np.asarray(xyz_A, dtype=float) / BOHR, charge, multiplicity, temperature=300.0)
         md.relax(200)
-        return md.pos * BOHR
+        return md.pos * BOHR, md.forces(md.pos, biased=False)[0] * KCAL
     except Exception:
-        return np.asarray(xyz_A, dtype=float)
+        return np.asarray(xyz_A, dtype=float), None
 
 
 def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict:
     """One trajectory's reactor states, [(event frame, key, xyz Angstrom)] earliest first, and every event's
-    [key, whether it left the seed's state], repeats included. The structure after each event is quenched and
+    [key, whether it left the seed's state, its quenched energy above the quenched seed (kcal/mol, GFN2-xTB;
+    None if unknown)], repeats included. The structure after each event is quenched and
     keyed by its stereo SMILES: a hot snapshot's bonds (a third of the events in (HCOOH)4 at 1800 K fall back to
     the seed on quenching) and the atom numbering (the same reaction in another of four identical molecules)
     are no new product. An event whose quenched state is the one before it changed nothing and is not counted."""
@@ -199,6 +200,7 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
     structure = Structure(symbols=list(symbols), geometry=np.asarray(xyz_A) * ANGSTROM_TO_BOHR,
                           charge=int(charge), multiplicity=int(multiplicity))
     seed = prev = stereo_key(structure)
+    _, e_seed = _quench(symbols, xyz_A, int(charge), int(multiplicity))
     bonded0 = {a for p in hist.initial for a in p}
     states, seen, keys, torn = [], {seed}, [], 0
     for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
@@ -207,11 +209,11 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
         if bonded0 - {a for p in hist.bonds_at(ev.product_frame) for a in p}:
             torn += 1
             continue
-        x = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity))
+        x, e = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity))
         key = stereo_key(structure.model_copy(update={"geometry": x * ANGSTROM_TO_BOHR}))
         if key is None or key == prev:
             continue
-        keys.append([key, prev == seed])
+        keys.append([key, prev == seed, None if e is None or e_seed is None else round(e - e_seed, 2)])
         prev = key
         if key not in seen:
             seen.add(key)
@@ -222,10 +224,15 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
 def reactor_products(structure, *, max_products: int = 20, temperature: float = 2200.0, time_ps: float = 5.0,
                      compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75, pull_fs: float = 300.0,
                      gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2, n_seeds: int = 0, seed: int = 0,
-                     unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "") -> list:
+                     unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "",
+                     cutoff_kcal: Optional[float] = None) -> list:
     """Product structures (input atom order) of batches of `n_seeds` Reactor
     runs of `structure` (default: one per process), `parallel` at a time
-    (default: all CPUs), until converged (the module's docstring)."""
+    (default: all CPUs), until converged (the module's docstring). With
+    `cutoff_kcal` (the explorer's access cutoff left above `structure`), a
+    product more than that above `structure` (quenched, GFN2-xTB) is still
+    proposed but doesn't count toward convergence: no step to it can be
+    within the cutoff, as a barrier is at least the reaction energy."""
     symbols = [str(s) for s in structure.symbols]
     xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
     width = max(1, int(parallel) or available_cpus())
@@ -240,17 +247,19 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         done = _run_in_processes(jobs, min(width, n))
         errors += [r for r in done if isinstance(r, str)]
         runs += [r for r in done if isinstance(r, dict)]
-        first = Counter(k for r in runs for k, from_seed in r["keys"] if from_seed)
+        first = Counter(k for r in runs for k, from_seed, de in r["keys"]
+                        if from_seed and (cutoff_kcal is None or de is None or de <= float(cutoff_kcal)))
         events = sum(first.values())
         f1 = sum(c == 1 for c in first.values()) / events if events else 1.0
+        below = "" if cutoff_kcal is None else f"; counted: products at most {float(cutoff_kcal):.0f} kcal/mol up"
         print(f"reactor: batch {batch + 1}: {len(first)} distinct products in {events} events from the seed's state "
-              f"({len({k for r in runs for k, _ in r['keys']})} states in all); {f1:.0%} of them gave a product seen "
-              f"once (converged at {unseen:.0%}).", flush=True)
+              f"({len({k for r in runs for k, *_ in r['keys']})} states in all{below}); {f1:.0%} of them gave a product "
+              f"seen once (converged at {unseen:.0%}).", flush=True)
         # Good-Turing's estimate resolves 1/events: below 1/unseen events, none seen once proves nothing
         if f1 <= float(unseen) and events * float(unseen) >= 1:
             break
     # the products the seed reached most often first (fewest steps, most often), then the earliest
-    count = Counter(k for r in runs for k, _ in r["keys"])
+    count = Counter(k for r in runs for k, *_ in r["keys"])
     pooled = sorted((-first[k], -count[k], f, s, k, x) for s, r in enumerate(runs) for f, k, x in r["states"])
     out, seen = [], set()
     for *_, key, x in pooled:

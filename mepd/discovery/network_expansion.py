@@ -921,8 +921,17 @@ def _build_guesses(props: list[Proposal], node: StructureNode, coords: np.ndarra
         p.frames = frames
 
 
+def _generator_cutoff(generator, options: dict, access_cutoff_kcal, species) -> dict:
+    """The reactor generator's options for expanding `species`: what is left of the access cutoff above it
+    (its rel_energy_kcal above the seed), so products that can't be reached within the cutoff don't hold up
+    its convergence."""
+    if str(generator).strip().lower() != "reactor" or access_cutoff_kcal is None:
+        return options
+    return {**options, "cutoff_kcal": float(access_cutoff_kcal) - float(species.rel_energy_kcal)}
+
+
 def _propose_structures_at_once(frontier, result, generator, generator_options, products_file, view,
-                                max_products, workers) -> dict:
+                                max_products, workers, access_cutoff_kcal=None) -> dict:
     """A structures generator's products for every frontier species, run concurrently.
 
     One species at a time leaves CPUs idle: a nanoreactor species runs only its
@@ -954,7 +963,9 @@ def _propose_structures_at_once(frontier, result, generator, generator_options, 
 
     def one(src):
         try:
-            return gen.propose(result.species[src].node.structure, max_products=max_products, options=dict(opts))
+            return gen.propose(result.species[src].node.structure, max_products=max_products,
+                               options=_generator_cutoff(generator, dict(opts), access_cutoff_kcal,
+                                                         result.species[src]))
         except Exception:
             return None   # the loop retries it on its own and reports the error there
 
@@ -2157,8 +2168,10 @@ def expand_network(
             node = StructureNode(structure=structure)
             if gen_obj.kind == "structures":
                 gen_obj.check()
-                props = external_proposals(gen_obj.propose(structure, max_products=max_products,
-                                                           options=dict(job_opts)), structure, src)
+                opts = _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
+                                         result.species[src])
+                props = external_proposals(gen_obj.propose(structure, max_products=max_products, options=opts),
+                                           structure, src)
             else:
                 coords = view.coords(node)
                 props, _ = propose_products(
@@ -2450,7 +2463,7 @@ def expand_network(
             n_edges_before = len(result.edges)
             proposals, stats_all = [], []
             prefetched = _propose_structures_at_once(frontier, result, generator, generator_options, products_file,
-                                                     view, max_products, workers)
+                                                     view, max_products, workers, access_cutoff_kcal)
             for src in frontier:
                 node = result.species[src].node
                 coords = view.coords(node)
@@ -2504,7 +2517,9 @@ def expand_network(
                     else:
                         gen.check()
                         items = gen.propose(node.structure, max_products=max_products,
-                                            options=dict(generator_options or {}))
+                                            options=_generator_cutoff(generator, dict(generator_options or {}),
+                                                                      access_cutoff_kcal,
+                                                                      result.species[src]))
                     props = external_proposals(items, node.structure, src)
                     stats = {gen.name: len(props)}
                 elif gen is not None:

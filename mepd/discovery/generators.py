@@ -146,7 +146,7 @@ GENERATORS: dict[str, Generator] = {
         "every so often. Nothing chooses the chemistry; the kinetics sort out what matters.",
         _reactor, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
         options={k: v for k, v in __import__("mepd.discovery.reactor_generator", fromlist=["OPTIONS"]).OPTIONS.items()
-                 if k != "workdir"},
+                 if k not in ("workdir", "cutoff_kcal")},   # set by the explorer
         references={"reactor": {
             "method": "piston-compressed Langevin MD with random steered collisions on GFN2-xTB (tblite); events "
                       "detected as in mepd's reimplementation of the ab initio nanoreactor",
