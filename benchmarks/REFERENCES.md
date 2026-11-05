@@ -1,0 +1,171 @@
+# Experimental targets for the explorer benchmarks
+
+Curated 2026-11-05 by the explorer team's curator (branch `team2/references`). The machine-readable version is `benchmarks/systems.yaml`. This file is the human-readable version, with every quoted passage. It replaces `playgroud/exp_benchmarks/REFERENCES.md` (2026-10-23).
+
+**Rules**
+- **Judge against experiment only.** Theory and our own earlier runs are never targets. Theory appears here only to say what a comparison must allow for.
+- **CONFIRMED** means the number was read in the primary text (full text, accepted manuscript, or abstract).
+- **UNCONFIRMED** means it was seen only as a snippet or a secondary citation. Only CONFIRMED targets are scorable.
+- **Error** = RT ln(predicted / nearest bound of the range) at the score temperature, 0 inside the range (BRIEF definition). Each target's range is also given in kcal/mol (RT ln ratio). Script: `data/runs/explorer-team/curator/scripts/targets_kcal.py`.
+- **tune** systems may be used to choose settings. **held-out** systems are only ever scored.
+
+<!-- SUMMARY-TABLE -->
+
+## 1. Formic acid: dehydration vs decarboxylation (`hcooh`, tune)
+
+HCOOH → CO + H2O (k1) and HCOOH → CO2 + H2 (k2); gas, Ar bath.
+
+**Target: k1/k2 = 20, window 10–40, at 1500 K, 1 atm Ar, ~0.5 % HCOOH, ~1 ms.**
+- In kcal/mol at 1500 K (RT = 2.981): RT ln 10 = 6.86, RT ln 20 = 8.93, RT ln 40 = 11.00. Window width 4.13 kcal/mol.
+- The old 6.3–10 window was 1.38 kcal/mol wide and has no source.
+
+### The source of the target
+Elwardany, Nasir, Es-sebbar, Farooq, *Proc. Combust. Inst.* 35, 429–436 (2015), [doi:10.1016/j.proci.2014.06.141](https://doi.org/10.1016/j.proci.2014.06.141).
+Read in full: the accepted manuscript ("revised v7"), from the KAUST repository copy archived by the Wayback Machine on 2018-07-23. Exponents were checked against the page images.
+- Method: simultaneous laser absorption of CO (4.56 µm), CO2 (4.18 µm) and H2O (2.93 µm) behind reflected shocks. It is the only formic acid study that measures CO2 directly.
+- Abstract: *"These two decomposition channels were found to be in the fall-off region and have a branching ratio, k1/k2, of approximately 20 over the range of pressures studied here."*
+- §3.1: *"Comparing Fig. 4(a) and Fig. 4(b), it can be concluded that the k1/k2 ≅ 20 over the entire temperature range studied here."*
+- §3: *"For formic acid, the experiments were performed at temperatures of 1234 - 1821 K, pressures of 1.0 and 6.5 atm and initial concentration of 0.5% in argon."*
+- Abstract, first-order rate constants:
+  - k1(1 atm) = 1.03×10¹¹ exp(−25651/T) s⁻¹ (±37 %)
+  - k1(6.5 atm) = 9.12×10¹² exp(−30275/T) s⁻¹ (±32 %)
+  - k2(1 atm) = 1.79×10⁸ exp(−21133/T) s⁻¹ (±41 %)
+  - k2(6.5 atm) = 2.73×10⁸ exp(−20074/T) s⁻¹ (±37 %)
+- §3.3: *"The overall uncertainty is calculated by the root-sum-squared method and found to be ± 37% and ± 41% for the first-order rate constants of R1 and R2, respectively at 1396 K and 1.22 atm."*
+
+**How 10–40 follows from the paper:**
+- The stated per-rate uncertainties give ±55 % on the ratio, i.e. 9–31.
+- Their own Arrhenius fits give, at 1500 K, 28 (1 atm) and 37 (6.5 atm); at 1300 K, 18 and 13 (`scripts/formic_ratios.py`).
+- A factor of 2 around their stated 20 covers both.
+
+### The other candidates, reconciled
+| Candidate | What the primary source says | Verdict |
+|---|---|---|
+| "6.3–10" (team's earlier window) | No source found in any paper checked. | Dropped. |
+| Hsu, Shaub, Blackburn, Lin, *Symp. (Int.) Combust.* 19, 89 (1982), [doi:10.1016/S0082-0784(82)80181-1](https://doi.org/10.1016/S0082-0784(82)80181-1); "~10 at low T → ~1 near 2000 K" | Abstract (NYCU research portal): CO laser only. *"apparent second order rate constants in the pressure range 0.75-2.8 atm. (k_1 = 2.3 x 10^15 exp (- 50, 000 ± 1700 / RT) c c mole^- 1 sec^- 1; k_2 = 1.5 x 10^16 exp (- 57, 000 ± 2800 / RT) c c mole^- 1 sec^- 1)"* (as indexed; the abstract's channel 2 reads "CO_2 + H_2 O", evidently a typo for CO2 + H2). These give k1/k2 = 2.3 at 1300 K, **1.6 at 1500 K** and 0.9 at 2000 K. The "~10" exists only secondhand. Chang, Chen, Xu, Lin, *J. Phys. Chem. A* 111, 6789 (2007), [doi:10.1021/jp069036p](https://doi.org/10.1021/jp069036p) (with M.C. Lin, a Hsu coauthor): *"the ratio of 10 measured experimentally by Hsu et al."*. Elwardany's introduction: *"~10 at low temperatures and approaches 1 at 2000 K"*. | "~10" UNCONFIRMED: not in the abstract, and its expressions contradict it. k2 is inferred from CO profiles only. Not used. |
+| Elwardany et al. 2015, "~20" | Quoted above. | **The target.** |
+| Saito, Kakumoto, Kuroda, Torii, Imamura, *J. Chem. Phys.* 80, 4989 (1984), [doi:10.1063/1.446521](https://doi.org/10.1063/1.446521); "~100" | Abstract (OpenAlex): channel 2 *"was very small"*; *"On the basis of a RRKM weak collision, k2,0 values were estimated which was smaller than k1,0 by about two orders, being consistent with the experimental results."* | The ~100 is an RRKM estimate, not a measurement. Qualitative support only. |
+| Saito, Shiose, Takahashi, Hidaka, Aiba, Tabayashi, *J. Phys. Chem. A* 109, 5352 (2005), [doi:10.1021/jp045072h](https://doi.org/10.1021/jp045072h) | Abstract (PubMed 16839059): dehydration main, decarboxylation minor; *"the dehydration process is in the second-order region and that the decarboxylation is in the falloff region, in the temperature range of 1300-2000 K and over the total density of (0.5-2.5) x 10(-5) mol cm(-3)"* (≈0.6–3 atm at 1500 K). The measured k2/k1 values are in the paywalled full text. | Regime CONFIRMED; numbers UNCONFIRMED. A same-group theory paper (Takahashi et al., *J. Mol. Struct. THEOCHEM* 545, 197, 2001) reportedly says "about forty times", seen only in a search snippet (repository under maintenance). UNCONFIRMED; it would sit at the window's upper edge. |
+
+### Fall-off, and what a high-pressure-limit model must be compared with
+**The experiments are in fall-off.** Every study runs at 0.75–6.5 atm in Ar and reports pressure-dependent rate constants:
+- Hsu: apparent second-order constants.
+- Saito 1984: second-order k1,0.
+- Saito 2005: k1 second order, k2 in fall-off.
+- Elwardany: both channels in fall-off; from 1 to 6.5 atm at 1500 K, k1 rises ×4 and k2 ×3.
+
+No experiment reaches the high-pressure limit. The ratio itself moves little: Elwardany report ≈20 at both 1 and 6.5 atm. But the studies disagree on which channel is nearer the low-pressure limit, so even the sign of the correction to the ratio is unknown.
+
+**What the explorer must be compared with.** The explorer uses high-pressure-limit TST (k∞), so it has to be compared with the measured 1 atm fall-off ratio, 10–40 at 1500 K, and scored as k∞ (model) vs fall-off (experiment).
+- Nobody has measured k1∞/k2∞, so there is no experimental high-pressure target.
+- Errors inside about ±1 kcal/mol can't be pinned on the explorer.
+- How large the correction could be, from theory (not a target): Chang 2007's RRKM gives k1∞/k2∞ ≈ 14 at 1500 K but k1,0/k2,0 ≈ 1.3.
+- A pressure-dependent (master-equation) kinetics option would remove the caveat.
+
+### Other caveats
+- Secondary chemistry is minor at 0.5 % HCOOH. Above 1500 K, Elwardany use only the first 50–100 µs.
+- Barriers must be measured from the lowest reactant conformer (E/Z formic acid).
+- For two parallel first-order channels, CO:CO2 equals k1/k2 at any time.
+
+## 2. Acetic acid: dehydration vs decarboxylation (`acetic_acid`, held-out)
+
+CH3COOH → CH2CO + H2O (k4) and CH3COOH → CH4 + CO2 (k3); gas, Ar bath.
+
+**Target: k4/k3 = 2, window 1.1–2.9, at 1500 K, 1 atm Ar.** In kcal/mol at 1500 K: RT ln 2 = 2.07; window 0.28–3.17.
+
+Source: Elwardany et al. 2015, the same manuscript as formic acid, read in full.
+- Abstract: *"The branching ratio, k4/k3, was found to be approximately 2. The decarboxylation and dehydration reactions of acetic acid appear to be in the falloff region over the tested pressure range"*.
+- Abstract, first-order rate constants:
+  - k3(1 atm) = 3.18×10¹¹ exp(−28679/T) s⁻¹ (±30 %)
+  - k3(6 atm) = 3.51×10¹² exp(−31330/T) s⁻¹ (±26 %)
+  - k4(1 atm) = 7.9×10¹¹ exp(−29056/T) s⁻¹ (±34 %)
+  - k4(6 atm) = 6.34×10¹² exp(−31330/T) s⁻¹ (±31 %)
+- These give k4/k3 = 1.9 (1 atm) and 1.8 (6 atm) at 1500 K. The window is 2 × (1 ± 0.45).
+- §3.2: *"Our measured rate constant data show that the tendency of the dehydration reaction to occur is about two times higher than that of the decarboxylation reaction, as observed previously by [19-21]. Mackie and Doolan [18], on the other hand, argued that both reactions have about the same probability."*
+- Method (§3.2): *"The rate constants, k3 and k4, of these two reactions were determined by fitting the measured CO2 and H2O profiles with simulations from the acetic acid mechanism of Mackie and Doolan [18]."* So the values depend on that mechanism.
+- Older values (Mackie & Doolan 1984, about equal; Butkovskaya et al. 1995, 2) are known only through Elwardany's citations: UNCONFIRMED.
+
+Fall-off applies as for formic acid. It is held out because it is formic acid's sibling: it tests whether settings tuned on formic acid transfer.
+
+## 3. Methyl formate (`methyl_formate`, tune, target provisional)
+
+CH3OCHO → CH3OH + CO (R1), 2 CH2O (R2), CH4 + CO2 (R3; also via the carbene, R7), CH2O + H2 + CO (R5); radical channel CH3 + HCO2 (R4).
+
+**Target: one-sided, CH3OH+CO : all other channels ≥ 88:12 (7.33), at 1500 K, 1 atm Ar.**
+- RT ln 7.33 = 5.94 kcal/mol at 1500 K.
+- PROVISIONAL: the floor rests on Ren 2013's numbers as quoted by Cho 2024. Ren itself was not read.
+- The phase-A reference (CH3OH+CO 94.7 %, CH2O+H2+CO 2.2 %, CH3+HCO2 2.1 %, CH4+CO2 0.5 % at 1400 K) is **Cho 2024's theory, not experiment**, and is not a target.
+
+Source: Cho, Labbe, Harding, Klippenstein, Sivaramakrishnan, *Proc. Combust. Inst.* 40, 105684 (2024), [doi:10.1016/j.proci.2024.105684](https://doi.org/10.1016/j.proci.2024.105684). Read in full (OSTI 2566363 accepted manuscript).
+- *"Thermal decomposition studies in the literature using reactors and shock tubes [6-8] point to the dominance of the molecular channel producing CH3OH and CO."*
+- *"Experimental studies [8] suggest that these reactions are minor channels with branching ratios that vary between 2 – 6 % for R2 and 6 – 4 % for R3 over the 1000 – 2000 K T-range at P ∼ 1 atm."* ([8] = Ren 2013)
+- *"Similarly, the CO profiles from the experiments of Ren et al. (Fig. 4C) shows that they exclusively sensitize R1."*
+- *"The present simulations conclusively indicate that the CH2O and CH4 profiles measured by Ren et al. [8] are influenced by secondary chemistry and cannot be used to isolate the kinetics for direct molecular channels from MF to these products"*
+- Theory, a caveat only: *"In the high-pressure limit, the radical channel R4 begins to compete strongly with the molecular channel R1 with branching ratios exceeding 10 % at T > 1300 K."* and *"at P = 1 atm fall-off de-emphasizes the role of the radical channels and branching ratios to R4 exceed 1 % only at T > 1400 K."*
+
+Not read:
+- Ren, Lam, Pyun, Farooq, Davidson, Hanson, *Proc. Combust. Inst.* 34, 453 (2013), [doi:10.1016/j.proci.2012.05.071](https://doi.org/10.1016/j.proci.2012.05.071). Paywalled; the KAUST copy is behind a bot wall. Its k1 expression in the old REFERENCES.md is UNCONFIRMED.
+- Peukert, Sivaramakrishnan, Su, Michael, *Combust. Flame* 159, 2312 (2012), [doi:10.1016/j.combustflame.2012.03.007](https://doi.org/10.1016/j.combustflame.2012.03.007), the direct H-ARAS k4.
+
+Abstract only:
+- Wenz, Pazdera, Golka, Olzmann, *J. Phys. Chem. A* 127, 1036 (2023), [doi:10.1021/acs.jpca.2c07053](https://doi.org/10.1021/acs.jpca.2c07053): *"temperatures between 1430 and 2070 K at a nominal pressure of 1.1 bar"*, H-ARAS and TOF-MS. Its branching is in the full text.
+- Döntgen, Wildenberg, Heufer, *Int. J. Chem. Kinet.* 58, 199 (2026), [doi:10.1002/kin.70035](https://doi.org/10.1002/kin.70035). CC-BY, but automated download was refused. It has new laser-absorption data on methyl formate and says formic acid decomposition *"might be very sensitive to the bath gas"*. **Worth downloading by hand.**
+
+Fair comparison:
+- Fall-off decides the radical share, so a k∞ model will overstate CH3 + HCO2.
+- R4 is a radical channel (open-shell fragments): flag it.
+- CH2O and CH4 + CO2 were never measured free of secondary chemistry: count them for recall only.
+- CH3OH + CO must be found and connected.
+
+## 4. Cyclopentadiene + methyl acrylate, endo:exo (`f0007`, tune)
+
+**Target: endo:exo = 77:23 (3.35), benzene, 1 M each, 80 °C, 6.5 h.** RT ln 3.35 = 0.848 kcal/mol at 353.15 K. No uncertainty is stated, so the point value is scored.
+
+Source: Lording, Fallon, Sherburn, Paddon-Row, *Chem. Sci.* 11, 11915–11926 (2020), [doi:10.1039/d0sc04553e](https://doi.org/10.1039/d0sc04553e). Read in full (PMC8162770).
+- Table 1, methyl acrylate 7 + CPD 2: temperature 80 °C, time 6.5 h, isolated yield 86 %, **endo:exo (exp.) 77 : 23**, endo:exo (CBS-QB3, benzene) 76 : 24.
+- *"Thus, a 1 : 1 molar ratio of CPD and dienophile (1 M concentration solutions of both diene and dienophile in benzene) were heated at 80 °C in the majority of cases, ... and the DA reactions of the three least reactive dienophiles employing 3 molar equivalents of CPD."* The three are not named in the main text; the ESI was not read.
+- *"Experimental endo : exo ratios were determined by quantitative 800 MHz 1H NMR spectroscopy."*
+- *"For representative DA reactions involving BD and CPD, different endo : exo ratios of selected products were exposed to the reaction conditions under which they were formed. An unchanged ratio was returned in each case, confirming the kinetic control of these reactions."*
+
+Solvent dependence:
+- Cativiela, García, Mayoral, Salvatella, *J. Chem. Soc. Perkin Trans. 2* 1994, 847, [doi:10.1039/p29940000847](https://doi.org/10.1039/p29940000847). Abstract only; the full text is restricted. They measured Cp/isoprene + methyl acrylate/MVK in 18 solvents: *"The endo/exo selectivity mainly depends on the solvophobic (Sp) and hydrogen bond donor (α) properties of the solvent. The influence of the dipolarity (π\*) is only observed in the reactions with methyl acrylate."*
+- Berson, Hamlet, Mueller, *J. Am. Chem. Soc.* 84, 297 (1962), [doi:10.1021/ja00861a033](https://doi.org/10.1021/ja00861a033), the Ω solvent scale built on this reaction. Not read.
+- A secondary compilation (ACS Omega 2021, PMC8340089, Table 6) quotes 2.9:1 in Et2O and 5.2:1 in MeOH at 30 °C. UNCONFIRMED.
+
+Fair comparison:
+- The solvent is benzene; a gas-phase model is compared with a solution value. Lording's CBS-QB3 shows little gas vs benzene-PCM change for methyl acrylate (theory).
+- Kinetic control is confirmed, so the ratio of formation rates is what counts.
+- Count both enantiomers of each adduct (mirror-image TSs) and both dienophile conformers (s-cis/s-trans), i.e. four TSs.
+- Cp dimerization competes for Cp; it changes conversion, not endo:exo.
+- The 0.85 kcal/mol selectivity is smaller than the TS-conformer noise seen in phase A (1.5 kcal/mol between mirror-image TSs).
+
+## 5. Cyclopentadiene + α-methylene-γ-butyrolactone, endo:exo (`cp_mbl`, held-out)
+
+**Target: endo:exo = 12:88**, scored as exo:endo = 7.33. Benzene, 1 M, 80 °C, 4 h, 72 % yield. RT ln 7.33 = 1.398 kcal/mol at 353.15 K.
+
+Source: Lording et al. 2020, Table 1, α-methylene γ-butyrolactone 11 + CPD 2: *"2 | 11CPD-n, 11CPD-x | 80 | 4 h | 72 | 12 : 88 | 10 : 90 | 5.3 : 0.0 | 4.5"* (diene | adducts | °C | time | yield % | endo:exo exp. | calc. | ...). Endo/exo refers to the lactone carbonyl. The product is a spiro compound.
+
+It is held out because it is the same reaction class and protocol as F0007, with the opposite selectivity: a method tuned toward endo on F0007 fails here.
+
+<!-- PENDING-SYSTEMS -->
+
+## Candidates considered and not used
+- **Ethanol pyrolysis** (Sivaramakrishnan 2010; Wu et al. 2011): radical channels dominate the comparison; numbers not verified.
+- **Glyoxal** (Friedrichs 2008): radical HCO channel, density dependent.
+- **Acetaldehyde, nitromethane:** roaming-dominated, which TST misses.
+- **Phenyl + O2:** open-shell, multireference, primary and secondary products mixed.
+- **Glucose/fructose → HMF, formose, Pd couplings, alkoxide eliminations:** salts, catalysts, ions or explicit water.
+- **2-Methylfuran, furan:** radical-rich at shock-tube temperatures.
+- **Cp + methyl vinyl ketone** (Lording Table 1: 79:21) and **Cp + acrylonitrile** (55:45): confirmed and usable as extra Diels-Alder rungs. They are left out to keep chemistry types balanced. 55:45 (0.14 kcal/mol) is too small to resolve.
+
+## How the texts were obtained
+Downloads are in the curator's scratchpad, not committed. Scripts are in `data/runs/explorer-team/curator/scripts/`.
+- Elwardany 2015: KAUST accepted manuscript via the Wayback Machine.
+- Cho 2024: OSTI accepted manuscript.
+- Lording 2020: Europe PMC full-text XML.
+- Saito 2005, Wenz 2023: PubMed abstracts via NCBI E-utilities.
+- Saito 1984, Cativiela 1994: OpenAlex abstracts.
+- Hsu 1982: NYCU research portal abstract.
+- Chang 2007: NYCU repository PDF via the DSpace REST API.
+
+Sites with bot walls (KAUST, Wiley, RWTH, DIGITAL.CSIC, RSC, ACS) were not circumvented.
