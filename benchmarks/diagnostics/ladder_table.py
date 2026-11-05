@@ -77,7 +77,7 @@ def main(def_path: str, out_path: str):
     def row(name, barrier_of):
         b = {t: barrier_of(t) for t in ts_names}
         k = selectivity(b, D["channels"], T)
-        r = k[num] / k[den]
+        r = k[num] / sum(k[x] for x in (den if isinstance(den, list) else [den]))
         rows.append({"row": name, "barriers": b, "selectivity": r, "rtln_kcal": rt * math.log(r)})
 
     # R0: the ceiling's own numbers (explorer level)
@@ -121,8 +121,9 @@ def main(def_path: str, out_path: str):
             print(f"{r['row']:<85} (missing)")
             continue
         shift = "" if prev is None else f"  shift {r['rtln_kcal'] - prev:+.2f}"
+        dl = "+".join(den) if isinstance(den, list) else den
         print(f"{r['row']:<85} " + " ".join(f"{t} {v:6.2f}" for t, v in r["barriers"].items())
-              + f"  {num}:{den} = {r['selectivity']:7.3g}  RTln {r['rtln_kcal']:5.2f}{shift}")
+              + f"  {num}:{dl} = {r['selectivity']:7.3g}  RTln {r['rtln_kcal']:5.2f}{shift}")
         prev = r["rtln_kcal"] if r["row"].startswith(("R0", "R1", "R2")) else prev
     for t, c in out["components"].items():
         print(t, {k: (round(v, 2) if isinstance(v, float) else v) for k, v in c.items() if k != "sp"},

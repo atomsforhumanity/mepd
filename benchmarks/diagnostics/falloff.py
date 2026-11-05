@@ -96,9 +96,11 @@ def main(def_path: str, out_path: str):
     model = rrkm.Model(well, channels, de=D.get("de", 10.0), e_max_cm=D.get("e_max_cm", 60000.0))
     num, den = D["ratio"]
 
+    dens = den if isinstance(den, list) else [den]
+
     def sel(kdict):
         kn = sum(v for k, v in kdict.items() if k.split("|")[0] == num)
-        kd = sum(v for k, v in kdict.items() if k.split("|")[0] == den)
+        kd = sum(v for k, v in kdict.items() if k.split("|")[0] in dens)
         return kn / kd
 
     out = {"level": lev, "channels": meta, "reactant_offsets_kcal": [c[2] / rrkm.KCAL_TO_CM for c in conformers],
