@@ -78,8 +78,16 @@ def main(def_path: str, out_path: str):
             e0 = energy(t) * HARTREE_CM + zpe_cm(real(t)) - e_ref
             v_rev = None
             if it.get("products"):
-                e_p = sum(energy(p) * HARTREE_CM + zpe_cm(real(p)) for p in it["products"]) - e_ref
-                v_rev = e0 - e_p
+                # the reaction energy at `product_level` (default: the same level) when the products lack `level`
+                plev = D.get("product_level", lev)
+
+                def e_at(name, lv):
+                    r = recs[name]
+                    return r["e_opt"] if lv == "dft" else r["sp"][lv]["energy"]
+
+                rxn = (sum(e_at(p, plev) * HARTREE_CM + zpe_cm(real(p)) for p in it["products"])
+                       - (e_at(r0, plev) * HARTREE_CM + zpe_cm(real(r0))))
+                v_rev = e0 - rxn
             ch = rrkm.Channel(f"{prod}|{t}", real(t), rrkm.moments(sym, X), e0, it.get("degeneracy", 1), 1, imag, v_rev)
             channels.append(ch)
             meta[ch.name] = {"product": prod, "e0_kcal": e0 / rrkm.KCAL_TO_CM, "imag_cm": imag,
@@ -112,6 +120,7 @@ def main(def_path: str, out_path: str):
         row["kappa_eckart"] = {c.name: (rrkm.eckart_kappa(c.e0_cm, c.v_rev_cm, c.imag_cm, T)
                                         if c.v_rev_cm is not None else None) for c in channels}
         row["pressures"] = []
+        me_here = T == D.get("T_ref", T)          # the master equation (slow) only at the reference temperature
         for P in D["pressures_atm"]:
             pr = {"P_atm": P}
             sc = model.strong_collision(T, P, bath)
@@ -121,7 +130,7 @@ def main(def_path: str, out_path: str):
             sct = model.strong_collision(T, P, bath, tunnel=True)
             sct.pop("omega")
             pr["sel_strong_eckart"] = sel(sct)
-            for a in D.get("de_down_cm", []):
+            for a in (D.get("de_down_cm", []) if me_here else []):
                 me = model.master_equation(T, P, bath, a)
                 lam = me.pop("lambda")
                 me.pop("omega")
@@ -138,7 +147,7 @@ def main(def_path: str, out_path: str):
               f"{rt * math.log(row['sel_inf_tst']):5.2f}")
         for pr in row["pressures"]:
             extra = "  ".join(f"ME{a:g} {pr[f'sel_me_{a:g}']:7.3g} (+Eck {pr[f'sel_me_{a:g}_eckart']:7.3g})"
-                              for a in D.get("de_down_cm", []))
+                              for a in D.get("de_down_cm", []) if f"sel_me_{a:g}" in pr)
             print(f"     P {pr['P_atm']:6.2f} atm  strong {pr['sel_strong']:7.3g} (+Eck {pr['sel_strong_eckart']:7.3g})"
                   f"  {extra}   k_strong/k_inf " + " ".join(f"{k.split('|')[0]} {pr['k_strong'][k] / row['k_inf'][k]:.3g}"
                                                          for k in pr["k_strong"]))

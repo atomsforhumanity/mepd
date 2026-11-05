@@ -41,8 +41,14 @@ def load_records(d: Path, extra: list) -> dict:
                 r = json.loads(f.read_text())
             except Exception:
                 continue
-            if isinstance(r, dict) and r.get("name") in recs:
-                recs[r["name"]].setdefault("sp", {}).update(r.get("sp", {}))
+            if not isinstance(r, dict) or "name" not in r:
+                continue
+            base = recs.setdefault(r["name"], {})
+            for k, v in r.items():                 # fill what the main record lacks (a structure finished elsewhere)
+                if k == "sp":
+                    base.setdefault("sp", {}).update(v)
+                elif k not in base:
+                    base[k] = v
     return recs
 
 

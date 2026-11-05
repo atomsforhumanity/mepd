@@ -168,7 +168,8 @@ class Network:
     notes: list = field(default_factory=list)
 
 
-def evaluate(level: ExplorerLevel, net: Network, time_s: float, steer: bool = True, mirrors: bool = True) -> dict:
+def evaluate(level: ExplorerLevel, net: Network, time_s: float, steer: bool = True, mirrors: bool = True,
+             steer_species: Optional[Sequence[int]] = None) -> dict:
     """The explorer's kinetics on `net`: free energies (+ steering single points), mirror images, simulate.
     Returns per-step free barriers from the seed (kcal/mol), kinetics, and per-product final amounts."""
     from mepd.discovery.kinetics import Step, simulate
@@ -180,7 +181,11 @@ def evaluate(level: ExplorerLevel, net: Network, time_s: float, steer: bool = Tr
     ts_E = [level.energy(t.st) for t in net.steps]
     ts_corr = [level.correction(t.st, True, t.ends) for t in net.steps]
     if steer and level.steer is not None:
-        d_sp = [level.single_point(s.st, False)["delta_kcal"] for s in net.species]
+        # `steer_species`: only these species get a single point (the others keep the explorer's energy relative to
+        # the seed -- for end products that only receive flux, this cannot change a selectivity)
+        todo = set(range(len(net.species))) if steer_species is None else set(steer_species) | {0}
+        d0 = level.single_point(net.species[0].st, False)["delta_kcal"]
+        d_sp = [level.single_point(s.st, False)["delta_kcal"] if k in todo else d0 for k, s in enumerate(net.species)]
         d_ts = [level.single_point(t.st, True, t.ends)["delta_kcal"] for t in net.steps]
     else:
         d_sp, d_ts = [0.0] * len(E), [0.0] * len(ts_E)

@@ -274,25 +274,28 @@ class Model:
         e, g = e[keep], g[keep]
         ks = {k: v[keep] for k, v in ks.items()}
         m = len(e)
-        # P[i, j] = probability that a collision takes grain j to grain i. Down (E_i <= E_j): C_j exp(-(E_j-E_i)/a);
-        # up (E_i > E_j) from detailed balance: P[i, j] g_j = P[j, i] g_i = C_i exp(-(E_i-E_j)/a) g_i.
-        # The normalisation constants C_j (sum_i P[i, j] = 1) by recursion from the top grain down.
+        # Collisional transitions j -> i at rate R[i, j]. Down (E_i < E_j): omega C_j exp(-(E_j - E_i)/a), with C_j
+        # normalising the down kernel of grain j (including staying). Up (E_i > E_j): by detailed balance,
+        # R[i, j] g_j = R[j, i] g_i. The diagonal is minus everything that leaves a grain (plus reaction), so
+        # probability is conserved and the Boltzmann distribution is exact without reaction, whatever the low-energy
+        # grains look like (a sparse density there made a strictly normalised kernel go negative).
         a = float(de_down_cm)
-        D = np.exp(-np.abs(e[:, None] - e[None, :]) / a)          # symmetric kernel
-        C = np.zeros(m)
+        D = np.exp(-np.abs(e[:, None] - e[None, :]) / a)
+        lower = np.tril(np.ones((m, m)), 0)                       # i <= j  -> lower[j, i] = 1 ... (used transposed)
+        C = 1.0 / (D * lower.T).sum(axis=0)                       # column j: sum over i <= j
         lg = np.log(g)
-        for j in range(m - 1, -1, -1):
-            down = D[:j + 1, j].sum()
-            up = float(np.sum(C[j + 1:] * D[j + 1:, j] * np.exp(lg[j + 1:] - lg[j]))) if j + 1 < m else 0.0
-            C[j] = max((1.0 - up) / down, 1e-12 / down)
-        Pm = np.where(e[:, None] <= e[None, :], C[None, :] * D, C[:, None] * D * np.exp(lg[:, None] - lg[None, :]))
+        down = np.where(e[:, None] < e[None, :], C[None, :] * D, 0.0)            # R/omega for i < j
+        up = np.where(e[:, None] > e[None, :], (C[:, None] * D) * np.exp(lg[:, None] - lg[None, :]), 0.0)
+        R = omega * (down + up)
         ktot = sum(ks.values())
-        M = omega * (Pm - np.eye(m)) - np.diag(ktot)
+        M = R - np.diag(R.sum(axis=0)) - np.diag(ktot)
         # symmetrise with sqrt(g) for a stable eigensolve
         s = np.sqrt(np.where(g > 0, g, 1e-300))
         A = (M * s[None, :]) / s[:, None]
         A = 0.5 * (A + A.T)
-        w, V = np.linalg.eigh(A)
+        from scipy.linalg import eigh
+
+        w, V = eigh(A, subset_by_index=[m - 1, m - 1])       # only the slowest relaxation (steady state)
         lam = -w[-1]
         x = V[:, -1] * s
         x = np.abs(x) / np.abs(x).sum()
