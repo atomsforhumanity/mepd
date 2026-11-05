@@ -133,8 +133,9 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
                           "argv": system_argv(name, suite[name], budget) + cargs + sargs, "harness_commit": harness})
     (d / "tasks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in tasks))
     timeout = int(hard_factor * budget + 900)
-    desc = (f"scoreboard {run}: discovery expand on explorer {sha[:7]}, {','.join(systems)} x "
-            f"{','.join(c for c, _ in configs)} x {replicates} replicates, {threads} threads, budget {budget:g} s "
+    what = "; then ".join(f"{','.join(gs)} x {','.join(c for c, _ in gc)}" for gs, gc in groups)
+    desc = (f"scoreboard {run}: discovery expand on explorer {sha[:7]}, {what}, {replicates} replicates each"
+            f"{' + controls' if control else ''}, {threads} threads, budget {budget:g} s "
             f"(explorer-team phase 0, benchmarks/cluster/bench.py)")
     (d / "run.yaml").write_text(
         f'description: "{desc}"\nimage: {IMAGE}\ncommand: "exec python3 $RUN_DIR/task.py"\n'
