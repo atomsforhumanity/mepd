@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dft_ladder  # noqa: E402
 
-task = json.loads(os.environ["TASK_JSON"])
+raw = os.environ.get("TASK_JSON", "")
+task = json.loads(Path(raw).read_text() if raw and Path(raw).is_file() else (raw or Path("task.json").read_text()))
 out = Path(os.environ.get("OUT_DIR", "out"))
 nthreads = int(os.environ.get("NTHREADS", "1"))
 spec = dict(task["spec"])
