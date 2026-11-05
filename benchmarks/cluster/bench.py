@@ -317,6 +317,14 @@ def report(name: str) -> str:
                    + f" | worker total {fmt(jt.get('worker_s'))} s, main callbacks {fmt(jt.get('main_callbacks_s'))} s"
                    + f" | wall: before queue {fmt(ph.get('before_queue'))}, queue {fmt(ph.get('queue'))}, "
                      f"after {fmt(ph.get('after_queue'))} s")
+        w = jt.get("wall") or {}
+        if w:
+            sole = sorted((w.get("sole_s") or {}).items(), key=lambda kv: -(kv[1] or 0))
+            out.append(f"  - queue wall {fmt(w.get('span_s'))} s: only one kind running: "
+                       + ", ".join(f"{k} {v:.0f} s" for k, v in sole if v)
+                       + f"; nothing running {fmt(w.get('idle_s'))} s; some job of the kind running: "
+                       + ", ".join(f"{k} {v:.0f}" for k, v in sorted((w.get('busy_s') or {}).items(),
+                                                                       key=lambda kv: -(kv[1] or 0)) if v))
     out.append("")
     out.append("## controls (replicate 0 rerun with the same seeds)")
     by_id = {o["id"]: o for o in scores}

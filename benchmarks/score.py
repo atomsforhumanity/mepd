@@ -714,6 +714,38 @@ def score_task(task: dict, sysdef: dict, dst: Path) -> dict:
     return {**base, "ok": True, **o, **run_facts(dst)}
 
 
+def _wall_by_kind(na: Path, t_cycle) -> dict:
+    """The queue phase's wall clock by job kind, from the job events (each job ran from t - run_s to t):
+    busy_s = time some job of the kind was running, sole_s = time it was the only kind running (what the run
+    waited on), idle_s = time no job ran (the main process deciding, or nothing queued)."""
+    iv = []
+    if na.is_file():
+        for line in na.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("event") == "job":
+                iv.append((e["t"] - float(e.get("run_s") or 0.0), e["t"], e.get("kind")))
+    if not iv:
+        return {}
+    t0 = t_cycle if t_cycle is not None else min(a for a, _, _ in iv)
+    pts = sorted({t0, *[max(a, t0) for a, _, _ in iv], *[b for _, b, _ in iv]})
+    busy, sole, idle = {}, {}, 0.0
+    for a, b in zip(pts[:-1], pts[1:]):
+        if b <= a:
+            continue
+        kinds = {k for s, e, k in iv if s < b and e > a}
+        if not kinds:
+            idle += b - a
+        for k in kinds:
+            busy[k] = busy.get(k, 0.0) + (b - a)
+        if len(kinds) == 1:
+            k = next(iter(kinds))
+            sole[k] = sole.get(k, 0.0) + (b - a)
+    return {"busy_s": busy, "sole_s": sole, "idle_s": idle, "span_s": pts[-1] - t0}
+
+
 def run_facts(dst: Path) -> dict:
     """From the logs: the reactor temperatures the propose jobs used (expand.log), and how many propose
     jobs ran and failed (network_aware.jsonl)."""
@@ -752,7 +784,8 @@ def run_facts(dst: Path) -> dict:
     total = sum(j["run_s"] for j in jobs.values())
     for j in jobs.values():
         j["share"] = j["run_s"] / total if total else None
-    out["job_time"] = {"by_kind": jobs, "worker_s": total, "main_callbacks_s": main_s}
+    out["job_time"] = {"by_kind": jobs, "worker_s": total, "main_callbacks_s": main_s,
+                       "wall": _wall_by_kind(na, t_cycle)}
     res = Path(dst) / "result.json"
     if res.is_file() and t_cycle is not None:
         r = json.loads(res.read_text())
@@ -794,6 +827,11 @@ def _job_time(runs: list) -> dict:
     for ph in ("before_queue", "queue", "after_queue"):
         out["phases_s"][ph] = med([o["job_time"]["phases_s"][ph] for o in runs
                                    if (o.get("job_time") or {}).get("phases_s", {}).get(ph) is not None])
+    walls = [o["job_time"].get("wall") or {} for o in runs if o.get("job_time")]
+    out["wall"] = {"sole_s": {k: med([w.get("sole_s", {}).get(k, 0.0) for w in walls if w]) for k in kinds},
+                   "busy_s": {k: med([w.get("busy_s", {}).get(k, 0.0) for w in walls if w]) for k in kinds},
+                   "idle_s": med([w.get("idle_s", 0.0) for w in walls if w]),
+                   "span_s": med([w.get("span_s", 0.0) for w in walls if w])}
     out["worker_s"] = med([o["job_time"]["worker_s"] for o in runs if o.get("job_time")])
     out["main_callbacks_s"] = med([o["job_time"]["main_callbacks_s"] for o in runs if o.get("job_time")])
     return out
