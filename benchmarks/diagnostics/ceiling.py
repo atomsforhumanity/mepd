@@ -52,16 +52,19 @@ def main(spec_path: str, out_path: str):
     for steer in ([True, False] if level.steer is not None else [False]):
         for mirrors in (True, False):
             rec = evaluate(level, net, spec["time_s"], steer=steer, mirrors=mirrors)
+            dens = den if isinstance(den, list) else [den]      # a list: the sum of those products ("the rest")
             f = rec["final"]
-            r_final = f.get(num, 0.0) / f[den] if f.get(den, 0.0) > 0 else float("inf")
+            fd = sum(f.get(d, 0.0) for d in dens)
+            r_final = f.get(num, 0.0) / fd if fd > 0 else float("inf")
             ks = rec["rate_sums"]
-            r_rate = ks.get(num, 0.0) / ks[den] if ks.get(den, 0.0) > 0 else float("inf")
+            kd = sum(ks.get(d, 0.0) for d in dens)
+            r_rate = ks.get(num, 0.0) / kd if kd > 0 else float("inf")
             rec["selectivity_final"] = r_final
             rec["selectivity_rates"] = r_rate
             rec["rtln_final_kcal"] = kcal_ratio(r_final, level.T) if 0 < r_final < float("inf") else None
             name = ("steered" if steer else "gxtb") + ("+mirrors" if mirrors else "")
             out["variants"][name] = rec
-            print(f"{name:<18} {num}:{den} = {r_final:9.4g} (final), {r_rate:9.4g} (rate sums); "
+            print(f"{name:<18} {num}:{'+'.join(dens)} = {r_final:9.4g} (final), {r_rate:9.4g} (rate sums); "
                   + "; ".join(f"{s['label']} dG {s['dG_kcal']:.2f} dE {s['dE_kcal']:.2f}" for s in rec["steps"]))
     Path(out_path).write_text(json.dumps(out, indent=1, default=str))
 

@@ -83,30 +83,43 @@ def wigner(imag_cm: float, T: float) -> float:
 
 
 def eckart_probability(e_cm: np.ndarray, v1_cm: float, v2_cm: float, imag_cm: float) -> np.ndarray:
-    """Transmission probability through an asymmetric Eckart barrier at energies e (measured from the reactant
-    side's zero, so the barrier top is at v1; the product side lies at v1 - v2). Johnston & Heicklen,
-    J. Phys. Chem. 66, 532 (1962), in the form of Truhlar & Kuppermann."""
+    """Transmission probability through an asymmetric Eckart barrier (Eckart, Phys. Rev. 35, 1303 (1930)) at
+    energies e measured from the reactant side's zero: the barrier top is at v1, the product side at v1 - v2,
+    and the barrier's curvature gives the imaginary frequency. With A = v1 - v2, B = (sqrt v1 + sqrt v2)^2 and
+    h nu = |imag|: 2 pi alpha = 4 pi sqrt(E v1 v2) / (h nu sqrt B), 2 pi beta the same with E - A,
+    2 pi delta = 2 sqrt(a1 a2 - pi^2/4) (a_i = 2 pi v_i / h nu), and
+    P = 1 - (cosh 2pi(alpha - beta) + cosh 2pi delta) / (cosh 2pi(alpha + beta) + cosh 2pi delta)."""
     e = np.asarray(e_cm, float)
-    nu = abs(imag_cm)
+    hnu = abs(float(imag_cm))
     v1, v2 = float(v1_cm), float(v2_cm)
+    A = v1 - v2
+    sb = math.sqrt(v1) + math.sqrt(v2)
     out = np.zeros_like(e)
-    ok = e > max(0.0, v1 - v2) + 1e-9          # above both asymptotes
+    ok = e > max(0.0, A) + 1e-9
     if not np.any(ok):
         return out
     E = e[ok]
-    # dimensionless (energies in units of h*nu; all cm^-1 so ratios are fine)
-    alpha1, alpha2 = 2 * math.pi * v1 / nu, 2 * math.pi * v2 / nu
-    xi = E / v1
-    a = 2 * np.sqrt(alpha1 * xi) / (1 / math.sqrt(alpha1) + 1 / math.sqrt(alpha2))
-    b = 2 * np.sqrt(np.clip((1 + xi) * alpha1 - alpha2, 0, None)) / (1 / math.sqrt(alpha1) + 1 / math.sqrt(alpha2))
-    d = 2 * math.sqrt(max(alpha1 * alpha2 - 4 * math.pi ** 2 / 16, 0.0)) / (1 / math.sqrt(alpha1) + 1 / math.sqrt(alpha2))
-    # P = 1 - (cosh(2pi(a-b)) + cosh(2pi d)) / (cosh(2pi(a+b)) + cosh(2pi d)), computed stably
+    ta = 4 * math.pi * np.sqrt(E * v1 * v2) / (hnu * sb)
+    tb = 4 * math.pi * np.sqrt((E - A) * v1 * v2) / (hnu * sb)
+    a1, a2 = 2 * math.pi * v1 / hnu, 2 * math.pi * v2 / hnu
+    dd = a1 * a2 - math.pi ** 2 / 4
+
     def lcosh(x):
         x = np.abs(x)
         return x + np.log1p(np.exp(-2 * x)) - math.log(2)
-    num = np.logaddexp(lcosh(2 * math.pi * (a - b)), lcosh(2 * math.pi * d) * np.ones_like(a))
-    den = np.logaddexp(lcosh(2 * math.pi * (a + b)), lcosh(2 * math.pi * d) * np.ones_like(a))
-    out[ok] = np.clip(1.0 - np.exp(num - den), 0.0, 1.0)
+
+    def lsinh(x):                           # x > 0
+        return x + np.log1p(-np.exp(-2 * x)) - math.log(2)
+
+    if dd >= 0:
+        # P = 2 sinh(ta) sinh(tb) / (cosh(ta + tb) + cosh(td)): no cancellation deep below the barrier top
+        ld = lcosh(2 * math.sqrt(dd)) * np.ones_like(ta)
+        lp = math.log(2) + lsinh(np.maximum(ta, 1e-300)) + lsinh(np.maximum(tb, 1e-300)) \
+            - np.logaddexp(lcosh(ta + tb), ld)
+        out[ok] = np.clip(np.exp(lp), 0.0, 1.0)
+    else:                                   # cosh of an imaginary argument: cos (very thin/low barriers)
+        cd = math.cos(2 * math.sqrt(-dd))
+        out[ok] = np.clip(1.0 - (np.cosh(ta - tb) + cd) / (np.cosh(ta + tb) + cd), 0.0, 1.0)
     return out
 
 
