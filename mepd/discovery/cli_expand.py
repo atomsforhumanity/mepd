@@ -386,7 +386,9 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max
                                   **options, "conformers_only": True})
         return run_channels(a, b, profile, opts, output / "channels" / f"pair_{label}")
 
-    refine.pairs, refine.width = pairs, min(3, max(1, int(workers)))
+    # at most half the workers: two sampling jobs fit the queue at once (3 of 4 workers left the 4th idle or
+    # oversubscribed behind each of them, (HCOOH)4)
+    refine.pairs, refine.width = pairs, min(3, max(1, int(workers) // 2))
     if prefetch_steps:
         # off by default: the steps it guesses from the kinetics before the IRC checks are mostly not the
         # ones asked for after them (Suzuki run 30: 114 sampled, 41 asked for), and it took two thirds of
@@ -447,7 +449,9 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
             fp = ts_dir / f"{label}_irc.xyz"
             if not fp.exists():
                 try:
-                    path = mepd.irc(mepd.load(ts_file), eng).path
+                    # ends minimized without the frequency check: its two Hessians were a fifth of an IRC
+                    # check's time (7-10 s of 30-50 s, 20-atom TSs) and the connectivity is what it decides
+                    path = mepd.irc(mepd.load(ts_file), eng, end_keywords={"check_frequencies": False}).path
                     missing = [n for n in path.nodes if n._cached_energy is None]
                     if missing:
                         eng.compute_energies(missing)
@@ -517,7 +521,7 @@ def expand(
         "budget runs out (--time-budget, --max-species, a stop request); --rounds and --max-expand do not apply."),
     time_budget: float = typer.Option(
         0.0, "--time-budget",
-        help="--schedule async: seconds of wall time; then no new job starts, the running ones finish and the "
+        help="--schedule async: seconds of wall time; then no new job starts, the running ones are cancelled and the "
         "network found so far is written with its kinetics. 0 (default): no limit."),
     max_expand: int = typer.Option(
         10, "--max-expand",

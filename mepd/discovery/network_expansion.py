@@ -1125,7 +1125,7 @@ def expand_network(
     caps the growth (`rounds` is not used): the queue ends when the kinetics
     ask for nothing more ("converged"), or when `time_budget_s`, a stop
     request or `max_species` runs out -- then no new job starts and the
-    running ones finish (one record in `rounds`, its "stopped" saying which)."""
+    running ones are cancelled (one record in `rounds`, its "stopped" saying which)."""
     if schedule not in ("rounds", "async"):
         raise ValueError(f"schedule must be 'rounds' or 'async', got {schedule!r}.")
     if schedule == "async":
@@ -2247,7 +2247,7 @@ def expand_network(
                 return f"{type(exc).__name__}: {exc}"
 
         if verify is not None:
-            connect.register("irc", _irc_job)
+            connect.register("irc", _irc_job, rank=1)
         if refine is not None:
             if not hasattr(refine, "pairs"):
                 raise ValueError("schedule='async' needs a `refine` with `pairs` (its conformer pairs).")
@@ -2255,7 +2255,7 @@ def expand_network(
         if steer_engine is not None and not getattr(steer_engine, "holds_torch_model", False):
             from mepd.discovery.energy_refine import _single_point
 
-            connect.register("steer", _steer_job, slots=int(getattr(steer_engine, "threads", 1) or 1))
+            connect.register("steer", _steer_job, slots=int(getattr(steer_engine, "threads", 1) or 1), rank=0)
             live_steer[0] = lambda key, item: _queue_steer(key, item)
         queued_irc: set = set()       # TS files whose IRC is queued or done
         queued_channels: set = set()  # species pairs whose sampling is queued or done
@@ -2311,7 +2311,7 @@ def expand_network(
 
         def _follow_up(final: bool = False) -> bool:
             """Queue whatever the live kinetics now ask for; True if anything was queued. Nothing once a budget
-            ran out: the queue then ends when the jobs running finish."""
+            ran out: the queue then cancels the jobs running and ends."""
             if _out_of_budget():
                 return False
             hot = _live_hot(final)          # (queues the steering single points they lack)
@@ -2537,7 +2537,10 @@ def expand_network(
         _save(force=True)
         if checkpoint is not None:
             checkpoint(result)   # a run cut off later keeps the rounds it finished
-    if steer == "access" and t_idx is not None and connect is not None and result.rounds:
+    # an async run that ran out of time (or was stopped) ends with what it has: these would run on unbudgeted
+    out_of_time = schedule == "async" and result.rounds and \
+        result.rounds[-1].get("stopped") in ("time budget", "stop requested")
+    if steer == "access" and t_idx is not None and connect is not None and result.rounds and not out_of_time:
         # Searches towards the target that the last round's network opened up
         # would have joined the next round's queue: there is none, so run them now.
         from mepd.network_aware import accessibility
@@ -2551,13 +2554,13 @@ def expand_network(
             _reroute(acc, attempts)
             _kinetics_record(attempts)
             result.rounds[-1]["final_reroute"] = [list(p) for p in attempts]
-    if steer == "access" and verify is not None and result.rounds:
+    if steer == "access" and verify is not None and result.rounds and not out_of_time:
         # the final prediction rests on IRC-checked steps only where it matters
         rnd = result.rounds[-1]["round"]
         if _verify_and_search(result.kinetics if result.kinetics is not None else _kinetics_record([])):
             _kinetics_record([])
             result.rounds[-1]["final_irc_check"] = True
-    if steer == "access" and refine is not None and result.rounds and result.steps:
+    if steer == "access" and refine is not None and result.rounds and result.steps and not out_of_time:
         # steps the last round made relevant get their channel sampling too
         rnd = result.rounds[-1]["round"]
         if _refine_steps(result.kinetics if result.kinetics is not None else _kinetics_record([])):

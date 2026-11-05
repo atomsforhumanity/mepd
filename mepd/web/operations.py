@@ -417,7 +417,7 @@ class ExpandParams(Params):
         cli="--schedule", requires="steer=access", group="Kinetics")
     time_budget_h: Optional[float] = P(
         None, "Time budget (h)", "The async network grows until its kinetics ask for nothing more; this stops it "
-        "earlier: no new job starts, the running ones finish, and the network so far is kept. Empty: no limit "
+        "earlier: no new job starts, the running ones are cancelled, and the network so far is kept. Empty: no limit "
         "(Stop & analyze ends it too).", kind="custom", gt=0, requires="schedule=async", group="Kinetics")
     cutoff_temperature: Optional[float] = P(
         None, "Cutoff temperature (K)", "The barrier cutoff is the barrier that reacts within the cutoff time at "
