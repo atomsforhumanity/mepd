@@ -227,3 +227,14 @@ def test_a_bare_cation_as_drawn_is_an_acceptor():
     assert mg["charge"] == 2 and not any(lv["occupied"] for lv in mg["levels"])
     assert len(r["pairs"]) == 1 and r["fragments"][r["pairs"][0]["acceptor"]]["formula"] == "Mg"
     assert (r["pairs"][0]["occ"], r["pairs"][0]["virt"]) == ("homo-1", "lumo") and r["cut"]["groups"] is None
+
+
+@pytest.mark.parametrize("name", ["gfn2_ch3cl", "gxtb2_ch3cl", "gxtb2_ceh4"])
+@pytest.mark.parametrize("kind", ["spherical", "cartesian"])
+def test_axtb_orbitals_are_orthonormal_through_the_overlap(name, kind):
+    """axtb's Molden files (Molden's conventions; spherical d and f functions read as the
+    Cartesian functions they span): orthonormal through the analytic overlap."""
+    text = (Path(__file__).parent / "data" / f"axtb_{name}_{kind}.molden").read_text()
+    side = fo._Side(text, "axtb")
+    M = side.C @ fo.overlap(side.basis, side.basis) @ side.C.T
+    assert np.abs(M - np.eye(len(M))).max() < 1e-8

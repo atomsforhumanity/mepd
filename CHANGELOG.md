@@ -12,6 +12,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Molden files with spherical d and f functions in the orbital viewer** (`[5D]`, `[7F]`, `[5D7F]`,
+  `[5D10F]`, in any order and case, e.g. PySCF's `[5d][7f][9g]`): `parse_molden` rewrites each orbital
+  over the Cartesian functions of the same shells (Molden's order d0, d+1, d-1, d+2, d-2 and f0 ... f-3,
+  normalized real solid harmonics), so `evaluate` and the fragment-orbital overlaps are unchanged; it
+  used to refuse such files. Spherical g functions are still refused. A new method `axtb` reads the
+  files axtb writes (GFN2-xTB, g-xTB v1.1/2.0.1; spherical by default, Cartesian with
+  `molden="cartesian"`) with the Molden convention (normalized primitives, each component normalized, as
+  TeraChem); `run_molden` runs no axtb single point, the files come from kept runs. A spherical file and
+  the Cartesian file of the same calculation give the same orbital values on a grid to 1e-7 relative
+  (identical in single precision) for CH3Cl (GFN2-xTB, g-xTB 2.0.1) and CeH4 (g-xTB 2.0.1, f functions);
+  the gfn2, gxtb and terachem readings are byte-identical to before.
 - **Harmonic distance restraints** (`[[restraints]]` in a profile: `atoms = [i, j]`, `distance` in Å,
   `force_constant` in kcal/mol/Å², 500 by default) on any engine; on QM/MM inside the QM/MM energy, so
   microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a
