@@ -2,7 +2,8 @@
 // until it is clicked: the entry (static/explain.json, keyed op.<key>,
 // param.<op>.<field>, profile.<key>, kinetics.<name>, level.<name>, other.<name>)
 // says what it changes, how mepd does it and with which program, the
-// default, what else could stand in and where, and the code behind it.
+// default, what else could stand in and where, and the code behind it;
+// `refs` links its References section, `manual` its manual page (page#anchor).
 import { html, useEffect, useRef, useState } from '../lib.js';
 import { set } from '../store.js';
 
@@ -61,6 +62,7 @@ export function Why({ id, ids, label, fallback = null }) {
         ${e.code?.length > 0 && html`<div><span class="muted">Code</span> ${e.code.map((c) => html`<code>${c}</code>`)}</div>`}
         ${e.cli && html`<div><span class="muted">Command</span> <code>${e.cli}</code></div>`}
         ${e.refs && html`<div><a href="#" onClick=${(ev) => { ev.preventDefault(); setOpen(false); set({ view: { tab: 'refs', jobId: null }, refsFocus: e.refs }); }}>What to cite ›</a></div>`}
+        ${e.manual && html`<div><a href=${`/manual/${e.manual}`} target="_blank" rel="noopener">Read more in the manual ›</a></div>`}
       </div>
     </div>`}
   </span>`;

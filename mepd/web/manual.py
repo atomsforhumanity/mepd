@@ -36,6 +36,11 @@ body { background: var(--bg); color: var(--text); margin: 0; }
 .manual footer a { color: var(--accent); }
 .manual ul { padding-left: 22px; }
 .manual li { margin: 3px 0; }
+.manual figure { margin: 20px 0; }
+.manual figure svg { display: block; width: 100%; height: auto; }
+.manual figcaption { font-size: 14px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+.manual table { border-collapse: collapse; margin: 12px 0; font-size: 15px; }
+.manual th, .manual td { text-align: left; vertical-align: top; padding: 5px 10px; border-bottom: 1px solid var(--border); }
 """
 
 

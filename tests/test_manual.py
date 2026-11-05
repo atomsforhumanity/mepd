@@ -47,3 +47,21 @@ def test_the_route(tmp_path):
         r = c.get("/manual/orbitals")
         assert r.status_code == 200 and "Fragment orbitals" in r.text
         assert c.get("/manual/missing").status_code == 404
+
+
+def test_explanations_link_to_existing_sections():
+    """The "?" explanations (static/explain.json) that point into the manual land on a section that exists, and
+    the bond orbitals' point at their References section."""
+    import json
+
+    from mepd.web import references
+
+    entries = json.loads((JS.parent / "explain.json").read_text())
+    linked = {k: e["manual"] for k, e in entries.items() if e.get("manual")}
+    assert linked["other.bond-arrows"] == "orbitals#what-the-arrows-mean"
+    for key, target in linked.items():
+        page, _, anchor = target.partition("#")
+        assert not anchor or f'id="{anchor}"' in manual.render(page), (key, target)
+    features = {g["feature"] for g in references.references()}
+    for key in ("other.bond-orbitals", "other.bond-arrows", "other.bond-charges"):
+        assert entries[key]["refs"] in features, key

@@ -24,10 +24,16 @@
 // together (the acceptor's in paler colours, its sign chosen so that same
 // colours meeting is in-phase overlap), with |<HOMO|LUMO>|, the gap, and on
 // a path |S| frame by frame.
+// "Bonds" shows the whole system's filled orbitals as bonds and lone pairs
+// (intrinsic bond orbitals; POST /api/bond-orbitals). On a path every one is
+// followed from frame to frame (POST /api/bond-orbitals/path): the few that
+// change are the mechanism's curly arrows, drawn as the path of each one's
+// charge centre, and the one chosen is drawn at every frame.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
 import { prefs } from '../store.js';
 import { drawLinks, ENV_MODES, parseXyz, styleRegion, useAutoSystem, useRegion } from '../qmmm.js';
+import { Why } from './Why.js';
 
 function themeBackground() {
   return getComputedStyle(document.documentElement).getPropertyValue('--viewer-bg').trim() || '#ffffff';
@@ -64,12 +70,15 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   const moIndex = frames && frames.length ? Math.min(frame, frames.length - 1) : 0;
   const mo = useOrbitals(orbitals && !qmmm ? orbitals : null, source, moIndex);
   const fmo = useFragmentOrbitals(orbitals && !qmmm ? orbitals : null, source, moIndex, mo.on && mo.frag);
+  const bmo = useBondOrbitals(orbitals && !qmmm ? orbitals : null, source, moIndex, mo.on && mo.bonds);
   const surfaces = useRef([]);
   const surfaces2 = useRef([]);
+  const arrows = useRef([]);
 
   useEffect(() => {
     if (!window.$3Dmol || !host.current) return undefined;
     viewer.current = window.$3Dmol.createViewer(host.current, { backgroundColor: themeBackground(), antialias: true });
+    host.current._v = viewer.current;   // (for tests)
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const onTheme = () => { viewer.current?.setBackgroundColor(themeBackground()); viewer.current?.render(); };
     mq.addEventListener('change', onTheme);
@@ -171,13 +180,20 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   useEffect(() => {
     if (!viewer.current) return;
     const frag = mo.on && mo.frag;
-    drawOrbital(viewer.current, surfaces, frag ? fmo.occ : mo.current, frag ? isoFor(fmo.occ, mo.pct) : mo.iso, frag ? fmo.sign : mo.sign);
+    const bonds = mo.on && mo.bonds;
+    const [one, iso, sign] = frag ? [fmo.occ, isoFor(fmo.occ, mo.pct), fmo.sign]
+      : bonds ? [bmo.current, isoFor(bmo.current, mo.pct), bmo.sign] : [mo.current, mo.iso, mo.sign];
+    drawOrbital(viewer.current, surfaces, one, iso, sign);
     drawOrbital(viewer.current, surfaces2, frag ? fmo.virt : null, isoFor(fmo.virt, mo.pct), fmo.virtSign, PALE);
+    drawArrows(viewer.current, arrows, bonds ? bmo.arrows : null, moIndex,
+      (a) => arrowName(bmo.followed, a.id, mo.symbols, labelBase || 1, moIndex));
     if (host.current) {   // for tests
       host.current._orbital = { surfaces: surfaces.current.length, fresh: mo.fresh, sign: mo.sign, orb: mo.current };
       host.current._fragments = { surfaces: surfaces2.current.length + (frag ? surfaces.current.length : 0), pair: fmo.pair, fresh: fmo.fresh, sign: fmo.sign };
+      host.current._bonds = { surfaces: bonds ? surfaces.current.length : 0, arrows: arrows.current.length, id: bmo.id, local: bmo.local, sign: bmo.sign, fresh: bmo.fresh,
+        dots: bonds && bmo.arrows ? bmo.arrows.map((a) => a.points[Math.min(moIndex, a.points.length - 1)]) : [] };
     }
-  }, [mo.current, mo.iso, mo.sign, mo.frag, mo.on, mo.pct, fmo.occ, fmo.virt, fmo.sign, xyz, frames, frame]);
+  }, [mo.current, mo.iso, mo.sign, mo.frag, mo.bonds, mo.on, mo.pct, fmo.occ, fmo.virt, fmo.sign, bmo.current, bmo.sign, bmo.arrows, xyz, frames, frame]);
 
   if (!window.$3Dmol) {
     return html`<div class="viewer viewer-missing" style=${{ height }}>3D viewer unavailable (3Dmol.js did not load)</div>`;
@@ -193,7 +209,7 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
         <input type="checkbox" checked=${motion} onChange=${(e) => setMotion(e.target.checked)} /> motion</label>`}
       <span class="qmmm-legend"><i class="qm"></i>QM <i class="link"></i>cut bond <i class="act"></i>moving <i class="frz"></i>frozen</span>
     </div>`}
-    ${orbitals && !qmmm && source && html`<${OrbitalBar} mo=${mo} fmo=${fmo} index=${moIndex} path=${Array.isArray(source) && source.length > 1}
+    ${orbitals && !qmmm && source && html`<${OrbitalBar} mo=${mo} fmo=${fmo} bmo=${bmo} index=${moIndex} path=${Array.isArray(source) && source.length > 1}
       nframes=${Array.isArray(source) ? source.length : 1} labelBase=${labelBase || 1} />`}
   </div>`;
 }
@@ -297,8 +313,12 @@ export function useOrbitals(chem, source, index = 0) {
   const [on, setOnState] = useState(() => prefs.get('orbitalsOn', false));
   const setOn = (v) => { setOnState(v); prefs.set('orbitalsOn', v); };
   const [which, setWhich] = useState('homo');
-  const [frag, setFragState] = useState(() => prefs.get('orbitalFragments', false));   // each molecule's own orbitals
-  const setFrag = (v) => { setFragState(v); prefs.set('orbitalFragments', v); };
+  // Which orbitals: the whole system's ('whole'), each molecule's own ('fragments'), or the whole
+  // system's filled ones as bonds and lone pairs ('bonds').
+  const [kind, setKindState] = useState(() => prefs.get('orbitalKind', prefs.get('orbitalFragments', false) ? 'fragments' : 'whole'));
+  const setKind = (v) => { setKindState(v); prefs.set('orbitalKind', v); };
+  const frag = kind === 'fragments';
+  const setFrag = (v) => setKind(v ? 'fragments' : 'whole');
   const [pct, setPctState] = useState(() => prefs.get('orbitalPct', DENSITY_PCT));
   const setPct = (v) => { setPctState(v); prefs.set('orbitalPct', v); };
   const [data, setData] = useState(null);        // the newest {xyz, result}
@@ -315,8 +335,8 @@ export function useOrbitals(chem, source, index = 0) {
   // playing it back draws each frame's own (a running calculation's: only the frame shown, as it moves).
   const needed = (f) => f && !cache.current.has(f) && !failed.current.has(f) && !inFlight.current.has(f);
   const targets = [];
-  if (needed(geom) && (!path || (on && !frag))) targets.push(geom);
-  if (path && on && !frag && !chem?.live) {
+  if (needed(geom) && (!path || (on && kind === 'whole'))) targets.push(geom);
+  if (path && on && kind === 'whole' && !chem?.live) {
     for (let k = 1; k < source.length && targets.length < LOADERS; k += 1) {
       const f = source[(index + k) % source.length];
       if (needed(f) && !targets.includes(f)) targets.push(f);
@@ -345,7 +365,7 @@ export function useOrbitals(chem, source, index = 0) {
   // On a path that moves on while a frame's are fetched (a running chain), the newest stay drawn
   // until the next frame's arrive; a single geometry shows only its own.
   const sameAtoms = !!result && !!geom && (fresh || parseInt(data?.xyz, 10) === parseInt(geom, 10));
-  const shown = on && !frag && result && (fresh || (path && sameAtoms)) ? result.orbitals[which] || null : null;
+  const shown = on && kind === 'whole' && result && (fresh || (path && sameAtoms)) ? result.orbitals[which] || null : null;
   // Its sign, so that a path's phase does not flip from frame to frame: a finished path's from its first
   // frame on (each frame against the one before it that has orbitals); a running one's against the last drawn.
   const last = useRef(null);
@@ -368,7 +388,7 @@ export function useOrbitals(chem, source, index = 0) {
     else if (ref && ref.which === which && sameAtoms) sign = ref.sign * phaseBetween(ref.orb, shown);
   }
   if (shown) last.current = { orb: shown, sign, which };
-  return { on, setOn, frag, setFrag, which, setWhich, pct, setPct, iso: isoFor(shown, pct), sign, busy: busy && on, error: on ? error?.message : null,
+  return { on, setOn, kind, setKind, frag, setFrag, bonds: kind === 'bonds', which, setWhich, pct, setPct, iso: isoFor(shown, pct), sign, busy: busy && on, error: on ? error?.message : null,
     result: on ? result : null, fresh, current: shown,
     symbols: geom ? geom.trim().split('\n').slice(2).map((l) => l.trim().split(/\s+/)[0]) : [] };
 }
@@ -617,7 +637,238 @@ function FragmentBar({ fmo, index, path, nframes = 1 }) {
     ${whole && html`<span class="mo-sites" title=${whole}>whole-system mix</span>`}`;
 }
 
-export function OrbitalBar({ mo, fmo = null, index = 0, path = false, nframes = 1, labelBase = 1 }) {
+// ---- bond orbitals -----------------------------------------------------------
+// The colours of the curly arrows (the active orbitals' charge centres along a path), apart from
+// the orbitals' blue and red.
+const ARROW_COLORS = ['#e07b00', '#12907e', '#8a4fd3', '#c2185b', '#5d7f1e', '#8d6e63'];
+
+// The whole system's filled orbitals as bonds and lone pairs, at the geometry shown (fetched while
+// `enabled`). A finished path: the server follows every orbital through the frames once (its
+// number and sign at each frame); the one chosen (by default the one that changes most) is drawn
+// at every frame, frames loading ahead in playing order, and the ones that change are drawn as
+// arrows. A single geometry (or a running calculation's frame): its list, and the one chosen.
+export function useBondOrbitals(chem, source, index, enabled) {
+  const [pick, setPick] = useState(null);         // a path: the followed orbital's id; one geometry: its number
+  const [track, setTrack] = useState(null);       // {key, data}: the path's orbitals followed frame to frame
+  const [tick, setTick] = useState(0);
+  const cache = useRef(new Map());                // `${number}|${xyz}` -> result
+  const inFlight = useRef(new Set());
+  const last = useRef(null);                      // the result drawn last (kept on screen until the next frame's)
+  const path = Array.isArray(source) && source.length > 1;
+  const live = !!chem?.live;
+  const geom = source ? (Array.isArray(source) ? source[index] : source) : null;
+  const pathKey = path && !live ? `${source.length}|${source[0]}|${source[source.length - 1]}` : null;
+  useEffect(() => { setPick(null); last.current = null; }, [pathKey || geom]);
+  useEffect(() => {
+    if (!enabled || !chem || !pathKey || track?.key === pathKey) return;
+    setTrack({ key: pathKey, data: null });
+    api.post('/api/bond-orbitals/path', { frames: source, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1, job: chem.job || undefined })
+      .then((d) => setTrack((t) => (t?.key === pathKey ? { key: pathKey, data: d } : t)))
+      .catch((e) => setTrack((t) => (t?.key === pathKey ? { key: pathKey, data: { error: String(e.message || e) } } : t)));
+  }, [enabled, pathKey]);
+  const T = pathKey && track?.key === pathKey ? track.data : null;
+  const followed = T && !T.error ? T : null;
+  const byChange = followed ? [...followed.orbitals].sort((a, b) => b.max_moved - a.max_moved) : [];
+  const id = followed ? (pick ?? followed.active[0] ?? byChange[0]?.id ?? null) : null;
+  // The orbital's number at frame f (a followed path), else the one picked (null: the server's choice).
+  // While a path is being followed, the frame on screen shows its own (the server's choice) meanwhile.
+  const numberAt = (f) => (pathKey ? (followed && id != null ? followed.orbitals[id].local[f] : (!T && f === index ? null : undefined)) : pick);
+  const keyOf = (xyz, k) => `${k ?? '-'}|${xyz}`;
+  const targets = [];
+  if (enabled && chem && geom) {
+    for (let j = 0; j < (pathKey ? source.length : 1) && targets.length < LOADERS; j += 1) {
+      const f = pathKey ? (index + j) % source.length : index;
+      const xyz = pathKey ? source[f] : geom;
+      const k = numberAt(f);
+      if (k === undefined) continue;
+      const key = keyOf(xyz, k);
+      if (!cache.current.has(key) && !inFlight.current.has(key)) targets.push([xyz, k]);
+    }
+  }
+  useEffect(() => {
+    for (const [xyz, k] of targets.slice(0, Math.max(0, LOADERS - inFlight.current.size))) {
+      const key = keyOf(xyz, k);
+      inFlight.current.add(key);
+      api.post('/api/bond-orbitals', { xyz, charge: chem.charge ?? 0, multiplicity: chem.multiplicity ?? 1, job: chem.job || undefined,
+        orbital: k ?? undefined, follow: path || live || undefined })
+        .then((r) => { cache.current.set(key, r); })
+        .catch((e) => { cache.current.set(key, { error: String(e.message || e) }); })
+        .finally(() => {
+          inFlight.current.delete(key);
+          if (cache.current.size > 600) cache.current.delete(cache.current.keys().next().value);
+          setTick((t) => t + 1);
+        });
+    }
+  }, [targets.map(([x, k]) => keyOf(x, k)).join('|'), tick]);
+  const k = numberAt(index);
+  const own = geom && k !== undefined ? cache.current.get(keyOf(geom, k)) : null;
+  const fresh = !!own && !own.error;
+  let r = fresh ? own : null;
+  let shownAt = index;
+  if (!r && path && last.current && parseInt(last.current.xyz, 10) === parseInt(geom, 10)) {
+    r = last.current.result;
+    shownAt = last.current.at;
+  }
+  if (fresh) last.current = { xyz: geom, result: own, at: index };
+  const drawn = enabled && r?.drawn ? r.drawn : null;
+  if (drawn) drawn._orb ||= { cube: drawn.cube };
+  const sign = followed && id != null ? (followed.orbitals[id].sign[shownAt] ?? 1) : 1;
+  const arrows = useMemo(() => (followed ? followed.active.slice(0, ARROW_COLORS.length).map((t, i) => ({
+    id: t, color: ARROW_COLORS[i], points: followed.orbitals[t].centre, chosen: t === id })) : null), [followed, id]);
+  const error = enabled ? (T?.error || own?.error || null) : null;
+  return { result: enabled ? r : null, error, busy: enabled && !!geom && ((!!pathKey && !T) || (!own && !error)), following: enabled && !!pathKey && !T,
+    followed: enabled ? followed : null, byChange, id, number: drawn?.index ?? null, local: k, current: enabled ? drawn?._orb || null : null,
+    sign, arrows: enabled ? arrows : null, fresh, colorOf: (t) => (followed ? ARROW_COLORS[followed.active.indexOf(t)] : null),
+    choose: setPick };
+}
+
+// The active orbitals' centroids along the path, as curly arrows (the chosen one thicker), each
+// with a dot where it is at the frame shown. Hovering one tags it with its name (`describe`).
+function drawArrows(v, shapes, arrows, frame, describe = () => '') {
+  (shapes.current || []).forEach((sh) => {
+    try { if (sh._tag) v.removeLabel(sh._tag); v.removeShape(sh); } catch { /* gone with the model */ }
+  });
+  shapes.current = [];
+  for (const a of arrows || []) {
+    const pts = [];
+    for (const c of a.points) {
+      if (!c) continue;
+      const p = { x: c[0], y: c[1], z: c[2] };
+      const q = pts[pts.length - 1];
+      if (!q || Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z) >= 0.08) pts.push(p);   // (no loops from jitter)
+    }
+    const end = a.points.filter(Boolean).pop();
+    const tail = pts[pts.length - 1];
+    if (end && tail && (end[0] !== tail.x || end[1] !== tail.y || end[2] !== tail.z)) {
+      if (pts.length > 1 && Math.hypot(end[0] - tail.x, end[1] - tail.y, end[2] - tail.z) < 0.04) pts.pop();
+      pts.push({ x: end[0], y: end[1], z: end[2] });    // the arrow ends where the orbital ends
+    }
+    if (pts.length < 2) continue;
+    if (pts.length === 2) pts.splice(1, 0, { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2, z: (pts[0].z + pts[1].z) / 2 });
+    const radius = a.chosen ? 0.07 : 0.045;
+    const head = pts[pts.length - 1];
+    const tag = {
+      hoverable: true,
+      hover_callback: (shape, viewer) => {
+        if (shape._tag) return;
+        const text = describe(a);
+        shape._tag = viewer.addLabel(text, { position: head, backgroundColor: a.color, backgroundOpacity: 0.92, fontColor: 'white',
+          fontSize: 12, inFront: true, borderRadius: 4, padding: 3 });
+        viewer._mepdHover = text;   // (for tests)
+        viewer.render();
+      },
+      unhover_callback: (shape, viewer) => {
+        if (!shape._tag) return;
+        viewer.removeLabel(shape._tag);
+        shape._tag = null;
+        viewer.render();
+      },
+    };
+    try {
+      shapes.current.push(v.addCurve({ points: pts, radius, color: a.color, toArrow: true, smooth: 4, ...tag }));
+      const at = a.points[Math.min(frame, a.points.length - 1)];
+      if (at) shapes.current.push(v.addSphere({ center: { x: at[0], y: at[1], z: at[2] }, radius: a.chosen ? 0.15 : 0.1, color: a.color, ...tag }));
+    } catch { /* a degenerate curve: skip it */ }
+  }
+  v.render();
+}
+
+// An orbital as people say it: "O3 lone pair", "C1–O3", "C1–H5–O3 (3c)", from the atoms it sits on.
+function bondLabel(o, symbols, base) {
+  const atoms = o?.atoms;
+  if (!atoms?.length) return '?';
+  const names = [...atoms].sort((x, y) => x[0] - y[0]).map(([a]) => `${symbols[a] ?? '?'}${a + base}`);
+  const spin = o.spin === 'α' || o.spin === 'β' ? ` ${o.spin}` : '';
+  if (names.length === 1) return `${names[0]} ${o.spin === 'single' ? 'radical' : 'lone pair'}${spin}`;
+  return `${names.join('–')}${names.length > 2 ? ` (${names.length}c)` : ''}${o.spin === 'single' ? ' (1e)' : ''}${spin}`;
+}
+
+// A followed orbital as "C1–C2 → C1–C6" (where it starts → where it ends).
+function pathLabel(F, t, symbols, base) {
+  const x = F.orbitals[t];
+  const a = bondLabel({ ...x, atoms: x.start }, symbols, base);
+  const b = bondLabel({ ...x, atoms: x.end }, symbols, base);
+  if (a !== b) return `${a} → ${b}`;
+  return F.active.includes(t) ? `${a} (polarizes)` : a;   // changing, but in the same bond: shifts toward one atom
+}
+
+// What an arrow's hover tag says: the electron pair, and how far it has moved by this frame.
+function arrowName(F, t, symbols, base, frame) {
+  if (!F?.orbitals[t]) return '';
+  const o = F.orbitals[t];
+  const now = o.moved[frame];
+  return `${pathLabel(F, t, symbols, base)} · electron pair, ${now == null ? '' : `${Math.round(now * 100)} % moved here, `}${Math.round(o.max_moved * 100)} % in all`;
+}
+
+// A little arrow in a colour (the legend's key to the arrows in the view).
+const Swatch = ({ color }) => html`<svg class="mo-swatch" width="20" height="8" viewBox="0 0 20 8" aria-hidden="true">
+  <line x1="1" y1="4" x2="13" y2="4" stroke=${color} stroke-width="2.4" /><path d="M12 0.5 L19 4 L12 7.5 Z" fill=${color} /></svg>`;
+
+// How much of each active orbital has moved between atoms at every frame (its colour as its
+// arrow's), the chosen one thicker, a dot at the frame shown.
+function ChangePlot({ series, index }) {
+  const W = 120, H = 24;
+  const n = Math.max(0, ...series.map((s) => s.values.length));
+  if (n < 2) return null;
+  const top = Math.max(0.05, ...series.flatMap((s) => s.values.filter((v) => v != null)));
+  const x = (i) => (i / (n - 1)) * (W - 4) + 2;
+  const y = (v) => H - 2 - (v / top) * (H - 4);
+  const chosen = series.find((s) => s.chosen);
+  const at = chosen?.values[index];
+  return html`<svg class="mo-spark" width=${W} height=${H} viewBox=${`0 0 ${W} ${H}`} aria-label="orbital change along the path">
+    <title>${`How much of each changing orbital has moved to other atoms, frame by frame (top ${Math.round(top * 100)} %); the dot is this frame`}</title>
+    ${series.map((s) => html`<polyline fill="none" stroke=${s.color} stroke-width=${s.chosen ? 1.8 : 1}
+      points=${s.values.map((v, i) => (v == null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean).join(' ')} />`)}
+    ${at != null && html`<circle cx=${x(index)} cy=${y(at)} r="2.6" fill=${chosen.color} />`}
+  </svg>`;
+}
+
+function BondBar({ bmo, index, path, symbols, labelBase }) {
+  if (bmo.error) return html`<span class="warn-text" title=${bmo.error}>no bond orbitals</span>`;
+  const r = bmo.result;
+  const F = bmo.followed;
+  const fmtq = (q) => `${q > 0 ? '+' : ''}${q.toFixed(2)}`.replace('-', '−');
+  const name = (a) => `${symbols[a] ?? '?'}${a + labelBase}`;
+  if (path && F) {
+    const o = F.orbitals[bmo.id];
+    if (!o) return null;
+    const label = (t) => pathLabel(F, t, symbols, labelBase);
+    const quiet = F.orbitals.filter((x) => !F.active.includes(x.id));
+    const series = F.active.map((t) => ({ values: F.orbitals[t].moved, color: bmo.colorOf(t), chosen: t === bmo.id }));
+    const q0 = F.charges.find(Boolean), q = F.charges[index];
+    const dq = q && q0 ? q.map((v, a) => [v - q0[a], a]).filter(([d]) => Math.abs(d) >= 0.05).sort((u, w) => Math.abs(w[0]) - Math.abs(u[0])) : [];
+    const moved = o.moved[index];
+    return html`
+      <select class="tiny" value=${bmo.id} onChange=${(e) => bmo.choose(+e.target.value)}
+        title="The whole system's filled orbitals as bonds and lone pairs (intrinsic bond orbitals), each followed along the path. The ones that change are the curly arrows of the mechanism, drawn as the path of each one's charge centre; the rest stay put.">
+        ${F.active.length > 0 && html`<optgroup label="Changing (arrows)">${F.active.map((t) => html`<option value=${t}>${label(t)} · ${Math.round(F.orbitals[t].max_moved * 100)} %</option>`)}</optgroup>`}
+        <optgroup label="Unchanged">${quiet.map((x) => html`<option value=${x.id}>${label(x.id)}</option>`)}</optgroup>
+      </select><${Why} id="other.bond-orbitals" label="Bond orbitals" />
+      <span class="mo-numbers" title="How much of this orbital has moved to other atoms since the first frame: half the sum over atoms of the change in its share">moved <b>${moved == null ? '–' : `${Math.round(moved * 100)} %`}</b></span>
+      ${series.length > 0 && html`<${ChangePlot} series=${series} index=${index} />`}
+      ${o.matched < 0.8 && html`<span class="warn-text" title=${`Followed from frame to frame with an overlap as low as ${o.matched.toFixed(2)} (IboView warns below 0.8): the frames are far apart, or it mixes with an equivalent orbital (lone pairs around a bond axis).`}>⚠ loosely followed</span>`}
+      ${dq.length > 0 && html`<span class="mo-sites" title=${`Charge on each atom (IAO charges) at this frame minus the first frame's (+: electrons lost, −: gained):\n${dq.map(([d, a]) => `${name(a)} ${fmtq(d)}`).join('\n')}`}>Δq ${dq.slice(0, 3).map(([d, a]) => `${name(a)} ${fmtq(d)}`).join(', ')}<${Why} id="other.bond-charges" label="Δq" /></span>`}
+      ${F.failed?.length > 0 && html`<span class="warn-text" title=${`No orbitals at frame${F.failed.length > 1 ? 's' : ''} ${F.failed.map((i) => i + 1).join(', ')}`}>⚠ ${F.failed.length} frame${F.failed.length > 1 ? 's' : ''} missing</span>`}
+      <span class="mo-legend">${F.active.length > 0
+        ? html`<span class="muted" title="Each arrow is one electron pair that moves along the path: from where it sits at the first frame (tail) to where it sits at the last (head); the dot is where it is now">Arrows</span>
+          ${F.active.slice(0, 6).map((t) => html`<button type="button" class=${t === bmo.id ? 'on' : ''} onClick=${() => bmo.choose(t)}
+            title=${`${label(t)}: this electron pair moves ${Math.round(F.orbitals[t].max_moved * 100)} % onto other atoms along the path. Click to draw it.`}>
+            <${Swatch} color=${bmo.colorOf(t)} />${label(t)}</button>`)}`
+        : html`<span class="muted">No bond or lone pair changes along this path</span>`}<${Why} id="other.bond-arrows" label="The arrows" /></span>`;
+  }
+  if (!r) return bmo.following ? html`<span class="muted" title="Every frame's bond orbitals are built and each is followed from frame to frame">following the orbitals along the path…</span>` : null;
+  const order = r.orbitals.map((x, i) => [x, i]).sort(([a], [b]) => (b.atoms.length > 2) - (a.atoms.length > 2) || b.energy_ev - a.energy_ev);
+  const drawn = r.orbitals[r.drawn.index];
+  return html`
+    <select class="tiny" value=${r.drawn.index} onChange=${(e) => bmo.choose(+e.target.value)} disabled=${bmo.following}
+      title="The whole system's filled orbitals as bonds and lone pairs (intrinsic bond orbitals): those spread over three or more atoms first (a transition state's forming and breaking bonds), then from the highest energy down">
+      ${order.map(([x, i]) => html`<option value=${i}>${bondLabel(x, symbols, labelBase)}</option>`)}</select><${Why} id="other.bond-orbitals" label="Bond orbitals" />
+    ${drawn && html`<span class="mo-sites" title=${`Its share on each atom (IAO populations); orbital energy ${drawn.energy_ev.toFixed(2)} eV (the canonical energies it mixes, weighted)`}>on ${drawn.atoms.map(([a, w]) => `${name(a)} ${Math.round(w * 100)}%`).join(', ')}</span>`}
+    ${r.charges && html`<span class="mo-sites" title=${`Partial charges (IAO): ${r.charges.map((v, a) => `${name(a)} ${fmtq(v)}`).join(', ')}`}>charges</span>`}
+    ${bmo.following && html`<span class="muted" title="Every frame's bond orbitals are built and each is followed from frame to frame; until then, this frame's own are shown">following the path…</span>`}`;
+}
+
+export function OrbitalBar({ mo, fmo = null, bmo = null, index = 0, path = false, nframes = 1, labelBase = 1 }) {
   const r = mo.result;
   const open = r?.open_shell;
   const name = (k) => (k === 'homo' && open ? 'SOMO' : k.toUpperCase());
@@ -629,16 +880,19 @@ export function OrbitalBar({ mo, fmo = null, index = 0, path = false, nframes = 
   return html`<div class="mo-bar small">
     <button class=${`btn small ${mo.on ? 'on' : ''}`} onClick=${() => mo.setOn(!mo.on)} aria-pressed=${mo.on}
       title="Show the highest occupied and lowest unoccupied molecular orbitals: where it gives and takes electrons (remembered for every view)">
-      ${mo.busy || fmo?.busy ? html`<span class="spinner" aria-hidden="true"></span>` : ''}Orbitals</button>
-    ${mo.on && fmo && html`<span class="segmented mini">
-      <button class=${mo.frag ? '' : 'on'} onClick=${() => mo.setFrag(false)} title="The orbitals of the whole system">Whole</button>
-      <button class=${mo.frag ? 'on' : ''} onClick=${() => mo.setFrag(true)}
-        title="Each molecule's own orbitals, computed on its own where it sits: a filled orbital of one and an empty orbital of another, and how much they overlap (the frontier-orbital picture of why molecules bond)">Fragments</button></span>`}
+      ${mo.busy || (mo.frag && fmo?.busy) || (mo.bonds && bmo?.busy) ? html`<span class="spinner" aria-hidden="true"></span>` : ''}Orbitals</button>
+    ${mo.on && (fmo || bmo) && html`<span class="segmented mini">
+      <button class=${mo.kind === 'whole' ? 'on' : ''} onClick=${() => mo.setKind('whole')} title="The orbitals of the whole system">Whole</button>
+      ${fmo && html`<button class=${mo.frag ? 'on' : ''} onClick=${() => mo.setKind('fragments')}
+        title="Each molecule's own orbitals, computed on its own where it sits: a filled orbital of one and an empty orbital of another, and how much they overlap (the frontier-orbital picture of why molecules bond)">Fragments</button>`}
+      ${bmo && html`<button class=${mo.bonds ? 'on' : ''} onClick=${() => mo.setKind('bonds')}
+        title="The whole system's filled orbitals as its bonds and lone pairs (intrinsic bond orbitals). Along a path, the few that change are the curly arrows of the mechanism.">Bonds</button>`}</span>`}
     ${mo.on && mo.frag && fmo && html`<${FragmentBar} fmo=${fmo} index=${index} path=${path} nframes=${nframes} />`}
-    ${mo.on && mo.frag && fmo && html`<label class="mo-pct" title="The surfaces enclose this share of each orbital's density (|ψ|²). Smaller: tighter lobes.">
+    ${mo.on && mo.bonds && bmo && html`<${BondBar} bmo=${bmo} index=${index} path=${path} symbols=${mo.symbols} labelBase=${labelBase} />`}
+    ${mo.on && (mo.frag ? fmo : mo.bonds ? bmo : null) && html`<label class="mo-pct" title="The surfaces enclose this share of each orbital's density (|ψ|²). Smaller: tighter lobes.">
         <input type="number" class="tiny" min="1" max="99.9" step="5" value=${mo.pct}
           onChange=${(e) => { const v = +e.target.value; if (v > 0 && v < 100) mo.setPct(v); }} /> % density</label>`}
-    ${mo.on && !mo.frag && r && html`
+    ${mo.on && mo.kind === 'whole' && r && html`
       <span class="segmented mini">${['homo', 'lumo'].filter((k) => r.orbitals[k]).map((k) => html`<button class=${mo.which === k ? 'on' : ''}
         onClick=${() => mo.setWhich(k)} title=${`${name(k)}: ${fmt(ev(k))} eV`}>${name(k)}</button>`)}</span>
       <label class="mo-pct" title=${`The surface encloses this share of the orbital's density (|ψ|²); drawn at |ψ| = ${mo.iso.toFixed(3)}. Smaller: tighter lobes.`}>
@@ -648,8 +902,9 @@ export function OrbitalBar({ mo, fmo = null, index = 0, path = false, nframes = 
       <span class="mo-method muted" title=${r.source === 'run' ? 'From the calculation itself: the SCF it ran at this geometry' : 'From a single point at this level on the geometry shown (no calculation had run this geometry)'}>${method}${r.source === 'run' ? ' · this run' : ''}</span>
       ${sites.length > 0 && html`<span class="mo-sites" title="How much of the shown orbital sits on each atom">on ${sites.map(([w, i]) => `${mo.symbols[i]}${i + labelBase} ${Math.round(w * 100)}%`).join(', ')}</span>`}
       `}
-    ${mo.error && !mo.frag && html`<span class="warn-text" title=${mo.error}>no orbitals</span>`}
-    ${mo.on && html`<a class="mo-help" href=${`/manual/orbitals#${mo.frag ? 'fragment-orbitals' : 'whole-orbitals'}`} target="_blank" rel="noopener"
+    ${mo.on && mo.bonds && bmo?.result && html`<span class="mo-method muted" title=${bmo.result.source === 'run' ? 'Built from the calculation\'s own orbitals at this geometry' : 'Built from a single point at this level on the geometry shown (no calculation had run this geometry)'}>${bmo.result.label}${bmo.result.source === 'run' ? ' · this run' : ''}</span>`}
+    ${mo.error && mo.kind === 'whole' && html`<span class="warn-text" title=${mo.error}>no orbitals</span>`}
+    ${mo.on && html`<a class="mo-help" href=${`/manual/orbitals#${mo.frag ? 'fragment-orbitals' : mo.bonds ? (path ? 'bonds-along-a-path' : 'bond-orbitals') : 'whole-orbitals'}`} target="_blank" rel="noopener"
       title="How these orbitals are computed (manual)">?</a>`}
   </div>`;
 }

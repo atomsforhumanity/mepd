@@ -12,7 +12,7 @@ import { conformerRows, conformerLabel } from './Inspector.js';
 import { ApplyToNetwork } from './Variants.js';
 import { StepBar, reactorFor } from './Welcome.js';
 import { useMap } from '../quests.js';
-import { OrbitalBar, PALE, drawOrbital, isoFor, useFragmentOrbitals, useOrbitals } from './Viewer3D.js';
+import { OrbitalBar, PALE, drawOrbital, isoFor, useBondOrbitals, useFragmentOrbitals, useOrbitals } from './Viewer3D.js';
 
 const COMMON = ['H', 'C', 'N', 'O', 'F', 'P', 'S', 'Cl', 'Br', 'I', 'B', 'Si'];
 // The periodic table as [symbol, row, column] (lanthanides/actinides on rows 8-9).
@@ -345,6 +345,7 @@ export function DesignView() {
   const moXyz = design && !design.reaction ? molblockXyz(design.molblock) : null;
   const mo = useOrbitals(moChem, moXyz);
   const fmo = useFragmentOrbitals(moChem, moXyz, 0, mo.on && mo.frag);
+  const bmo = useBondOrbitals(moChem, moXyz, 0, mo.on && mo.bonds);
   useEffect(() => { if (empty && !['add', 'element'].includes(tool)) setTool('add'); }, [empty]);
   const [order, setOrder] = useState(2);
   const [group, setGroup] = useState('methyl');
@@ -679,7 +680,7 @@ export function DesignView() {
             </div>`
           : html`<div class="design-single">
               <${Canvas} molblock=${design.molblock} liveXyz=${liveXyz} picked=${picked} changed=${changed} onAtom=${onAtom} labels=${labels}
-                clickable=${tool !== 'view' || empty} onBackground=${onBackground} orbital=${mo.frag ? fmo.occ : mo.current} iso=${mo.frag ? isoFor(fmo.occ, mo.pct) : mo.iso}
+                clickable=${tool !== 'view' || empty} onBackground=${onBackground} orbital=${mo.frag ? fmo.occ : mo.bonds ? bmo.current : mo.current} iso=${mo.frag ? isoFor(fmo.occ, mo.pct) : mo.bonds ? isoFor(bmo.current, mo.pct) : mo.iso}
                 orbital2=${mo.frag ? fmo.virt : null} iso2=${isoFor(fmo.virt, mo.pct)} sign2=${fmo.virtSign} />
               ${empty && (tool === 'place'
                 ? html`<div class="design-empty-hint"><b>Click anywhere to place ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}.</b>
@@ -730,7 +731,7 @@ export function DesignView() {
               : html`<span class="small muted">not minimized since the last edit</span>`}</dd>
             ${design.source?.kind === 'graph' && html`<dt>From</dt><dd>${design.source.name}${design.source.ts ? ' (a TS: Clean/Minimize would move it off the saddle)' : ''}</dd>`}
           </dl>
-          ${!rx && design.natoms > 0 && html`<div class="design-orbitals"><${OrbitalBar} mo=${mo} fmo=${fmo} /></div>`}
+          ${!rx && design.natoms > 0 && html`<div class="design-orbitals"><${OrbitalBar} mo=${mo} fmo=${fmo} bmo=${bmo} /></div>`}
           ${design.last_ts && html`<div class=${`ts-status ${design.last_ts.ok ? 'ok' : 'failed'}`}>
             ${design.last_ts.ok ? html`
               <b>TS converged.</b> ${design.last_ts.barrier_kcal != null ? html`Barrier ${design.last_ts.barrier_kcal.toFixed(1)} kcal/mol from its IRC. ` : ''}

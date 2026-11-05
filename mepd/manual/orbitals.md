@@ -1,17 +1,20 @@
 # Orbitals
 
 Any 3D view of a structure or a path can show frontier orbitals: switch on
-**Orbitals** under the viewer. There are two kinds:
+**Orbitals** under the viewer. There are three kinds:
 
 - **Whole**: the orbitals of the complete system shown (a molecule, a
   complex, a TS).
 - **Fragments**: each molecule's own orbitals, computed separately, and how
   a filled orbital of one overlaps an empty orbital of another. This is the
   frontier-orbital picture of why two molecules react.
+- **Bonds**: the whole system's filled orbitals rewritten as its bonds and
+  lone pairs (intrinsic bond orbitals). Along a path, the few that change
+  are the curly arrows of the mechanism, read off the wavefunction.
 
-Both come from the same kind of calculation: a single point that writes the
-orbitals to a molden file, at the session's level of theory. What differs is
-which system that calculation is run on and what is done with the result.
+All three come from the same kind of calculation: a single point that writes
+the orbitals to a molden file, at the session's level of theory. What differs
+is which system that calculation is run on and what is done with the result.
 
 ## Whole orbitals
 
@@ -230,6 +233,219 @@ molecules' orbitals are not orthogonal to each other, so the weights describe
 the mix rather than split it exactly (the idea of charge decomposition
 analysis).
 
+## Bond orbitals
+
+The canonical orbitals (HOMO, HOMO−1, …) of a molecule are spread over the
+whole molecule, and any rotation among the filled ones describes exactly the
+same electrons. **Bonds** shows the rotation in which every filled orbital
+sits on as few atoms as possible: Knizia's intrinsic bond orbitals (IBOs).
+They come out as the Lewis structure: one orbital per bond (a double bond as
+a σ and a π orbital) and per lone pair. Where no single Lewis structure fits
+(a transition state's forming and breaking bonds, a bridging hydrogen), they
+spread over three or more atoms. Water gives two O–H bonds and two lone pairs
+on O; ethylene gives four C–H bonds and the C–C σ and π.
+
+### How they are made
+
+1. **The whole system's orbitals**, from the same source as **Whole**: the
+   session's store, the calculation's own SCF at this geometry (turned with
+   the frame when the calculation ran it turned), else a single point.
+2. **Intrinsic atomic orbitals (IAOs).** A minimal set of atomic orbitals,
+   polarized by the molecule, that holds the filled orbitals exactly (Knizia
+   2013). "How much of an orbital is on atom A" is its population in A's
+   IAOs. This does not depend on the basis set the way Mulliken or Löwdin
+   populations do. The reference minimal basis:
+   - xtb's basis (g-xTB, GFN2-xTB) is already a minimal valence basis. The
+     reference is its own minimal valence shells per atom (s for H and the
+     alkali and alkaline-earth metals; s and p for the p block; s and d for
+     transition metals; s, d and f for the lanthanides from Ce and the
+     actinides from Th), with d and f shells as their five and seven pure
+     functions. Polarization shells, such as Cl 3d, are left out.
+   - All-electron bases (TeraChem): MINAO, the minimal basis Knizia made from
+     the cc-pVTZ sets (as distributed with PySCF), H to Kr except K. Core
+     orbitals (C 1s, Cl 1s–2p, …) are left out of the bond orbitals.
+3. **Localization.** The filled orbitals are rotated, two at a time, to
+   maximize Σ over orbitals and atoms of (population on the atom)^p (Knizia
+   2013, with the 2×2 rotation angles of his reference code), with **p = 2**.
+   Knizia used 4 and found 2 effectively the same except in aromatic rings.
+   IboView's default has been 2 since 2015. Along a g-xTB Diels–Alder IRC
+   (an aromatic transition state) p = 4 flipped back and forth between two
+   localizations within ten frames, while p = 2 changed smoothly. Benzene's π
+   orbitals came out the same with either.
+4. **Open shells.** Files with separate α and β orbitals give separate α and
+   β bond orbitals (shown with α/β). xtb writes open shells spin-averaged:
+   the doubly and singly occupied orbitals are localized separately (a
+   singly occupied orbital on one atom shows as a **radical**).
+
+The bar lists every bond orbital: those spread over three or more atoms first
+(marked "3c"), then from the highest energy down. The first one is drawn by
+default. "on C3 47%, …" is the orbital's IAO population per atom. The energy
+in the tooltip is the canonical orbital energies it mixes, weighted. It is a
+guide to which bond or lone pair is most reactive, not a measurable energy.
+**charges** gives the IAO partial charges of the atoms.
+
+### Bonds along a path
+
+On a finished path (an IRC, a path's frames), every frame's bond orbitals
+are built and each orbital of the first frame is followed through the
+frames. This is the analysis of Knizia & Klein (2015). Most orbitals stay
+where they are. The few that change are drawn as arrows, the curly arrows of
+the mechanism.
+
+### What the arrows mean
+
+<figure class="manual-figure">
+<svg viewBox="0 0 720 240" role="img" aria-labelledby="arrows-fig-title">
+<title id="arrows-fig-title">How to read the arrows, on an SN2 step</title>
+<defs>
+<marker id="hd-orange" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#e07b00"/></marker>
+<marker id="hd-teal" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#12907e"/></marker>
+</defs>
+<line x1="140" y1="130" x2="340" y2="130" stroke-width="3" stroke-dasharray="7 6" style="stroke: var(--muted)"/>
+<line x1="340" y1="130" x2="560" y2="130" stroke-width="3" style="stroke: var(--muted)"/>
+<text x="240" y="156" text-anchor="middle" font-size="12" style="fill: var(--muted)">Nu···C forming</text>
+<text x="400" y="118" text-anchor="middle" font-size="12" style="fill: var(--muted)">C–X breaking</text>
+<ellipse cx="183" cy="130" rx="19" ry="11" fill="none" stroke="#e07b00" stroke-width="1.2" stroke-dasharray="3 3"/>
+<circle cx="140" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<circle cx="340" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<circle cx="560" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<text x="140" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">Nu</text>
+<text x="340" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">C</text>
+<text x="560" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">X</text>
+<path d="M186 121 Q215 52 240 118" fill="none" stroke="#e07b00" stroke-width="3.5" marker-end="url(#hd-orange)"/>
+<circle cx="214" cy="86" r="6" fill="#e07b00"/>
+<path d="M452 138 Q487 205 532 143" fill="none" stroke="#12907e" stroke-width="3.5" marker-end="url(#hd-teal)"/>
+<circle cx="488" cy="172" r="6" fill="#12907e"/>
+<g font-size="11" font-weight="700" text-anchor="middle">
+<circle cx="168" cy="100" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="168" y="104" fill="#e07b00">1</text>
+<circle cx="258" cy="98" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="258" y="102" fill="#e07b00">2</text>
+<circle cx="214" cy="60" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="214" y="64" fill="#e07b00">3</text>
+<circle cx="436" cy="160" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="436" y="164" fill="#12907e">1</text>
+<circle cx="548" cy="166" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="548" y="170" fill="#12907e">2</text>
+<circle cx="488" cy="200" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="488" y="204" fill="#12907e">3</text>
+</g>
+</svg>
+<figcaption>An SN2 step, drawn by hand to show how the arrows read. <b>1</b>
+tail: where the electron pair sits at the first frame. <b>2</b> head: where
+it sits at the last frame. <b>3</b> dot: where it is at the frame on screen.
+Orange: the nucleophile's lone pair becomes the new Nu–C bond. Teal: the C–X
+bond becomes a lone pair on the leaving group X. In mepd the lines are the
+computed paths of each pair's centre, and the atoms move with the
+frames.</figcaption>
+</figure>
+
+Each arrow is one electron pair (one bond orbital) that changes along the
+path. It is a curly arrow of the mechanism, but computed from the
+wavefunction instead of drawn by hand.
+
+| Part | What it shows |
+|---|---|
+| Tail | Where the pair sits at the first frame: in a lone pair's lobe, just off its atom, or along a bond, between its two atoms. |
+| Head | Where the pair sits at the last frame: between the two atoms of a new bond, or on the atom of a new lone pair. |
+| Line | The route of the pair's centre, frame by frame. |
+| Dot | Where the pair is at the frame on screen. Drag the slider and the dots move along the arrows. |
+| Thick arrow | The orbital chosen in the menu, the one drawn as blue/red surfaces. |
+| Colour | The same in the legend under the viewer ("Arrows") and in the plot. Click a legend entry to draw that orbital. |
+
+Hover an arrow in the view to see its name ("C1–C2 → C1–C6") and how much
+of the pair has moved at this frame. Only orbitals that change get an arrow
+(a change of 0.1 or more; see below). Every other bond and lone pair stays
+where it is.
+
+The pair's centre is the orbital's centroid ⟨φ|r|φ⟩, the average position of
+its two electrons, computed exactly from the basis at every frame. Drawing
+these centroids as arrows follows Vidossich & Lledós (2014).
+
+**How they differ from arrows drawn by hand:**
+
+- **They are short.** A pair's centre moves about 0.5–1 Å, so zoom in.
+- **A head ends between two atoms** (the new bond), not on an atom.
+- **They can bend near the transition state**, where an orbital is briefly
+  spread over three atoms and its centre sits between them.
+- **A short arrow inside one bond is polarization**: the pair shifts toward
+  one atom, and no bond forms or breaks. Its name ends in "(polarizes)".
+- **A ring of arrows can go either way.** For a pericyclic step
+  (Diels–Alder) the arrows could be drawn clockwise or counterclockwise, and
+  the orbitals pick one direction.
+
+**Timing.** The plot next to the menu shows, for every arrow in its colour,
+how much of the pair has moved at each frame. Arrows that rise together
+are synchronous. One that rises well before the others is a bond change
+that runs ahead of the rest within the same elementary step. In HCN → HNC
+(below), the hydrogen's two arrows are half done before the TS, and the N
+lone pair's arrow only after it.
+
+### How the orbitals are followed
+
+- **Following.** Each frame's orbitals are matched one to one with the
+  previous frame's by the largest overlap: an assignment (Hungarian method)
+  within each spin set, with the sign chosen so that the overlap is
+  positive, so the colours do not flip. The overlap uses the orbitals' IAO
+  coefficients. IAOs are the same atomic functions from frame to frame, as
+  IboView treats the atomic orbitals. If the smallest overlap with which an
+  orbital was followed is below 0.8 (IboView's warning level), the bar says
+  **⚠ loosely followed**. The frames may be too far apart, or the orbital
+  mixes with an equivalent one, such as lone pairs around a bond axis, where
+  any mix is as localized as another.
+- **Which orbitals change.** An orbital's change at a frame is
+  √(Σ_A (n_A − n_A(first frame))²), with n_A its population on atom A (the
+  measure of Klein & Knizia and IboView). Orbitals whose change reaches 0.1
+  at some frame are **changing**: they are listed first and drawn as arrows,
+  largest change first. The rest are listed as unchanged. IboView sets no
+  threshold and only ranks; 0.1 separated the reacting orbitals from the
+  rest in every case tried here (unchanged ones stayed below 0.05).
+- **"moved"** is the share of the orbital that has moved to other atoms
+  since the first frame: half the sum over atoms of the change in its
+  population. A lone pair on A that becomes an even A–B bond has moved 50 %.
+  The option list gives each changing orbital's largest value.
+- **The plot** shows every changing orbital's "moved" frame by frame, in its
+  arrow's colour. Whether the arrows move together or one after another says
+  whether the bond changes are synchronous or stepwise within one
+  elementary step.
+- **Δq** gives the atoms whose IAO charge at this frame differs most from
+  the first frame's (+ lost electrons, − gained).
+
+Until every frame is built, the frame on screen shows its own bond orbitals
+("following the path…").
+
+### Examples
+
+g-xTB IRCs, read from the start of the path:
+
+- **HCN → HNC** (44 frames, TS at frame 21): the C–H bond becomes a lone pair
+  on C (43 % moved), one of the C–N bonds becomes the N–H bond (49 %), and the N
+  lone pair becomes a C–N bond (32 %). The first two are half done by frame
+  17, before the TS. The lone pair is half done at frame 32, after it: the
+  hydrogen moves first and the lone pair follows. A fourth orbital, a C–N
+  bond, changes its polarization (14 %). The fifth stays below 3 %.
+- **Butadiene + ethylene → cyclohexene** (164 frames): three orbitals change,
+  each by 50 %. Each C=C π bond becomes one of the two new C–C σ bonds or
+  the new π bond. The other fourteen move less than 4 %. A pericyclic
+  reaction can be drawn with its arrows going either way round the ring,
+  and the bond orbitals pick one.
+
+### Reading them for design
+
+Each **?** in the bar explains its part in place: the bond orbitals, the
+arrows, and Δq. Each one links back here and to the References tab.
+
+- **Which bonds react.** The changing orbitals name the bonds and lone pairs
+  that do the chemistry, and everything else is a spectator. Substituents
+  and catalysts act on those atoms.
+- **Where charge builds up.** Δq at the TS says which atoms gain or lose
+  electrons on the way up. An electron-withdrawing group on an atom that
+  gains electrons, or a donor on one that loses them, stabilizes the TS
+  (the reasoning behind Hammett-type substituent effects). A Lewis acid or a
+  hydrogen-bond donor helps where a lone pair builds up. The charges are a
+  guide: check a suggestion by computing the substituted path.
+- **Timing.** If one arrow moves well before the others (a proton before a
+  C–C bond), the steps are asynchronous. A substituent that speeds up the
+  first event may change which event limits the rate.
+- **With Fragments.** Bonds shows what the electrons do. Fragments shows why,
+  for two molecules: the donor's filled and the acceptor's empty orbital,
+  their overlap and gap. A changing lone pair or π bond in Bonds is usually
+  the donor level that Fragments ranks first.
+
 ## Why the whole and fragment gaps differ
 
 They measure different things. The **whole gap** is the LUMO minus the HOMO
@@ -354,6 +570,39 @@ polarizing environment (an ion pair, a solvent) the real orbitals shift.
 - **Cost on a path.** Every frame is two or more extra single points. Cheap
   with xtb (about 0.5 s per frame for 16 atoms), slow with TeraChem.
 
+**Bond orbitals**
+
+- **xtb's minimal basis.** When the calculation's basis is itself minimal,
+  the IAO step has nothing to correct. The IAOs are then the
+  orthonormalized atomic orbitals, and the bond orbitals are Pipek–Mezey
+  orbitals on Löwdin populations. They are right in shape (the textbook
+  bonds and lone pairs above). No published work validates IBOs from
+  tight-binding wavefunctions, so check a conclusion that matters in a
+  TeraChem session (all-electron, MINAO reference).
+- **Exponent.** Only p = 2 is offered. p = 4 picks one Kekulé structure in
+  aromatic rings at a single geometry, but flips between them along a path.
+- **Following.** The matching assumes the frames are aligned, as an IRC's
+  are, and close enough. Mapping orbitals as sets between structures (Bensberg
+  & Reiher 2023) would be more robust for distant frames.
+- **The 0.1 threshold** for changing orbitals was set on three paths
+  (an SN2 by interpolation, HCN → HNC, Diels–Alder), not validated broadly.
+- **Not built yet**, from the same literature:
+  - natural reaction orbitals: the occupied and empty orbital pairs that mix
+    as the atoms move along the IRC, with a curve that peaks where the
+    electrons reorganize (Ebisawa et al. 2022);
+  - the activation strain model along the path: the energy of distorting
+    the molecules against their interaction, plotted against a forming bond
+    length (Bickelhaupt & Houk 2017). The fragment single points of
+    **Fragments** already give most of it;
+  - occupied–occupied overlaps in **Fragments**: Pauli repulsion, which
+    Lewis acid catalysis lowers (Vermeeren et al. 2020);
+  - charge-transfer orbitals with energies (ETS-NOCV, ALMO-EDA), which need
+    an SCF program with access to the Fock matrix (e.g. PySCF).
+- **Cost.** Each frame needs the whole system's orbitals: free when the
+  calculation computed that frame, else a single point. The Diels–Alder IRC
+  above (164 frames, 16 atoms, g-xTB) took 15–25 s the first time on a
+  laptop, 3 frames at a time. After that it is a file read.
+
 ## References
 
 - Frontier orbitals: K. Fukui, T. Yonezawa, H. Shingu, *J. Chem. Phys.* 20,
@@ -365,3 +614,24 @@ polarizing environment (an ion pair, a solvent) the real orbitals shift.
 - Whole-system orbitals in fragment orbitals: S. Dapprich, G. Frenking,
   *J. Phys. Chem.* 99, 9352 (1995).
 - Overlap integrals: S. Obara, A. Saika, *J. Chem. Phys.* 84, 3963 (1986).
+- Intrinsic atomic and bond orbitals: G. Knizia, *J. Chem. Theory Comput.* 9,
+  4834 (2013).
+- Electron flow along IRCs: G. Knizia, J. E. M. N. Klein, *Angew. Chem. Int.
+  Ed.* 54, 5518 (2015).
+- The orbital change measure and following orbitals frame to frame: J. E. M.
+  N. Klein, G. Knizia, *Angew. Chem. Int. Ed.* 57, 11913 (2018); J. E. M. N.
+  Klein, G. Knizia, H. S. Rzepa, *ChemistryOpen* 8, 1244 (2019).
+- Orbital centroids as arrows: G. Vidossich, A. Lledós, *Dalton Trans.* 43,
+  11145 (2014).
+- Pipek–Mezey localization: J. Pipek, P. G. Mezey, *J. Chem. Phys.* 90, 4916
+  (1989).
+- MINAO and IBOs in PySCF: Q. Sun et al., *J. Chem. Phys.* 153, 024109
+  (2020).
+- Mapping orbitals between structures: J. Bensberg, M. Reiher, *J. Phys.
+  Chem. Lett.* 14, 2112 (2023).
+- Natural reaction orbitals: T. Ebisawa, M. Hasebe, T. Tsutsumi, T. Tsuneda,
+  T. Taketsugu, *Phys. Chem. Chem. Phys.* 24, 3532 (2022).
+- Activation strain model: F. M. Bickelhaupt, K. N. Houk, *Angew. Chem. Int.
+  Ed.* 56, 10070 (2017); Lewis acids lower Pauli repulsion: P. Vermeeren, T.
+  A. Hamlin, I. Fernández, F. M. Bickelhaupt, *Angew. Chem. Int. Ed.* 59,
+  6201 (2020).

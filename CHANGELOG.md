@@ -23,6 +23,20 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   the Cartesian file of the same calculation give the same orbital values on a grid to 1e-7 relative
   (identical in single precision) for CH3Cl (GFN2-xTB, g-xTB 2.0.1) and CeH4 (g-xTB 2.0.1, f functions);
   the gfn2, gxtb and terachem readings are byte-identical to before.
+- **Bond orbitals** (Orbitals › Bonds, beside Whole and Fragments, in every 3D view and in Design): the
+  whole system's filled orbitals as its bonds and lone pairs (Knizia's intrinsic bond orbitals, built on
+  intrinsic atomic orbitals; xtb's own minimal valence shells, d and f as pure functions, or MINAO as the
+  reference, exponent 2), from the same orbitals the Whole view uses, Cartesian or spherical files (axtb's). On a finished path every orbital is followed from frame to frame;
+  the few that change are the mechanism's curly arrows, drawn as the path of each one's centroid, with how
+  much each has moved frame by frame and the atoms' charge change (Knizia & Klein's electron flow). Kept in
+  `<workspace>/orbitals/bonds/`. `POST /api/bond-orbitals`, `POST /api/bond-orbitals/path`,
+  `mepd.bond_orbitals`; manual: /manual/orbitals#bond-orbitals.
+- **Bond orbitals explained in place**: a colour-keyed "Arrows" legend under the viewer (click an entry to draw
+  that orbital), hover tags naming each arrow and how far its pair has moved, and "?" explanations of the bond
+  orbitals, the arrows and Δq, each linking to the manual and to the References tab. The manual's new
+  "What the arrows mean" section has a labelled diagram (tail, head, dot) and a table of every part. A "?"
+  explanation (static/explain.json) can now link its manual section (`manual`: "page#anchor"; checked by
+  tests/test_manual.py).
 - **Harmonic distance restraints** (`[[restraints]]` in a profile: `atoms = [i, j]`, `distance` in Å,
   `force_constant` in kcal/mol/Å², 500 by default) on any engine; on QM/MM inside the QM/MM energy, so
   microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a
@@ -590,6 +604,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Orbitals in busy workspaces are fast again.** Looking up a calculation's own SCF scanned every line its
+  index.jsonl ever got (346,218 lines in one workspace's 15 jobs, for about 15,000 molden files still kept),
+  fitting a rotation to each: 1.4 s per frame, serialized across threads. Now only the entries whose files
+  exist are read (then the index is read on from where it stopped), their positions compared as one array,
+  and a rotation fitted only where every atom's distance to the centroid agrees: 0.4 ms, the same answers on
+  all 512 test lookups there. Bond orbitals' integrals and localization are compiled (numba, threads run them
+  at once): building a 20-atom path's frames went from 2.6 s to 0.07 s each (30 frames: 77 s to 2 s), a
+  75-atom frame from 4.2 s to 1.2 s. Whole and Fragments use the same lookup.
 - **The Docker image runs GFN-xTB with the official xtb 6.7.1 release** (`XTB_EXECUTABLE=/opt/xtb/bin/xtb`,
   checksum-verified), not conda-forge's, whose CPCM-X gave one energy for every solvent (the test below failed
   in CI, so nothing deployed since 2026-10-28). Not the g-xTB build either: its CPCM-X gives other values

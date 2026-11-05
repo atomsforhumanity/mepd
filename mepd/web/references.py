@@ -32,6 +32,25 @@ _OTHER = [
         ],
     },
     {
+        "feature": "Bond orbitals",
+        "where": "Orbitals › Bonds (in any 3D view with orbitals, and Design)",
+        "items": [
+            {"what": "Intrinsic atomic orbitals (IAOs) and intrinsic bond orbitals (IBOs)",
+             "cite": ["G. Knizia, J. Chem. Theory Comput. 9, 4834 (2013), doi:10.1021/ct400687b"]},
+            {"what": "Electron flow along a reaction path: the few bond orbitals that change are the curly arrows",
+             "cite": ["G. Knizia, J. E. M. N. Klein, Angew. Chem. Int. Ed. 54, 5518 (2015), doi:10.1002/anie.201410637"]},
+            {"what": "The orbital change measure, and following orbitals from frame to frame by overlap",
+             "cite": ["J. E. M. N. Klein, G. Knizia, Angew. Chem. Int. Ed. 57, 11913 (2018), doi:10.1002/anie.201805511",
+                      "J. E. M. N. Klein, G. Knizia, H. S. Rzepa, ChemistryOpen 8, 1244 (2019), doi:10.1002/open.201900099"]},
+            {"what": "Orbital centroids as curly arrows",
+             "cite": ["G. Vidossich, A. Lledós, Dalton Trans. 43, 11145 (2014), doi:10.1039/C4DT00251B"]},
+            {"what": "Localization by atomic populations (the exponent-2 functional)",
+             "cite": ["J. Pipek, P. G. Mezey, J. Chem. Phys. 90, 4916 (1989), doi:10.1063/1.456588"]},
+            {"what": "The MINAO reference basis (as distributed with PySCF)",
+             "cite": ["Q. Sun et al., J. Chem. Phys. 153, 024109 (2020), doi:10.1063/5.0006074"]},
+        ],
+    },
+    {
         "feature": "QM/MM",
         "where": "Put in explicit solvent (QM/MM), QM/MM systems",
         "items": [
