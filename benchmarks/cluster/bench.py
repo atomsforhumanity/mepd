@@ -278,6 +278,8 @@ def report(name: str) -> str:
            "", (res / "table.md").read_text()]
     groups = {k: g for k, g in agg.items() if isinstance(g, dict) and "system" in g}
     configs = sorted({g["config"] for g in groups.values()})
+    if "default" in configs and "T1800" in configs:
+        configs = ["T1800", "default"]
     if len(configs) == 2:
         per = {c: {g["system"]: g for g in groups.values() if g["config"] == c} for c in configs}
         both = sorted(set(per[configs[0]]) & set(per[configs[1]]))
@@ -326,8 +328,21 @@ def report(name: str) -> str:
                        + ", ".join(f"{k} {v:.0f}" for k, v in sorted((w.get('busy_s') or {}).items(),
                                                                        key=lambda kv: -(kv[1] or 0)) if v))
     out.append("")
-    out.append("## controls (replicate 0 rerun with the same seeds)")
     by_id = {o["id"]: o for o in scores}
+    pairs = [(by_id[i.replace("-program-", "-default-")], by_id[i]) for i in by_id
+             if "-program-" in i and i.replace("-program-", "-default-") in by_id]
+    if pairs:
+        out.append("## equivalence: g-xTB program vs axtb (same seeds)")
+        for a, b in pairs:
+            g = lambda r: (f"species {r.get('species')}, steps {r.get('steps')}, sel "
+                           f"{'; '.join(format(t['selectivity'], '.3g') if t.get('selectivity') is not None else '-' for t in r.get('targets', []))}, "
+                           f"found {r.get('recall', {}).get('found')}, connected {r.get('recall', {}).get('connected')}, "
+                           f"wall {r.get('wall_s') or 0:.0f} s, CPU {r.get('cpu_h') or 0:.2f} h, "
+                           f"job s {((r.get('job_time') or {}).get('worker_s') or 0):.0f}, {r.get('stopped')}")
+            out.append(f"- axtb {a['id']}: {g(a)}")
+            out.append(f"- program {b['id']}: {g(b)}")
+        out.append("")
+    out.append("## controls (replicate 0 rerun with the same seeds)")
     for o in scores:
         if not o.get("control_of") or o["control_of"] not in by_id:
             continue
