@@ -570,9 +570,11 @@ class HorizontalConnector:
                     self._running.value = busy()
                     t_end = time.monotonic()
                     t_start = started.pop(fut, t_end)
+                    exc = fut.exception()
                     log_event({"event": "job", "kind": kind.removeprefix("own:"), "what": what(kind, pair, args),
                                "wait_s": round(t_start - queued_at.pop(id(args), t_start), 1),
-                               "run_s": round(t_end - t_start, 1), "ok": fut.exception() is None})
+                               "run_s": round(t_end - t_start, 1), "ok": exc is None,
+                               **({} if exc is None else {"why": f"{type(exc).__name__}: {exc}"})})
                     rerun = False
                     try:
                         i, j = pair if pair is not None else (None, None)

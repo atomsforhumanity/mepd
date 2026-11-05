@@ -1079,7 +1079,11 @@ class _AsyncConnector(_IcingConnector):
             while self.queue:
                 job = self.queue.pop(0)
                 if job[0] == "own":
-                    job[3](self._jobs[job[1]](*job[2]))
+                    try:
+                        out = self._own(job[1], job[2])
+                    except Exception:          # as in the real queue: a failed job comes back as None
+                        out = None
+                    job[3](out)
                     continue
                 i, j = job[1]
                 self.pairs.append((i, j))
@@ -1090,6 +1094,112 @@ class _AsyncConnector(_IcingConnector):
             if not (on_drain is not None and on_drain()):
                 break
         return []
+
+    def _own(self, kind, args):
+        return self._jobs[kind](*args)
+
+
+class _ForkedAsyncConnector(_AsyncConnector):
+    """As _AsyncConnector, but its own jobs run in one worker process forked at the first job, as the real
+    queue's pool workers are: whatever a job reads of the explorer's state is its copy from that moment."""
+
+    def __init__(self):
+        super().__init__()
+        self._pipe = None
+
+    def _own(self, kind, args):
+        import multiprocessing as mp
+        import os
+
+        if self._pipe is None:
+            here, there = mp.Pipe()
+            pid = os.fork()
+            if pid == 0:                          # the worker: run jobs until told to stop, never return
+                try:
+                    here.close()
+                    while (msg := there.recv()) is not None:
+                        try:
+                            there.send(("ok", self._jobs[msg[0]](*msg[1])))
+                        except Exception as exc:   # sent back: the test fails with it
+                            there.send(("error", f"{type(exc).__name__}: {exc}"))
+                finally:
+                    os._exit(0)
+            there.close()
+            self._pipe, self._pid = here, pid
+        self._pipe.send((kind, args))
+        status, out = self._pipe.recv()
+        if status == "error":
+            raise RuntimeError(f"the {kind} job failed in the worker: {out}")
+        return out
+
+    def close(self):
+        import os
+
+        if self._pipe is not None:
+            self._pipe.send(None)
+            os.waitpid(self._pid, 0)
+            self._pipe = None
+
+
+def _hcn_reactor(calls):
+    """A stand-in "reactor" (a structures generator) for HCN <-> HNC: the H moved to the other heavy atom.
+    Records the options each call got."""
+
+    def propose(structure, *, max_products, options):
+        calls.append(dict(options))
+        sy, xyz = list(structure.symbols), np.asarray(structure.geometry, dtype=float).copy()
+        h, c, n = sy.index("H"), sy.index("C"), sy.index("N")
+        near, far = (c, n) if np.linalg.norm(xyz[h] - xyz[c]) < np.linalg.norm(xyz[h] - xyz[n]) else (n, c)
+        axis = (xyz[far] - xyz[near]) / np.linalg.norm(xyz[far] - xyz[near])
+        xyz[h] = xyz[far] + axis * np.linalg.norm(xyz[h] - xyz[near])
+        return [structure.model_copy(update={"geometry": xyz})]
+
+    return propose
+
+
+def test_async_reactor_expands_species_found_after_the_job_workers_started(monkeypatch):
+    """The reactor's options for a species (what is left of the access cutoff above it) are made when its
+    proposals are queued, in the main process: a pool worker's copy of the network is the one from when it
+    was forked (only the seed), so reading the species there failed for every species but the seed
+    (IndexError, 07c1cd9) and the network never grew past the seed's own proposals."""
+    from mepd.discovery import generators
+
+    calls = []
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", _hcn_reactor(calls), kind="structures"))
+    kw = dict(steer="access", access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+              schedule="async", generator="reactor", generator_options={"n_seeds": 1}, allow_zwitterions=True)
+    forked = _ForkedAsyncConnector()
+    try:
+        res = expand_network(_node("C#N"), _GraphEngine(), connect=forked, **kw)
+    finally:
+        forked.close()
+    assert {0, 1} <= set(res.rounds[0]["sources"])       # HNC, found after the worker forked, was expanded
+    assert "proposals_failed" not in res.rounds[0]
+    # in one process: each species' call got what is left of the cutoff above that species
+    res = expand_network(_node("C#N"), _GraphEngine(), connect=_AsyncConnector(), **kw)
+    assert [c["cutoff_kcal"] for c in calls] == pytest.approx([30.0 - s.rel_energy_kcal for s in res.species[:2]])
+
+
+def test_async_a_failed_proposal_job_is_said_and_not_counted_as_an_expansion(monkeypatch):
+    """A species whose proposals failed is listed under the round's proposals_failed, not its sources: the
+    summary must not read it as expanded (07c1cd9's IndexError hid behind exactly that)."""
+    from mepd.discovery import generators
+
+    hcn, calls = _hcn_reactor([]), [0]
+
+    def propose(structure, *, max_products, options):
+        calls[0] += 1
+        if calls[0] > 1:
+            raise RuntimeError("the generator failed")
+        return hcn(structure, max_products=max_products, options=options)
+
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", propose, kind="structures"))
+    res = expand_network(_node("C#N"), _GraphEngine(), connect=_AsyncConnector(), steer="access",
+                         access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6}, schedule="async",
+                         generator="reactor", generator_options={"n_seeds": 1}, allow_zwitterions=True)
+    assert res.rounds[0]["sources"] == [0] and res.rounds[0]["proposals_failed"] == [1]
 
 
 def test_async_schedule_expands_species_as_the_kinetics_reach_them_in_one_queue():

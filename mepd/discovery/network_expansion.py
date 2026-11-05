@@ -2161,17 +2161,16 @@ def expand_network(
         if gen_obj.kind == "structures" and ("parallel" in job_opts or "parallel" in gen_obj.options):
             job_opts["parallel"] = width   # its share of the workers, not all of them
 
-        def _propose_job(src, structure, known_smiles):
+        def _propose_job(src, structure, known_smiles, gen_opts):
             """In a worker: the generator's proposals for species `src`, minimized (loosely, as in rounds),
             with their Hessian checks when asked for. Proposals of species known when it was queued come
-            back unminimized ("known")."""
+            back unminimized ("known"). `gen_opts`, a structures generator's options for `src`, are made when
+            it is queued: the worker's copy of the network is the one from when its pool was forked."""
             node = StructureNode(structure=structure)
             if gen_obj.kind == "structures":
                 gen_obj.check()
-                opts = _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
-                                         result.species[src])
-                props = external_proposals(gen_obj.propose(structure, max_products=max_products, options=opts),
-                                           structure, src)
+                props = external_proposals(gen_obj.propose(structure, max_products=max_products,
+                                                           options=gen_opts), structure, src)
             else:
                 coords = view.coords(node)
                 props, _ = propose_products(
@@ -2230,10 +2229,11 @@ def expand_network(
             expanding.discard(src)
             expanded.add(src)
             rec = result.rounds[-1]
-            rec["sources"].append(src)
-            if out is None:
+            if out is None:     # not counted as expanded: said in the round (the why: the queue's job event)
+                rec.setdefault("proposals_failed", []).append(src)
                 _emit(on_event, "warning", message=f"proposals for species {src} failed")
                 return
+            rec["sources"].append(src)
             props, res = out
             rec["proposed"] += len(props)
             known = {sp.smiles: k for k, sp in enumerate(result.species) if sp.smiles}
@@ -2272,7 +2272,9 @@ def expand_network(
             for k in picks:
                 expanding.add(k)
                 known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
-                connect.submit("propose", (k, result.species[k].node.structure, known_smiles),
+                connect.submit("propose", (k, result.species[k].node.structure, known_smiles,
+                                           _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
+                                                             result.species[k])),
                                lambda out, k=k: _proposed(k, out), label=f"species {k}")
             if picks:
                 _emit(on_event, "expanding", round=rnd, species=picks)

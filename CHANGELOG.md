@@ -703,6 +703,16 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Async explorer with the reactor: species past the seed were never expanded** (from 07c1cd9, the reactor's
+  energy cutoff). The proposal job read the species it expands from the explorer's network inside the queue's
+  pool worker, whose copy of the network is the one from when the pool was forked (only the seed): every
+  proposal job for another species raised IndexError, and the network grew only by the seed's own proposals,
+  IRC ends and channel sampling. The reactor's options for a species are now made when its proposals are
+  queued, in the main process. A failed proposal job is now listed under the round's `proposals_failed`
+  instead of its `sources` (it had counted as an expansion, so a run could end "converged" with expansions
+  missing), and the queue's `job` event in network_aware.jsonl carries the failure (`why`). A test runs the
+  queue's jobs in a forked worker, as the real pool does.
+
 - **Explorer free energies: a TS's spectators also count bound, when that is lower.** Counting a
   molecule whose bonds don't change apart (at the standard state) drops whatever it does to the TS
   electronically, so a catalyst acting only through an H-bond, an ion pair or a dative contact lost its
