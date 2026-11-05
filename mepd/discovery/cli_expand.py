@@ -302,7 +302,7 @@ def _channels_refiner(run_inputs, output: Path, workers: int, options: dict, max
                     rec[kind].append({"start": st.irc.path[0], "end": st.irc.path[-1], "ts": st.ts,
                                       "label": f"ch_{label}_{st.folder.parent.name}_{st.folder.name}",
                                       "files": {"ts": str(st.folder / "ts.xyz"), "verified": True,
-                                                "channels": str(folder)}})
+                                                "irc": str(st.folder / "irc.xyz"), "channels": str(folder)}})
         for pool in (res.start_conformers, res.end_conformers):
             with_e = [n for n in pool if getattr(n, "_cached_energy", None) is not None]
             if with_e:
@@ -939,9 +939,11 @@ def expand(
                          "mirror_images": mirror_images is not False}
                         if steer in ("flux", "access") else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
-        # kinetics_barrier_kcal: what the rates used (the TS never below an end).
+        # kinetics_barrier_kcal: what the rates used (the TS never below an end); null for a step out of the
+        # kinetics' reach (closed: no rate).
         "steps": [{"a": st.a, "b": st.b, "ts_energy": st.ts_energy, "barrier_kcal": list(raw),
-                   "kinetics_barrier_kcal": list(bar), "label": st.label, "files": st.files,
+                   "kinetics_barrier_kcal": list(bar) if bar is not None else None, "label": st.label,
+                   "files": st.files,
                    "warning": negative_barrier_warning(st.label, st.a, st.b, *raw)}
                   for st, bar, raw in zip(result.steps, result.kinetics.barriers_kcal if result.kinetics else [],
                                           raw_barriers(result.steps, [float(s.node.energy) for s in result.species]))],

@@ -193,7 +193,8 @@ def _reoptimize(item: Item, high, free_high: Optional[FreeEnergies]) -> dict:
             (same_molecule(first, b) and same_molecule(last, a))):
         raise RuntimeError("its IRC at the higher level connects other species")
     e = _energy(ts.structure, high)
-    thermal = free_high.corrections([ts.structure], [True])[0] if free_high is not None else 0.0
+    thermal = (free_high.corrections([ts.structure], [True], [(first.structure, last.structure)])[0]
+               if free_high is not None else 0.0)
     return {"e_high": e, "g_high": e + thermal / HARTREE_TO_KCAL_PER_MOL, "structures": [ts.structure]}
 
 
@@ -250,12 +251,16 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
         ts = Structure.open(str(fp))
         ts_structs[m] = ts.model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity})
 
-    # The explorer's own free energies (its level, its geometries)
+    # The explorer's own free energies (its level, its geometries); a TS's spectators apart, as in the species
+    from mepd.discovery.free_energy import step_ends
+
+    ts_ends = {m: step_ends(steps[m].files or {}, (species[steps[m].a], species[steps[m].b])) for m in open_steps}
     free_low = FreeEnergies(low_engine, temperature, standard_state, workers) if free_energy else None
     sp_idx = sorted(reach)
     if free_low is not None:
         corr = free_low.corrections([species[k] for k in sp_idx] + [ts_structs[m] for m in open_steps],
-                                    [False] * len(sp_idx) + [True] * len(open_steps))
+                                    [False] * len(sp_idx) + [True] * len(open_steps),
+                                    [None] * len(sp_idx) + [ts_ends[m] for m in open_steps])
         if any(c is None for c in corr):
             raise RuntimeError("thermal corrections failed at the explorer's level: " + "; ".join(free_low.notes))
         sp_corr = dict(zip(sp_idx, corr[:len(sp_idx)]))
@@ -270,7 +275,9 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     items = [Item("species", k, species[k],
                   _fragments(species[k], splitter.parts(species[k], False) if free_energy else [None]))
              for k in sp_idx]
-    items += [Item("ts", m, ts_structs[m], [ts_structs[m]], (species[steps[m].a], species[steps[m].b]))
+    items += [Item("ts", m, ts_structs[m],
+                   _fragments(ts_structs[m], splitter.parts(ts_structs[m], True, ts_ends[m]) if free_energy else [None]),
+                   (species[steps[m].a], species[steps[m].b]))
               for m in open_steps]
     for n in dict.fromkeys(splitter.notes):
         say(f"free energies: {n}")
@@ -342,15 +349,16 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
             if isinstance(r, str):
                 say(f"{label}: not re-converged at the higher level ({r}); its single-point free energy is used")
                 continue
+            lows = it.parts if it.kind == "species" else [it.structure]   # a TS is re-converged whole
             row.update(how="reoptimized", e_high=r["e_high"],
-                       rmsd_angstrom=max(_rmsd_angstrom(lo, hi) for lo, hi in zip(it.parts, r["structures"])))
+                       rmsd_angstrom=max(_rmsd_angstrom(lo, hi) for lo, hi in zip(lows, r["structures"])))
             if save_dir is not None:
                 save_dir = Path(save_dir)
                 save_dir.mkdir(parents=True, exist_ok=True)
                 stem = f"species_{it.index}" if it.kind == "species" else f"ts_{it.index}"
                 files = []
-                for j, (lo, hi) in enumerate(zip(it.parts, r["structures"])):
-                    part = f"_m{j}" if len(it.parts) > 1 else ""
+                for j, (lo, hi) in enumerate(zip(lows, r["structures"])):
+                    part = f"_m{j}" if len(lows) > 1 else ""
                     for level, st in (("low", lo), ("high", hi)):
                         name = f"{stem}{part}_{level}.xyz"
                         st.save(save_dir / name)

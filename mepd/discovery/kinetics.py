@@ -51,7 +51,7 @@ class KineticsResult:
     flux: list[float]          # integrated inflow per species
     max_concentration: list[float]
     final_concentration: list[float]
-    barriers_kcal: list[tuple[float, float]]  # (forward a->b, reverse b->a) per step
+    barriers_kcal: list[Optional[tuple[float, float]]]  # (forward a->b, reverse b->a) per step; None: closed
     # with mirror images (mepd.discovery.mirror): the species the explorer found come first, the
     # mirror images it did not find after them; `mirrors` is Mirrors.record()
     n_found: Optional[int] = None

@@ -179,14 +179,19 @@ class HorizontalConnector:
             self._next_index.update(state.get("next_index", {}))
 
     # --- jobs -------------------------------------------------------------
-    def _write_ts(self, ts, label: str) -> str:
+    def _write_ts(self, ts, label: str, ends=None) -> str:
+        """ts/<label>.xyz, and with `ends` (the two nodes its search started between, in its atom order)
+        ts/<label>_ends.xyz: what tells a TS's spectators from its reacting complex until it has an IRC
+        (free_energy.step_ends)."""
         import mepd
 
         fp = self.ts_dir / f"{label}.xyz"
         mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
+        if ends is not None:
+            mepd.write_xyz(self.ts_dir / f"{label}_ends.xyz", list(ends))
         return str(fp)
 
-    def _ts_correction(self, ts, label: str):
+    def _ts_correction(self, ts, label: str, ends=None):
         """(cache key, thermal correction) of the TS as the caller's kinetics read it back from its file, or
         None: computed here, in the worker, so the caller's free-energy kinetics don't stop the queue for
         a Hessian each time a TS comes in."""
@@ -197,7 +202,8 @@ class HorizontalConnector:
         try:
             st = _open_structure(self.ts_dir / f"{label}.xyz").model_copy(
                 update={"charge": ts.structure.charge, "multiplicity": ts.structure.multiplicity})
-            return self.free._key(st, True), float(self.free._correction(st, True))
+            ends = [n.structure for n in ends] if ends is not None else None
+            return self.free._key(st, True, ends), float(self.free._correction(st, True, ends))
         except Exception:
             return None   # the caller computes it, or keeps the electronic energy (said)
 
@@ -207,13 +213,13 @@ class HorizontalConnector:
         label = label or f"fast_{i}_{j}"
         if (self.ts_dir / f"{label}.xyz").exists():
             ts = mepd.load(self.ts_dir / f"{label}.xyz")
-            return ts, label, self._ts_correction(ts, label)
+            return ts, label, self._ts_correction(ts, label, (a, b))
         path = mepd.interpolate(a, b, nimages=self.nimages)
         en = mepd.energies(list(path.nodes), self.job_inputs.engine)
         k = max(range(1, len(en) - 1), key=lambda m: en[m])
         ts = mepd.find_ts(path.nodes[k], self.job_inputs.engine, maxiter=self.fast_ts_steps, continue_unconverged=0)
-        self._write_ts(ts, label)
-        return ts, label, self._ts_correction(ts, label)
+        self._write_ts(ts, label, (a, b))
+        return ts, label, self._ts_correction(ts, label, (a, b))
 
     def _piece(self, chain, index: int, depth: int):
         from mepd.msmep import _parallel_recursive_step_worker
@@ -224,8 +230,8 @@ class HorizontalConnector:
         import mepd
 
         ts = mepd.find_ts(chain.get_ts_node(), self.job_inputs.engine)
-        self._write_ts(ts, label)
-        corr = self._ts_correction(ts, label)
+        self._write_ts(ts, label, (chain[0], chain[-1]))
+        corr = self._ts_correction(ts, label, (chain[0], chain[-1]))
         if self.end_keywords is None:
             return ("with_ends", ts, None, corr)
         # The piece's two ends minimized as the caller would (its `end_keywords`), here in the worker: done
@@ -249,7 +255,7 @@ class HorizontalConnector:
             if any(getattr(n, "_cached_energy", None) is None for n in nodes):
                 self.job_inputs.engine.compute_energies(nodes)
             peak = max(nodes, key=lambda n: float(n.energy)).copy()
-            self._write_ts(peak, label)
+            self._write_ts(peak, label, (nodes[0], nodes[-1]))
             return peak
         except Exception:
             return None

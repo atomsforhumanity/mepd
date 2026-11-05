@@ -1505,6 +1505,9 @@ def expand_network(
         k_energies, k_steps, basis = _free_energy_view(energies)
         energies = [float(s.node.energy) for s in result.species]   # tightened species
         kinetic = _simulate(k_steps, k_energies, basis.startswith("free"))
+        # a step closed out of reach has no barrier of its own (its TS + 1 Hartree only stops its rate)
+        kinetic.barriers_kcal = [None if m < len(k_steps) and k_steps[m].files.get("closed") else b
+                                 for m, b in enumerate(kinetic.barriers_kcal)]
         result.kinetics = kinetic
         warnings = negative_barrier_warnings(result.steps, energies)
         for w in warnings:
@@ -1523,10 +1526,17 @@ def expand_network(
         ref = result.species[0].node.structure
         return _open_structure(fp).model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity})
 
+    def _ts_ends(st):
+        """Step `st`'s two ends in its TS's atom order (free_energy.step_ends)."""
+        from mepd.discovery.free_energy import step_ends
+
+        return step_ends(st.files or {}, (result.species[st.a].node.structure, result.species[st.b].node.structure))
+
     def _steer_shifts(structs: list, queue=None) -> list:
-        """E_high - E_low (Hartree) of each (structure, is_ts), the molecules of a species apart when the
-        free energies count them so; None where a single point failed. `queue(key, item)`: the missing
-        single points are handed to it (jobs of the async queue) and are None until they come back."""
+        """E_high - E_low (Hartree) of each (structure, is_ts, a TS's step's ends or None), the molecules of a
+        species -- a TS's spectators -- apart when the free energies count them so; None where a single point
+        failed. `queue(key, item)`: the missing single points are handed to it (jobs of the async queue) and are
+        None until they come back."""
         import hashlib
 
         from mepd.cli_common import _fork_map
@@ -1536,10 +1546,13 @@ def expand_network(
         splitter = free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"))
         keys = []
         todo: dict = {}
-        for s, is_ts in structs:
+        for s, is_ts, ends in structs:
+            # a TS with spectators apart is another item than the TS whole (keys saved before kept theirs)
+            groups = splitter._groups(s, is_ts, ends) if free is not None else None
             xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
             key = hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
-                                     is_ts)).encode()).hexdigest()[:24]
+                                     is_ts) + ((groups,) if groups and len(groups) > 1 else ()))
+                               .encode()).hexdigest()[:24]
             keys.append(key)
             if key in steer_delta or key in todo:
                 continue
@@ -1547,7 +1560,7 @@ def expand_network(
             if done is not None:
                 steer_delta[key] = done["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
                 continue
-            parts = [s] if is_ts or free is None else _fragments(s, splitter.parts(s, False))
+            parts = [s] if free is None else _fragments(s, splitter.parts(s, is_ts, ends))
             todo[key] = Item("ts" if is_ts else "species", 0, s, parts)
         if todo and queue is not None:
             for key, item in todo.items():
@@ -1600,8 +1613,8 @@ def expand_network(
         sp_idx = sorted(reach)
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
-        d = _steer_shifts([(result.species[k].node.structure, False) for k in sp_idx]
-                          + [(ts[m], True) for m in open_steps], queue)
+        d = _steer_shifts([(result.species[k].node.structure, False, None) for k in sp_idx]
+                          + [(ts[m], True, _ts_ends(result.steps[m])) for m in open_steps], queue)
         d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
         if d_sp.get(0) is None and queue is not None:
             return g, steps, basis     # the seed's single point is still running
@@ -1642,7 +1655,8 @@ def expand_network(
             ts_structs.append(ts.model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity}))
         sp_idx = sorted(reach)
         corr = free.corrections([result.species[k].node.structure for k in sp_idx] + ts_structs,
-                                [False] * len(sp_idx) + [True] * len(ts_structs))
+                                [False] * len(sp_idx) + [True] * len(ts_structs),
+                                [None] * len(sp_idx) + [_ts_ends(result.steps[m]) for m in open_steps])
         for note in dict.fromkeys(free.notes):
             _emit(on_event, "warning", message=f"free energies: {note}")
         free.notes.clear()
@@ -1651,8 +1665,10 @@ def expand_network(
         sp_corr = dict(zip(sp_idx, corr[:len(sp_idx)]))
         ts_corr = dict(zip(open_steps, corr[len(sp_idx):]))
         g = [e + sp_corr.get(k, 0.0) / HARTREE_TO_KCAL_PER_MOL for k, e in enumerate(energies)]
-        steps = [Step(st.a, st.b, st.ts_energy + (ts_corr[m] / HARTREE_TO_KCAL_PER_MOL if m in ts_corr else 1.0),
-                      st.label, st.files) for m, st in enumerate(result.steps)]
+        # a closed step: TS + 1 Hartree, no rate -- marked, so no one reads that as its barrier
+        steps = [Step(st.a, st.b, st.ts_energy + ts_corr[m] / HARTREE_TO_KCAL_PER_MOL, st.label, st.files)
+                 if m in ts_corr else Step(st.a, st.b, st.ts_energy + 1.0, st.label, {**st.files, "closed": True})
+                 for m, st in enumerate(result.steps)]
         closed = len(result.steps) - len(open_steps)
         return g, steps, (f"free energy ({kin['temperature']:g} K, {kin.get('standard_state', '1M')})"
                           + (f"; {closed} step(s) out of reach closed" if closed else ""))

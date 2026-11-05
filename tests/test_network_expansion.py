@@ -580,7 +580,7 @@ def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tigh
             return super().compute_geometry_optimization(node, keywords)
 
     monkeypatch.setattr(ne, "_takes_fmax", lambda engine: True)
-    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None: [0.0] * len(structures))
     engine = Engine()
     res = expand_network(_node("C#N"), engine, rounds=1, allow_zwitterions=True, steer="access",
                          connect=_connector(5.0), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
@@ -589,6 +589,20 @@ def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tigh
     assert reached and not any(res.species[k].loose for k in reached)
     tight = expand_network(_node("C#N"), Engine(), rounds=1, allow_zwitterions=True, proposal_fmax=0)
     assert not any(s.loose for s in tight.species)
+
+
+def test_a_step_out_of_reach_has_no_kinetics_barrier(monkeypatch):
+    """A step the free-energy kinetics close (its TS above the cutoff) runs at TS + 1 Hartree, which only stops
+    its rate: its kinetics barrier is None, not ~630 kcal/mol."""
+    from mepd.discovery.free_energy import FreeEnergies
+
+    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None: [0.0] * len(structures))
+    res = expand_network(_node("C#N"), _ShiftEngine(), rounds=1, allow_zwitterions=True, steer="access",
+                         connect=_connector(5.0), access_cutoff_kcal=3.0, kinetics={"free_energy": True})
+    assert res.steps and res.kinetics.barriers_kcal[:len(res.steps)] == [None] * len(res.steps)
+    res = expand_network(_node("C#N"), _ShiftEngine(), rounds=1, allow_zwitterions=True, steer="access",
+                         connect=_connector(5.0), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
+    assert all(b is not None and b[0] < 10.0 for b in res.kinetics.barriers_kcal[:len(res.steps)])
 
 
 def test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=None):

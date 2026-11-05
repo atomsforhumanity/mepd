@@ -52,3 +52,57 @@ def test_a_species_of_two_molecules_counts_them_apart(monkeypatch):
     assert sorted(seen) == [(("C", "O"), 0, 1, False), (("O", "H", "H"), 0, 1, False)]
     seen.clear()
     assert fe._correction(st, ts=True) == -40.0 and len(seen) == 1    # a TS is one molecule
+
+
+# formic acid -> CO + H2O next to a spectator water (O5 H6 H7), Angstrom
+_W = np.array([[6.0, 0, 0], [6.96, 0, 0], [5.76, 0.93, 0]])
+_CO_H2O = np.array([[3.0, 0, 0], [-0.41, 0.06, -0.16], [-0.56, 1.17, 0.27], [3.96, 0, 0], [2.76, 0.93, 0]])
+TS_SYM = SYM + ["O", "H", "H"]
+
+
+def _st(xyz):
+    from qcdata import Structure
+
+    return Structure(symbols=TS_SYM, geometry=np.asarray(xyz) * 1.8897259886, charge=0, multiplicity=1)
+
+
+def test_a_ts_counts_its_spectators_apart_and_its_reacting_complex_whole(monkeypatch):
+    from mepd.discovery.free_energy import ts_groups
+
+    start, end = np.vstack([XYZ, _W]), np.vstack([_CO_H2O, _W])
+    # the TS where the water has left: a distance split would cut the reacting complex in two, its ends don't
+    assert ts_groups(TS_SYM, end, [start, end]) == [[0, 1, 2, 3, 4], [5, 6, 7]]
+    assert ts_groups(TS_SYM, start, [start, start]) is None                  # nothing reacts
+    swapped = end[[5, 1, 2, 3, 4, 0, 6, 7]]          # an end in another atom order: the two waters swap O
+    assert ts_groups(TS_SYM, end, [start, swapped]) is None
+
+    fe = FreeEnergies(engine=None, temperature=1000.0)
+    seen = []
+    monkeypatch.setattr(fe, "_one", lambda s, x, q, m, ts: seen.append((tuple(s), ts)) or -40.0)
+    monkeypatch.setattr("mepd.energies", lambda nodes, eng: [0.0] * len(nodes))
+    ts = _st(end)
+    assert fe._correction(ts, True, (_st(start), _st(end))) == -80.0
+    assert seen == [(tuple(SYM), True), (("O", "H", "H"), False)]           # the reaction mode: complex only
+    seen.clear()
+    assert fe._correction(ts, True) == -40.0 and seen == [(tuple(TS_SYM), True)]   # no ends: whole
+    assert fe._key(ts, True, (_st(start), _st(end))) != fe._key(ts, True)
+    seen.clear()
+    assert fe._correction(ts, True, (_st(start), _st(swapped))) == -40.0 and len(seen) == 1
+    assert any("don't match its bonds" in n for n in fe.notes)
+
+
+def test_step_ends_come_from_the_irc_then_the_ts_job_then_the_species(tmp_path):
+    import mepd
+    from mepd.discovery.free_energy import step_ends
+    from mepd.nodes.node import StructureNode
+
+    a, b, mid = _st(np.vstack([XYZ, _W])), _st(np.vstack([_CO_H2O, _W])), _st(np.vstack([XYZ, _W]) + 0.01)
+    ts = tmp_path / "s.xyz"
+    mepd.write_xyz(ts, StructureNode(structure=mid))
+    assert step_ends({"ts": str(ts)}, ("A", "B")) == ("A", "B")
+    mepd.write_xyz(tmp_path / "s_ends.xyz", [StructureNode(structure=b), StructureNode(structure=a)])
+    e0, e1 = step_ends({"ts": str(ts)}, ("A", "B"))
+    assert np.allclose(e0.geometry, b.geometry, atol=1e-5) and np.allclose(e1.geometry, a.geometry, atol=1e-5)
+    mepd.write_xyz(tmp_path / "irc.xyz", [StructureNode(structure=s) for s in (a, mid, b)])
+    e0, e1 = step_ends({"ts": str(ts), "irc": str(tmp_path / "irc.xyz")}, ("A", "B"))
+    assert np.allclose(e0.geometry, a.geometry, atol=1e-5) and np.allclose(e1.geometry, b.geometry, atol=1e-5)

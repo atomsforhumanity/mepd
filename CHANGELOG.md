@@ -616,6 +616,25 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Explorer free energies: a TS's spectators count apart, as in its species.** A species of several molecules
+  counts them apart at the standard state; a TS counted as one complex, so in a cluster seed a step between two
+  molecules paid its spectators' association entropy on top of its barrier (about +20 to +50 kcal/mol at
+  1000 K on (HCOOH)4). Now a TS's reacting complex -- the connected pieces of the union of its step's two ends'
+  bond graphs that hold a bond made or broken -- stays whole and loses its reaction mode, and each spectator
+  counts apart with its own electronic energy, as the species' molecules do (`free_energy.ts_groups`). The ends
+  are the step's IRC ends, else the two structures its TS search started from (written by the TS job as
+  `ts/<label>_ends.xyz`), else its two species; ends whose bonds don't bracket the TS's leave it whole (said).
+  Not from the TS geometry alone: partly formed bonds are long, and a distance split can cut the reacting
+  complex in two. The steering single points (`_steer_shifts`) and `refine_energies` split TSs the same way.
+  Channel steps now record their IRC (`files["irc"]`). On j_4e10ef7a (recomputed offline), e.g. step
+  `ch_0_2_6` 0->2: 80.2 -> 48.4 kcal/mol; steps through species 4: 120-157 -> 75-109. A step whose
+  molecules all react (`fast_0_2`: an addition with three concerted proton transfers round the tetramer) and
+  unimolecular formic acid are unchanged.
+- **Explorer summary: a step out of the kinetics' reach has no kinetics barrier, not ~800 kcal/mol.** Such a
+  step is closed (its TS + 1 Hartree, so it carries no rate) and `kinetics_barrier_kcal` reported that
+  placeholder as its barrier (818-893 kcal/mol for the six closed steps of j_4e10ef7a, 810 for formic acid's
+  CO2 + H2 -> CO + H2O). It is now null.
+
 - **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
   orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
   parent's multiprocessing resource tracker. Together these hung a finished `discovery expand` with GPU
