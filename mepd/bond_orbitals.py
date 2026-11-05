@@ -73,7 +73,7 @@ SITE_SHARE = 0.9           # an orbital's atoms: the fewest that hold this share
 SITE_MIN = 0.1             # ...each holding at least this much
 ACTIVE = 0.1               # along a path: an orbital whose charge distribution moved this far (RMS over atoms,
 #                            in electrons per orbital electron) at some frame is active -- a curly arrow
-STATE_VERSION = 2          # bump when the kept results' layout or meaning changes
+STATE_VERSION = 3          # bump when the kept results' layout or meaning changes
 _DATA = Path(__file__).parent / "data"
 
 
@@ -82,7 +82,7 @@ _DATA = Path(__file__).parent / "data"
 def _core_pairs(z: int) -> int:
     """Core orbitals (pairs) below the valence shell: those an all-electron
     calculation has and xtb's valence-only basis does not."""
-    for top, core in ((2, 0), (10, 1), (18, 5), (30, 9), (36, 14), (48, 18), (54, 23), (80, 34), (86, 39)):
+    for top, core in ((2, 0), (10, 1), (18, 5), (30, 9), (36, 14), (48, 18), (54, 23), (71, 27), (80, 34), (86, 39)):
         if z <= top:
             return core
     return 43
@@ -92,7 +92,9 @@ def _valence_ls(z: int) -> tuple:
     """The angular momenta of an element's minimal valence shells."""
     if z <= 2 or z in (3, 4, 11, 12, 19, 20, 37, 38, 55, 56, 87, 88):
         return (0,)
-    if 21 <= z <= 30 or 39 <= z <= 48 or 57 <= z <= 80:
+    if 58 <= z <= 71 or 90 <= z <= 103:   # 4f / 5f
+        return (0, 2, 3)
+    if 21 <= z <= 30 or 39 <= z <= 48 or 57 <= z <= 80 or z == 89:
         return (0, 2)
     return (0, 1)
 
@@ -334,16 +336,24 @@ def _reference(mol: dict, b1: list, S1: np.ndarray, all_electron: bool) -> tuple
     file's own first shell of each minimal valence angular momentum per atom.
     All-electron: MINAO, its d shells as the five real spherical functions."""
     if not all_electron:
-        idx, atom_of, k, seen = [], [], 0, set()
-        for (atom, l, _), _b in zip(mol["shells"], b1):
-            n = len(orb._CART[l])
+        # d and f shells as their pure (spherical) functions: the Cartesian sets also hold an s
+        # (x^2+y^2+z^2) or three p functions that are no part of a minimal valence basis.
+        cols, atom_of, k, seen = [], [], 0, set()
+        for (atom, l, _), (*_, scale) in zip(mol["shells"], b1):
+            comps = orb._CART[l]
             if l in _valence_ls(mol["atoms"][atom][0]) and (atom, l) not in seen:
                 seen.add((atom, l))
-                idx += range(k, k + n)
-                atom_of += [atom] * n
-            k += n
-        idx = np.array(idx)
-        return S1[:, idx], S1[np.ix_(idx, idx)], np.array(atom_of)
+                for poly in (orb._PURE[l] if l >= 2 else [{c: 1.0} for c in comps]):
+                    col = {k + comps.index(e): v / scale[comps.index(e)] for e, v in poly.items()}
+                    cols.append(col)
+                    atom_of.append(atom)
+            k += len(comps)
+        T = np.zeros((k, len(cols)))
+        for j, col in enumerate(cols):
+            for i, v in col.items():
+                T[i, j] = v
+        S12 = S1 @ T
+        return S12, T.T @ S12, np.array(atom_of)
     data = _minao()
     b2, atom_of, blocks = [], [], []
     for a, (z, xyz) in enumerate(mol["atoms"]):
@@ -462,7 +472,7 @@ class BondOrbitals:
 
     def __init__(self, text: str, method: str, charge: int = 0, symbols: Optional[list] = None, shown_A=None,
                  align: Optional[dict] = None):
-        mol = orb.parse_molden(text)
+        mol = orb.parse_molden(text, orb.D_NORM[method])
         if symbols is not None:
             # The elements as given: g-xTB's molden files carry each atom's valence charge where the
             # atomic number belongs (O as 6, C as 4).

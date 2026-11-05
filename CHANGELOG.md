@@ -24,10 +24,21 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     `extra_args` and doesn't run the program's own optimizer (`minimizer = "xtb"`).
   - The default backend is still the program (`"xtb"`).
 
+- **Molden files with spherical d and f functions in the orbital viewer** (`[5D]`, `[7F]`, `[5D7F]`,
+  `[5D10F]`, in any order and case, e.g. PySCF's `[5d][7f][9g]`): `parse_molden` rewrites each orbital
+  over the Cartesian functions of the same shells (Molden's order d0, d+1, d-1, d+2, d-2 and f0 ... f-3,
+  normalized real solid harmonics), so `evaluate` and the fragment-orbital overlaps are unchanged; it
+  used to refuse such files. Spherical g functions are still refused. A new method `axtb` reads the
+  files axtb writes (GFN2-xTB, g-xTB v1.1/2.0.1; spherical by default, Cartesian with
+  `molden="cartesian"`) with the Molden convention (normalized primitives, each component normalized, as
+  TeraChem); `run_molden` runs no axtb single point, the files come from kept runs. A spherical file and
+  the Cartesian file of the same calculation give the same orbital values on a grid to 1e-7 relative
+  (identical in single precision) for CH3Cl (GFN2-xTB, g-xTB 2.0.1) and CeH4 (g-xTB 2.0.1, f functions);
+  the gfn2, gxtb and terachem readings are byte-identical to before.
 - **Bond orbitals** (Orbitals › Bonds, beside Whole and Fragments, in every 3D view and in Design): the
   whole system's filled orbitals as its bonds and lone pairs (Knizia's intrinsic bond orbitals, built on
-  intrinsic atomic orbitals; xtb's own minimal valence shells or MINAO as the reference, exponent 2), from
-  the same orbitals the Whole view uses. On a finished path every orbital is followed from frame to frame;
+  intrinsic atomic orbitals; xtb's own minimal valence shells, d and f as pure functions, or MINAO as the
+  reference, exponent 2), from the same orbitals the Whole view uses, Cartesian or spherical files (axtb's). On a finished path every orbital is followed from frame to frame;
   the few that change are the mechanism's curly arrows, drawn as the path of each one's centroid, with how
   much each has moved frame by frame and the atoms' charge change (Knizia & Klein's electron flow). Kept in
   `<workspace>/orbitals/bonds/`. `POST /api/bond-orbitals`, `POST /api/bond-orbitals/path`,
@@ -452,6 +463,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   HCOOH channels (CO + H2O and CO2 + H2) reliably, from the monomer and the (HCOOH)4 cluster (98-100% of runs).
   At 1800 K CO + H2O was missing from 12-16% of runs.
 
+- **mepd.afh.org allows 300 atoms per structure** (`MEPD_DEMO_MAX_ATOMS`, was 150; also the QM region's
+  cap). To be lowered again if larger jobs crowd the node.
 - **`mepd qmmm protein-build` writes an FSM-TS profile in a caged environment** (`path_min_method = "FSM-TS"`,
   `qmmm_environment = "cage"`, NEB fallback), not NEB with the shell relaxed. In a relaxed shell the TS
   search can end on an environment saddle (ketosteroid isomerase: a Tyr57 OH rotation, both IRC ends the
@@ -836,6 +849,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   float32 forces where the solvation correction cancels most of the force (`LineSearch failed!`): in ALPB
   water, 6 small molecules x 2 repeats, 9 of 12 converged with UMA and 2 of 12 with AIMNet2, against 12
   of 12 each with `LBFGS`. The FAIR-Chem and MLIP engines (and their Settings defaults) now use `LBFGS`.
+- **The Docker image runs GFN-xTB with the official xtb 6.7.1 release** (`XTB_EXECUTABLE=/opt/xtb/bin/xtb`,
+  checksum-verified), not conda-forge's, whose CPCM-X gave one energy for every solvent (the test below failed
+  in CI, so nothing deployed since 2026-10-28). Not the g-xTB build either: its CPCM-X gives other values
+  (HCN in hexane +0.5 kcal/mol, the release -2.2). CREST keeps conda-forge's xtb.
 - **CPCM-X solvation energies were the same for every solvent.** With `--cpcmx`, xtb's `energy` file holds the
   conductor-like SCF energy CPCM-X starts from (on HCN: -7.0 kcal/mol in water, THF and hexane alike); mepd now
   reads the printed CPCM-X total (water -5.65, hexane -4.12, as xtb's own dG_solv). xtb also needs CPCM-X's

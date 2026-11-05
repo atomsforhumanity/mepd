@@ -149,7 +149,7 @@ class _Side:
     index, basis, and energy levels (degenerate orbitals grouped)."""
 
     def __init__(self, text: str, method: str):
-        self.mol = orb.parse_molden(text)
+        self.mol = orb.parse_molden(text, orb.D_NORM[method])
         try:
             self.orbs, self.homo, self.lumo = orb._frontier(self.mol["mos"])
         except orb.OrbitalError:   # no electrons left (a bare cation: Mg2+, Li+, H+): empty orbitals only
