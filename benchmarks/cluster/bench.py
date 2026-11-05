@@ -6,7 +6,8 @@
                  [--budget 1800] [--threads 32] [--parallelism 8] [--memory 64Gi] [--control]
     $P $B submit RUN           # afh push + afh submit
     $P $B pull   RUN           # afh pull into the run's folder
-    $P $B score  RUN           # unpack and score every finished task, write aggregate.json + table.md
+    $P $B score  RUN [RUN2 --as NAME]  # unpack and score every finished task, write aggregate.json + table.md
+    $P $B report NAME          # table + gate both ways between two configurations + audit + controls (report.md)
     $P $B gate   BASE_RUN:CONFIG CAND_RUN:CONFIG     # see gate.py
 
 A run is one afh run (folder `<scoreboard>/afh/RUN/`, results in `<scoreboard>/results/RUN/`):
@@ -212,6 +213,64 @@ def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list) -> list:
     return scores
 
 
+def report(name: str) -> str:
+    """The baseline report of a scored result set: the table, the gate both ways between two configurations
+    (systems run in both), audit flag totals with examples, the mirror-image TS spread, and each control
+    rerun next to the replicate it repeats."""
+    import gate
+
+    res = RESULTS / name
+    agg = json.loads((res / "aggregate.json").read_text())
+    scores = [json.loads(fp.read_text()) for run in agg.get("runs", [name])
+              for fp in sorted((RESULTS / run).glob("*/score.json"))]
+    out = [f"# {name}: explorer {agg.get('commit')}, harness {agg.get('harness_commit')}, suite {agg.get('suite_source')}",
+           "", (res / "table.md").read_text()]
+    groups = {k: g for k, g in agg.items() if isinstance(g, dict) and "system" in g}
+    configs = sorted({g["config"] for g in groups.values()})
+    if len(configs) == 2:
+        per = {c: {g["system"]: g for g in groups.values() if g["config"] == c} for c in configs}
+        both = sorted(set(per[configs[0]]) & set(per[configs[1]]))
+        for b, c in ((configs[0], configs[1]), (configs[1], configs[0])):
+            v = gate.compare({k: per[b][k] for k in both}, {k: per[c][k] for k in both})
+            out.append(f"## gate: base {b} -> candidate {c} ({', '.join(both)})")
+            out += [f"- {k}: {'PASS' if x['pass'] else 'FAIL'}" + (f" ({'; '.join(x['why'])})" if x["why"] else "")
+                    for k, x in v.items()]
+            out.append(f"- overall: {'PASS' if all(x['pass'] for x in v.values()) else 'FAIL'}")
+            out.append("")
+    out.append("## audit flags (all runs, controls included)")
+    tot: dict = {}
+    for o in scores:
+        for k, v in ((o.get("audit") or {}).get("flags") or {}).items():
+            for f in v:
+                tot.setdefault(k, []).append((o["id"], f))
+    for k, v in sorted(tot.items()):
+        ex = "; ".join(f"{i}: {json.dumps(f, default=str)[:160]}" for i, f in v[:3])
+        out.append(f"- {k}: {len(v)} in {len({i for i, _ in v})} runs. e.g. {ex}")
+    out.append("")
+    out.append("## mirror-image TS pairs, |dG| (kcal/mol) per system")
+    for system in sorted({o["system"] for o in scores}):
+        ds = [abs(p["dG_kcal"]) for o in scores if o["system"] == system
+              for p in ((o.get("audit") or {}).get("info") or {}).get("mirror_ts_pairs", []) if p.get("dG_kcal") is not None]
+        if ds:
+            out.append(f"- {system}: {len(ds)} pairs, median {sorted(ds)[len(ds) // 2]:.2f}, max {max(ds):.2f}, "
+                       f"{sum(d > 0.2 for d in ds)} above 0.2")
+    out.append("")
+    out.append("## controls (replicate 0 rerun with the same seeds)")
+    by_id = {o["id"]: o for o in scores}
+    for o in scores:
+        if not o.get("control_of") or o["control_of"] not in by_id:
+            continue
+        a = by_id[o["control_of"]]
+        f = lambda x: "-" if x is None else (f"{x:.3g}" if isinstance(x, float) else str(x))
+        row = lambda r: (f"species {r.get('species')}, steps {r.get('steps')}, sel "
+                         f"{'; '.join(f(t['selectivity']) for t in r.get('targets', []))}, settle "
+                         f"{f((r.get('settle') or {}).get('settle_s'))}, {r.get('stopped')}")
+        out.append(f"- {a['id']}: {row(a)}  |  rerun: {row(o)}")
+    text = "\n".join(out) + "\n"
+    (res / "report.md").write_text(text)
+    return text
+
+
 def main(argv: list) -> int:
     import argparse
 
@@ -239,6 +298,7 @@ def main(argv: list) -> int:
     g = sub.add_parser("gate")
     g.add_argument("base")
     g.add_argument("cand")
+    sub.add_parser("report").add_argument("name")
     a = ap.parse_args(argv)
     if a.cmd == "build":
         if a.group:
@@ -257,6 +317,8 @@ def main(argv: list) -> int:
         afh("status", a.run, check=False)
     elif a.cmd == "score":
         score_run(a.run, a.rescore, a.name)
+    elif a.cmd == "report":
+        print(report(a.name))
     elif a.cmd == "gate":
         import gate
         return gate.main([a.base, a.cand])
