@@ -286,7 +286,94 @@ guide to which bond or lone pair is most reactive, not a measurable energy.
 
 On a finished path (an IRC, a path's frames), every frame's bond orbitals
 are built and each orbital of the first frame is followed through the
-frames. This is the analysis of Knizia & Klein (2015).
+frames. This is the analysis of Knizia & Klein (2015). Most orbitals stay
+where they are. The few that change are drawn as arrows, the curly arrows of
+the mechanism.
+
+### What the arrows mean
+
+<figure class="manual-figure">
+<svg viewBox="0 0 720 240" role="img" aria-labelledby="arrows-fig-title">
+<title id="arrows-fig-title">How to read the arrows, on an SN2 step</title>
+<defs>
+<marker id="hd-orange" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#e07b00"/></marker>
+<marker id="hd-teal" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#12907e"/></marker>
+</defs>
+<line x1="140" y1="130" x2="340" y2="130" stroke-width="3" stroke-dasharray="7 6" style="stroke: var(--muted)"/>
+<line x1="340" y1="130" x2="560" y2="130" stroke-width="3" style="stroke: var(--muted)"/>
+<text x="240" y="156" text-anchor="middle" font-size="12" style="fill: var(--muted)">Nu···C forming</text>
+<text x="400" y="118" text-anchor="middle" font-size="12" style="fill: var(--muted)">C–X breaking</text>
+<ellipse cx="183" cy="130" rx="19" ry="11" fill="none" stroke="#e07b00" stroke-width="1.2" stroke-dasharray="3 3"/>
+<circle cx="140" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<circle cx="340" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<circle cx="560" cy="130" r="22" stroke-width="1.5" style="fill: var(--bg); stroke: var(--text)"/>
+<text x="140" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">Nu</text>
+<text x="340" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">C</text>
+<text x="560" y="135" text-anchor="middle" font-size="15" style="fill: var(--text)">X</text>
+<path d="M186 121 Q215 52 240 118" fill="none" stroke="#e07b00" stroke-width="3.5" marker-end="url(#hd-orange)"/>
+<circle cx="214" cy="86" r="6" fill="#e07b00"/>
+<path d="M452 138 Q487 205 532 143" fill="none" stroke="#12907e" stroke-width="3.5" marker-end="url(#hd-teal)"/>
+<circle cx="488" cy="172" r="6" fill="#12907e"/>
+<g font-size="11" font-weight="700" text-anchor="middle">
+<circle cx="168" cy="100" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="168" y="104" fill="#e07b00">1</text>
+<circle cx="258" cy="98" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="258" y="102" fill="#e07b00">2</text>
+<circle cx="214" cy="60" r="9" stroke="#e07b00" stroke-width="1.5" style="fill: var(--bg)"/><text x="214" y="64" fill="#e07b00">3</text>
+<circle cx="436" cy="160" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="436" y="164" fill="#12907e">1</text>
+<circle cx="548" cy="166" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="548" y="170" fill="#12907e">2</text>
+<circle cx="488" cy="200" r="9" stroke="#12907e" stroke-width="1.5" style="fill: var(--bg)"/><text x="488" y="204" fill="#12907e">3</text>
+</g>
+</svg>
+<figcaption>An SN2 step, drawn by hand to show how the arrows read. <b>1</b>
+tail: where the electron pair sits at the first frame. <b>2</b> head: where
+it sits at the last frame. <b>3</b> dot: where it is at the frame on screen.
+Orange: the nucleophile's lone pair becomes the new Nu–C bond. Teal: the C–X
+bond becomes a lone pair on the leaving group X. In mepd the lines are the
+computed paths of each pair's centre, and the atoms move with the
+frames.</figcaption>
+</figure>
+
+Each arrow is one electron pair (one bond orbital) that changes along the
+path. It is a curly arrow of the mechanism, but computed from the
+wavefunction instead of drawn by hand.
+
+| Part | What it shows |
+|---|---|
+| Tail | Where the pair sits at the first frame: in a lone pair's lobe, just off its atom, or along a bond, between its two atoms. |
+| Head | Where the pair sits at the last frame: between the two atoms of a new bond, or on the atom of a new lone pair. |
+| Line | The route of the pair's centre, frame by frame. |
+| Dot | Where the pair is at the frame on screen. Drag the slider and the dots move along the arrows. |
+| Thick arrow | The orbital chosen in the menu, the one drawn as blue/red surfaces. |
+| Colour | The same in the legend under the viewer ("Arrows") and in the plot. Click a legend entry to draw that orbital. |
+
+Hover an arrow in the view to see its name ("C1–C2 → C1–C6") and how much
+of the pair has moved at this frame. Only orbitals that change get an arrow
+(a change of 0.1 or more; see below). Every other bond and lone pair stays
+where it is.
+
+The pair's centre is the orbital's centroid ⟨φ|r|φ⟩, the average position of
+its two electrons, computed exactly from the basis at every frame. Drawing
+these centroids as arrows follows Vidossich & Lledós (2014).
+
+**How they differ from arrows drawn by hand:**
+
+- **They are short.** A pair's centre moves about 0.5–1 Å, so zoom in.
+- **A head ends between two atoms** (the new bond), not on an atom.
+- **They can bend near the transition state**, where an orbital is briefly
+  spread over three atoms and its centre sits between them.
+- **A short arrow inside one bond is polarization**: the pair shifts toward
+  one atom, and no bond forms or breaks. Its name ends in "(polarizes)".
+- **A ring of arrows can go either way.** For a pericyclic step
+  (Diels–Alder) the arrows could be drawn clockwise or counterclockwise, and
+  the orbitals pick one direction.
+
+**Timing.** The plot next to the menu shows, for every arrow in its colour,
+how much of the pair has moved at each frame. Arrows that rise together
+are synchronous. One that rises well before the others is a bond change
+that runs ahead of the rest within the same elementary step. In HCN → HNC
+(below), the hydrogen's two arrows are half done before the TS, and the N
+lone pair's arrow only after it.
+
+### How the orbitals are followed
 
 - **Following.** Each frame's orbitals are matched one to one with the
   previous frame's by the largest overlap: an assignment (Hungarian method)
@@ -309,13 +396,6 @@ frames. This is the analysis of Knizia & Klein (2015).
   since the first frame: half the sum over atoms of the change in its
   population. A lone pair on A that becomes an even A–B bond has moved 50 %.
   The option list gives each changing orbital's largest value.
-- **Arrows.** Each changing orbital's centroid ⟨φ|r|φ⟩, the centre of its
-  electrons, is computed exactly from the basis at every frame. The path of
-  the centroid along the reaction is drawn as an arrow, with a dot where it
-  is at the frame shown (Vidossich & Lledós). The arrow starts in a lone
-  pair's lobe, not on the nucleus, and ends between the atoms of a new bond:
-  a curly arrow computed rather than drawn. The chosen orbital's arrow is
-  thicker, and its surfaces are drawn at every frame.
 - **The plot** shows every changing orbital's "moved" frame by frame, in its
   arrow's colour. Whether the arrows move together or one after another says
   whether the bond changes are synchronous or stepwise within one
@@ -326,7 +406,9 @@ frames. This is the analysis of Knizia & Klein (2015).
 Until every frame is built, the frame on screen shows its own bond orbitals
 ("following the path…").
 
-Examples (g-xTB IRCs, from the start of the path):
+### Examples
+
+g-xTB IRCs, read from the start of the path:
 
 - **HCN → HNC** (44 frames, TS at frame 21): the C–H bond becomes a lone pair
   on C (43 % moved), one of the C–N bonds becomes the N–H bond (49 %), and the N
@@ -341,6 +423,9 @@ Examples (g-xTB IRCs, from the start of the path):
   and the bond orbitals pick one.
 
 ### Reading them for design
+
+Each **?** in the bar explains its part in place: the bond orbitals, the
+arrows, and Δq. Each one links back here and to the References tab.
 
 - **Which bonds react.** The changing orbitals name the bonds and lone pairs
   that do the chemistry, and everything else is a spectator. Substituents
