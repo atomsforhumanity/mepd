@@ -38,7 +38,7 @@ import numpy as np
 
 BOHR = 0.529177210903       # Angstrom
 EV = 27.211386245988        # eV per Hartree
-METHODS = ("gxtb", "gfn2", "terachem")
+METHODS = ("gxtb", "gfn2", "terachem", "axtb")
 MAX_POINTS = 56 ** 3        # grid points per orbital (a cube of ~2 MB of text, ~0.5 MB gzipped)
 LIVE_POINTS = 38 ** 3       # ...when following a running calculation: a third of the points, built ~3x faster
 MARGIN_BOHR = 5.0           # grid beyond the outermost atoms
@@ -54,6 +54,23 @@ _CART = {
     2: [(2, 0, 0), (0, 2, 0), (0, 0, 2), (1, 1, 0), (1, 0, 1), (0, 1, 1)],
     3: [(3, 0, 0), (0, 3, 0), (0, 0, 3), (1, 2, 0), (2, 1, 0), (2, 0, 1), (1, 0, 2), (0, 1, 2), (0, 2, 1), (1, 1, 1)],
 }
+# Molden's spherical d and f functions in its order (d: 0, +1, -1, +2, -2; f: 0, +1, -1, +2,
+# -2, +3, -3): the real solid harmonics with their standard signs, as polynomials over the
+# Cartesian components of _CART (normalized in _pure_to_cart).
+_PURE = {
+    2: [{(0, 0, 2): 2, (2, 0, 0): -1, (0, 2, 0): -1},     # 2z^2 - x^2 - y^2
+        {(1, 0, 1): 1},                                  # xz
+        {(0, 1, 1): 1},                                  # yz
+        {(2, 0, 0): 1, (0, 2, 0): -1},                   # x^2 - y^2
+        {(1, 1, 0): 1}],                                 # xy
+    3: [{(0, 0, 3): 2, (2, 0, 1): -3, (0, 2, 1): -3},     # z(2z^2 - 3x^2 - 3y^2)
+        {(1, 0, 2): 4, (3, 0, 0): -1, (1, 2, 0): -1},     # x(4z^2 - x^2 - y^2)
+        {(0, 1, 2): 4, (2, 1, 0): -1, (0, 3, 0): -1},     # y(4z^2 - x^2 - y^2)
+        {(2, 0, 1): 1, (0, 2, 1): -1},                   # z(x^2 - y^2)
+        {(1, 1, 1): 1},                                  # xyz
+        {(3, 0, 0): 1, (1, 2, 0): -3},                   # x(x^2 - 3y^2)
+        {(2, 1, 0): 3, (0, 3, 0): -1}],                  # y(3x^2 - y^2)
+}
 _SYMBOLS = ["X", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar",
             "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr"]
 
@@ -64,11 +81,43 @@ class OrbitalError(RuntimeError):
 
 # ------------------------------------------------------------------ molden
 
-def parse_molden(text: str) -> dict:
+def _spherical_shells(text: str) -> dict:
+    """Which shell types a molden file writes as spherical functions, {l: bool}, from its
+    flags in any order and spelling: [5D] (5D and 7F), [5D7F], [5D10F] (5D, Cartesian f),
+    [7F] (7F; 6D unless a 5D flag is there too, as PySCF writes [5d][7f][9g]), [9G]."""
+    flags = {f.lower() for f in re.findall(r"^\s*\[(5D7F|5D10F|5D|7F|9G)\]", text, re.M | re.I)}
+    return {0: False, 1: False, 2: bool(flags & {"5d", "5d7f", "5d10f"}),
+            3: bool(flags & {"5d7f", "7f"}) or ("5d" in flags and "5d10f" not in flags),
+            4: "9g" in flags}
+
+
+def _pure_to_cart(l: int, d_norm: str) -> np.ndarray:
+    """(Cartesian components x spherical functions) of shell type `l`: column m holds the
+    coefficients of Molden's normalized spherical function m over the Cartesian functions
+    as `evaluate` normalizes them (`d_norm`: each on its own, or all with the norm of
+    x^l), all with the same contraction."""
+    comps = _CART[l]
+    # <a|b> / <x^l|x^l> of two components with the same radial part
+    metric = np.array([[0.0 if any((p + q) % 2 for p, q in zip(a, b)) else
+                        float(np.prod([_dfact(p + q - 1) for p, q in zip(a, b)])) / _dfact(2 * l - 1)
+                        for b in comps] for a in comps])
+    t = np.zeros((len(comps), 2 * l + 1))
+    for m, poly in enumerate(_PURE[l]):
+        for e, v in poly.items():
+            t[comps.index(e), m] = v
+        t[:, m] /= math.sqrt(t[:, m] @ metric @ t[:, m])
+    if d_norm != "axis":   # a component normalized on its own is sqrt(<a|a> / <x^l|x^l>) times larger
+        t *= np.sqrt(np.diag(metric))[:, None]
+    return t
+
+
+def parse_molden(text: str, d_norm: str = "own") -> dict:
     """{atoms: [(Z, xyz_bohr)], shells: [(atom, l, [(alpha, coef)])], mos: [{energy, spin, occ, coef}]}
-    from a molden file with Cartesian functions (what xtb writes)."""
-    if re.search(r"^\[(5D|5D7F|7F|9G|5D10F)\]", text, re.M | re.I):
-        raise OrbitalError("spherical-harmonic molden basis is not supported (xtb writes Cartesian functions)")
+    from a molden file. Orbitals over spherical d and f functions ([5D], [7F], ... see
+    _spherical_shells) come back over the Cartesian functions of the same shells, normalized
+    as `evaluate` will with `d_norm`, so every caller sees Cartesian functions (what xtb
+    writes)."""
+    pure = _spherical_shells(text)
     sections = re.split(r"^\[", text, flags=re.M)
     atoms, shells, mos = [], [], []
     for sec in sections:
@@ -121,6 +170,8 @@ def parse_molden(text: str) -> dict:
                     p = ln.split()
                     if len(p) == 2 and cur is not None:
                         cur["coef"][int(p[0]) - 1] = float(p[1].replace("D", "E"))
+    if any(pure[l] for _, l, _ in shells):
+        _to_cartesian(shells, mos, pure, d_norm)
     nbf = sum(len(_CART[l]) for _, l, _ in shells)
     for mo in mos:
         c = np.zeros(nbf)
@@ -131,6 +182,29 @@ def parse_molden(text: str) -> dict:
     if not atoms or not shells or not mos:
         raise OrbitalError("the molden file has no atoms, basis or orbitals")
     return {"atoms": atoms, "shells": shells, "mos": mos}
+
+
+def _to_cartesian(shells: list, mos: list, pure: dict, d_norm: str) -> None:
+    """Rewrite each orbital's coefficients {index: value} over the file's functions (spherical
+    where `pure` says) as coefficients over the Cartesian functions of the same shells."""
+    if any(pure[l] for _, l, _ in shells if l > 3):
+        raise OrbitalError("spherical g functions are not supported")
+    blocks, k = [], 0          # (first index in the file, number there, l)
+    for _, l, _ in shells:
+        n = 2 * l + 1 if pure[l] and l >= 2 else len(_CART[l])
+        blocks.append((k, n, l))
+        k += n
+    trafo = {l: _pure_to_cart(l, d_norm) for l in (2, 3) if pure[l]}
+    for mo in mos:
+        old, new, j = mo["coef"], {}, 0
+        for start, n, l in blocks:
+            c = np.array([old.get(start + i, 0.0) for i in range(n)])
+            if l in trafo:
+                c = trafo[l] @ c
+            for i, v in enumerate(c):
+                new[j + i] = float(v)
+            j += len(c)
+        mo["coef"] = new
 
 
 def _dfact(n: int) -> int:
@@ -149,9 +223,11 @@ def _self_overlap(alphas: np.ndarray, cs: np.ndarray, lx: int, ly: int, lz: int)
 # grid: each comes out with norm 1 only so). xtb's contraction coefficients
 # are for unnormalized primitives, TeraChem's (the Molden convention) for
 # normalized ones; GFN2-xTB and TeraChem give each Cartesian component unit
-# norm, g-xTB gives all of a shell's the norm of its x^l one.
-D_NORM = {"gfn2": "own", "gxtb": "axis", "terachem": "own"}
-NORMALIZED_PRIMS = {"gfn2": False, "gxtb": False, "terachem": True}
+# norm, g-xTB gives all of a shell's the norm of its x^l one. axtb (GFN2-xTB,
+# g-xTB v1.1 and 2.0.1; `molden=True` spherical, `molden="cartesian"`
+# Cartesian functions) writes the Molden convention, as TeraChem.
+D_NORM = {"gfn2": "own", "gxtb": "axis", "terachem": "own", "axtb": "own"}
+NORMALIZED_PRIMS = {"gfn2": False, "gxtb": False, "terachem": True, "axtb": True}
 
 
 def _prim_norm(a: float, lx: int, ly: int, lz: int) -> float:
@@ -312,6 +388,8 @@ def run_molden(symbols: list, coords_A: np.ndarray, charge: int = 0, multiplicit
     """A single point with xtb's `--molden`; the molden file's text."""
     from mepd.engines.gxtb import _run_gxtb_process
 
+    if method == "axtb":
+        raise OrbitalError("axtb orbitals are read from the molden files a calculation keeps; no axtb single point here")
     if method not in ("gxtb", "gfn2"):
         raise OrbitalError(f"orbitals come from one of {', '.join(METHODS)}, not {method!r}")
     base = _executable(method)
@@ -369,7 +447,7 @@ def orbitals_from_molden(text: str, method: str, extra: int = 0, multiplicity: i
     `shown_A` and `align` (find_run_orbitals): on a grid around the geometry
     as shown, each point evaluated where it lies in the molden file's own
     orientation, so a turned frame gets its orbitals turned with it."""
-    mol = parse_molden(text)
+    mol = parse_molden(text, D_NORM[method])
     orbs, homo, lumo = _frontier(mol["mos"])
     if shown_A is not None and align is not None:
         shown = np.asarray(shown_A, dtype=float) / BOHR

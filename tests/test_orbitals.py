@@ -247,3 +247,99 @@ def test_a_jobs_frames_are_built_once_and_kept(tmp_path, monkeypatch):
     orbitals._from_file.cache_clear()
     assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz) == first      # a file read
     assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz + [[0, 0, 1.0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]) is None
+
+
+# axtb (GFN2-xTB, g-xTB) writes Molden files with spherical d and f functions by default and with
+# Cartesian ones on request. tests/data has both files of three calculations (axtb 0.1.0,
+# `axtb.singlepoint(..., molden=True)` and `molden="cartesian"`): CH3Cl with GFN2-xTB and with
+# g-xTB 2.0.1 (Cl d functions) and CeH4 with g-xTB 2.0.1 (Ce d and f functions).
+AXTB_PAIRS = ["gfn2_ch3cl", "gxtb2_ch3cl", "gxtb2_ceh4"]
+
+
+def _axtb_molden(name, kind):
+    from pathlib import Path
+
+    return (Path(__file__).parent / "data" / f"axtb_{name}_{kind}.molden").read_text()
+
+
+def _values(text, d_norm="own", normalized_prims=True, points=None):
+    """Every orbital of a molden file on a grid around it (or at `points`), and the points."""
+    mol = orbitals.parse_molden(text, d_norm)
+    if points is None:
+        xyz = np.array([p for _, p in mol["atoms"]])
+        origin, h, n = orbitals.grid_for(xyz, max_points=32 ** 3)
+        axes = [origin[i] + h * np.arange(n[i]) for i in range(3)]
+        points = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    coefs = [m["coef"] for m in mol["mos"]]
+    return orbitals.evaluate(mol, coefs, points, d_norm, normalized_prims).astype(float), points
+
+
+@pytest.mark.parametrize("name", AXTB_PAIRS)
+def test_spherical_and_cartesian_molden_files_give_the_same_orbitals(name):
+    """Every orbital of a spherical file ([5D]/[7F]) equals the same orbital of the Cartesian
+    file of the same calculation on a grid, and the frontier orbitals come out the same."""
+    sph, cart = _axtb_molden(name, "spherical"), _axtb_molden(name, "cartesian")
+    assert "[5D]" in sph and "[6D]" in cart and ("[7F]" in sph) == (name == "gxtb2_ceh4")
+    v_sph, pts = _values(sph)
+    v_cart, _ = _values(cart, points=pts)
+    assert len(v_sph) == len(v_cart) > 10
+    assert (np.abs(v_sph - v_cart).max(axis=1) / np.abs(v_cart).max(axis=1)).max() < 1e-7
+    a = orbitals.orbitals_from_molden(sph, "axtb", extra=2, max_points=24 ** 3)
+    b = orbitals.orbitals_from_molden(cart, "axtb", extra=2, max_points=24 ** 3)
+    assert a["gap_ev"] == b["gap_ev"] and set(a["orbitals"]) == set(b["orbitals"])
+    for k, orb in a["orbitals"].items():
+        assert orb["energy_ev"] == b["orbitals"][k]["energy_ev"] and orb["norm"] == b["orbitals"][k]["norm"], k
+        assert np.allclose(orb["atoms"], b["orbitals"][k]["atoms"], atol=1e-6), k
+
+
+@pytest.mark.parametrize("name", ["gfn2_ch3cl", "gxtb2_ceh4"])
+def test_axtb_orbitals_come_out_normalized(name):
+    """Normalized primitives and functions (the Molden convention): every occupied orbital has
+    norm 1 on a fine grid (Ce's tight functions need one)."""
+    mol = orbitals.parse_molden(_axtb_molden(name, "spherical"))
+    xyz = np.array([p for _, p in mol["atoms"]])
+    origin, h, n = orbitals.grid_for(xyz, spacing=0.08, margin=6.0, max_points=110 ** 3)
+    axes = [origin[i] + h * np.arange(n[i]) for i in range(3)]
+    pts = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    occupied = [m["coef"] for m in mol["mos"] if m["occ"] > 0.5]
+    norm = sum((orbitals.evaluate(mol, occupied, chunk, "own", True).astype(float) ** 2).sum(axis=1)
+               for chunk in np.array_split(pts, 20)) * h ** 3
+    assert np.abs(norm - 1).max() < 0.01
+
+
+@pytest.mark.parametrize("flags", ["[7F]\n[5D]", "[5D]", "[5D7F]", "[5d]\n[7f]\n[9g]", "[5D]\n[7F]"])
+def test_every_spelling_of_the_spherical_flags(flags):
+    """[5D] alone means 5D and 7F (the format description), PySCF writes [5d][7f][9g], axtb
+    [7F][5D]: all read the same."""
+    sph = _axtb_molden("gxtb2_ceh4", "spherical")
+    v_ref, pts = _values(sph)
+    v, _ = _values(sph.replace("[7F]\n[5D]", flags), points=pts)
+    assert np.array_equal(v, v_ref)
+
+
+def test_spherical_flags():
+    none = {0: False, 1: False, 2: False, 3: False, 4: False}
+    assert orbitals._spherical_shells("[5D]\n") == {**none, 2: True, 3: True}
+    assert orbitals._spherical_shells("[5D10F]\n") == {**none, 2: True}
+    assert orbitals._spherical_shells("[7F]\n") == {**none, 3: True}
+    assert orbitals._spherical_shells(" [5d7f]\n[9G]\n") == {**none, 2: True, 3: True, 4: True}
+    assert orbitals._spherical_shells(_axtb_molden("gfn2_ch3cl", "cartesian")) == none
+    for l in (2, 3):
+        own, axis = orbitals._pure_to_cart(l, "own"), orbitals._pure_to_cart(l, "axis")
+        assert own.shape == axis.shape == (len(orbitals._CART[l]), 2 * l + 1)
+        assert np.allclose(own[0], axis[0])          # x^l: the same component either way
+    with pytest.raises(orbitals.OrbitalError, match="g functions"):     # spherical g is not read
+        orbitals.parse_molden("[Molden Format]\n[Atoms] AU\nX 1 1 0 0 0\n[GTO]\n1 0\ng 1 1.0\n1.0 1.0\n\n[9G]\n[MO]\n"
+                              "Sym= 1a\nEne= -1.0\nSpin= Alpha\nOccup= 2.0\n1 1.0\n")
+
+
+def test_axtb_files_are_read_with_the_molden_convention():
+    """axtb writes normalized primitives with every Cartesian component normalized (as TeraChem);
+    reading the spherical file with either component normalization gives the same orbitals."""
+    assert orbitals.D_NORM["axtb"] == "own" and orbitals.NORMALIZED_PRIMS["axtb"] is True
+    sph = _axtb_molden("gxtb2_ch3cl", "spherical")
+    v_own, pts = _values(sph, "own")
+    v_axis, _ = _values(sph, "axis", points=pts)
+    assert (np.abs(v_own - v_axis).max(axis=1) / np.abs(v_own).max(axis=1)).max() < 1e-6
+    with pytest.raises(orbitals.OrbitalError, match="axtb"):   # read from kept files, never run here
+        orbitals.run_molden(*CH3CL, 0, 1, "axtb")
