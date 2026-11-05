@@ -880,7 +880,7 @@ def table(agg: dict, scores: list) -> str:
                   "wall s | CPU-h | stopped | flags |", "|" + "---|" * 14]
     for o in sorted(scores, key=lambda o: o["id"]):
         if not o.get("ok"):
-            lines.append(f"| {o['id']} | {o.get('seeds')} | - | - | - | - | - | - | - | - | {_f(o.get('wall_s'), '.0f')} | "
+            lines.append(f"| {o['id']} | {(o.get('seeds') or {}).get('reactor_seed', '-')} | - | - | - | - | - | - | - | - | {_f(o.get('wall_s'), '.0f')} | "
                          f"{_f(o.get('cpu_h'))} | {o.get('stopped')} | - |")
             continue
         yn = lambda d: ",".join(f"{k}:{'Y' if v else 'N'}" for k, v in d.items())
