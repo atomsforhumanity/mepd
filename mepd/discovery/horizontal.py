@@ -47,6 +47,7 @@ import concurrent.futures.process
 import copy
 import os
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -333,6 +334,9 @@ class HorizontalConnector:
         next_index = self._next_index
         crashed: dict = {}     # id(job args) -> times its worker died under it
         outstanding: dict = {}  # pair -> its jobs queued or running
+        queued_at: dict = {}    # id(job args) -> when it was queued; started: future -> when it started
+        started: dict = {}
+        main_s = [0.0]          # seconds spent in the caller's callbacks (no job starts meanwhile)
 
         def record(rec):
             found.append(rec)
@@ -356,10 +360,12 @@ class HorizontalConnector:
                     pool = self._broken(pool)
                     fut = pool.submit(_run_job, method, args)
                 running[fut] = (kind, pair, args)
+                started[fut] = time.monotonic()
                 self._running.value = busy()
 
             def queue(kind, pair, *args):
                 outstanding[pair] = outstanding.get(pair, 0) + 1
+                queued_at[id(args)] = time.monotonic()
                 waiting.append((kind, pair, args))
 
             def settle(pair):
@@ -479,6 +485,7 @@ class HorizontalConnector:
             def submit(kind, args, on_done, label=""):
                 own_done[id(args)] = on_done
                 own_label[id(args)] = label
+                queued_at[id(args)] = time.monotonic()
                 waiting.append(("own:" + kind, None, args))
 
             def add_channel(pair, a, b, label):
@@ -498,9 +505,16 @@ class HorizontalConnector:
                     if not running:
                         break
                 done, _ = concurrent.futures.wait(tuple(running), return_when=concurrent.futures.FIRST_COMPLETED)
+                t_main, done_kinds = time.monotonic(), set()
                 for fut in done:
                     kind, pair, args = running.pop(fut)
+                    done_kinds.add(kind.removeprefix("own:"))
                     self._running.value = busy()
+                    t_end = time.monotonic()
+                    t_start = started.pop(fut, t_end)
+                    log_event({"event": "job", "kind": kind.removeprefix("own:"), "what": what(kind, pair, args),
+                               "wait_s": round(t_start - queued_at.pop(id(args), t_start), 1),
+                               "run_s": round(t_end - t_start, 1), "ok": fut.exception() is None})
                     rerun = False
                     try:
                         i, j = pair if pair is not None else (None, None)
@@ -594,6 +608,10 @@ class HorizontalConnector:
                     finally:
                         if not rerun and pair is not None:
                             settle(pair)
+                dt = time.monotonic() - t_main
+                main_s[0] += dt
+                if dt > 2.0:   # the caller's work on these results held the queue: no job started meanwhile
+                    log_event({"event": "main_busy", "s": round(dt, 1), "after": sorted(done_kinds)})
         finally:
             self._live = None
             try:
@@ -602,7 +620,7 @@ class HorizontalConnector:
                 pass
             pool.shutdown(wait=True, cancel_futures=True)
             _CONNECTOR.pop("self", None)
-        log_event({"event": "horizontal_connect", "pairs": len(pairs), **counts})
+        log_event({"event": "horizontal_connect", "pairs": len(pairs), "main_s": round(main_s[0], 1), **counts})
         self.say(f"Connected {len(pairs)} pair(s): " + (f"{counts['searched']} by path search only, " if search else "")
                  + f"{counts['fast_ok']} by one TS optimization, "
                  f"{counts['fast_failed']} by path search ({counts['pieces']} pieces, {counts['leaf_ts_ok']} TSs"
