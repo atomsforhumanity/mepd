@@ -101,7 +101,7 @@ OPTIMIZER_DEFAULTS = {
 OPTIMIZER_ALIASES = {"conjugate_gradient": "cg", "velocity_projected": "vpo", "stochastic_gradient_descent": "sgd",
                      "gradient_descent": "gd", "deterministic_gradient_descent": "gd", "adaptive_momentum": "amg"}
 
-GXTB_DEFAULTS = {"executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
+GXTB_DEFAULTS = {"backend": "xtb", "executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
                  "timeout_s": 3600.0, "add_gxtb_flag": True, "keep_workdirs": False}
 FAIRCHEM_DEFAULTS = {"model": "uma-s-1p2p1", "task": "omol", "device": "", "checkpoint": None,
                      "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGS"}
@@ -196,6 +196,7 @@ OPTIONS = {
                          ("cage", "cage: the environment frozen, the path found in its field"),
                          ("mean_force", "free energy: mean force over environment dynamics")],
     "atom_mapping_inputs.metric": [(m, _MAPPING_LABELS[m]) for m in _OFFERED_METRICS],
+    "gxtb_engine_kwds.backend": [("xtb", "the g-xTB program"), ("axtb", "axtb, in process")],
 }
 
 HELP = {
@@ -274,6 +275,7 @@ HELP = {
     "min_nebk": "Smallest spring constant.",
     "max_nebk": "Largest spring constant (empty: same as the smallest).",
     "min_image": "Images (empty: the chain length).",
+    "backend": "What computes g-xTB 2.0.1: the g-xTB program (one run per call), or axtb, AFH's Rust version of it, inside mepd (no program start per call, analytic Hessians). Both give the same energies (to 1e-10 Eh), so this is not a different level of theory.",
     "n_threads": "Threads per g-xTB call. Keep 1 and parallelize across calls instead.",
     "n_parallel": "g-xTB calls at once (0: all cores).",
     "hessian_acc": "SCC accuracy for numerical Hessians (smaller = tighter).",
@@ -681,8 +683,18 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
                    "fields": [_field(data, f"path_min_inputs.{k}", defaults[k], key=True) for k in keys]
                    + [_field(data, f"path_min_inputs.{k}", defaults[k]) for k in rest]})
     if engine == "gxtb":
+        gx = _table(data, "gxtb_engine_kwds")
+        if str(gx.get("backend") or "xtb") == "axtb":
+            import importlib.util
+
+            if importlib.util.find_spec("axtb") is None:
+                issues.append('g-xTB backend "axtb" needs the axtb package, which is not installed here; '
+                              'pick the g-xTB program.')
+            if gx.get("add_gxtb_flag", True) is False:
+                issues.append('axtb computes g-xTB only: with add_gxtb_flag = false (GFN2-xTB), pick the g-xTB program.')
         groups.append({"id": "engine", "title": "g-xTB",
-                       "fields": [_field(data, f"gxtb_engine_kwds.{k}", v, key=k in ("n_threads", "n_parallel"))
+                       "fields": [_field(data, f"gxtb_engine_kwds.{k}", v,
+                                         key=k in ("backend", "n_threads", "n_parallel"))
                                   for k, v in GXTB_DEFAULTS.items()]})
     elif engine in ("qccompute", "chemcloud"):
         fields = [_field(data, f"geometry_optimizer_kwds.{k}", v) for k, v in GEOMOPT_DEFAULTS.items()]

@@ -22,7 +22,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     from 282 s to 176 s.
   - Needs the `axtb` package (a wheel; not a mepd dependency). It takes only `--etemp/--acc/--iterations` in
     `extra_args` and doesn't run the program's own optimizer (`minimizer = "xtb"`).
-  - The default backend is still the program (`"xtb"`).
+  - The default backend is still the program (`"xtb"`). In the web app: Profiles › g-xTB › Backend (with a "?"
+    explanation), and a note when axtb isn't installed. A workspace counts both backends as one g-xTB level.
   - A job's kept orbitals (the viewer's Whole, Fragments and Bonds) are axtb's own Molden files, kept as method
     `axtb` with the label g-xTB: a g-xTB session finds them, and each is read with axtb's conventions. Read as
     the program's, formamide's HOMO was off by up to 44% of its peak value; read as axtb's it matches the program's to 2e-8.

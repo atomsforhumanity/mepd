@@ -225,3 +225,31 @@ def test_edited_profiles_still_validate():
     assert validate_profile_text(t)["ok"]
     t = pf.apply(pf.apply(VALID, "gi_inputs.nimages", "14")["text"], "interpolation", "idpp")["text"]
     assert validate_profile_text(t)["ok"]
+
+
+def test_gxtb_backend_is_a_choice_and_not_a_level(monkeypatch):
+    """g-xTB's backend: the program or axtb (in process). Same energies, so the same level of theory;
+    a profile asking for axtb where it isn't installed, or for GFN2-xTB from it, says so."""
+    import importlib.util
+
+    from mepd.web.workspace import level_key
+
+    f = pf.form(BASE)
+    field = next(x for g in f["groups"] for x in g["fields"] if x["path"] == "gxtb_engine_kwds.backend")
+    assert field["type"] == "select" and field["key"] and field["default"] == "xtb"
+    assert [o["value"] for o in field["options"]] == ["xtb", "axtb"]
+    ax = pf.apply(BASE, "gxtb_engine_kwds.backend", "axtb")["text"]
+    assert tomllib.loads(ax)["gxtb_engine_kwds"]["backend"] == "axtb"
+    with pytest.raises(WorkspaceError):
+        pf.apply(BASE, "gxtb_engine_kwds.backend", "tblite")
+    assert level_key(ax) == level_key(BASE)
+    conv = BASE + '\n[gxtb_engine_kwds]\nbackend = "axtb"\naxtb_conventions = "gxtb"\n'
+    assert level_key(conv) == level_key(BASE)
+    assert level_key(BASE + '\n[gxtb_engine_kwds]\nadd_gxtb_flag = false\n') != level_key(BASE)
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "axtb" else real(name, *a))
+    assert any("not installed" in i for i in pf.form(ax)["issues"])
+    assert not any("axtb" in i for i in pf.form(BASE)["issues"])
+    gfn2 = pf.apply(ax, "gxtb_engine_kwds.add_gxtb_flag", "false")["text"]
+    assert any("g-xTB only" in i for i in pf.form(gfn2)["issues"])

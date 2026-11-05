@@ -3431,6 +3431,24 @@
    "mepd/neb.py:NEB"
   ]
  },
+ "profile.gxtb_engine_kwds.backend": {
+  "title": "Backend",
+  "does": "What computes g-xTB 2.0.1: the g-xTB program, or axtb inside mepd's own process.",
+  "how": [
+   "xtb (default): the g-xTB program (xtb --gxtb) runs once per energy, gradient or Hessian, in a folder of its own.",
+   "axtb: AFH's Rust implementation of g-xTB 2.0.1 (atomsforhumanity/axtb) runs in the calculation's own process, with no program start or files per call, and its Hessians are analytic (Hessian accuracy doesn't apply). A job keeps axtb's own Molden files for the orbital viewer.",
+   "On 120 benchmark structures (reactants, products and TSs of 40 reactions), axtb's energies matched the program's to 1.4e-10 Eh and TS frequencies to 0.6 cm⁻¹. One gradient took 11 ms with axtb and 93 ms with the program, on one CPU."
+  ],
+  "default": "xtb (the program).",
+  "caveats": [
+   "axtb computes g-xTB only: not GFN2-xTB (add_gxtb_flag = false). Of the extra arguments it takes only --etemp, --acc and --iterations.",
+   "Both give the same level of theory: a workspace counts their energies as one g-xTB level."
+  ],
+  "code": [
+   "mepd/engines/axtb_backend.py",
+   "mepd/engines/gxtb.py:GXTBCalculator"
+  ]
+ },
  "profile.gxtb_engine_kwds.hessian_acc": {
   "title": "Hessian accuracy",
   "does": "SCC accuracy (xtb --acc) for g-xTB's numerical Hessians. Smaller is tighter.",
