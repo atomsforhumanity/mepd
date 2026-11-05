@@ -28,6 +28,21 @@ H  -0.640   2.360   0.070
 """
 
 
+# Ethane: big enough for faer to multiply matrices in parallel (axtb's vibrational analysis then
+# starts rayon's global pool; methane and formamide stay sequential).
+ETHANE = """8
+
+C  -0.748   0.042   0.011
+C   0.751   0.001   0.001
+H  -1.130  -0.636   0.814
+H  -1.189   1.025   0.200
+H  -1.200  -0.333  -0.938
+H   1.084  -0.737  -0.773
+H   1.227   0.958  -0.265
+H   1.204  -0.320   0.950
+"""
+
+
 def _node(xyz: str = FORMAMIDE) -> StructureNode:
     return StructureNode(structure=Structure.from_xyz(xyz))
 
@@ -109,14 +124,14 @@ def test_scf_failure_takes_the_retry_ladder(caplog):
 
 def _child_hessian(q):
     eng = GXTBCalculator(backend="axtb", n_parallel=1)
-    q.put(float(np.asarray(eng._compute_hessian_result(_node()).results.freqs_wavenumber)[-1]))
+    q.put(float(np.asarray(eng._compute_hessian_result(_node(ETHANE)).results.freqs_wavenumber)[-1]))
 
 
 def test_forked_child_after_a_hessian_does_not_hang():
     """mepd forks workers (channel_search, network expansion): a Hessian and frequencies in the
     parent must leave nothing a forked child waits on."""
     eng = GXTBCalculator(backend="axtb", n_parallel=1)
-    eng._compute_hessian_result(_node())
+    eng._compute_hessian_result(_node(ETHANE))
     ctx = multiprocessing.get_context("fork")
     q = ctx.Queue()
     p = ctx.Process(target=_child_hessian, args=(q,))
