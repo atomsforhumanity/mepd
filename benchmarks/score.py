@@ -3,7 +3,7 @@
     python benchmarks/score.py run   BENCH OUT [--src WORKTREE] [--budget S] [--workers N] [-- extra expand args]
     python benchmarks/score.py score BENCH OUT          # score a finished run directory again
 
-BENCH is `hcooh` or `f0007`. `run` prints, and saves as OUT/score.json, one line: wall and CPU time,
+BENCH is `hcooh` (monomer), `hcooh4` ((HCOOH)4 cluster) or `f0007`. `run` prints, and saves as OUT/score.json, one line: wall and CPU time,
 species and steps, the selectivity read from summary.json against experiment, and whether the
 products the selectivity needs were found and connected to the seed.
 
@@ -41,6 +41,10 @@ COMMON = ["--charge", "0", "--multiplicity", "1", "--steer", "access", "--schedu
 BENCHES = {
     # experiment: dehydration (CO + H2O) : decarboxylation (CO2 + H2) = 6.3-10
     "hcooh": dict(seed="hcooh.xyz", expt=(6.3, 10.0), args=[
+        "--inputs", str(HERE / "hcooh_profile.toml"), "--standard-state", "1atm",
+        "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"]),
+    # the same, from the (HCOOH)4 cluster seed of the user's run j_4e10ef7a (spectator molecules)
+    "hcooh4": dict(seed="hcooh4.xyz", expt=(6.3, 10.0), args=[
         "--inputs", str(HERE / "hcooh_profile.toml"), "--standard-state", "1atm",
         "--cutoff-temperature", "1500", "--cutoff-time", "1e-3", "--temperature", "1500", "--time", "1e-3"]),
     # experiment: endo:exo = 77:23
@@ -110,7 +114,7 @@ def stereo(fp):
 def _channels(bench, s, run):
     """{channel name: {species index: weight}} for the selectivity numerator and denominator."""
     frags = [[_canon(f) for f in sp["smiles"].split(".")] for sp in s["species"]]
-    if bench == "hcooh":
+    if bench.startswith("hcooh"):
         co, co2 = _canon("[C-]#[O+]"), _canon("O=C=O")
         return {"dehydration": {k: fr.count(co) for k, fr in enumerate(frags) if co in fr},
                 "decarboxylation": {k: fr.count(co2) for k, fr in enumerate(frags) if co2 in fr}}
@@ -205,7 +209,8 @@ def main(argv):
             return 1
         o = score(bench, out / "run", wall, cpu, rev)
         o["returncode"] = rc
-    (out / "score.json").write_text(json.dumps(o, indent=1))
+    if (out / "argv.json").exists():   # a harness run; never write into other run directories
+        (out / "score.json").write_text(json.dumps(o, indent=1))
     print(line(o))
     return 0
 
