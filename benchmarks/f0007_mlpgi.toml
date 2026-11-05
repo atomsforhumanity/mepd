@@ -1,0 +1,9 @@
+# F0007 explorer level: the default (g-xTB) with MLP-GI on g-xTB as the path method, loosened:
+# 20 FIRE steps per stage (defaults 200 / 500) and 10 images (default 15).
+engine_name = "gxtb"
+path_min_method = "MLPGI"
+[path_min_inputs]
+fire_stage1_iter = 20
+fire_stage2_iter = 20
+[gi_inputs]
+nimages = 10

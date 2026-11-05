@@ -1,0 +1,9 @@
+# Steering level for the F0007 explorer: wB97X-D3BJ/def2-TZVP (RIJCOSX) single points in ORCA 6.0.0,
+# one process each (no MPI on this machine); the explorer runs several side by side.
+engine_name = "orca"
+[orca_engine_kwds]
+method = "wB97X-D3BJ"
+basis = "def2-TZVP"
+threads = 1
+maxcore = 3000
+executable = "/home/user/.local/opt/orca-6.0.0/orca"

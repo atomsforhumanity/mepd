@@ -1,0 +1,97 @@
+engine_name = "gxtb"
+program = "xtb"
+write_qcio = false
+print_stdout = false
+path_min_method = "FSM-TS"
+program_kwds = ""
+
+[nanoreactor_inputs]
+
+[path_min_inputs]
+max_min_iter = 3
+max_grow_iter = 20
+verbosity = 1
+skip_identical_graphs = true
+disregard_stereochem = false
+do_elem_step_checks = true
+grad_tol = 0.05
+barrier_thre = 5
+tangent = "geodesic"
+tangent_alpha = 1.0
+use_xtb_grow = false
+distance_metric = "GEODESIC"
+min_images = 3
+todd_way = true
+dist_err = 0.1
+phi = 0.5
+drstep = 0.1
+ts_maxiter = 500
+ts_fmax = 0.001
+pseudo_irc_amplitude = 0.3
+pseudo_irc_maxiter = 500
+pseudo_irc_hessian = "auto"
+pseudo_irc_imaginary_cutoff = 20.0
+fallback = "GSM"
+
+[path_min_inputs.gsm_inputs]
+
+[path_min_inputs.neb_inputs]
+
+[chain_inputs]
+k = 0.1
+delta_k = 0.09
+do_parallel = true
+interpolation = "geodesic"
+node_freezing = true
+fraction_freeze = 0.1
+node_rms_thre = 5.0
+node_ene_thre = 5.0
+frozen_atom_indices = ""
+
+[gi_inputs]
+nimages = 10
+friction = 0.001
+nudge = 0.1
+random_seed = 0
+align = true
+
+[gi_inputs.extra_kwds]
+
+[ts_inputs]
+fmax = 0.001
+maxiter = 1000
+continue_unconverged = 1
+check_frequencies = true
+imaginary_cutoff_cm = 10.0
+exact_hessian = true
+hessian_every = 0
+
+[atom_mapping_inputs]
+n_candidates = 3
+metric = "snap-gi-xtb"
+veto_margin = 0.0
+recheck_on_split = false
+explore_mechanisms = 0
+relax_top = 4
+relax_margin = 5.0
+rmsd_window = 1.0
+gi_variant_cap = 20
+
+[ase_engine_kwds]
+
+[gxtb_engine_kwds]
+
+[xtb_engine_kwds]
+
+[fairchem_engine_kwds]
+
+[mlip_engine_kwds]
+
+[psi4_engine_kwds]
+
+[terachem_engine_kwds]
+
+[geometry_optimizer_kwds]
+
+[optimizer_kwds]
+name = "cg"
