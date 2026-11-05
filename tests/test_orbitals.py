@@ -1,6 +1,7 @@
 """Frontier orbitals (mepd.orbitals, /api/orbitals): xtb's molden orbitals
 evaluated on a grid must come out normalized for both programs, whose
 Cartesian d functions are scaled differently."""
+import json
 import shutil
 
 import numpy as np
@@ -247,3 +248,44 @@ def test_a_jobs_frames_are_built_once_and_kept(tmp_path, monkeypatch):
     orbitals._from_file.cache_clear()
     assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz) == first      # a file read
     assert orbitals.frame_build(tmp_path / "orbitals", list(s.symbols), xyz + [[0, 0, 1.0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]) is None
+
+
+def test_the_lookup_reads_only_live_entries_and_follows_a_growing_index(tmp_path):
+    """An index lists every SCF ever kept, the folder only the newest: entries whose molden file is gone when
+    the index is first read are skipped; lines appended later are read on from where the last read stopped;
+    exact, turned and different geometries are told apart as before."""
+    from scipy.spatial.transform import Rotation
+
+    d = tmp_path / "orbitals"
+    d.mkdir()
+    rng = np.random.default_rng(0)
+    syms = ["C", "O", "H", "H"]
+    geoms = [rng.normal(size=(4, 3)) * 1.2 for _ in range(6)]
+
+    def keep(k, exists=True):
+        name = f"{1000 + k}-1.molden"
+        if exists:
+            (d / name).write_text("kept")
+        with open(d / "index.jsonl", "a") as fh:
+            fh.write(json.dumps({"file": name, "method": "gxtb", "label": "g-xTB", "source": "run", "symbols": syms,
+                                 "coords": geoms[k].round(5).tolist()}) + "\n")
+
+    for k in range(4):
+        keep(k, exists=k >= 2)                       # the first two were pruned long ago
+    assert [e["file"] for e in orbitals._index(d / "index.jsonl")] == ["1002-1.molden", "1003-1.molden"]
+    assert orbitals.find_run_orbitals([d], syms, geoms[0]) is None
+    hit = orbitals.find_run_orbitals([d], syms, geoms[3] + 1e-4)
+    assert hit["file"] == "1003-1.molden" and hit["align"] is None
+    R = Rotation.from_euler("xyz", [20, 70, -40], degrees=True).as_matrix()
+    turned = (geoms[2] - geoms[2].mean(axis=0)) @ R + 3.0
+    hit = orbitals.find_run_orbitals([d], syms, turned)
+    assert hit["file"] == "1002-1.molden" and hit["align"] is not None
+    moved = turned + 0.0
+    moved[0] += 0.05                                  # a different geometry: no match, turned or not
+    assert orbitals.find_run_orbitals([d], syms, moved) is None
+    assert orbitals.find_run_orbitals([d], syms, turned, rigid=False) is None
+    keep(4)                                           # a running calculation keeps another
+    assert orbitals.find_run_orbitals([d], syms, geoms[4])["file"] == "1004-1.molden"
+    assert orbitals.find_run_orbitals([d], syms[::-1], geoms[4]) is None   # other atoms
+    (d / "1004-1.molden").unlink()                    # pruned after it was read: checked when found
+    assert orbitals.find_run_orbitals([d], syms, geoms[4]) is None

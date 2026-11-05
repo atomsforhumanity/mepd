@@ -471,28 +471,82 @@ def save_run_orbitals(molden: Path, xyz_text: str, method: str, label: str, wher
         return None
 
 
-_INDEX: dict = {}   # index.jsonl path -> ((mtime, size), entries)
+class _Kept:
+    """One folder's index.jsonl as read so far: the entries whose molden
+    files still existed when it was first read (an index lists every SCF
+    ever kept there, the folder holds only the newest KEEP_RUNS: one
+    workspace's 15 jobs had 346,218 index lines for about 15,000 files), plus
+    every line appended since, read on from where the last read stopped.
+    `groups` (built when asked): per list of atoms, the entries' positions as
+    one array, for looking up a geometry without a Python loop per entry."""
+
+    def __init__(self, inode: int):
+        self.inode, self.offset, self.entries, self.groups = inode, 0, [], None
 
 
-def _index(fp: Path) -> list:
+_INDEX: dict = {}   # index.jsonl path -> _Kept
+_INDEX_LOCK = threading.Lock()
+_FILE = re.compile(rb'"file":\s*"([^"]+)"')
+
+
+def _kept(fp: Path) -> Optional[_Kept]:
     try:
         st = fp.stat()
     except OSError:
-        return []
-    key = (st.st_mtime_ns, st.st_size)
-    hit = _INDEX.get(str(fp))
-    if hit and hit[0] == key:
-        return hit[1]
-    entries = []
-    for ln in fp.read_text().splitlines():
-        try:
-            e = json.loads(ln)
-            e["xyz"] = np.asarray(e["coords"], dtype=float)
-            entries.append(e)
-        except Exception:
-            continue
-    _INDEX[str(fp)] = (key, entries)
-    return entries
+        return None
+    with _INDEX_LOCK:
+        k = _INDEX.get(str(fp))
+        if k is None or k.inode != st.st_ino or st.st_size < k.offset:     # new, or written anew
+            k = _INDEX[str(fp)] = _Kept(st.st_ino)
+        if st.st_size > k.offset:
+            first = k.offset == 0
+            with open(fp, "rb") as fh:
+                fh.seek(k.offset)
+                data = fh.read(st.st_size - k.offset)
+            data = data[:data.rfind(b"\n") + 1]            # whole lines only (a writer may be mid-line)
+            k.offset += len(data)
+            live = None
+            if first:
+                try:
+                    live = {e.name.encode() for e in os.scandir(fp.parent) if e.name.endswith(".molden")}
+                except OSError:
+                    live = None
+            for ln in data.splitlines():
+                if live is not None:
+                    m = _FILE.search(ln)
+                    if m and m.group(1) not in live:
+                        continue                         # its molden file was pruned long ago
+                try:
+                    e = json.loads(ln)
+                    e["xyz"] = np.asarray(e["coords"], dtype=float)
+                except Exception:
+                    continue
+                k.entries.append(e)
+            k.groups = None
+        return k
+
+
+def _index(fp: Path) -> list:
+    """The kept SCFs listed in `fp` (index.jsonl), oldest first (see _Kept)."""
+    k = _kept(fp)
+    return k.entries if k is not None else []
+
+
+def _group(k: _Kept, symbols: tuple):
+    """(entry numbers, positions (n, atoms, 3), each atom's distance to the
+    centroid (n, atoms)) of `k`'s entries with these atoms, or None."""
+    with _INDEX_LOCK:
+        if k.groups is None:
+            rows: dict = {}
+            for i, e in enumerate(k.entries):
+                rows.setdefault((tuple(e["symbols"]), e["xyz"].shape), []).append(i)
+            groups = {}
+            for (syms, shape), idx in rows.items():
+                X = np.stack([k.entries[i]["xyz"] for i in idx])
+                C = X - X.mean(axis=1, keepdims=True)
+                groups[syms] = (np.array(idx), X, np.sqrt((C * C).sum(axis=2)))
+            k.groups = groups
+        return k.groups.get(symbols)
 
 
 def _aligned(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray]:
@@ -510,25 +564,39 @@ def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = Non
     any of `dirs` (and of `method`, if given), or None. With `rigid`, also
     one at the same geometry turned and moved (an IRC's frames have their
     rigid motion taken out): then `align` = {"R", "from", "to"} maps the asked
-    geometry onto the kept one, (x - from) @ R + to (Angstrom)."""
+    geometry onto the kept one, (x - from) @ R + to (Angstrom).
+
+    Per folder the newest entry that matches; across folders an exact match
+    before a turned one, then the newest. The positions are compared as one
+    array per folder; a turned match is fitted (Kabsch) only for entries
+    whose atoms' distances to the centroid all agree within sqrt(n) x
+    MATCH_A, which every geometry within MATCH_A RMSD after the best fit
+    does."""
     xyz = np.asarray(coords_A, dtype=float).reshape(-1, 3)
+    key = tuple(symbols)
+    rq = np.sqrt(((xyz - xyz.mean(axis=0)) ** 2).sum(axis=1))
+    loose = MATCH_A * math.sqrt(len(xyz)) + 1e-9
     best = None
     for d in dirs:
         d = Path(d)
-        for e in reversed(_index(d / "index.jsonl")):
-            if e["symbols"] != list(symbols) or e["xyz"].shape != xyz.shape or (method and e.get("method") != method):
+        k = _kept(d / "index.jsonl")
+        g = _group(k, key) if k is not None else None
+        if g is None or g[1].shape[1:] != xyz.shape:
+            continue
+        rows, X, R = g
+        exact = np.abs(X - xyz).max(axis=(1, 2)) <= MATCH_A
+        maybe = exact | (np.abs(R - rq).max(axis=1) <= loose) if rigid and len(xyz) > 2 else exact
+        for i in np.nonzero(maybe)[0][::-1]:                  # newest first
+            e = k.entries[rows[i]]
+            if (method and e.get("method") != method) or not (d / e["file"]).is_file():
                 continue
-            if not (d / e["file"]).is_file():
-                continue
-            if np.abs(e["xyz"] - xyz).max() <= MATCH_A:
+            if exact[i]:
                 hit = {**e, "dir": str(d), "align": None}
-            elif rigid and len(xyz) > 2:
-                rmsd, R = _aligned(xyz, e["xyz"])
+            else:
+                rmsd, Rm = _aligned(xyz, e["xyz"])
                 if rmsd > MATCH_A:
                     continue
-                hit = {**e, "dir": str(d), "align": {"R": R, "from": xyz.mean(axis=0), "to": e["xyz"].mean(axis=0)}}
-            else:
-                continue
+                hit = {**e, "dir": str(d), "align": {"R": Rm, "from": xyz.mean(axis=0), "to": e["xyz"].mean(axis=0)}}
             if best is None or (best["align"] is not None and hit["align"] is None) or \
                     ((best["align"] is None) == (hit["align"] is None) and e["file"] > best["file"]):
                 best = hit
