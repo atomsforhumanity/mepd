@@ -725,14 +725,40 @@ def run_facts(dst: Path) -> dict:
         out["reactor_T"] = sorted({float(t) for t in re.findall(r"trajectories of [\d.]+ ps at ([\d.]+) K",
                                                                  log.read_text(errors="replace"))})
     na = Path(dst) / "network_aware.jsonl"
+    # where the time goes: worker-seconds per job kind (the queue's job events: run_s summed, so concurrent jobs
+    # add up), the main process's time in the queue's callbacks, and the wall clock's phases (start -> the
+    # async queue's cycle_start: process start, seed minimization, setup; the queue; its last job -> the end)
+    jobs, main_s, t_cycle, t_last = {}, 0.0, None, None
     if na.is_file():
         for line in na.read_text().splitlines():
             try:
                 e = json.loads(line)
             except ValueError:
                 continue
-            if e.get("event") == "job" and e.get("kind") == "propose":
-                out["propose_jobs"]["ok" if e.get("ok") else "failed"] += 1
+            if e.get("event") == "job":
+                if e.get("kind") == "propose":
+                    out["propose_jobs"]["ok" if e.get("ok") else "failed"] += 1
+                j = jobs.setdefault(e.get("kind"), {"n": 0, "failed": 0, "run_s": 0.0, "wait_s": 0.0, "max_s": 0.0})
+                j["n"] += 1
+                j["failed"] += 0 if e.get("ok") else 1
+                j["run_s"] += float(e.get("run_s") or 0.0)
+                j["wait_s"] += float(e.get("wait_s") or 0.0)
+                j["max_s"] = max(j["max_s"], float(e.get("run_s") or 0.0))
+                t_last = e["t"] if t_last is None else max(t_last, e["t"])
+            elif e.get("event") == "horizontal_connect":
+                main_s += float(e.get("main_s") or 0.0)
+            elif e.get("event") == "phase" and e.get("phase") == "cycle_start" and t_cycle is None:
+                t_cycle = e["t"]
+    total = sum(j["run_s"] for j in jobs.values())
+    for j in jobs.values():
+        j["share"] = j["run_s"] / total if total else None
+    out["job_time"] = {"by_kind": jobs, "worker_s": total, "main_callbacks_s": main_s}
+    res = Path(dst) / "result.json"
+    if res.is_file() and t_cycle is not None:
+        r = json.loads(res.read_text())
+        out["job_time"]["phases_s"] = {"before_queue": t_cycle - r["start"],
+                                       "queue": (t_last - t_cycle) if t_last is not None else None,
+                                       "after_queue": r["end"] - (t_last if t_last is not None else t_cycle)}
     return out
 
 
@@ -753,6 +779,24 @@ def _stats(vals: list) -> dict:
     return {"n": len(vs), "missing": len(vals) - len(vs), "median": med,
             "min": min(fin) if fin else None, "max": max(fin) if fin else None,
             "iqr": (_q(fin, 75) - _q(fin, 25)) if len(fin) >= 2 else None, "n_inf": len(vs) - len(fin)}
+
+
+def _job_time(runs: list) -> dict:
+    """Median over the runs of each job kind's worker-seconds and share, and of the wall-clock phases."""
+    kinds = sorted({k for o in runs for k in ((o.get("job_time") or {}).get("by_kind") or {})})
+    med = lambda xs: float(np.median(xs)) if xs else None
+    out = {"by_kind": {}, "phases_s": {}}
+    for k in kinds:
+        js = [((o.get("job_time") or {}).get("by_kind") or {}).get(k, {"n": 0, "run_s": 0.0, "share": 0.0}) for o in runs
+              if o.get("job_time")]
+        out["by_kind"][k] = {"n": med([j["n"] for j in js]), "run_s": med([j["run_s"] for j in js]),
+                             "share": med([j.get("share") or 0.0 for j in js])}
+    for ph in ("before_queue", "queue", "after_queue"):
+        out["phases_s"][ph] = med([o["job_time"]["phases_s"][ph] for o in runs
+                                   if (o.get("job_time") or {}).get("phases_s", {}).get(ph) is not None])
+    out["worker_s"] = med([o["job_time"]["worker_s"] for o in runs if o.get("job_time")])
+    out["main_callbacks_s"] = med([o["job_time"]["main_callbacks_s"] for o in runs if o.get("job_time")])
+    return out
 
 
 def aggregate(scores: list, suite: dict) -> dict:
@@ -797,6 +841,7 @@ def aggregate(scores: list, suite: dict) -> dict:
             "species": _stats([o.get("species") for o in runs]), "steps": _stats([o.get("steps") for o in runs]),
             "stopped": sorted(str(o.get("stopped")) for o in runs), "audit_flags": flags,
             "reactor_T": sorted({t for o in runs for t in o.get("reactor_T") or []}),
+            "job_time": _job_time(runs),
             "propose_jobs": {k: sum((o.get("propose_jobs") or {}).get(k, 0) for o in runs) for k in ("ok", "failed")}}
     return out
 

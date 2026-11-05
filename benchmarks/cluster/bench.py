@@ -48,7 +48,7 @@ BENCH = HERE.parent
 REPO = BENCH.parent
 TEAM = Path("/home/user/astera/data/runs/explorer-team/scoreboard")
 AFH_DIR, RESULTS = TEAM / "afh", TEAM / "results"
-IMAGE = "192.168.8.6:5000/mepd-orca-uma:2026-10-28a"
+IMAGE = "192.168.8.6:5000/mepd-orca-uma-axtb:2026-11-05"   # mepd-orca-uma + axtb (g-xTB in process, develop 37250d5)
 
 sys.path.insert(0, str(BENCH))
 import score  # noqa: E402  (benchmarks/score.py: the suite, metrics and audit)
@@ -57,6 +57,8 @@ CONFIGS = {
     "default": [],                                                  # the code's own reactor settings
     "T1800": ["--generator-option", "temperature=1800"],
     "T2200": ["--generator-option", "temperature=2200"],
+    # F0007 only: the g-xTB program instead of axtb (the profiles use axtb since 37250d5), for the equivalence check
+    "program": ["--inputs", "{RUN_DIR}/inputs/f0007_mlpgi_program.toml"],
 }
 COMMON = ["--steer", "access", "--schedule", "async", "--generator", "reactor",
           "--steer-energies", "{RUN_DIR}/inputs/orca_steer.toml"]
@@ -90,11 +92,13 @@ def seed_argv(replicate: int) -> tuple[dict, list]:
 
 
 def build(run: str, commit: str, groups: list, replicates: int, budget: float, threads: int,
-          parallelism: int, memory: str, control: bool, hard_factor: float = 3.0) -> Path:
-    """`groups`: [(systems, [(config name, args)])] in priority order (pods start in task order)."""
+          parallelism: int, memory: str, control: bool, hard_factor: float = 3.0, image: str = IMAGE) -> Path:
+    """`groups`: [(systems, [(config name, args)], replicates or None)] in priority order (pods start in
+    task order); None = `replicates`."""
     suite = score.load_systems()
     systems = list(dict.fromkeys(n for g in groups for n in g[0]))
     configs = list({c: a for g in groups for c, a in g[1]}.items())
+    groups = [g if len(g) == 3 else (*g, None) for g in groups]
     sha = _git("rev-parse", commit)
     harness = _git("rev-parse", "HEAD") + ("+dirty" if _git("status", "--porcelain", "--", "benchmarks") else "")
     d = AFH_DIR / run
@@ -115,7 +119,7 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
     # pods start in task order: group by group (priority), and in a group replicate by replicate, every system
     # (as given: long ones first) and configuration in each, so all arms meet the same cluster load and a run
     # cut short has every arm
-    order = [(r, name, c) for g_systems, g_configs in groups for r in range(replicates)
+    order = [(r, name, c) for g_systems, g_configs, g_reps in groups for r in range(g_reps or replicates)
              for name in g_systems for c in g_configs]
     for r, name, (cname, cargs) in order:
         seeds, sargs = seed_argv(r)
@@ -133,19 +137,27 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
                           "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                           "hard_timeout": hard_factor * budget,
                           "argv": system_argv(name, suite[name], budget) + cargs + sargs, "harness_commit": harness})
+    for t in tasks:     # input files a configuration names ({RUN_DIR}/inputs/X): from benchmarks/ or cluster/suite/
+        for a in t["argv"]:
+            if a.startswith("{RUN_DIR}/inputs/") and not (d / "inputs" / a.split("/")[-1]).is_file():
+                src = next((p for p in (BENCH / a.split("/")[-1], HERE / "suite" / a.split("/")[-1]) if p.is_file()), None)
+                if src is None:
+                    raise SystemExit(f"{a}: no such input in benchmarks/ or benchmarks/cluster/suite/")
+                shutil.copy(src, d / "inputs" / src.name)
     (d / "tasks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in tasks))
     timeout = int(hard_factor * budget + 900)
-    what = "; then ".join(f"{','.join(gs)} x {','.join(c for c, _ in gc)}" for gs, gc in groups)
+    what = "; then ".join(f"{','.join(gs)} x {','.join(c for c, _ in gc)}" + (f" x {gr}" if gr else "")
+                          for gs, gc, gr in groups)
     desc = (f"scoreboard {run}: discovery expand on explorer {sha[:7]}, {what}, {replicates} replicates each"
             f"{' + controls' if control else ''}, {threads} threads, budget {budget:g} s "
             f"(explorer-team phase 0, benchmarks/cluster/bench.py)")
     (d / "run.yaml").write_text(
-        f'description: "{desc}"\nimage: {IMAGE}\ncommand: "exec python3 $RUN_DIR/task.py"\n'
+        f'description: "{desc}"\nimage: {image}\ncommand: "exec python3 $RUN_DIR/task.py"\n'
         f"threads_per_task: {threads}\ncpus_per_pod: {threads}\nmemory_per_pod: {memory}\n"
         f"shards: {len(tasks)}\nparallelism: {parallelism}\ntask_timeout: {timeout}\npriority: batch\n"
         "notify: auto\nenv: {SELLA_DISABLE_GPU: 1, OMP_NUM_THREADS: 1, MKL_NUM_THREADS: 1, OPENBLAS_NUM_THREADS: 1}\n")
     (d / "manifest.json").write_text(json.dumps(
-        {"run": run, "commit": sha, "harness_commit": harness, "image": IMAGE, "configs": dict(configs),
+        {"run": run, "commit": sha, "harness_commit": harness, "image": image, "configs": dict(configs),
          "systems": {n: suite[n] for n in systems}, "replicates": replicates, "budget_s": budget,
          "threads": threads, "control": control, "tasks": len(tasks), "suite_source": score.SUITE_SOURCE},
         indent=1))
@@ -288,6 +300,18 @@ def report(name: str) -> str:
             out.append(f"- {system}: {len(ds)} pairs, median {sorted(ds)[len(ds) // 2]:.2f}, max {max(ds):.2f}, "
                        f"{sum(d > 0.2 for d in ds)} above 0.2")
     out.append("")
+    out.append("## where the time goes (medians over replicates): worker-seconds per job kind (share), wall phases")
+    for key, g in sorted(groups.items()):
+        jt = g.get("job_time") or {}
+        kinds = sorted((jt.get("by_kind") or {}).items(), key=lambda kv: -(kv[1].get("run_s") or 0))
+        ph = jt.get("phases_s") or {}
+        fmt = lambda x: "-" if x is None else f"{x:.0f}"
+        out.append(f"- {key}: " + ", ".join(f"{k} {v['run_s']:.0f} s ({100 * (v['share'] or 0):.0f} %, n {v['n']:.0f})"
+                                            for k, v in kinds)
+                   + f" | worker total {fmt(jt.get('worker_s'))} s, main callbacks {fmt(jt.get('main_callbacks_s'))} s"
+                   + f" | wall: before queue {fmt(ph.get('before_queue'))}, queue {fmt(ph.get('queue'))}, "
+                     f"after {fmt(ph.get('after_queue'))} s")
+    out.append("")
     out.append("## controls (replicate 0 rerun with the same seeds)")
     by_id = {o["id"]: o for o in scores}
     for o in scores:
@@ -315,7 +339,9 @@ def main(argv: list) -> int:
     b.add_argument("--config", action="append", default=[])
     b.add_argument("--systems", default="")
     b.add_argument("--group", action="append", default=[],
-                   help="SYSTEMS:CONFIGS (comma-separated each), repeatable, in priority order; replaces --systems/--config")
+                   help="SYSTEMS:CONFIGS[:REPLICATES] (comma-separated lists), repeatable, in priority order; "
+                        "replaces --systems/--config")
+    b.add_argument("--image", default=IMAGE)
     b.add_argument("--replicates", type=int, default=5)
     b.add_argument("--budget", type=float, default=1800.0)
     b.add_argument("--threads", type=int, default=32)
@@ -338,12 +364,13 @@ def main(argv: list) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "build":
         if a.group:
-            groups = [([x for x in g.split(":")[0].split(",") if x], [_config(c) for c in g.split(":")[1].split(",")])
-                      for g in a.group]
+            groups = [([x for x in g.split(":")[0].split(",") if x], [_config(c) for c in g.split(":")[1].split(",")],
+                       int(g.split(":")[2]) if len(g.split(":")) > 2 else None) for g in a.group]
         else:
             groups = [([x for x in a.systems.split(",") if x] or list(score.load_systems()),
                        [_config(c) for c in (a.config or ["default"])])]
-        build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control)
+        build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control,
+              image=a.image)
     elif a.cmd == "submit":
         afh("push", str(AFH_DIR / a.run), a.run)
         afh("submit", a.run)

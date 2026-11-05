@@ -7,3 +7,7 @@ fire_stage1_iter = 20
 fire_stage2_iter = 20
 [gi_inputs]
 nimages = 10
+[gxtb_engine_kwds]
+# g-xTB 2.0.1 from axtb in process (develop 37250d5; the user's instruction 2026-11-05), the program's conventions
+backend = "axtb"
+axtb_conventions = "gxtb"
