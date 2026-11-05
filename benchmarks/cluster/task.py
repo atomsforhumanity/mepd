@@ -77,6 +77,14 @@ def main() -> int:
                TMPDIR=str(Path("tmp").resolve()), MEPD_DRIVE_CHAIN_DIR=str(Path("live").resolve()),
                MEPD_NETWORK_AWARE_LOG=str((out / "network_aware.jsonl").resolve()),
                OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1")
+    # the code this measurement runs (BRIEF: log mepd.__file__ and the commit; it must be the run's snapshot)
+    probe = subprocess.run([sys.executable, "-c", "import mepd; print(mepd.__file__)"], env=env, capture_output=True,
+                           text=True)
+    mepd_file = (probe.stdout.strip().splitlines() or [""])[-1]
+    if not mepd_file.startswith(str(Path("code").resolve()) + "/"):
+        (out / "result.json").write_text(json.dumps({"id": task["id"], "error": "mepd is not the run's snapshot",
+                                                     "mepd_file": mepd_file, "probe_stderr": probe.stderr[-500:]}))
+        return 1
     stop = threading.Event()
     watcher = threading.Thread(target=snapshotter, args=(stop, snap), daemon=True)
     killed = {"why": None}
@@ -128,7 +136,7 @@ def main() -> int:
     commit_fp = Path("code/COMMIT")
     result = {"id": task["id"], "system": task["system"], "config": task["config"],
               "replicate": task["replicate"], "seeds": task.get("seeds"), "argv": cmd,
-              "code_commit": commit_fp.read_text().strip() if commit_fp.is_file() else None,
+              "code_commit": commit_fp.read_text().strip() if commit_fp.is_file() else None, "mepd_file": mepd_file,
               "harness_commit": task.get("harness_commit"), "budget_s": task.get("budget"),
               "start": start, "end": end, "wall_s": end - start, "cpu_s": ru.ru_utime + ru.ru_stime,
               "exit": rc, "killed": killed["why"], "stopped": stopped, "summary": summary.is_file(),

@@ -703,7 +703,8 @@ def score_task(task: dict, sysdef: dict, dst: Path) -> dict:
     meta = json.loads((dst / "_meta.json").read_text()) if (dst / "_meta.json").is_file() else {}
     base = {"id": task["id"], "system": task["system"], "config": task["config"], "replicate": task["replicate"],
             "seeds": task.get("seeds"), "control_of": task.get("control_of"), "code_commit": result.get("code_commit"),
-            "harness_commit": result.get("harness_commit")}
+            "mepd_file": result.get("mepd_file"), "harness_commit": result.get("harness_commit"),
+            "instrument": instrument()}
     if not (dst / "run" / "summary.json").is_file():
         why = result.get("killed") or (f"exit {result.get('exit')}" if result else "no result.json")
         return {**base, "ok": False, "stopped": f"no summary.json ({why})", "full_recall": False,
@@ -744,6 +745,21 @@ def _wall_by_kind(na: Path, t_cycle) -> dict:
             k = next(iter(kinds))
             sole[k] = sole.get(k, 0.0) + (b - a)
     return {"busy_s": busy, "sole_s": sole, "idle_s": idle, "span_s": pts[-1] - t0}
+
+
+_INSTRUMENT: dict = {}
+
+
+def instrument() -> dict:
+    """The scoring code itself: its mepd (the audit's structure comparisons) and this worktree's commit."""
+    if not _INSTRUMENT:
+        import subprocess
+
+        import mepd
+
+        _INSTRUMENT.update(mepd_file=mepd.__file__, commit=subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip())
+    return dict(_INSTRUMENT)
 
 
 def run_facts(dst: Path) -> dict:
