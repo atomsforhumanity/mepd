@@ -8,6 +8,7 @@
     $P $B pull   RUN           # afh pull into the run's folder
     $P $B score  RUN [RUN2 --as NAME]  # unpack and score every finished task, write aggregate.json + table.md
     $P $B report NAME          # table + gate both ways between two configurations + audit + controls (report.md)
+    $P $B local  RUN [--threads 4]   # run RUN's tasks here, one at a time, filed as the cluster's (checks only)
     $P $B gate   BASE_RUN:CONFIG CAND_RUN:CONFIG     # see gate.py
 
 A run is one afh run (folder `<scoreboard>/afh/RUN/`, results in `<scoreboard>/results/RUN/`):
@@ -150,6 +151,38 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
         indent=1))
     print(f"{d}: {len(tasks)} tasks, explorer {sha[:7]}, harness {harness[:7]}")
     return d
+
+
+def local(run: str, threads: int) -> None:
+    """Run RUN's pending tasks one at a time on this machine with the pod wrapper (NTHREADS = `threads`),
+    filed like the cluster's: afh/RUN/output/<id> (exit 0) or errors/<id>, with a _meta.json. For checks of
+    the pipeline at a few cores; not the 32-core "quick" definition."""
+    import os
+    import socket
+    import tempfile
+    import time
+
+    d = AFH_DIR / run
+    tasks = [json.loads(line) for line in (d / "tasks.jsonl").read_text().splitlines() if line.strip()]
+    for t in tasks:
+        if (d / "output" / t["id"]).is_dir() or (d / "errors" / t["id"]).is_dir():
+            continue
+        with tempfile.TemporaryDirectory(prefix=f"sb-{t['id']}-",
+                                         dir=os.environ.get("SB_LOCAL_SCRATCH") or None) as wd:
+            env = dict(os.environ, TASK_JSON=json.dumps(t), RUN_DIR=str(d), NTHREADS=str(threads), TASK_ID=t["id"])
+            t0 = time.time()
+            print(f"local {run}: {t['id']} ...", flush=True)
+            rc = subprocess.run([sys.executable, str(d / "task.py")], cwd=wd, env=env).returncode
+            dst = d / ("output" if rc == 0 else "errors") / t["id"]
+            dst.parent.mkdir(exist_ok=True)
+            shutil.copytree(Path(wd) / "out", dst)
+            res = json.loads((dst / "result.json").read_text()) if (dst / "result.json").is_file() else {}
+            secs = time.time() - t0
+            (dst / "_meta.json").write_text(json.dumps(
+                {"id": t["id"], "exit_code": rc, "seconds": round(secs, 2), "host": f"local:{socket.gethostname()}",
+                 "cpu_seconds": res.get("cpu_s"), "cores": None if not res.get("cpu_s") else res["cpu_s"] / secs,
+                 "nthreads": threads}, indent=1))
+            print(f"local {run}: {t['id']} exit {rc} in {secs:.0f} s", flush=True)
 
 
 def afh(*args, check=True):
@@ -299,6 +332,9 @@ def main(argv: list) -> int:
     g.add_argument("base")
     g.add_argument("cand")
     sub.add_parser("report").add_argument("name")
+    lo = sub.add_parser("local")
+    lo.add_argument("run")
+    lo.add_argument("--threads", type=int, default=4)
     a = ap.parse_args(argv)
     if a.cmd == "build":
         if a.group:
@@ -317,6 +353,8 @@ def main(argv: list) -> int:
         afh("status", a.run, check=False)
     elif a.cmd == "score":
         score_run(a.run, a.rescore, a.name)
+    elif a.cmd == "local":
+        local(a.run, a.threads)
     elif a.cmd == "report":
         print(report(a.name))
     elif a.cmd == "gate":
