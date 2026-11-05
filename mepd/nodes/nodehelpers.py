@@ -510,6 +510,26 @@ def _is_conformer_identical(
 
 _STEREO_SMILES: dict = {}
 _STEREO_SMILES_MAX = 4096
+_STEREO_VARIANTS_MAX = 24
+
+
+def _heavy_automorphisms(node: Node, limit: int) -> list[dict]:
+    """Up to `limit` permutations of `node`'s heavy atoms that keep its bond graph (elements and hydrogen
+    counts kept), the identity left out."""
+    import itertools
+
+    import networkx as nx
+    from networkx.algorithms.isomorphism import GraphMatcher
+
+    symbols = [str(x) for x in node.structure.symbols]
+    heavy = [i for i, x in enumerate(symbols) if x != "H"]
+    G = nx.Graph()
+    for i in heavy:
+        G.add_node(i, label=(symbols[i], sum(symbols[int(j)] == "H" for j in node.graph.neighbors(i))))
+    G.add_edges_from((int(u), int(v)) for u, v in node.graph.edges() if int(u) in G and int(v) in G)
+    match = GraphMatcher(G, G, node_match=lambda a, b: a["label"] == b["label"])
+    perms = (m for m in match.isomorphisms_iter() if any(k != v for k, v in m.items()))
+    return list(itertools.islice(perms, limit))
 
 
 def _canonical_atom_order(node: Node) -> list[int]:
@@ -553,32 +573,45 @@ def _stereo_smiles(node: Node, bond_orders: bool = True) -> tuple[str, bool]:
     hit = _STEREO_SMILES.get(key)
     if hit is not None:
         return hit
+
+    def build(order):
+        where = {old: new for new, old in enumerate(order)}
+        mol = Chem.RWMol()
+        for i in order:
+            mol.AddAtom(Chem.Atom(str(st.symbols[i])))
+        for u, v in node.graph.edges():
+            mol.AddBond(where[int(u)], where[int(v)], Chem.BondType.SINGLE)
+        conformer = Chem.Conformer(len(order))
+        for k, (x, y, z) in enumerate(geometry[order] * BOHR_TO_ANGSTROM):
+            conformer.SetAtomPosition(k, Point3D(float(x), float(y), float(z)))
+        mol.AddConformer(conformer, assignId=True)
+        with_orders = False
+        if bond_orders:
+            trial = Chem.Mol(mol)
+            try:
+                rdDetermineBonds.DetermineBondOrders(trial, charge=int(st.charge))
+                mol, with_orders = trial, True
+            except Exception:
+                pass
+        mol = Chem.Mol(mol)
+        if not with_orders:
+            for atom in mol.GetAtoms():
+                atom.SetNoImplicit(True)
+            Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        Chem.AssignStereochemistryFrom3D(mol)
+        return Chem.MolToSmiles(mol), with_orders
+
     order = _canonical_atom_order(node)
-    where = {old: new for new, old in enumerate(order)}
-    mol = Chem.RWMol()
-    for i in order:
-        mol.AddAtom(Chem.Atom(str(st.symbols[i])))
-    for u, v in node.graph.edges():
-        mol.AddBond(where[int(u)], where[int(v)], Chem.BondType.SINGLE)
-    conformer = Chem.Conformer(len(order))
-    for k, (x, y, z) in enumerate(geometry[order] * BOHR_TO_ANGSTROM):
-        conformer.SetAtomPosition(k, Point3D(float(x), float(y), float(z)))
-    mol.AddConformer(conformer, assignId=True)
-    with_orders = False
-    if bond_orders:
-        trial = Chem.Mol(mol)
-        try:
-            rdDetermineBonds.DetermineBondOrders(trial, charge=int(st.charge))
-            mol, with_orders = trial, True
-        except Exception:
-            pass
-    mol = Chem.Mol(mol)
-    if not with_orders:
-        for atom in mol.GetAtoms():
-            atom.SetNoImplicit(True)
-        Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
-    Chem.AssignStereochemistryFrom3D(mol)
-    out = (Chem.MolToSmiles(mol), with_orders)
+    out = build(order)
+    if out[1] and ("/" in out[0] or "\\" in out[0]):
+        # The canonical order fixes atoms only up to the graph's symmetry, and a tie in the bond orders between
+        # equivalent atoms falls on whichever comes first: in HO-C-OH as [C-]=[OH+] the formal C=O, so the
+        # E/Z read from its OH. Every equivalent order is read and the distinct SMILES kept (sorted, joined
+        # by "|"): the same for every numbering of one geometry; one SMILES where they agree, as before.
+        variants = {out[0]}
+        for perm in _heavy_automorphisms(node, _STEREO_VARIANTS_MAX):
+            variants.add(build([perm.get(i, i) for i in order])[0])
+        out = ("|".join(sorted(variants)), True)
     if len(_STEREO_SMILES) >= _STEREO_SMILES_MAX:
         _STEREO_SMILES.clear()
     _STEREO_SMILES[key] = out

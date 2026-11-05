@@ -616,6 +616,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Species identity: one molecule no longer splits in two by its atom numbering.** The stereo SMILES that
+  tells species apart (`_stereo_smiles`, used by `same_molecule`, the reactor's and nanoreactor's product keys
+  and the mixture's molecule keys) puts the atoms in a canonical order that fixes them only up to the graph's
+  symmetry, and a tie in the bond orders falls on whichever equivalent atom comes first. Dihydroxycarbene
+  HO-C-OH is written [C-]=[OH+], so its formal C=O landed on either O and its syn/anti conformer read as E or
+  Z by numbering alone: every HCOOH run held the carbene twice (species 2 and 4, same energy to 1e-10 Eh).
+  When a SMILES has E/Z marks, each equivalent order of the heavy atoms (up to 24) is now read too and the
+  distinct SMILES are kept, sorted and joined by "|": one key per geometry whatever the numbering. Where they
+  agree, nothing changes, so real E/Z isomers stay apart and so do the carbene's three conformers. Rescored
+  offline, the HCOOH selectivity is unchanged at 27.6: the carbene steps are out of reach.
+
 - **Explorer: one TS found twice counts as one channel.** A TS asked for one pair whose IRC lands on the ends
   of a step with that very TS (or a channel search finding it again) was kept as a parallel channel, and each
   copy got its own mirror-image twin: formic acid's dehydration TS counted 3x (develop) or 4x (reactor at
