@@ -6,22 +6,22 @@
 
 Cluster runs (build, submit, pull, score, aggregate, gate): benchmarks/cluster/bench.py and gate.py.
 
-The suite (`load_systems`): benchmarks/systems.yaml (the curator's) when it exists, else PROVISIONAL below.
-Each system: its seed, charge and multiplicity, profile, kinetics conditions (temperature, time, standard
-state; the access cutoff uses the same), its experimental channels (product sets as SMILES; F0007's
-two diastereomers also by a geometric classifier) and its experimental selectivities (ratios of channel
-amounts with a range).
+The suite (`load_systems`): the curator's benchmarks/systems.yaml (channels, target, conditions, split) plus
+HARNESS here (each system's seed geometry and explorer profile). Kinetics and access cutoff run at the
+system's score temperature and time.
 
 Definitions (BRIEF.md, "Shared definitions"), as computed here:
 - species amounts: the run's last kinetics (`summary.json` rounds[-1].kinetics), `final_concentration`
   at the kinetics time (the yield an experiment measures); the virtual mirror images the kinetics add
   are counted with the species they mirror.
 - a species belongs to a channel when its molecules are exactly the channel's product set (RDKit
-  canonical SMILES without stereo of each molecule of the species' SMILES, as a multiset), and, for a
-  classified channel, its geometry gives the class (endo/exo).
+  canonical SMILES without stereo of each molecule of the species' SMILES, as a multiset), and, when the
+  products carry stereo, the species geometry's stereo SMILES (RDKit, from 3D) is theirs or, for a racemic
+  channel, their mirror image's.
 - recall: found = a species of the channel exists; connected = one is reachable from the seed (species 0)
   through steps the kinetics use, i.e. steps with a kinetics barrier (not closed out of reach).
-  `linked` = reachable through any step, closed ones too.
+  `linked` = reachable through any step, closed ones too. Full recall = every required channel found and
+  connected (required: the target's numerator, plus its denominator unless the target is one-sided).
 - selectivity of a target = sum of the amounts of the numerator channels' species / the denominator's.
   error = RT ln(selectivity / nearest bound of the experimental range) at the system's temperature,
   kcal/mol, 0 inside the range; +-inf when one side has no amount; worst = largest |error|.
@@ -61,67 +61,52 @@ HARTREE_KCAL = 627.5094740631
 SETTLE_KCAL = 0.5
 QUICK_S = 1800.0
 
-# Provisional suite until the curator's benchmarks/systems.yaml exists. Targets marked UNCONFIRMED are
-# placeholders from REFERENCES.md (playgroud/exp_benchmarks), not pinned from primary sources.
-PROVISIONAL = {
-    "hcooh": {
-        "seed": "hcooh.xyz", "charge": 0, "multiplicity": 1, "profile": "hcooh_profile.toml",
-        "conditions": {"temperature_K": 1500.0, "time_s": 1e-3, "standard_state": "1atm"},
-        "channels": {"dehydration": {"products": ["[C-]#[O+]", "O"]},
-                     "decarboxylation": {"products": ["O=C=O", "[H][H]"]}},
-        "targets": [{"num": ["dehydration"], "den": ["decarboxylation"], "range": [10.0, 40.0],
-                     "status": "curator, NOTES 2026-11-05 10:50: Elwardany et al., Proc. Combust. Inst. 35, 429 (2015), "
-                               "doi:10.1016/j.proci.2014.06.141, abstract: 'branching ratio, k1/k2, of approximately 20'; "
-                               "window 10-40 = factor 2 around 20 (1-6.5 atm Ar, fall-off; the explorer is k-infinity)"}],
-        "held_out": False,
-    },
-    "methyl_formate": {
-        "seed": "cluster/suite/methyl_formate.xyz", "charge": 0, "multiplicity": 1, "profile": "hcooh_profile.toml",
-        "conditions": {"temperature_K": 1400.0, "time_s": 2e-3, "standard_state": "1atm"},
-        "channels": {"methanol_co": {"products": ["CO", "[C-]#[O+]"]},
-                     "formaldehyde2": {"products": ["C=O", "C=O"]},
-                     "methane_co2": {"products": ["C", "O=C=O"]}},
-        "targets": [{"num": ["methanol_co"], "den": ["formaldehyde2"], "range": [19.0, math.inf],
-                     "status": "UNCONFIRMED: REFERENCES.md 'CH3OH+CO dominant (~95%), others minor (<5% each)'; "
-                               "Ren 2013 (doi:10.1016/j.proci.2012.05.071) k1/k2 at 1400 K = 25 from the quoted "
-                               "Arrhenius fits (PDF not checked); the curator pins it"},
-                    {"num": ["methanol_co"], "den": ["methane_co2"], "range": [19.0, math.inf],
-                     "status": "UNCONFIRMED: as above (k3 exponent unconfirmed)"}],
-        "held_out": False,
-    },
-    "f0007": {
-        "seed": "f0007_start_complex.xyz", "charge": 0, "multiplicity": 1, "profile": "f0007_mlpgi.toml",
-        "conditions": {"temperature_K": 353.0, "time_s": 23400.0, "standard_state": "1M"},
-        "channels": {"endo": {"products": ["COC(=O)C1CC2C=CC1C2"], "classify": "endo"},
-                     "exo": {"products": ["COC(=O)C1CC2C=CC1C2"], "classify": "exo"}},
-        "targets": [{"num": ["endo"], "den": ["exo"], "range": [77 / 23, 77 / 23],
-                     "status": "Lording et al., Chem. Sci. 11, 11915 (2020), doi:10.1039/d0sc04553e: endo:exo "
-                               "77:23 in benzene at 80 C (NMR), as verified in Finding F0007"}],
-        "held_out": False,
-    },
+# What the harness adds to each system of the curator's benchmarks/systems.yaml: the seed geometry and the
+# explorer profile (paths relative to benchmarks/). Seeds: hcooh, methyl formate (playgroud exp_benchmarks),
+# f0007 (the Finding's start complex); acetic acid and the Cp + lactone complex built for the suite
+# (benchmarks/cluster/suite/README in NOTES: RDKit/MMFF, the lactone's C=C placed where F0007's acrylate C=C is).
+HARNESS = {
+    "hcooh": {"seed": "hcooh.xyz", "profile": "hcooh_profile.toml"},
+    "acetic_acid": {"seed": "cluster/suite/acetic_acid.xyz", "profile": "hcooh_profile.toml"},
+    "methyl_formate": {"seed": "cluster/suite/methyl_formate.xyz", "profile": "hcooh_profile.toml"},
+    "f0007": {"seed": "f0007_start_complex.xyz", "profile": "f0007_mlpgi.toml"},
+    "cp_mbl": {"seed": "cluster/suite/cp_mbl_start_complex.xyz", "profile": "f0007_mlpgi.toml"},
 }
-SUITE_SOURCE = "provisional (benchmarks/score.py PROVISIONAL)"
+SUITE_SOURCE = "benchmarks/systems.yaml"
 
 
-def load_systems() -> dict:
-    """The suite: the curator's benchmarks/systems.yaml when it exists, else PROVISIONAL."""
-    global SUITE_SOURCE
-    fp = HERE / "systems.yaml"
-    if not fp.is_file():
-        return PROVISIONAL
+def load_systems(fp: Path | None = None) -> dict:
+    """The suite: the curator's benchmarks/systems.yaml (schema_version 1) plus HARNESS, as
+    {id: {seed, profile, charge, multiplicity, conditions{temperature_K, time_s, standard_state},
+    channels{name: {products, racemic}}, targets[{num, den, range, ...}], required[channels], held_out}}.
+    Required channels (recall, settle time): the target's numerator, and its denominator unless the target
+    is one-sided (an open upper bound: finding the minor channels only lowers the ratio)."""
     import yaml
 
-    raw = yaml.safe_load(fp.read_text())
-    SUITE_SOURCE = f"benchmarks/systems.yaml"
-    systems = raw.get("systems", raw)
+    raw = yaml.safe_load(Path(fp or HERE / "systems.yaml").read_text())
     out = {}
-    for name, sd in systems.items():
-        sd = dict(sd)
-        for t in sd.get("targets", []):
-            t["num"] = [t["num"]] if isinstance(t["num"], str) else list(t["num"])
-            t["den"] = [t["den"]] if isinstance(t["den"], str) else list(t["den"])
-            t["range"] = [math.inf if str(v).lower() in ("inf", "infinity", ".inf") else float(v) for v in t["range"]]
-        out[name] = sd
+    for sd in raw["systems"]:
+        sid = sd["id"]
+        if sid not in HARNESS:
+            print(f"score.py: system {sid!r} has no seed/profile in score.HARNESS; skipped", file=sys.stderr)
+            continue
+        c = sd["conditions"]
+        t = sd["target"]
+        lo, hi = t["range"]
+        rng = [float(lo) if lo is not None else 0.0, float(hi) if hi is not None else math.inf]
+        num, den = list(t["numerator"]), list(t["denominator"])
+        out[sid] = {**HARNESS[sid], "name": sd.get("name"),
+                    "charge": sum(int(r.get("charge", 0)) for r in sd.get("reactants", [])), "multiplicity": 1,
+                    "conditions": {"temperature_K": float(c["score_temperature_K"]), "time_s": float(c["score_time_s"]),
+                                   "standard_state": c["standard_state"]},
+                    "channels": {k: {"products": v["products"], "racemic": bool(v.get("racemic")),
+                                     **({"reactants": v["reactants"]} if v.get("reactants") else {})}
+                                 for k, v in sd["channels"].items()},
+                    "targets": [{"num": num, "den": den, "range": rng, "value": t.get("value"),
+                                 "quantity": t.get("quantity"), "status": t.get("status")}],
+                    "required": num + (den if math.isfinite(rng[1]) else []),
+                    "held_out": sd.get("split") == "held-out", "split": sd.get("split"),
+                    "scorable": sd.get("scorable")}
     return out
 
 
@@ -187,23 +172,74 @@ def stereo_class(fp) -> str:
     return "endo" if np.linalg.norm(e - x[cc].mean(0)) < np.linalg.norm(e - x[bridge[0]]) else "exo"
 
 
+def _has_stereo(smi: str) -> bool:
+    return any(ch in smi for ch in "@/\\")
+
+
+def _iso(smi: str, mirror: bool = False) -> str:
+    """Canonical isomeric SMILES (of the mirror image: every tetrahedral centre inverted)."""
+    from rdkit import Chem, RDLogger
+
+    RDLogger.DisableLog("rdApp.*")
+    m = Chem.MolFromSmiles(smi)
+    if m is None:
+        return smi
+    if mirror:
+        for at in m.GetAtoms():
+            tag = at.GetChiralTag()
+            if tag == Chem.ChiralType.CHI_TETRAHEDRAL_CW:
+                at.SetChiralTag(Chem.ChiralType.CHI_TETRAHEDRAL_CCW)
+            elif tag == Chem.ChiralType.CHI_TETRAHEDRAL_CCW:
+                at.SetChiralTag(Chem.ChiralType.CHI_TETRAHEDRAL_CW)
+    return Chem.MolToSmiles(m)
+
+
+_ISO_CACHE: dict = {}
+
+
+def geometry_iso(fp) -> tuple:
+    """A species geometry's molecules as sorted canonical isomeric SMILES (stereo from 3D, RDKit bonds);
+    () if RDKit can't perceive it."""
+    key = str(fp)
+    if key not in _ISO_CACHE:
+        from rdkit import Chem, RDLogger
+        from rdkit.Chem import rdDetermineBonds
+
+        RDLogger.DisableLog("rdApp.*")
+        out = ()
+        try:
+            m = Chem.MolFromXYZFile(str(fp))
+            rdDetermineBonds.DetermineBonds(m, charge=0)
+            Chem.AssignStereochemistryFrom3D(m)
+            out = tuple(sorted(_iso(Chem.MolToSmiles(f)) for f in Chem.GetMolFrags(m, asMols=True)))
+        except Exception:
+            out = ()
+        _ISO_CACHE[key] = out
+    return _ISO_CACHE[key]
+
+
 def channel_species(sysdef: dict, smiles: list, species_file) -> dict:
-    """{channel: [species index]} for species SMILES `smiles` (index = position); `species_file(k)`:
-    species k's geometry file, for classified channels."""
-    want = {name: tuple(sorted(_canon(p) for p in ch["products"])) for name, ch in sysdef["channels"].items()}
-    out = {name: [] for name in want}
-    cls_cache = {}
+    """{channel: [species index]} for species SMILES `smiles` (index = position): the species' molecules are
+    exactly the channel's products (no stereo); a channel whose products carry stereo also needs the
+    species geometry's stereo SMILES to be the products' (or their mirror image's, when racemic).
+    `species_file(k)`: species k's geometry file."""
+    flat, iso = {}, {}
+    for name, ch in sysdef["channels"].items():
+        flat[name] = tuple(sorted(_canon(p) for p in ch["products"]))
+        if any(_has_stereo(p) for p in ch["products"]):
+            keys = {tuple(sorted(_iso(p) for p in ch["products"]))}
+            if ch.get("racemic"):
+                keys.add(tuple(sorted(_iso(p, mirror=True) for p in ch["products"])))
+            iso[name] = keys
+    out = {name: [] for name in flat}
     for k, smi in enumerate(smiles):
         fr = fragments(smi or "")
-        for name, prod in want.items():
+        for name, prod in flat.items():
             if fr != prod:
                 continue
-            cls = sysdef["channels"][name].get("classify")
-            if cls:
-                if k not in cls_cache:
-                    fp = species_file(k)
-                    cls_cache[k] = stereo_class(fp) if fp and Path(fp).is_file() else ""
-                if cls_cache[k] != cls:
+            if name in iso:
+                fp = species_file(k)
+                if not (fp and Path(fp).is_file() and geometry_iso(fp) in iso[name]):
                     continue
             out[name].append(k)
     return out
@@ -308,7 +344,8 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
     n_final = len(summary.get("species") or [])
     mir = (summary.get("mirror_images") or {}).get("species_mirror") or list(range(n_final))
     final_sel = [x["selectivity"] for x in final["targets"]]
-    complete = all(final["recall"]["found"].values()) and all(final["recall"]["connected"].values())
+    req = sysdef.get("required") or list(sysdef["channels"])
+    complete = all(final["recall"]["found"][c] and final["recall"]["connected"][c] for c in req)
     kin = sorted(snap_dir.glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
     parts = sorted(snap_dir.glob("summary_partial_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
     part_t = [int(p.stem.split("_")[-1]) / 1e9 for p in parts]
@@ -352,7 +389,7 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         found = {c: bool(ks) for c, ks in chans.items()}
         conn = {c: any(k in reach or k in live for k in ks) for c, ks in chans.items()}
         sels = [v[0] for v in target_values(sysdef, chans, amount)]
-        ok = all(found.values()) and all(conn.values()) and all(
+        ok = all(found[c] and conn[c] for c in req) and all(
             _within(s, f, temp) for s, f in zip(sels, final_sel))
         series.append((t - t0, sels, found, conn, ok))
     if not complete:
@@ -567,6 +604,7 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
     reach_any = reachable(len(sp), steps)
     amounts = folded_amounts(s)
     amount = (lambda k: amounts.get(k, (0.0, 0.0))[0]) if amounts else (lambda k: 0.0)
+    req = sysdef.get("required") or list(sysdef["channels"])
     rec = {"found": {c: bool(ks) for c, ks in chans.items()},
            "connected": {c: any(k in reach_open for k in ks) for c, ks in chans.items()},
            "linked": {c: any(k in reach_any for k in ks) for c, ks in chans.items()},
@@ -580,11 +618,13 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
     worst = None if any(e is None for e in errs) or not errs else max(errs, key=abs)
     kin = (s.get("rounds") or [{}])[-1]
     out = {"species": len(sp), "steps": len(steps), "recall": rec,
-           "full_recall": all(rec["found"].values()) and all(rec["connected"].values()),
+           "required": req, "full_recall": all(rec["found"][c] and rec["connected"][c] for c in req),
            "targets": targets, "worst_error_kcal": worst,
            "worst_abs_error_kcal": None if worst is None else abs(worst),
            "conversion": (1.0 - amounts.get(0, (0.0, 0.0))[0]) if amounts else None,
            "stopped": kin.get("stopped"), "kinetics_T": (s.get("steering") or {}).get("temperature_K"),
+           "conditions_match": abs(float((s.get("steering") or {}).get("temperature_K") or 0) - temp) < 0.5
+           and abs(float((s.get("steering") or {}).get("time_s") or 0) / float(sysdef["conditions"]["time_s"]) - 1) < 1e-6,
            "cutoff_kcal": (s.get("steering") or {}).get("cutoff_kcal"),
            "wall_s": result.get("wall_s"), "cpu_s": result.get("cpu_s"),
            "cpu_h": None if result.get("cpu_s") is None else result["cpu_s"] / 3600.0,
