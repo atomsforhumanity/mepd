@@ -107,6 +107,10 @@ systems:
       - "Secondary chemistry: minor at 0.5 % in Ar; Elwardany use only the first 50-100 µs above 1500 K."
       - "Reactant conformers: E/Z formic acid; barriers must be measured from the lowest reactant conformer."
       - "Score the CO:CO2 product ratio; for two parallel first-order channels it equals k1/k2 at any time."
+      - >-
+        Monomer only. The experiments use dilute HCOOH in Ar (Elwardany: dimer "less than 10%" before the shock,
+        all converted to monomer at time zero), so this target does not apply to the (HCOOH)4 cluster benchmark
+        (hcooh4), which has no experimental target.
 
   # ------------------------------------------------------------------ 2
   - id: acetic_acid
@@ -468,3 +472,130 @@ systems:
       - "Both regioisomers carry one stereocentre and form as racemates; endo and exo TSs (and s-cis/s-trans dienophile, s-cis diene) all lead to the same product of a given regiochemistry: sum them."
       - "Kinetic control assumed (no retro-Diels-Alder at 145 °C for this adduct is reported in the sources read)."
       - "0.74 kcal/mol selectivity, window 0.63-0.91 kcal/mol: as demanding as f0007."
+
+  # ------------------------------------------------------------------ 7
+  - id: furan_maleimide
+    name: Furan + maleimide Diels-Alder, kinetic endo vs thermodynamic exo (retro-Diels-Alder)
+    chemistry: bimolecular pericyclic [4+2], reversible; closed-shell multistep (endo forms, reverts, exo accumulates)
+    split: tune
+    phase: solution
+    scorable: provisional
+    atoms: 19
+    reactants:
+      - {name: furan, smiles: "c1ccoc1", charge: 0, multiplicity: 1}
+      - {name: maleimide, smiles: "O=C1C=CC(=O)N1", charge: 0, multiplicity: 1}
+    conditions:
+      temperature_range_K: [300, 300]
+      score_temperature_K: 300
+      solvent: null
+      solvent_note: "not stated in the abstract; full text and SI not reachable (MPG.PuRe copies are MPG-network only)"
+      time_scale_s: [1.0e3, 1.0e6]
+      score_time_s: null
+      standard_state: 1M
+    channels:
+      endo: {products: ["O=C1NC(=O)[C@H]2[C@@H]1[C@H]1C=C[C@@H]2O1"], racemic: false, radical: false, note: "meso; the kinetic adduct, reverts by retro-Diels-Alder"}
+      exo: {products: ["O=C1NC(=O)[C@H]2[C@@H]1[C@@H]1C=C[C@H]2O1"], racemic: false, radical: false, note: "meso; the thermodynamic adduct"}
+    target:
+      quantity: k-ratio
+      numerator: [endo]
+      denominator: [exo]
+      value: 1.399
+      range: [1.318, 1.480]
+      range_basis: >-
+        Initial formation rate constants at 300 K (Rulisek 2005 abstract): k_endo = (1.93 +- 0.082)e-5 and
+        k_exo = (1.38 +- 0.055)e-5 L mol-1 s-1, so k_endo/k_exo = 1.40 +- 0.08 (first-order propagation).
+        Second, qualitative target: at long times exo is the dominant product (retro-Diels-Alder of endo).
+      rt_ln_kcal_mol: {at_K: 300, value: 0.200, range: [0.165, 0.234]}
+      long_time: "exo dominant (qualitative, CONFIRMED in the abstract); no measured endo:exo at a stated time"
+      status: "values CONFIRMED (abstract); solvent, concentrations and the kinetic scheme behind the k values UNCONFIRMED"
+    references:
+      - doi: 10.1021/jo050759z
+        citation: "L. Rulíšek, P. Šebek, Z. Havlas, R. Hrabal, P. Čapek, A. Svatoš, J. Org. Chem. 70 (2005) 6295-6302"
+        read: abstract (PubMed 16050690); full text and SI paywalled or MPG-network only
+        used_for: rate constants, kinetic vs thermodynamic outcome
+        passages:
+          - where: Abstract
+            text: "The experimental values of rate constants (k(1+2endo) = (1.75 +/- 0.48) x 10(-5); mol(-1) l s(-1); k(1+2exo) = (3.10 +/- 0.55) x 10(-5); mol(-1) l s(-1); k(1+3endo) = (1.93 +/- 0.082) x 10(-5); mol(-1) l s(-1), k(1+3exo) = (1.38 +/- 0.055) x 10(-5); mol(-1) l s(-1) all at 300 K)"
+            note: "1 = furan, 2 = maleic anhydride, 3 = maleimide"
+          - where: Abstract
+            text: "The low thermodynamic stability of furan [4 + 2] adducts opens retro-Diels-Alder reaction channels and overrules the very small kinetic preference (calculated and measured here) of initial formation for endo stereoisomers. On a macroscopic scale \"an irregular\"-thermodynamically more stable-exo stereoisomer was consequently observed as a dominant species."
+        status: CONFIRMED (abstract values); conditions UNCONFIRMED
+      - doi: 10.1039/d5sc06724c
+        citation: "C.B. Lennox, C.R. Taylor, I. Huskić, J. Vainauskas, C.W. Nickels, R.S. Stein, T.H. Borchers, A.R.B.J. Lutton-Gething, J.M. Marrett, G.M. Day, T. Friščić, Chem. Sci. 17 (2026) 15432-15442"
+        read: full text (Europe PMC PMC13321552); SI not retrieved
+        used_for: the state of the experimental literature on furan + maleic anhydride (sibling system); not a target
+        passages:
+          - where: Introduction (secondary summary of the literature)
+            text: "Lee and Herndon have indicated that the initial rate of formation for endo-1 is ca. 500 times higher compared to that of exo-1,20 with the final isolated product being the result of rapid endo-to exo-1 conversion. Koreshkov et al.21 have found that the rates of formation of endo- and exo-1 are comparable, while González and López-Ortiz have also observed the preferred formation of endo-1.22 More recently, the Svatoš group has observed comparable initial rates of formation for both isomers, with endo-1 subsequently converting into the exo-form.23"
+          - where: Results (own measurement, neat, solidifying mixture)
+            text: "The 1H NMR analysis of an extracted sample of the product dissolved in CD3CN revealed two major sets of signals, one corresponding to exo-1, while the second one was consistent with chemical shifts reported for endo-1.28,29 In addition to these signals, which indicated a ratio of endo-1 and exo-1 of ca. 2 : 7"
+        status: CONFIRMED (text read); neat solid-forming conditions, so not used as a target
+      - doi: 10.1038/s41598-019-54156-4
+        citation: "Widstrom and Lear, Sci. Rep. (2019), retro-Diels-Alder kinetics of furan-maleic anhydride and furan-N-methylmaleimide adducts by 1H NMR"
+        read: full text and SI (by the source agent, not re-read by the curator)
+        used_for: lead only; rate-constant units not stated and the isomer measured was not assigned experimentally
+        status: not used
+    fair_comparison:
+      - "Reversibility is the point: the explorer's kinetics must include retro-Diels-Alder of both adducts; the initial ratio tests the forward TSs, the long-time exo dominance tests the thermodynamics and the reverse steps."
+      - "The solvent of the measurement is not known (full text unread). Do not promote to scorable before the conditions are confirmed."
+      - "The literature disagrees on the sibling furan + maleic anhydride (endo 500x faster initially per Lee and Herndon 1978 vs comparable rates per Koreshkov 1989 and Rulisek 2005; all secondary here), which is why maleic anhydride is not the target."
+
+  # ------------------------------------------------------------------ 8
+  - id: cb_diester
+    name: Electrocyclic ring opening of dimethyl cis-cyclobut-3-ene-1,2-dicarboxylate, (2Z,4E) vs (2E,4E) diene
+    chemistry: unimolecular pericyclic rearrangement (4-electron electrocyclic ring opening), stereospecificity
+    split: held-out
+    phase: liquid (neat)
+    scorable: true
+    atoms: 22
+    reactants:
+      - {name: dimethyl cis-cyclobut-3-ene-1,2-dicarboxylate, smiles: "COC(=O)[C@H]1C=C[C@H]1C(=O)OC", charge: 0, multiplicity: 1}
+    conditions:
+      temperature_range_K: [363.15, 363.15]
+      score_temperature_K: 363.15
+      solvent: neat (6 µm film between SiOx-coated ZnSe windows, "non-cavity" control)
+      time_scale_s: 7200
+      score_time_s: 7200
+      standard_state: 1M
+      conversion: "incomplete after 2 h (unreacted CB remains); k_obs = 0.0120 min-1 at 90 °C"
+    channels:
+      conrotatory_ZE: {products: ["COC(=O)/C=C\\C=C\\C(=O)OC"], radical: false, note: "dimethyl (2Z,4E)-muconate, 'cis-trans', Woodward-Hoffmann allowed"}
+      EE: {products: ["COC(=O)/C=C/C=C/C(=O)OC"], radical: false, note: "dimethyl (2E,4E)-muconate, 'trans-trans'; assigned by the authors to the forbidden disrotatory path"}
+    target:
+      quantity: yield-ratio
+      numerator: [conrotatory_ZE]
+      denominator: [EE]
+      value: null
+      range: [12.2, null]
+      range_basis: >-
+        One-sided. Measured (Z,E):(E,E) = 12.7 +- 0.5 (92 % : 8 %) after 2 h at 90 °C. The authors assign the (E,E) to
+        a disrotatory TS only 7.6 kJ/mol above the conrotatory one, against 35-40 kJ/mol for cis-3,4-dimethylcyclobutene
+        (their own comparison). A trans-isomer impurity or surface chemistry in the 6 µm cell isn't excluded in the text
+        read, so only the lower bound 12.7 - 0.5 is scored. A two-sided reading (12.2-13.2, RT ln 1.81-1.86 kcal/mol)
+        needs the SI (reactant purity) first.
+      rt_ln_kcal_mol: {at_K: 363.15, value: null, range: [1.805, null]}
+      status: CONFIRMED (value read in the primary text; the mechanism of the minor product is the authors' interpretation)
+    references:
+      - doi: 10.1002/anie.202013465
+        citation: "A. Sau, K. Nagarajan, B. Patrahau, L. Lethuillier-Karl, R.M.A. Vergauwe, A. Thomas, J. Moran, C. Genet, T.W. Ebbesen, Angew. Chem. Int. Ed. 60 (2021) 5712"
+        read: full text (Europe PMC PMC7986062; read by the source agent, quotes re-checked by the curator); SI not read
+        used_for: the non-cavity (ordinary thermal) control only; the vibrational-strong-coupling results are not targets
+        passages:
+          - where: Results, non-cavity conditions
+            text: "Electrocyclic ring‐opening of CB was performed by heating the sample at 90 °C for two hours (Figure 2 a). To begin, we followed the reaction under non‐cavity conditions (Figure S2, Supporting Information). Neat CB was injected into the preheated chamber at 90 °C and the reaction was monitored in the FT‐IR (Figure 2 b)."
+          - where: Results, non-cavity conditions
+            text: "After two hours, the reaction mixture was allowed to cool to room temperature (RT) and dissolved in CDCl3 to perform the 1H‐NMR measurement."
+          - where: Results, non-cavity conditions
+            text: "As predicted by the WH rules, the symmetry‐allowed cis‐trans butadiene is obtained as the major product (92 %) while the symmetry‐forbidden trans‐trans derivative is present only with a 8 % yield. This leads to a ratio between symmetry‐allowed conrotatory (cis‐trans) vs. symmetry‐forbidden disrotatory (trans‐trans) product ratio of 12.7±0.5. No other products or intermediates were observed in the NMR spectra."
+          - where: Table 1 (cis-trans/trans-trans | ΔΔG‡ kJ/mol)
+            text: "Non‐cavity | 12.7±0.5 | 7.7±0.2"
+          - where: Discussion
+            text: "In non‐cavity conditions, the average free energy change between con‐ and disrotatory transition states of CB at 90 °C is 7.6±0.2 kJ mol−1, which is much lower when compared to cis‐3,4‐dimethylcyclobutene (35–40 kJ mol−1)."
+          - where: Results
+            text: "The rate of formation of cis‐trans and trans‐trans butadiene under non‐cavity conditions at 90 °C was 0.011 min−1 and 0.001 min−1 respectively."
+        status: CONFIRMED
+    fair_comparison:
+      - "Stereospecificity test: the explorer must find the conrotatory path to the (2Z,4E) diene and predict it dominant; product matching must keep C=C stereo (isomeric SMILES)."
+      - "One-sided on purpose: a TST search will put a true disrotatory TS far higher than 7.6 kJ/mol, so a two-sided 12.7 would punish a correct stereospecific prediction if the 8 % (E,E) is an artefact."
+      - "Neat liquid at 90 °C, thin film: no solvent model is needed for the selectivity, but surface effects in the 6 µm cell cannot be excluded."
+      - "Held out: the only rearrangement in the ladder; never tune on it."

@@ -9,7 +9,26 @@ Curated 2026-11-05 by the explorer team's curator (branch `team2/references`). T
 - **Error** = RT ln(predicted / nearest bound of the range) at the score temperature, 0 inside the range (BRIEF definition). Each target's range is also given in kcal/mol (RT ln ratio). Script: `data/runs/explorer-team/curator/scripts/targets_kcal.py`.
 - **tune** systems may be used to choose settings. **held-out** systems are only ever scored.
 
-<!-- SUMMARY-TABLE -->
+## Summary
+
+| # | id | System | Split | Phase, conditions | Target (numerator:denominator) | RT ln (kcal/mol) | Confidence |
+|---|---|---|---|---|---|---|---|
+| 1 | `hcooh` | HCOOH → CO+H2O vs CO2+H2 | tune | gas, 1500 K, 1 atm Ar, ~1 ms | k1/k2 = 20, **10–40** | 6.86–11.00 | CONFIRMED (Elwardany 2015); fall-off, k∞-vs-1 atm caveat |
+| 2 | `acetic_acid` | CH3COOH → CH2CO+H2O vs CH4+CO2 | **held-out** | gas, 1500 K, 1 atm Ar | k4/k3 = 2, **1.1–2.9** | 0.28–3.17 | CONFIRMED (Elwardany 2015); fall-off; mechanism-fitted |
+| 3 | `methyl_formate` | CH3OCHO → CH3OH+CO vs all others | tune | gas, 1500 K, 1 atm Ar | **≥ 88:12** (one-sided) | ≥ 5.94 | dominance CONFIRMED; floor PROVISIONAL (Ren 2013 not read) |
+| 4 | `f0007` | Cp + methyl acrylate, endo:exo | tune | benzene, 80 °C, 1:1 ~0.9 M, 6.5 h | **77:23 ± 0.5** (3.26–3.44) | 0.83–0.87 | CONFIRMED (Lording 2020 + ESI) |
+| 5 | `cp_mbl` | Cp + α-methylene-γ-butyrolactone, exo:endo | **held-out** | benzene, 80 °C, 1:1 ~0.9 M, 4 h | **88:12 ± 0.5** (7.0–7.7) | 1.37–1.43 | CONFIRMED (Lording 2020 + ESI) |
+| 6 | `isoprene_ma` | isoprene + methyl acrylate, para:meta | tune | toluene, 145 °C, 15 h | 71:29, **68:32–75:25** | 0.63–0.91 | CONFIRMED (Renslo thesis 1998; Treu 2022) |
+| 7 | `furan_maleimide` | furan + maleimide, k_endo/k_exo; exo wins at long times | tune | solution (solvent unknown), 300 K | **1.40 ± 0.08** + exo dominant at long times | 0.17–0.23 | values CONFIRMED (abstract); conditions UNCONFIRMED → PROVISIONAL |
+| 8 | `cb_diester` | cis-cyclobutene diester → (2Z,4E) vs (2E,4E) diene | **held-out** | neat, 90 °C, 2 h | **≥ 12.2** (one-sided) | ≥ 1.81 | CONFIRMED value; one-sided by choice (see §8) |
+
+Chemistry covered:
+- **Unimolecular eliminations:** 1, 2, 3.
+- **Bimolecular pericyclic:** 4 and 5 (stereoselectivity) and 6 (regioselectivity).
+- **Closed-shell multistep, reversible:** 7.
+- **Rearrangement:** 8 (electrocyclic ring opening).
+
+Radical channels appear only in 3 (CH3 + HCO2, flagged). All systems have 5–25 atoms.
 
 ## 1. Formic acid: dehydration vs decarboxylation (`hcooh`, tune)
 
@@ -66,6 +85,7 @@ No experiment reaches the high-pressure limit. The ratio itself moves little: El
 - Secondary chemistry is minor at 0.5 % HCOOH. Above 1500 K, Elwardany use only the first 50–100 µs.
 - Barriers must be measured from the lowest reactant conformer (E/Z formic acid).
 - For two parallel first-order channels, CO:CO2 equals k1/k2 at any time.
+- **Monomer only.** The window does not apply to the (HCOOH)4 cluster benchmark (`hcooh4`), which has no experimental target. Elwardany report that pre-shock dimers are *"less than 10% in all considered cases"* and that *"The shock-heating process will convert all dimer to monomer at the reflected shock wave (time zero)."*
 
 ## 2. Acetic acid: dehydration vs decarboxylation (`acetic_acid`, held-out)
 
@@ -123,7 +143,7 @@ Fair comparison:
 
 Source: Lording, Fallon, Sherburn, Paddon-Row, *Chem. Sci.* 11, 11915–11926 (2020), [doi:10.1039/d0sc04553e](https://doi.org/10.1039/d0sc04553e). Read in full (PMC8162770).
 - Table 1, methyl acrylate 7 + CPD 2: temperature 80 °C, time 6.5 h, isolated yield 86 %, **endo:exo (exp.) 77 : 23**, endo:exo (CBS-QB3, benzene) 76 : 24.
-- *"Thus, a 1 : 1 molar ratio of CPD and dienophile (1 M concentration solutions of both diene and dienophile in benzene) were heated at 80 °C in the majority of cases, ... and the DA reactions of the three least reactive dienophiles employing 3 molar equivalents of CPD."* The three are not named in the main text; the ESI was not read.
+- *"Thus, a 1 : 1 molar ratio of CPD and dienophile (1 M concentration solutions of both diene and dienophile in benzene) were heated at 80 °C in the majority of cases, ... and the DA reactions of the three least reactive dienophiles employing 3 molar equivalents of CPD."* The three are not named in the main text. The ESI shows methyl acrylate run 1:1 (below); it uses 3 equivalents of Cp for acrylonitrile and for the preparative acrylamide run.
 - *"Experimental endo : exo ratios were determined by quantitative 800 MHz 1H NMR spectroscopy."*
 - ESI, general methods: *"Quoted endo:exo ratios refer to values obtained from 800 MHz 1H NMR spectroscopic analysis of crude reaction mixtures and were recorded in duplicate (maximum difference between runs = +/- 0.5%)."* This is the ±0.5 % used for the range. No systematic error is stated.
 - ESI procedure: *"Methyl acrylate (7) (0.18 mL, 1.0 mmol) was added to an ampule followed a solution of cyclopentadiene (2) in benzene (2.0 mL of a 1.0M solution in PhH, 2.0 mmol). The ampule was sealed and placed in a heating bath at 80 °C for 6.5 h."* ... *"(total yield 261 mg, 86%)"*. 0.18 mL of methyl acrylate is 2.0 mmol, and 261 mg is 86 % of 2.0 mmol of adduct, so "1.0 mmol" is a typo. The run is 1:1 at about 0.92 M each. The endo:exo ratio was recorded *"from equivalent runs conducted in benzene-d6"*.
@@ -187,7 +207,68 @@ The peer-reviewed version is Renslo, Weinstein, Tester, Danheiser, *J. Org. Chem
 - Each regioisomer has one stereocentre and forms as a racemate. All TSs of one regiochemistry (endo/exo, dienophile s-cis/s-trans, both faces) give the same product: sum them.
 - 0.74 kcal/mol selectivity is as demanding as F0007.
 
-<!-- PENDING-SYSTEMS -->
+## 7. Furan + maleimide: kinetic endo, thermodynamic exo (`furan_maleimide`, tune, target provisional)
+
+This is the closed-shell multistep case. The endo adduct forms about as fast as exo, reverts by retro-Diels-Alder, and exo accumulates. Both adducts are meso: endo `O=C1NC(=O)[C@H]2[C@@H]1[C@H]1C=C[C@@H]2O1`, exo `O=C1NC(=O)[C@H]2[C@@H]1[C@@H]1C=C[C@H]2O1`.
+
+**Target (provisional):**
+- Initial formation k_endo/k_exo = 1.40 ± 0.08 at 300 K. RT ln = 0.200 kcal/mol (range 0.165–0.234).
+- Qualitative: exo is the dominant product at long times.
+- Provisional because the solvent, the concentrations and the kinetic scheme behind the rate constants are unknown.
+
+Source: Rulíšek, Šebek, Havlas, Hrabal, Čapek, Svatoš, *J. Org. Chem.* 70, 6295 (2005), [doi:10.1021/jo050759z](https://doi.org/10.1021/jo050759z). Abstract only (PubMed 16050690). The full text and SI are on MPG.PuRe, but restricted to the MPG network.
+- *"The experimental values of rate constants (k(1+2endo) = (1.75 +/- 0.48) x 10(-5); mol(-1) l s(-1); k(1+2exo) = (3.10 +/- 0.55) x 10(-5); mol(-1) l s(-1); k(1+3endo) = (1.93 +/- 0.082) x 10(-5); mol(-1) l s(-1), k(1+3exo) = (1.38 +/- 0.055) x 10(-5); mol(-1) l s(-1) all at 300 K)"*. Here 1 = furan, 2 = maleic anhydride, 3 = maleimide.
+- *"The low thermodynamic stability of furan [4 + 2] adducts opens retro-Diels-Alder reaction channels and overrules the very small kinetic preference (calculated and measured here) of initial formation for endo stereoisomers. On a macroscopic scale "an irregular"-thermodynamically more stable-exo stereoisomer was consequently observed as a dominant species."*
+
+**Why maleimide and not maleic anhydride.** Maleimide has the tighter rate constants (±4–6 % against ±18–27 %). The literature on furan + maleic anhydride also conflicts. Lennox, …, Day, Friščić, *Chem. Sci.* 17, 15432 (2026), [doi:10.1039/d5sc06724c](https://doi.org/10.1039/d5sc06724c), read in full, summarises it:
+- *"Lee and Herndon have indicated that the initial rate of formation for endo-1 is ca. 500 times higher compared to that of exo-1, ... Koreshkov et al. have found that the rates of formation of endo- and exo-1 are comparable, ... More recently, the Svatoš group has observed comparable initial rates of formation for both isomers, with endo-1 subsequently converting into the exo-form."* The cited values are secondary here.
+- Their own neat (solvent-free, solidifying) reaction gave endo:exo *"ca. 2 : 7"* after standing overnight at room temperature. That is not a solution benchmark.
+- Widstrom & Lear, *Sci. Rep.* (2019), [doi:10.1038/s41598-019-54156-4](https://doi.org/10.1038/s41598-019-54156-4), measured retro-Diels-Alder rates of these adducts by NMR. The rate-constant units are not stated and the isomer was not assigned experimentally (per the source agent), so it is not used.
+
+**Fair comparison:**
+- The kinetics must include the retro-Diels-Alder of both adducts. The initial ratio tests the forward TSs; the long-time exo dominance tests the thermodynamics and the reverse steps.
+- Don't promote it to scorable until the conditions are read. Needed: the Rulíšek full text, by MPG-network access, an ACS subscription, or a request to the authors.
+
+## 8. Electrocyclic ring opening of dimethyl cis-cyclobut-3-ene-1,2-dicarboxylate (`cb_diester`, held-out)
+
+Reactant: `COC(=O)[C@H]1C=C[C@H]1C(=O)OC` (cis, meso). Products:
+- conrotatory (2Z,4E)-muconate, `COC(=O)/C=C\C=C\C(=O)OC`;
+- (2E,4E)-muconate, `COC(=O)/C=C/C=C/C(=O)OC`.
+
+**Target: (Z,E):(E,E) ≥ 12.2 (one-sided), neat, 90 °C (363.15 K), 2 h.** RT ln 12.2 = 1.81 kcal/mol.
+
+Source: Sau, Nagarajan, Patrahau, Lethuillier-Karl, Vergauwe, Thomas, Moran, Genet, Ebbesen, *Angew. Chem. Int. Ed.* 60, 5712 (2021), [doi:10.1002/anie.202013465](https://doi.org/10.1002/anie.202013465), PMC7986062. Full text read; quotes re-checked by the curator; SI not read. The paper is about vibrational strong coupling; only its ordinary "non-cavity" control is used.
+- *"Neat CB was injected into the preheated chamber at 90 °C and the reaction was monitored in the FT‐IR"* ... *"After two hours, the reaction mixture was allowed to cool to room temperature (RT) and dissolved in CDCl3 to perform the 1H‐NMR measurement."*
+- *"As predicted by the WH rules, the symmetry‐allowed cis‐trans butadiene is obtained as the major product (92 %) while the symmetry‐forbidden trans‐trans derivative is present only with a 8 % yield. This leads to a ratio between symmetry‐allowed conrotatory (cis‐trans) vs. symmetry‐forbidden disrotatory (trans‐trans) product ratio of 12.7±0.5. No other products or intermediates were observed in the NMR spectra."*
+- Table 1: *"Non‐cavity | 12.7±0.5 | 7.7±0.2"* (cis-trans/trans-trans | ΔΔG‡ in kJ/mol).
+- *"In non‐cavity conditions, the average free energy change between con‐ and disrotatory transition states of CB at 90 °C is 7.6±0.2 kJ mol−1, which is much lower when compared to cis‐3,4‐dimethylcyclobutene (35–40 kJ mol−1)."*
+
+**Why one-sided.** A disrotatory TS only 7.6 kJ/mol (1.8 kcal/mol) above the allowed one is an extraordinary claim; the authors' own comparison case has a 35–40 kJ/mol gap. The text read does not exclude other sources of the 8 % (E,E): a trans-cyclobutene impurity (its allowed opening gives E,E), or surface chemistry in the 6 µm film between SiOx windows. A two-sided target of 12.7 would punish a correct stereospecific prediction if that 8 % is an artefact. So only the lower bound is scored: the conrotatory product must dominate by at least 12.2:1.
+
+**Decision for the user:** read the SI (reactant purity) and then either keep the bound one-sided or score 12.2–13.2 two-sided.
+
+## Candidates that need a PDF (numbers UNCONFIRMED; not in systems.yaml)
+- **Cope rearrangement of meso- and (±)-3,4-dimethylhexa-1,5-diene** (chair vs boat). Doering & Roth, *Tetrahedron* 18, 67 (1962), [doi:10.1016/0040-4020(62)80025-8](https://doi.org/10.1016/0040-4020(62)80025-8). The best rearrangement benchmark: 22 atoms, closed-shell, concerted.
+  - meso: `C=C[C@@H](C)[C@@H](C)C=C`; (±): `C=C[C@@H](C)[C@H](C)C=C`.
+  - Products: (E,Z) `C/C=C/CC/C=C\C`, (E,E) `C/C=C/CC/C=C/C`, (Z,Z) `C/C=C\CC/C=C\C`.
+  - Only a secondary source was reachable. A Caltech thesis (thesis.caltech.edu/5378) says *"On the basis of product ratios, Doering and Roth estimated that ΔΔG‡ (boat–chair) for meso 138a was 5.7 kcal/mol"* and labels the meso → (E,Z) product *"(99.7% yield)"*.
+  - The textbook (±) → 90 % (E,E) + 10 % (Z,Z), the temperature and the phase were not found in any text read.
+- **Claisen rearrangement of the four stereoisomeric propenyl but-2-enyl ethers.** Vittorelli, Hansen, Schmid, *Helv. Chim. Acta* 58, 1293 (1975), [doi:10.1002/hlca.19750580508](https://doi.org/10.1002/hlca.19750580508). Chair/boat diastereomer ratios, 20 atoms. Closed access.
+- **Formic acid:**
+  - Saito et al. 2005: the measured k2/k1 values.
+  - Hsu et al. 1982: whether "~10" appears anywhere in the paper.
+- **Methyl formate:**
+  - Ren et al. 2013: k1 and the minor channels.
+  - Peukert et al. 2012: k4 by H-ARAS.
+  - Wenz et al. 2023: k4/(k1+k4).
+  - Döntgen, Wildenberg, Heufer 2026 (CC-BY, [doi:10.1002/kin.70035](https://doi.org/10.1002/kin.70035)): new methyl formate and formic acid data; the publisher and repository refused automated download.
+- **Cp + methyl acrylate solvent series:** Berson et al. 1962; Cativiela et al. 1994 (restricted copy at DIGITAL.CSIC).
+- **Isoprene + methyl acrylate:**
+  - Renslo et al., *J. Org. Chem.* 62, 4530 (1997): the peer-reviewed version of the thesis data.
+  - Hennis 1963: temperature independence.
+  - Inukai & Kojima 1966: AlCl3, 95:5.
+- **Furan + maleimide:** Rulíšek et al. 2005 full text and SI (solvent, concentrations, kinetic scheme). MPG.PuRe item_442180_6 is MPG-network only.
+- **Furan + maleic anhydride literature (secondary only):** Lee & Herndon, *J. Org. Chem.* 43, 518 (1978); Tobia et al., *J. Org. Chem.* 58, 6701 (1993).
 
 ## Candidates considered and not used
 - **Ethanol pyrolysis** (Sivaramakrishnan 2010; Wu et al. 2011): radical channels dominate the comparison; numbers not verified.
@@ -197,6 +278,9 @@ The peer-reviewed version is Renslo, Weinstein, Tester, Danheiser, *J. Org. Chem
 - **Glucose/fructose → HMF, formose, Pd couplings, alkoxide eliminations:** salts, catalysts, ions or explicit water.
 - **2-Methylfuran, furan:** radical-rich at shock-tube temperatures.
 - **Cp + methyl vinyl ketone** (Lording Table 1: 79:21) and **Cp + acrylonitrile** (55:45): confirmed and usable as extra Diels-Alder rungs. They are left out to keep chemistry types balanced. 55:45 (0.14 kcal/mol) is too small to resolve.
+- **Torquoselective opening of a 3-silylcyclobutene** (Murakami, Miyamoto, Ito, *J. Synth. Org. Chem. Jpn.* 60, 1049, 2002; cis:trans 69:31, m-xylene, 140 °C): primary and open, but 41 atoms with Si.
+- **Retro-Diels-Alder kinetics of furan adducts** (Widstrom & Lear 2019): rate-constant units not stated and the isomer not assigned.
+- **Neat furan + maleic anhydride** (Lennox et al. 2026): the reaction mixture solidifies, so it is not a solution or gas benchmark.
 
 ## How the texts were obtained
 Downloads are in the curator's scratchpad, not committed. Scripts are in `data/runs/explorer-team/curator/scripts/`.
