@@ -24,7 +24,6 @@ def _connector(tmp_path):
     hc._root_chain = lambda a, b: [a, b]
     hc._leaf_ts = lambda chain, label: SimpleNamespace(energy=-1.0)
     hc.iced, hc._pieces, hc._next_index, hc.free, hc._jobs, hc._live = [], {}, {}, None, {}, None
-    hc.stop_when = None
     return hc
 
 

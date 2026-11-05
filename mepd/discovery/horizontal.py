@@ -112,6 +112,7 @@ class HorizontalConnector:
     live = True    # takes on_found / relevant: the caller's network grows while the queue runs
     reports_pairs = True   # takes on_pair_done
     ices = True    # keeps pieces nothing reaches (`iced`) and queues them again on every call
+    stop_when = None   # the caller's budget (set per instance; see __init__)
 
     def __init__(self, run_inputs, output: Path, workers: int, *, max_pieces_per_pair: int = 40,
                  max_depth: Optional[int] = 6, nimages: int = 11, fast_ts_steps: int = 300, say=print):
