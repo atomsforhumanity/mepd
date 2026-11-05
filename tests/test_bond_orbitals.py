@@ -124,8 +124,10 @@ def test_localization_reaches_the_optimum():
 
 def test_a_turned_frame_gets_its_orbitals_turned():
     """The same geometry computed turned and moved: its IBOs, turned back onto the shown frame, are the
-    unturned ones (the same populations; the same functions, up to sign, for every orbital not mixed with an
-    equivalent one)."""
+    unturned ones: the same populations, every bond the same function (up to sign), and each atom's lone
+    pairs the same space. Lone pairs on one atom can come out rotated among themselves: each stays wholly on
+    its atom, so the localization gains nothing from any one choice (where the SCF's canonical orbitals
+    start it decides; on CI's machine Cl's lone pairs came out mixed, 0.76 overlap one to one)."""
     if not _has("gfn2"):
         pytest.skip("xtb not available")
     from scipy.spatial.transform import Rotation
@@ -139,8 +141,12 @@ def test_a_turned_frame_gets_its_orbitals_turned():
                          align={"R": Rk, "from": x.mean(axis=0), "to": xr.mean(axis=0)})
     assert np.allclose(np.sort(B0.pop, axis=0), np.sort(Bt.pop, axis=0), atol=1e-3)
     S = fo.overlap(fo.basis(B0.mol, "gfn2"), fo.basis(Bt.mol, "gfn2"))
-    best = np.abs(B0.C @ S @ Bt.C.T).max(axis=1)
-    assert (best > 1 - 1e-4).sum() >= len(best) - 2      # Cl's two lone pairs around the axis may mix
+    M = B0.C @ S @ Bt.C.T
+    k0, kt = ([tuple(sorted(a for a, _ in o["atoms"])) for o in B.orbitals] for B in (B0, Bt))
+    assert sorted(k0) == sorted(kt)
+    for g in set(k0):          # a bond, or one atom's lone pairs: the same space (all singular values 1)
+        i, j = ([n for n, k in enumerate(ks) if k == g] for ks in (k0, kt))
+        assert np.linalg.svd(M[np.ix_(i, j)], compute_uv=False).min() > 1 - 1e-4, g
 
 
 def test_sn2_path_has_two_curly_arrows():
