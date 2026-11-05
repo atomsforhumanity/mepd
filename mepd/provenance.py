@@ -28,7 +28,7 @@ from typing import Optional, Sequence
 # Binaries a profile can route work to when it doesn't name one explicitly.
 DEFAULT_BINARIES = ("xtb", "gxtb-xtb", "crest", "terachem", "gsm")
 PACKAGES = ("mepd", "numpy", "scipy", "rdkit", "ase", "sella", "geodesic-interpolate",
-            "qcop", "qcio", "qcdata", "openmm", "torch")
+            "qcop", "qcio", "qcdata", "openmm", "torch", "axtb")
 
 
 def _sha256(path: Path) -> str:

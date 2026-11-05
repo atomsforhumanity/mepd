@@ -312,7 +312,7 @@ def _run_gxtb_process(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float,
                       watch: Callable[[], None] | None = None) -> subprocess.CompletedProcess[str]:
     """`_run_gxtb_process_` with, when MEPD_CALL_LOG names a folder, one JSON line per run in
     <folder>/<pid>.jsonl: start time, wall and CPU seconds, the run's flags and where in mepd it came from
-    (for finding what a long run spends its time on)."""
+    (for finding what a long run spends its time on; axtb_backend logs its calls the same way)"""
     folder = os.environ.get("MEPD_CALL_LOG")
     if not folder:
         return _run_gxtb_process_(cmd, cwd=cwd, env=env, timeout_s=timeout_s, watch=watch)
@@ -448,7 +448,26 @@ class GXTBCalculator(Engine):
     # take (or that fail there) run xtb as before.
     in_process: bool = False
 
+    # "xtb": run the g-xTB program for every calculation. "axtb": g-xTB 2.0.1 from axtb, AFH's Rust
+    # reimplementation, in this process (mepd.engines.axtb_backend): the program's energies, no
+    # process start per call, analytic Hessians. It takes only --etemp/--acc/--iterations in
+    # extra_args, g-xTB only (add_gxtb_flag), no minimizer = "xtb", and timeout_s does not apply.
+    backend: str = "xtb"
+    # axtb's conventions: None/"axtb" (its default) or "gxtb" (reproduces the program to ~1e-12 Eh).
+    axtb_conventions: str | None = None
+
     def __post_init__(self) -> None:
+        if self.backend not in ("xtb", "axtb"):
+            raise ValueError(f"backend must be \"xtb\" or \"axtb\", not {self.backend!r}.")
+        if self.backend == "axtb":
+            from mepd.engines import axtb_backend
+
+            if not self.add_gxtb_flag:
+                raise ValueError("backend = \"axtb\" computes g-xTB only (add_gxtb_flag = true).")
+            if (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb":
+                raise ValueError("minimizer = \"xtb\" runs the g-xTB program's own optimizer; with backend = "
+                                 "\"axtb\" use sella, geometric or lbfgs.")
+            self._axtb_settings = axtb_backend.settings_from_args(_split_args(self.extra_args))
         # Nothing configured: $GXTB_EXECUTABLE, else `gxtb`, which (if not on
         # PATH) _resolve_executable looks up -- or fetches -- on first use.
         self._default_executable = self.executable is None and not os.getenv("GXTB_EXECUTABLE")
@@ -531,7 +550,28 @@ class GXTBCalculator(Engine):
             )
         return node_list
 
+    def _axtb_kwds(self) -> dict:
+        return {"threads": max(1, int(self.n_threads)), "conventions": self.axtb_conventions,
+                "settings": getattr(self, "_axtb_settings", {})}
+
+    def _axtb_compute_node(self, node: StructureNode) -> FakeQCIOOutput:
+        from mepd.engines import axtb_backend
+
+        molden = bool(os.environ.get("MEPD_ORBITALS_DIR", "").strip())
+        out = axtb_backend.point(node, molden=molden, **self._axtb_kwds())
+        if molden and out.get("molden"):
+            from mepd.orbitals import save_run_orbitals
+
+            with tempfile.TemporaryDirectory(prefix="axtb-") as tmp:
+                fp = Path(tmp) / "molden.input"
+                fp.write_text(out["molden"])
+                save_run_orbitals(fp, node.structure.to_xyz(), "gxtb", "g-xTB")
+        res = FakeQCIOResults.model_validate({"energy": out["energy"], "gradient": out["gradient"]})
+        return FakeQCIOOutput.model_validate({"results": res})
+
     def _compute_node(self, node: StructureNode) -> FakeQCIOOutput:
+        if self.backend == "axtb":
+            return self._axtb_compute_node(node)
         if self.in_process and not self.add_gxtb_flag and Path(self.executable).name != "gxtb":
             out = _tblite_point(node, self.extra_args)
             if out is not None:
@@ -648,6 +688,11 @@ class GXTBCalculator(Engine):
         node: StructureNode,
         step_size: float | None = None,
     ) -> NDArray:
+        if self.backend == "axtb":
+            # Analytic and unprojected: its rigid-body part is already exact.
+            from mepd.engines import axtb_backend
+
+            return np.asarray(axtb_backend.hessian(node, **self._axtb_kwds())["hessian"], dtype=float)
         with tempfile.TemporaryDirectory(prefix="gxtb-hess-") as tmp:
             workdir = Path(tmp)
             xyz_path = workdir / "structure.xyz"
@@ -688,8 +733,29 @@ class GXTBCalculator(Engine):
         to the generic build_hessian_result_from_matrix (mass-weight the raw
         Hessian, discard the lowest-magnitude modes as trans/rot) only if
         g98.out isn't available or fails to parse.
+
+        With backend "axtb": axtb's analytic Hessian, with translations and rotations projected out
+        in mass-weighted coordinates here (mepd.discovery.vri.projected_frequencies; 3N-6 modes,
+        frequencies as the program's to ~0.2 cm^-1). Not axtb's own analysis: it starts rayon's
+        global thread pool, and a forked child (mepd forks workers) then deadlocks in it.
         """
         natoms = len(node.symbols)
+        if self.backend == "axtb":
+            from mepd.discovery.vri import node_masses, projected_frequencies
+            from mepd.engines import axtb_backend
+
+            hessian = np.asarray(axtb_backend.hessian(node, **self._axtb_kwds())["hessian"], dtype=float)
+            modes = projected_frequencies(hessian, np.asarray(node.coords, dtype=float).reshape(natoms, 3),
+                                          node_masses(node))
+            return FiniteDifferenceHessianOutput(
+                input_data=SimpleNamespace(structure=node.structure),
+                results=FiniteDifferenceHessianResults(
+                    hessian=hessian,
+                    normal_modes_cartesian=[np.asarray(m, dtype=float).reshape(natoms, 3) for m in modes.modes_cart],
+                    freqs_wavenumber=[float(f) for f in modes.freqs],
+                ),
+                success=True,
+            )
         with tempfile.TemporaryDirectory(prefix="gxtb-hess-") as tmp:
             workdir = Path(tmp)
             xyz_path = workdir / "structure.xyz"

@@ -1,0 +1,129 @@
+"""GXTBCalculator(backend="axtb"): g-xTB 2.0.1 from axtb in this process, checked against the g-xTB
+program where one is installed."""
+from __future__ import annotations
+
+import multiprocessing
+import os
+import shutil
+
+import numpy as np
+import pytest
+
+axtb = pytest.importorskip("axtb")
+
+from qcdata import Structure  # noqa: E402
+
+from mepd.engines.gxtb import GXTBCalculator  # noqa: E402
+from mepd.nodes.node import StructureNode  # noqa: E402
+
+# A distorted formamide (not a stationary point) and the HCN <-> HNC saddle region.
+FORMAMIDE = """6
+
+C   0.000   0.420   0.000
+O   1.180   0.650   0.050
+N  -0.920   1.380  -0.020
+H  -0.330  -0.620   0.040
+H  -1.900   1.150   0.030
+H  -0.640   2.360   0.070
+"""
+
+
+def _node(xyz: str = FORMAMIDE) -> StructureNode:
+    return StructureNode(structure=Structure.from_xyz(xyz))
+
+
+def _program() -> GXTBCalculator | None:
+    exe = os.getenv("GXTB_EXECUTABLE") or shutil.which("gxtb-xtb")
+    return GXTBCalculator(executable=exe, n_parallel=1) if exe else None
+
+
+needs_program = pytest.mark.skipif(_program() is None, reason="no g-xTB program (gxtb-xtb or $GXTB_EXECUTABLE)")
+
+
+@needs_program
+@pytest.mark.parametrize("conventions, tol_e, tol_g", [("gxtb", 1e-9, 1e-7), (None, 1e-8, 1e-4)])
+def test_energy_and_gradient_match_the_program(conventions, tol_e, tol_g):
+    # "gxtb" reproduces the program's SCF step by step; the default conventions converge to the same
+    # state along another path, so their gradients differ by the SCF's own convergence error.
+    ref = _program()
+    ax = GXTBCalculator(backend="axtb", axtb_conventions=conventions, n_parallel=1)
+    a, b = _node(), _node()
+    e_ref, g_ref = ref.compute_energies([a])[0], a.gradient
+    e_ax, g_ax = ax.compute_energies([b])[0], b.gradient
+    assert abs(e_ax - e_ref) < tol_e
+    assert np.abs(np.asarray(g_ax) - np.asarray(g_ref)).max() < tol_g
+
+
+@needs_program
+def test_frequencies_match_the_program():
+    # At a minimum: away from one, the program's projection (geometric center, before mass
+    # weighting) and the mass-weighted one here differ by up to ~20 cm^-1 in soft modes.
+    ax_eng = GXTBCalculator(backend="axtb", n_parallel=1)
+    minimum = ax_eng.compute_geometry_optimization(_node(), {"fmax": 1e-4})[-1]
+    ref = _program()._compute_hessian_result(minimum.copy())
+    ax = ax_eng._compute_hessian_result(minimum.copy())
+    f_ref, f_ax = np.sort(ref.results.freqs_wavenumber), np.sort(ax.results.freqs_wavenumber)
+    assert len(f_ax) == len(f_ref) == 3 * 6 - 6
+    assert np.abs(f_ax - f_ref).max() < 1.0      # the program's numerical Hessian (--acc 0.001)
+    modes = np.asarray(ax.results.normal_modes_cartesian)
+    assert modes.shape == (12, 6, 3)
+    assert np.allclose(np.linalg.norm(modes.reshape(12, -1), axis=1), 1.0)
+
+
+def test_hessian_is_symmetric_and_matches_gradient_differences():
+    eng = GXTBCalculator(backend="axtb", n_parallel=1, extra_args=["--acc", "1e-6"])
+    node = _node()
+    h = eng.compute_hessian(node)
+    assert np.allclose(h, h.T, atol=1e-10)
+    x0 = np.asarray(node.structure.geometry, dtype=float)
+    step = 1e-3
+    for k in (0, 7, 13):
+        cols = []
+        for sign in (1, -1):
+            x = x0.copy().reshape(-1)
+            x[k] += sign * step
+            s = node.structure.model_copy(update={"geometry": x.reshape(-1, 3)})
+            cols.append(np.asarray(eng.compute_gradients([StructureNode(structure=s)])[0]).reshape(-1))
+        assert np.abs((cols[0] - cols[1]) / (2 * step) - h[:, k]).max() < 1e-5
+
+
+def test_options_it_cannot_apply_raise():
+    with pytest.raises(ValueError, match="does not take"):
+        GXTBCalculator(backend="axtb", extra_args=["--gfn", "2"])
+    with pytest.raises(ValueError, match="minimizer"):
+        GXTBCalculator(backend="axtb", minimizer="xtb")
+    with pytest.raises(ValueError, match="g-xTB only"):
+        GXTBCalculator(backend="axtb", add_gxtb_flag=False)
+    with pytest.raises(ValueError, match="backend"):
+        GXTBCalculator(backend="tblite")
+
+
+def test_scf_failure_takes_the_retry_ladder(caplog):
+    # 3 SCF iterations never converge: the ladder's 1000 K / 1000 iterations does.
+    eng = GXTBCalculator(backend="axtb", n_parallel=1, extra_args=["--iterations", "3"])
+    with caplog.at_level("WARNING"):
+        e = eng.compute_energies([_node()])[0]
+    assert np.isfinite(e)
+    assert "did not converge" in caplog.text
+
+
+def _child_hessian(q):
+    eng = GXTBCalculator(backend="axtb", n_parallel=1)
+    q.put(float(np.asarray(eng._compute_hessian_result(_node()).results.freqs_wavenumber)[-1]))
+
+
+def test_forked_child_after_a_hessian_does_not_hang():
+    """mepd forks workers (channel_search, network expansion): a Hessian and frequencies in the
+    parent must leave nothing a forked child waits on."""
+    eng = GXTBCalculator(backend="axtb", n_parallel=1)
+    eng._compute_hessian_result(_node())
+    ctx = multiprocessing.get_context("fork")
+    q = ctx.Queue()
+    p = ctx.Process(target=_child_hessian, args=(q,))
+    p.start()
+    p.join(60)
+    alive = p.is_alive()
+    if alive:
+        p.kill()
+    assert not alive, "forked child hung"
+    assert q.get(timeout=5) > 1000
