@@ -42,6 +42,22 @@ def test_a_pull_between_molecules_moves_them_whole():
     accel = whole / m[:, None]                 # every atom of a molecule accelerated alike: nothing pulled out of it
     assert np.allclose(accel[:5], accel[0]) and np.allclose(accel[5:], accel[5])
     assert np.count_nonzero(atom.any(axis=1)) == 2    # within one molecule a pull still acts on the two atoms
+    with pytest.raises(ValueError, match="masses"):
+        pull_pairs(x, [(1, 6, tuple(range(5)), tuple(range(5, 10)))], 0.05)
+
+
+def test_pushes_between_two_molecules_lose_no_step_of_a_trajectory(monkeypatch):
+    pytest.importorskip("tblite")
+    import mepd.discovery.reactor_generator as rg
+
+    picks, pick = [], rg.collision_pair
+    monkeypatch.setattr(rg, "collision_pair", lambda *a, **kw: picks.append(pick(*a, **kw)) or picks[-1])
+    xyz = np.vstack([XYZ, XYZ + [5.0, 0.0, 0.0]])
+    # a push every ~25 fs for 0.2 ps; a pull that raised was taken for an SCF failure and cut the trajectory short
+    frames = rg._trajectory(SYM * 2, xyz, 0, 1, temperature=300.0, time_ps=0.2, compress=1.0, period_ps=1.0,
+                            duty=0.75, pull_fs=20.0, gap_fs=5.0, k=100.0, intra_hops=2, seed=0)
+    assert any(p is not None and len(p) == 4 for p in picks)       # pushes between the two molecules happened
+    assert len(frames) == round(200.0 / rg.TRAJ_FS) + 1             # and every frame came back
 
 
 def test_pulls_between_molecules_prefer_no_species():

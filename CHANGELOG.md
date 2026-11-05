@@ -105,8 +105,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   most `unseen` (5%) of its events gave a product seen only once (Good-Turing), at most `max_batches` (4).
 - **Explorer: the `reactor` generator, the interactive Reactor unattended** (`mepd/discovery/reactor_generator.py`).
   Langevin MD on GFN2-xTB in the nanoreactor's wall with the piston swinging it (the Reactor's cycle), while
-  Collide pulls two atoms picked at random toward their moving midpoint every so often (200 fs apart on
-  average, 300 fs each). Nothing chooses the chemistry; events are read with the nanoreactor's detection,
+  Collide every so often (200 fs apart on average, 300 fs each) pushes two molecules picked at random
+  together, or pulls two atoms of one molecule toward their moving midpoint (whole molecules: see Changed).
+  Nothing chooses the chemistry; events are read with the nanoreactor's detection,
   and the structure after each is a proposal. Within one molecule any pair two or more bonds apart may be
   pulled, H-H included (the Reactor's own rule left formic acid one pair, an H shift). `--generator reactor`;
   formic acid at 1500 K: CO + H2O and CO2 + H2 from 16 trajectories of 5 ps in ~10 s.
@@ -458,22 +459,30 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   change, since one random draw fewer is used per pick.
 
 - **Collide and the reactor push whole molecules into each other; the [4+2] double pulls are gone.** Between two
-  molecules a pull no longer drags one atom of A onto one atom of B: the same capped force, along the line between
-  a random heavy atom of each, acts on each whole molecule, spread over its atoms by mass (`langevin.pull_pairs`
-  with `(i, j, A, B)`), so the molecules meet as wholes and the dynamics decide what forms. Within one molecule the
-  atom pull stays (formic acid without pulls: no reaction in 48 trajectories of 5 ps at 2200 K).
-  `collide_generator.cycloaddition_moves`, a reaction-class template, is removed. Cyclopentadiene + methyl acrylate
-  (F0007), GFN2-xTB:
-  - one collision at 1000 K: endo and exo adducts each in 3% of collisions (300 fs pull), 8% and 6% (600 fs).
-    Pulling the two centres of mass together instead aims every encounter at the acrylate's ester: endo 8, exo 1
-    in 288 collisions, the hetero-Diels-Alder on C=O in a quarter.
-  - collide generator (96 collisions, 1000 K): both adducts proposed in 2 of 5 runs, 4 of 5 with `pull_fs=600`.
+  molecules a pull no longer drags one atom of A onto one atom of B: the capped force along the line between two
+  atoms, one of each (collide: every such pair, H included; the reactor: a random heavy atom of each), acts on each
+  whole molecule, spread over its atoms by mass (`langevin.pull_pairs` with `(i, j, A, B)`). The two atoms only set
+  the direction: until they are within 2 x cap / `k` (1.9 A at the default `k`) the force is the cap (95 kcal/mol/A),
+  a constant push, and which atoms meet is up to the orientation and the dynamics. Within one molecule the atom pull
+  stays (formic acid without pulls: no reaction in 48 trajectories of 5 ps at 2200 K).
+  `collide_generator.cycloaddition_moves`, a reaction-class template, is removed. `LangevinMD.step` adds the bias
+  outside its SCF retry, so a pull that raises is not retried as an SCF failure (a test checks that pushes between
+  molecules lose no step of a reactor trajectory). Measured with 300 fs pulls unless said; cyclopentadiene + methyl
+  acrylate (F0007), GFN2-xTB:
+  - one collision at 1000 K: endo and exo adducts each in 3% of collisions (8% and 6% with 600 fs pulls). Pushing
+    the two centres of mass together instead sends every encounter at the acrylate's ester: endo 8, exo 1 in 288
+    collisions, the hetero-Diels-Alder on C=O in a quarter.
+  - collide generator (96 collisions, 1000 K): both adducts proposed in 4 of 10 runs (9 of 10 with `pull_fs=600`).
   - reactor (5 ps trajectories): the Diels-Alder adduct is now the seed's most frequent first reaction; endo in 21%
     and exo in 6% of trajectories at 1000 K, 14% and 3% at 1500 K, 13% and 0% at 2200 K (before: 2 adducts in 72
     trajectories of 10 ps at 1200-2200 K, both exo).
-  - Formic acid: the monomer's trajectories are unchanged (bit for bit). (HCOOH)4 at 2200 K: 3.1 events per 5 ps
-    instead of 4.6; CO + H2O proposed from 16 trajectories in 84% of resamplings (before 100%), from 32 in 98%; the
-    seed's reactions now nearly converge (10% seen once, before ~30%). Cost per trajectory unchanged.
+  - Formic acid: pulls within one molecule are unchanged, but once a molecule has come apart (a reaction's products,
+    or a hot H briefly beyond bonding distance) its pieces are pushed together as wholes too, so a monomer's
+    trajectory matches the old one only until then (seed 7 at 2200 K: up to 0.62 ps). Monomer, CO + H2O: in 24% of
+    trajectories at 2200 K (before 19%), 3% at 1500 K (before 9%; most of it came from pulling the H2 of CO2 + H2
+    back onto CO2). (HCOOH)4 at 2200 K: 3.1 events per 5 ps instead of 4.6; CO + H2O proposed from 16 trajectories in
+    84% of resamplings (before 100%), from 32 in 98%; the seed's reactions now nearly converge (10% seen once, before
+    ~30%). Cost per trajectory unchanged.
 
 - **Reactor generator: products the access cutoff can't reach don't hold up its convergence.** With `--steer access`,
   the explorer passes the reactor what is left of the access cutoff above the species it expands; a product whose

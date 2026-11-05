@@ -7,9 +7,10 @@ let go, in Langevin dynamics on GFN2-xTB at a moderate temperature. Here one
 structure gets `n_collisions` such pulls, each from its own start, on pairs
 picked the way the Reactor picks them (atoms of two molecules; or of one
 molecule at least `min_hops` bonds apart -- a ring closing, an H moving
-across). Between two molecules the pull moves the whole molecules (the force
-spread over each by mass, aimed so the two atoms meet), from a random
-orientation of the partner: what forms is up to the dynamics, a concerted
+across). Between two molecules the whole molecules are pushed together
+instead, from a random orientation of the partner: the capped force along the
+line between the two atoms, spread over each molecule by mass. Which atoms
+meet, and what forms, is up to the orientation and the dynamics, a concerted
 cycloaddition included. The pull supplies the energy a reaction needs where
 it is needed, so a unimolecular decomposition happens without heating the
 whole molecule to thousands of K (the piston nanoreactor rarely makes those: Chang, Meisner,
@@ -140,8 +141,8 @@ def _turn_partner(symbols, xyz_A, atom, rng) -> np.ndarray:
 
 def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None):
     """One collision: pull `pair` together, and drag the bond `push` apart
-    until it lets go; between two molecules, the whole molecules, from a
-    random orientation of the partner. The quenched end geometry (Angstrom),
+    until it lets go; between two molecules, push the whole molecules together
+    along the pair's direction, from a random orientation of the partner. The quenched end geometry (Angstrom),
     or the error if the dynamics failed."""
     from mepd.discovery.free_energy import molecules
     from mepd.discovery.langevin import MAX_PULL, LangevinMD, pull_pairs

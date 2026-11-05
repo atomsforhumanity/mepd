@@ -3,9 +3,10 @@
 What a person does in the Reactor (mepd.web.sandbox) with the piston on and
 "keep colliding" ticked: Langevin dynamics on GFN2-xTB (tblite) inside the
 nanoreactor's soft wall, which the piston swings between a wide and a
-squeezed radius, while Collide every so often pulls two molecules chosen at
-random together for a moment (whole: the force spread over each by mass,
-aimed at an atom of each), or two atoms of one molecule, and lets go.
+squeezed radius, while Collide every so often pushes two molecules chosen at
+random together for a moment (whole: a capped force along the line between a
+random heavy atom of each, spread over each molecule by mass), or pulls two
+atoms of one molecule together, and lets go.
 Nothing picks the chemistry: the piston and the random pulls supply the energy, and the
 kinetics decide afterwards which of the reactions matter.
 
