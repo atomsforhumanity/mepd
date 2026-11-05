@@ -29,6 +29,14 @@ partly formed bond is long, and a distance split could cut the reacting
 complex in two. Without ends, or with ends whose bonds don't bracket the
 TS's, the TS counts as one molecule.
 
+A TS with spectators is also counted bound, the whole complex as one
+molecule: a molecule whose bonds don't change can still lower the TS (an
+H-bond, an ion pair, a dative contact -- a catalyst), and apart that
+stabilization is lost. Bound and apart are two parallel channels, so their
+rates add: the TS's correction is -RT ln(exp(-G_apart/RT) + exp(-G_bound/RT))
+(both_channels), and FreeEnergies.ts_channels gives the two for anything
+that moves them (the steering single points).
+
 The rotational symmetry number and linearity come from xtb's analysis of the
 geometry (mepd.thermo.frequencies), which is cheap at these sizes.
 """
@@ -40,6 +48,23 @@ from typing import Optional
 import numpy as np
 
 HARTREE_TO_KCAL = 627.5094740631
+R_KCAL = 1.987204259e-3   # kcal/mol/K
+
+
+def both_channels(apart: float, bound: float, temperature: float) -> float:
+    """One correction (or free energy, kcal/mol) for a TS's two parallel channels, spectators apart and bound:
+    the rates add, so -RT ln(exp(-apart/RT) + exp(-bound/RT))."""
+    rt = R_KCAL * float(temperature)
+    low = min(apart, bound)
+    return low - rt * float(np.log(np.exp(-(apart - low) / rt) + np.exp(-(bound - low) / rt)))
+
+
+def channels_shift(apart: float, bound: float, d_apart: float, d_bound: float, temperature: float) -> float:
+    """How far (kcal/mol) a higher level's single points move a TS of two channels: `d_apart` (its reacting
+    complex and spectators apart) and `d_bound` (the whole TS) move each channel's correction, and the
+    combination moves by this."""
+    return (both_channels(apart + d_apart, bound + d_bound, temperature)
+            - both_channels(apart, bound, temperature))
 BOHR_PER_ANGSTROM = 1.8897259886
 def _electrons(symbol: str) -> int:
     from rdkit import Chem
@@ -244,7 +269,8 @@ class FreeEnergies:
             return whole
         return out
 
-    def _correction(self, structure, ts: bool, ends=None) -> float:
+    def _correction(self, structure, ts: bool, ends=None):
+        """Thermal correction (kcal/mol); a TS with spectators: (apart, bound)."""
         symbols = [str(s) for s in structure.symbols]
         xyz = np.asarray(structure.geometry, dtype=float) / BOHR_PER_ANGSTROM
         parts = self.parts(structure, ts, ends)
@@ -265,7 +291,11 @@ class FreeEnergies:
         # otherwise count on top of the separated molecules' entropy). Each at its geometry in the complex.
         whole = StructureNode(structure=structure)
         apart = sum(mepd.energies(frags, self.engine)) - mepd.energies([whole], self.engine)[0]
-        return total + apart * HARTREE_TO_KCAL
+        if not ts:
+            return total + apart * HARTREE_TO_KCAL
+        # ... and the TS bound, as one molecule: the other channel (a spectator's H-bond, ion pair, dative contact)
+        return total + apart * HARTREE_TO_KCAL, self._one(symbols, xyz, int(structure.charge),
+                                                          int(structure.multiplicity), True)
 
     def corrections(self, structures: list, ts_flags: list[bool], ends: Optional[list] = None
                     ) -> list[Optional[float]]:
@@ -298,5 +328,10 @@ class FreeEnergies:
                 self.notes.append(f"thermal correction failed ({v}); electronic energy used")
                 out.append(None)
             else:
-                out.append(float(v))
+                out.append(both_channels(*v, self.T) if isinstance(v, tuple) else float(v))
         return out
+
+    def ts_channels(self, structure, ends) -> Optional[tuple[float, float]]:
+        """(apart, bound) corrections (kcal/mol) of a TS with spectators, once `corrections` has it; else None."""
+        v = self._cache.get(self._key(structure, True, ends))
+        return tuple(v) if isinstance(v, tuple) else None

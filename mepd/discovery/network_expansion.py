@@ -1632,15 +1632,22 @@ def expand_network(
         if steer_engine is None or not result.steps:
             return g, steps, basis
         from mepd.discovery.energy_refine import kinetic_reach
+        from mepd.discovery.free_energy import channels_shift
 
         reach, open_steps = kinetic_reach(result.steps, [float(s.node.energy) for s in result.species], e0,
                                           access_cutoff_kcal, _mirror_of())
         sp_idx = sorted(reach)
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
+        ends = {m: _ts_ends(result.steps[m]) for m in open_steps}
+        # a TS with spectators is two channels, apart and bound (free_energy.both_channels): each its own shift
+        channels = {m: c for m in open_steps
+                    if free is not None and (c := free.ts_channels(ts[m], ends[m])) is not None}
+        bound = list(channels)
         d = _steer_shifts([(result.species[k].node.structure, False, None) for k in sp_idx]
-                          + [(ts[m], True, _ts_ends(result.steps[m])) for m in open_steps], queue)
+                          + [(ts[m], True, ends[m]) for m in open_steps] + [(ts[m], True, None) for m in bound], queue)
         d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
+        d_bound = dict(zip(bound, d[len(sp_idx) + len(open_steps):]))
         if d_sp.get(0) is None and queue is not None:
             return g, steps, basis     # the seed's single point is still running
         if d_sp.get(0) is None:
@@ -1649,6 +1656,13 @@ def expand_network(
             return g, steps, basis
         # relative to the seed, on the explorer's scale (the rest of the network keeps the explorer's energies)
         g = [e + (d_sp[k] - d_sp[0] if d_sp.get(k) is not None else 0.0) for k, e in enumerate(g)]
+        for m, (ca, cb) in channels.items():
+            if d_ts.get(m) is not None and d_bound.get(m) is not None:
+                # both channels at the steering level: what moves their combination
+                d_ts[m] = channels_shift(ca, cb, d_ts[m] * HARTREE_TO_KCAL_PER_MOL, d_bound[m] * HARTREE_TO_KCAL_PER_MOL,
+                                         kin["temperature"]) / HARTREE_TO_KCAL_PER_MOL
+            else:
+                d_ts[m] = None
         steps = [Step(st.a, st.b, st.ts_energy + (d_ts[m] - d_sp[0] if d_ts.get(m) is not None else 0.0),
                       st.label, st.files) for m, st in enumerate(steps)]
         n = sum(x is not None for x in d)

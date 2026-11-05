@@ -217,7 +217,7 @@ class HorizontalConnector:
             st = _open_structure(self.ts_dir / f"{label}.xyz").model_copy(
                 update={"charge": ts.structure.charge, "multiplicity": ts.structure.multiplicity})
             ends = [n.structure for n in ends] if ends is not None else None
-            return self.free._key(st, True, ends), float(self.free._correction(st, True, ends))
+            return self.free._key(st, True, ends), self.free._correction(st, True, ends)
         except Exception:
             return None   # the caller computes it, or keeps the electronic energy (said)
 

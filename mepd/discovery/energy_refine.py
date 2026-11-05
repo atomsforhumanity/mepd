@@ -163,7 +163,8 @@ class _Saved:
 
 
 def _stem(item: Item) -> str:
-    return f"species_{item.index}" if item.kind == "species" else f"ts_{item.index}"
+    return f"species_{item.index}" if item.kind == "species" else f"ts_{item.index}" + (
+        "_bound" if item.kind == "ts_bound" else "")
 
 
 def _reoptimize(item: Item, high, free_high: Optional[FreeEnergies]) -> dict:
@@ -281,6 +282,10 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
               for m in open_steps]
     for n in dict.fromkeys(splitter.notes):
         say(f"free energies: {n}")
+    # a TS with spectators is two channels, apart and bound (free_energy.both_channels): the bound one its own item
+    channels = {m: c for m in open_steps
+                if free_low is not None and (c := free_low.ts_channels(ts_structs[m], ts_ends[m])) is not None}
+    bound_items = [Item("ts_bound", m, ts_structs[m], [ts_structs[m]]) for m in channels]
 
     # Single points everywhere first: they are what "reoptimize" falls back to
     threads = max(1, int(getattr(high_engine, "threads", 1) or 1))
@@ -299,8 +304,9 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
         saved.put("single_points", _stem(item), r)
         return r
 
-    sps = list(_fork_map(sp, items, at_once))
-    failed = [(it, r) for it, r in zip(items, sps) if isinstance(r, str)]
+    sps = list(_fork_map(sp, items + bound_items, at_once))
+    sps, sps_bound = sps[:len(items)], sps[len(items):]
+    failed = [(it, r) for it, r in zip(items + bound_items, sps + sps_bound) if isinstance(r, str)]
     if failed:
         raise RuntimeError("higher-level single points failed: " +
                            "; ".join(f"{it.kind} {it.index}: {r}" for it, r in failed[:5]))
@@ -315,6 +321,15 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
             ts_high[it.index] = ts_low[it.index] + d
         rows.append({"kind": it.kind, "index": it.index, "molecules": len(it.parts),
                      "e_low": r["e_low"], "e_high": r["e_high"], "how": "single point"})
+    if channels:
+        from mepd.discovery.free_energy import channels_shift
+
+        d_apart = {it.index: r["delta_kcal"] for it, r in zip(items, sps) if it.kind == "ts"}
+        for it, r in zip(bound_items, sps_bound):
+            ts_high[it.index] = ts_low[it.index] + channels_shift(
+                *channels[it.index], d_apart[it.index], r["delta_kcal"], temperature) / HARTREE_TO_KCAL_PER_MOL
+    rows_bound = [{"kind": it.kind, "index": it.index, "molecules": 1, "e_low": r["e_low"], "e_high": r["e_high"],
+                   "how": "single point"} for it, r in zip(bound_items, sps_bound)]
 
     if mode == "reoptimize":
         free_high = FreeEnergies(high_engine, temperature, standard_state, 1) if free_energy else None
@@ -403,6 +418,7 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     def rel_low(x):
         return (x - g_low[0]) * HARTREE_TO_KCAL_PER_MOL
 
+    rows += rows_bound   # (after the re-convergence, which takes a TS whole)
     for row in rows:
         if row["kind"] == "species":
             row.update(g_low_kcal=rel_low(g_low[row["index"]]), g_high_kcal=rel(g_high[row["index"]]),

@@ -687,6 +687,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Explorer free energies: a TS's spectators also count bound -- the two are parallel channels.** Counting a
+  molecule whose bonds don't change apart (at the standard state) drops whatever it does to the TS
+  electronically, so a catalyst acting only through an H-bond, an ion pair or a dative contact lost its
+  catalysis. A TS with spectators now also gets its correction bound (the whole complex, one molecule, as
+  before 9bdac62), and the two channels' rates add: G = -RT ln(exp(-G_apart/RT) + exp(-G_bound/RT))
+  (`free_energy.both_channels`). One extra Hessian per TS with spectators, cached with the TS (and in the TS
+  job's precomputed correction). The steering single points (and `refine_energies`) move each channel by its
+  own single point -- reacting complex and spectators apart, or the whole TS -- before combining
+  (`channels_shift`). On j_4e10ef7a (g-xTB, 1 M, recomputed offline): at 1000 K, apart wins on all 40 steps
+  with spectators (by 5.7-51.7 kcal/mol), so nothing changes; at 500 K, bound wins on 15 of them (by up to
+  20.6 kcal/mol, e.g. `pair_0_9_leaf_3` 0->1: 70.6 apart -> 51.5). Unimolecular formic acid is unchanged.
+
 - **Species identity: one molecule no longer splits in two by its atom numbering.** The stereo SMILES that
   tells species apart (`_stereo_smiles`, used by `same_molecule`, the reactor's and nanoreactor's product keys
   and the mixture's molecule keys) puts the atoms in a canonical order that fixes them only up to the graph's
