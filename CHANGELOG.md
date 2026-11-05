@@ -646,6 +646,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   until half its workers are free, and it starts on those. A channel-sampling job takes at most half the
   workers (it took 3 of 4, so one sat idle beside it). Proposals for species the kinetics populate never ran in a 15-min (HCOOH)2 run for that. IRC checks minimize their ends without the
   frequency check (a fifth of their time). `network_aware.jsonl` logs each job's wait and run time.
+- **The reactor generator's products are molecules, not atom numberings or hot snapshots.** Each event's
+  structure is quenched (collide's 200 steepest-descent steps) and keyed by its stereo SMILES alone; the bond
+  set by atom number made the same reaction in another of a cluster's identical molecules a new product, and
+  a hot contact that relaxes back to the seed a product at all. Convergence (Good-Turing) counts the reactions
+  out of the seed's state, and needs at least 1/`unseen` of them; proposals come most-often-reached first.
+  (HCOOH)4 at 1800 K, 48 trajectories of 5 ps: 284 "products" in 332 events (76% seen once) were 79 states,
+  27% of events fell back to the seed; the seed's own reactions: 15 products in 54 events (17% seen once).
 - **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
   orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the
   parent's multiprocessing resource tracker. Together these hung a finished `discovery expand` with GPU

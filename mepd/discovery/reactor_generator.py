@@ -9,13 +9,17 @@ the chemistry: the piston and the random pulls supply the energy, and the
 kinetics decide afterwards which of the reactions matter.
 
 The trajectory is read like the nanoreactor's (its bond hysteresis, minimum
-lifetime and event detection), and the structure right after each reaction
-event is one product: whole, in the input's atom order, one per distinct
-bond graph and stereochemistry, earliest first across `n_seeds`
-independent trajectories. Batches of `n_seeds` trajectories run until the
-products have converged: until the events whose product was seen only once
-(Good-Turing's estimate of the chance that the next event gives a product
-not yet seen) are at most `unseen` of all events, or `max_batches` ran.
+lifetime and event detection). The structure right after each reaction event
+is quenched and is one product: whole, in the input's atom order, one per
+stereo SMILES of the quenched structure (canonical: the same reaction in
+another of a cluster's identical molecules is one product, and a hot
+snapshot that relaxes back is none). Batches of `n_seeds` independent
+trajectories run until the seed's own reactions have converged: until the
+events out of the seed's state whose product was seen only once
+(Good-Turing's estimate of the chance that the seed's next reaction gives a
+product not yet seen) are at most `unseen` of them, and there are at least
+1/`unseen` such events, or `max_batches` ran. Every state reached is
+proposed, those the seed reached most often first.
 """
 from __future__ import annotations
 
@@ -164,13 +168,29 @@ class _LiveRun:
         self.written, self.k = len(frames), self.k + 1
 
 
-def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> list:
-    """One trajectory's reactor states, [(event frame, key, xyz Angstrom)] earliest
-    first, and every event's product key (repeats included); a key is [sorted bonds, stereo SMILES]."""
+def _quench(symbols, xyz_A, charge, multiplicity) -> np.ndarray:
+    """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on GFN2-xTB, no new chemistry), Angstrom;
+    the snapshot itself if the SCF fails."""
+    from mepd.discovery.langevin import LangevinMD
+
+    try:
+        md = LangevinMD(symbols, np.asarray(xyz_A, dtype=float) / BOHR, charge, multiplicity, temperature=300.0)
+        md.relax(200)
+        return md.pos * BOHR
+    except Exception:
+        return np.asarray(xyz_A, dtype=float)
+
+
+def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict:
+    """One trajectory's reactor states, [(event frame, key, xyz Angstrom)] earliest first, and every event's
+    [key, whether it left the seed's state], repeats included. The structure after each event is quenched and
+    keyed by its stereo SMILES: a hot snapshot's bonds (a third of the events in (HCOOH)4 at 1800 K fall back to
+    the seed on quenching) and the atom numbering (the same reaction in another of four identical molecules)
+    are no new product. An event whose quenched state is the one before it changed nothing and is not counted."""
     from qcdata import Structure
 
     from mepd.discovery.nanoreactor import DetectSettings, bond_history, detect_events
-    from mepd.discovery.nanoreactor_generator import select_states
+    from mepd.discovery.nanoreactor_generator import stereo_key
 
     frames = _trajectory(symbols, xyz_A, charge, multiplicity, **options)
     detect = DetectSettings()
@@ -178,10 +198,25 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> list
     events = detect_events(len(symbols), hist, detect, TRAJ_FS)
     structure = Structure(symbols=list(symbols), geometry=np.asarray(xyz_A) * ANGSTROM_TO_BOHR,
                           charge=int(charge), multiplicity=int(multiplicity))
-    out, torn, keys = select_states(structure, frames, hist, events, max_products, with_keys=True)
-    key = lambda k: [sorted(map(list, k[0])), k[1]]
-    return {"states": [(int(f), key(k), (np.asarray(x.geometry) / ANGSTROM_TO_BOHR).tolist()) for f, k, x in out],
-            "keys": [key(k) for k in keys], "events": len(events), "torn": torn}
+    seed = prev = stereo_key(structure)
+    bonded0 = {a for p in hist.initial for a in p}
+    states, seen, keys, torn = [], {seed}, [], 0
+    for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
+        # the hot MD eventually tears a structure into atoms: a state with an atom that lost all its bonds
+        # (it had some) is no product guess
+        if bonded0 - {a for p in hist.bonds_at(ev.product_frame) for a in p}:
+            torn += 1
+            continue
+        x = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity))
+        key = stereo_key(structure.model_copy(update={"geometry": x * ANGSTROM_TO_BOHR}))
+        if key is None or key == prev:
+            continue
+        keys.append([key, prev == seed])
+        prev = key
+        if key not in seen:
+            seen.add(key)
+            states.append((int(ev.product_frame), key, x.tolist()))
+    return {"states": states, "keys": keys, "events": len(events), "torn": torn}
 
 
 def reactor_products(structure, *, max_products: int = 20, temperature: float = 800.0, time_ps: float = 5.0,
@@ -205,16 +240,20 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         done = _run_in_processes(jobs, min(width, n))
         errors += [r for r in done if isinstance(r, str)]
         runs += [r for r in done if isinstance(r, dict)]
-        counts = Counter(json.dumps(k) for r in runs for k in r["keys"])
-        events = sum(counts.values())
-        f1 = sum(c == 1 for c in counts.values()) / events if events else 1.0
-        print(f"reactor: batch {batch + 1}: {len(counts)} distinct products in {events} events; "
-              f"{f1:.0%} of the events gave a product seen once (converged at {unseen:.0%}).", flush=True)
-        if f1 <= float(unseen):
+        first = Counter(k for r in runs for k, from_seed in r["keys"] if from_seed)
+        events = sum(first.values())
+        f1 = sum(c == 1 for c in first.values()) / events if events else 1.0
+        print(f"reactor: batch {batch + 1}: {len(first)} distinct products in {events} events from the seed's state "
+              f"({len({k for r in runs for k, _ in r['keys']})} states in all); {f1:.0%} of them gave a product seen "
+              f"once (converged at {unseen:.0%}).", flush=True)
+        # Good-Turing's estimate resolves 1/events: below 1/unseen events, none seen once proves nothing
+        if f1 <= float(unseen) and events * float(unseen) >= 1:
             break
-    pooled = sorted((f, s, json.dumps(k), x) for s, r in enumerate(runs) for f, k, x in r["states"])
+    # the products the seed reached most often first (fewest steps, most often), then the earliest
+    count = Counter(k for r in runs for k, _ in r["keys"])
+    pooled = sorted((-first[k], -count[k], f, s, k, x) for s, r in enumerate(runs) for f, k, x in r["states"])
     out, seen = [], set()
-    for _, _, key, x in pooled:
+    for *_, key, x in pooled:
         if key in seen:
             continue
         seen.add(key)
