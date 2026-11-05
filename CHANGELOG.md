@@ -604,6 +604,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Orbitals in busy workspaces are fast again.** Looking up a calculation's own SCF scanned every line its
+  index.jsonl ever got (346,218 lines in one workspace's 15 jobs, for about 15,000 molden files still kept),
+  fitting a rotation to each: 1.4 s per frame, serialized across threads. Now only the entries whose files
+  exist are read (then the index is read on from where it stopped), their positions compared as one array,
+  and a rotation fitted only where every atom's distance to the centroid agrees: 0.4 ms, the same answers on
+  all 512 test lookups there. Bond orbitals' integrals and localization are compiled (numba, threads run them
+  at once): building a 20-atom path's frames went from 2.6 s to 0.07 s each (30 frames: 77 s to 2 s), a
+  75-atom frame from 4.2 s to 1.2 s. Whole and Fragments use the same lookup.
 - **The Docker image runs GFN-xTB with the official xtb 6.7.1 release** (`XTB_EXECUTABLE=/opt/xtb/bin/xtb`,
   checksum-verified), not conda-forge's, whose CPCM-X gave one energy for every solvent (the test below failed
   in CI, so nothing deployed since 2026-10-28). Not the g-xTB build either: its CPCM-X gives other values

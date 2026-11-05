@@ -220,3 +220,28 @@ def test_diels_alder_irc_three_arrows_followed_smoothly():
     assert len(pairs) == 3
     quiet = [o for o in F["orbitals"] if o["id"] not in F["active"]]
     assert max(o["max_moved"] for o in quiet) < 0.1
+
+
+def test_compiled_integrals_and_localization_match_the_reference_code():
+    """The compiled overlap and dipole integrals equal mepd.fragment_orbitals.overlap and dipoles for every
+    program's conventions (and the MINAO cross overlaps run); the compiled localization reaches the same
+    functional as the plain one."""
+    text = (Path(__file__).parent / "data" / "terachem_ch3cl_b3lyp_631gs.molden").read_text()
+    cases = [("terachem", text)]
+    for m in ("gfn2", "gxtb"):
+        if _has(m):
+            cases.append((m, orbitals.run_molden(*CH3CL, 0, 1, m)))
+    for method, t in cases:
+        b = fo.basis(orbitals.parse_molden(t), method)
+        S, D = bo.integrals(b, dip=True)
+        assert np.abs(S - fo.overlap(b, b)).max() < 1e-12 and np.abs(D - bo.dipoles(b)).max() < 1e-12
+        B = bo.BondOrbitals(t, method, 0, CH3CL[0])
+        Q = B.Q.T
+        U, _ = bo.localize(Q, B.ref_atom)
+        plain = bo._localize_kernel
+        bo._localize_kernel = None
+        try:
+            V, _ = bo.localize(Q, B.ref_atom)
+        finally:
+            bo._localize_kernel = plain
+        assert abs(bo.functional(Q @ U, B.ref_atom) - bo.functional(Q @ V, B.ref_atom)) < 1e-8

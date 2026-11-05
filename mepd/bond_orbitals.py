@@ -55,6 +55,12 @@ import numpy as np
 from mepd import fragment_orbitals as fo
 from mepd import orbitals as orb
 
+try:   # the integrals and the localization compiled (numba is a core dependency; plain numpy without it)
+    import numba as _nb
+    _HAVE_NUMBA = True
+except Exception:  # pragma: no cover
+    _HAVE_NUMBA = False
+
 # The IBO functional's power. Knizia (2013) used 4 and found 2 (Pipek-Mezey with IAO charges) effectively the
 # same except in aromatic rings; IboView's default has been 2 since 2015. Along a path through an aromatic TS
 # (Diels-Alder, g-xTB IRC) 4 flipped between two localizations from frame to frame (an orbital's moved share
@@ -164,6 +170,145 @@ def dipoles(b: list) -> np.ndarray:
     return D
 
 
+def _primitives(b: list) -> tuple:
+    """A basis (as mepd.fragment_orbitals.basis) as its primitive Cartesian
+    Gaussians: centres (n, 3), exponents, coefficients (times their
+    function's scale), powers (n, 3), function numbers; and the number of
+    functions."""
+    cen, alp, coef, pw, fn = [], [], [], [], []
+    f = 0
+    for centre, l, alphas, cs, scale in b:
+        for u, comp in enumerate(orb._CART[l]):
+            for a, c in zip(alphas, cs):
+                cen.append(centre)
+                alp.append(a)
+                coef.append(c * scale[u])
+                pw.append(comp)
+                fn.append(f)
+            f += 1
+    return (np.array(cen, dtype=float).reshape(-1, 3), np.array(alp, dtype=float), np.array(coef, dtype=float),
+            np.array(pw, dtype=np.int64).reshape(-1, 3), np.array(fn, dtype=np.int64), f)
+
+
+def _integrals_py(cA, aA, kA, pA, fA, nA, cB, aB, kB, pB, fB, nB, dip):
+    """<a|b> and, with `dip`, <a| x, y, z |b> over primitive Gaussians, Obara-Saika per axis (the tables one
+    order higher in b for the moments: x b = (x - B_x) b + B_x b). Plain loops: compiled by numba below."""
+    S = np.zeros((nA, nB))
+    D = np.zeros((3, nA, nB)) if dip else np.zeros((3, 1, 1))
+    E = np.zeros((3, 6, 7))
+    for p in range(aA.shape[0]):
+        for q in range(aB.shape[0]):
+            a = aA[p]
+            b = aB[q]
+            g = a + b
+            ab2 = (cA[p, 0] - cB[q, 0]) ** 2 + (cA[p, 1] - cB[q, 1]) ** 2 + (cA[p, 2] - cB[q, 2]) ** 2
+            pre = kA[p] * kB[q] * (math.pi / g) ** 1.5 * math.exp(-a * b / g * ab2)
+            if abs(pre) < 1e-15:
+                continue
+            half = 0.5 / g
+            for k in range(3):
+                P = (a * cA[p, k] + b * cB[q, k]) / g
+                PA = P - cA[p, k]
+                PB = P - cB[q, k]
+                la = pA[p, k]
+                lb = pB[q, k] + 1
+                E[k, 0, 0] = 1.0
+                for i in range(la + 1):
+                    for j in range(lb + 1):
+                        if i == 0 and j == 0:
+                            continue
+                        if i > 0:
+                            v = PA * E[k, i - 1, j]
+                            if i > 1:
+                                v += (i - 1) * half * E[k, i - 2, j]
+                            if j > 0:
+                                v += j * half * E[k, i - 1, j - 1]
+                        else:
+                            v = PB * E[k, i, j - 1]
+                            if j > 1:
+                                v += (j - 1) * half * E[k, i, j - 2]
+                        E[k, i, j] = v
+            ex = E[0, pA[p, 0], pB[q, 0]]
+            ey = E[1, pA[p, 1], pB[q, 1]]
+            ez = E[2, pA[p, 2], pB[q, 2]]
+            S[fA[p], fB[q]] += pre * ex * ey * ez
+            if dip:
+                mx = E[0, pA[p, 0], pB[q, 0] + 1] + cB[q, 0] * ex
+                my = E[1, pA[p, 1], pB[q, 1] + 1] + cB[q, 1] * ey
+                mz = E[2, pA[p, 2], pB[q, 2] + 1] + cB[q, 2] * ez
+                D[0, fA[p], fB[q]] += pre * mx * ey * ez
+                D[1, fA[p], fB[q]] += pre * ex * my * ez
+                D[2, fA[p], fB[q]] += pre * ex * ey * mz
+    return S, D
+
+
+def _localize_py(Q, bounds, p, tol, max_sweeps):
+    """localize's Jacobi sweeps as plain loops (Q's rows sorted by atom, atom a's rows bounds[a]:bounds[a+1];
+    Q is rotated in place). Compiled by numba below."""
+    nao, n = Q.shape
+    U = np.eye(n)
+    nat = bounds.shape[0] - 1
+    for sweep in range(1, max_sweeps + 1):
+        grad = 0.0
+        for i in range(n):
+            for j in range(i):
+                A = 0.0
+                B = 0.0
+                for at in range(nat):
+                    qii = 0.0
+                    qjj = 0.0
+                    qij = 0.0
+                    for r in range(bounds[at], bounds[at + 1]):
+                        x = Q[r, i]
+                        y = Q[r, j]
+                        qii += x * x
+                        qjj += y * y
+                        qij += x * y
+                    if p == 2:
+                        A += 4.0 * qij * qij - (qii - qjj) ** 2
+                        B += 4.0 * qij * (qii - qjj)
+                    else:
+                        A += -qii ** 4 - qjj ** 4 + 6.0 * (qii * qii + qjj * qjj) * qij * qij + qii ** 3 * qjj + qii * qjj ** 3
+                        B += 4.0 * qij * (qii ** 3 - qjj ** 3)
+                grad += B * B
+                phi = 0.25 * math.atan2(B, -A)
+                if abs(phi) < 1e-14:
+                    continue
+                c = math.cos(phi)
+                s = math.sin(phi)
+                for r in range(nao):
+                    x = Q[r, i]
+                    y = Q[r, j]
+                    Q[r, i] = c * x + s * y
+                    Q[r, j] = -s * x + c * y
+                for r in range(n):
+                    x = U[r, i]
+                    y = U[r, j]
+                    U[r, i] = c * x + s * y
+                    U[r, j] = -s * x + c * y
+        if grad < tol:
+            return U, sweep
+    return U, max_sweeps
+
+
+if _HAVE_NUMBA:
+    # nogil: a path's frames are built on threads, which then run these at the same time.
+    _integrals_kernel = _nb.njit(cache=True, nogil=True)(_integrals_py)
+    _localize_kernel = _nb.njit(cache=True, nogil=True)(_localize_py)
+else:  # pragma: no cover
+    _integrals_kernel, _localize_kernel = _integrals_py, None
+
+
+def integrals(ba: list, bb: Optional[list] = None, dip: bool = False):
+    """<chi_a|chi_b> between two bases (one with itself if `bb` is None) and,
+    with `dip`, <chi_a| x, y, z |chi_b> (bohr): (S, D) -- the same numbers as
+    mepd.fragment_orbitals.overlap and dipoles, compiled."""
+    A = _primitives(ba)
+    B = A if bb is None else _primitives(bb)
+    S, D = _integrals_kernel(*A, *B, bool(dip))
+    return (S, D) if dip else S
+
+
 # ------------------------------------------------------------------ IAOs
 
 def _orth(X: np.ndarray, S: np.ndarray) -> np.ndarray:
@@ -228,8 +373,8 @@ def _reference(mol: dict, b1: list, S1: np.ndarray, all_electron: bool) -> tuple
     for t in blocks:
         Tsph[i:i + t.shape[0], j:j + t.shape[1]] = t
         i, j = i + t.shape[0], j + t.shape[1]
-    S12 = fo.overlap(b1, b2) @ Tsph
-    S2 = Tsph.T @ fo.overlap(b2, b2) @ Tsph
+    S12 = integrals(b1, b2) @ Tsph
+    S2 = Tsph.T @ integrals(b2) @ Tsph
     return S12, S2, np.array(atom_of)
 
 
@@ -247,6 +392,10 @@ def localize(Q: np.ndarray, atom_of: np.ndarray, p: int = EXPONENT) -> tuple[np.
     order = np.argsort(atom_of, kind="stable")
     Q = Q[order].copy()
     starts = np.r_[0, np.nonzero(np.diff(atom_of[order]))[0] + 1]
+    if _localize_kernel is not None:
+        U, sweeps = _localize_kernel(np.ascontiguousarray(Q), np.r_[starts, len(Q)].astype(np.int64), int(p),
+                                     GRAD_TOL, MAX_SWEEPS)
+        return U, int(sweeps)
     for sweep in range(1, MAX_SWEEPS + 1):
         grad = 0.0
         for i in range(n):
@@ -327,7 +476,7 @@ class BondOrbitals:
         Z = np.array([z for z, _ in mol["atoms"]])
         self.natoms = len(Z)
         b1 = fo.basis(mol, method)
-        S1 = fo.overlap(b1, b1)
+        S1, D = integrals(b1, dip=True)
         occ_e = sum(m["occ"] for m in mol["mos"])
         valence = float(sum(z - 2 * _core_pairs(int(z)) for z in Z))
         # Which electrons the file holds: all of them, or only the valence ones (xtb).
@@ -374,7 +523,6 @@ class BondOrbitals:
         self.xyz_A = np.array([p for _, p in mol["atoms"]]) * orb.BOHR
         # Each orbital's centroid <phi|r|phi> (Vidossich & Lledos): where its electrons sit -- off the
         # atom, into the lone pair's lobe, for a lone pair; along the bond for a bond.
-        D = dipoles(b1)
         centres = np.einsum("ia,kab,ib->ik", self.C, D, self.C) * orb.BOHR
         for k, o in enumerate(self.orbitals):
             o["atoms"] = sites(self.pop[k])
