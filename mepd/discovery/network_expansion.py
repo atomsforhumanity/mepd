@@ -2126,7 +2126,7 @@ def expand_network(
                 out[k] = (opt, record)
             return props, out
 
-        connect.register("propose", _propose_job, slots=width, rank=0)   # (what the kinetics need first)
+        connect.register("propose", _propose_job, slots=width)
 
         class _SpeciesNodes:
             """The species' nodes as the queue indexes them, growing as species are found."""
@@ -2235,7 +2235,7 @@ def expand_network(
         if refine is not None:
             if not hasattr(refine, "pairs"):
                 raise ValueError("schedule='async' needs a `refine` with `pairs` (its conformer pairs).")
-            connect.register("channels", _channels_job, slots=int(getattr(refine, "width", 1)), rank=1)
+            connect.register("channels", _channels_job, slots=int(getattr(refine, "width", 1)))
         if steer_engine is not None and not getattr(steer_engine, "holds_torch_model", False):
             from mepd.discovery.energy_refine import _single_point
 

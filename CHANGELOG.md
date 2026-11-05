@@ -620,10 +620,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   budget (or Stop & analyze) the running jobs are cancelled, their worker processes killed with what they
   started, instead of awaited, and the run goes straight to its analysis: the final IRC pass and the final
   channel sampling (full path searches) no longer run after the queue, unbudgeted (they ran 50 min past a
-  1 h budget in a (HCOOH)4 run). Waiting jobs start by rank: proposals for a newly populated species and
-  steering single points first, then IRC checks and channel sampling, then TS searches, then path-search
-  pieces. A job that needs several workers (channel sampling 3, proposals 2) no longer waits while
-  narrower jobs queued after it take each free worker. IRC checks minimize their ends without the
+  1 h budget in a (HCOOH)4 run). Waiting jobs start by rank, in queue order within one: steering single
+  points, then IRC checks, then proposals, TS searches and channel sampling, then path-search pieces. A
+  job that needs several workers (proposals: all of them; channel sampling 3) no longer waits while
+  narrower jobs queued after it take each free worker: after 60 s (`wide_wait_s`) it starts on the
+  workers free. Proposals for species the kinetics populate never ran in a 15-min (HCOOH)2 run for that. IRC checks minimize their ends without the
   frequency check (a fifth of their time). `network_aware.jsonl` logs each job's wait and run time.
 - **Parallel workers** (`_fork_map`): a worker OOM-killed mid-run no longer leaves its siblings' own workers
   orphaned for good (each forked worker now dies with its parent, on Linux), and forked workers let go of the

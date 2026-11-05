@@ -113,6 +113,11 @@ class HorizontalConnector:
     reports_pairs = True   # takes on_pair_done
     ices = True    # keeps pieces nothing reaches (`iced`) and queues them again on every call
     stop_when = None   # the caller's budget (set per instance; see __init__)
+    # A job that needs more workers than are free lets narrower ones behind it start in its place for this
+    # long; then it starts on the workers free (the cores briefly oversubscribed). Narrower jobs started in
+    # its place for good kept channel sampling (3 of 4 workers) and proposals (all 4) waiting while any were
+    # queued; holding them back instead left workers idle for minutes behind each wide job.
+    wide_wait_s = 60.0
 
     def __init__(self, run_inputs, output: Path, workers: int, *, max_pieces_per_pair: int = 40,
                  max_depth: Optional[int] = 6, nimages: int = 11, fast_ts_steps: int = 300, say=print):
@@ -401,6 +406,10 @@ class HorizontalConnector:
                 kind, _, args = job
                 return kind == "piece" and args[2] > 0 and relevant is not None
 
+            def overdue(job, now) -> bool:
+                """A wide job that waited long enough: it starts on whatever workers are free."""
+                return now - queued_at.get(id(job[2]), now) > self.wide_wait_s
+
             def rank(job) -> int:
                 kind = job[0]
                 return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind]
@@ -417,6 +426,10 @@ class HorizontalConnector:
                 counts["cancelled"] = len(running)
                 log_event({"event": "queue_stopped", "dropped": len(waiting), "cancelled": len(running)})
                 waiting.clear()
+                now = time.monotonic()
+                for fut, (kind, pair, args) in running.items():
+                    log_event({"event": "job", "kind": kind.removeprefix("own:"), "what": what(kind, pair, args),
+                               "run_s": round(now - started.get(fut, now), 1), "cancelled": True})
                 if running:
                     for proc in list((getattr(pool, "_processes", None) or {}).values()):
                         proc.kill()   # (a thread pool can't be: its jobs run on, unheard)
@@ -433,6 +446,7 @@ class HorizontalConnector:
             def fill(final=False):
                 if halted():
                     return
+                now = time.monotonic()
                 waiting.sort(key=rank)   # (stable: queue order within a rank)
                 k = 0
                 while k < len(waiting) and busy() < self.workers:
@@ -440,10 +454,9 @@ class HorizontalConnector:
                     if gated(job) and relevant(job[2][0], final) is not True:
                         k += 1
                         continue
-                    if running and busy() + slots(job[0]) > self.workers:
-                        # a wide job waits for room, and the jobs behind it wait with it: started in its
-                        # place, they kept it waiting while any were left (channel sampling, 3 of 4 workers)
-                        break
+                    if running and busy() + slots(job[0]) > self.workers and not overdue(job, now):
+                        k += 1      # a wide job waits for room; narrower ones behind it may start meanwhile
+                        continue
                     waiting.pop(k)
                     run(*job)
                 if final and not running and on_drain is not None and on_drain():
