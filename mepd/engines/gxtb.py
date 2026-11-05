@@ -565,7 +565,7 @@ class GXTBCalculator(Engine):
             with tempfile.TemporaryDirectory(prefix="axtb-") as tmp:
                 fp = Path(tmp) / "molden.input"
                 fp.write_text(out["molden"])
-                save_run_orbitals(fp, node.structure.to_xyz(), "gxtb", "g-xTB")
+                save_run_orbitals(fp, node.structure.to_xyz(), "axtb", "g-xTB")   # axtb's Molden conventions
         res = FakeQCIOResults.model_validate({"energy": out["energy"], "gradient": out["gradient"]})
         return FakeQCIOOutput.model_validate({"results": res})
 

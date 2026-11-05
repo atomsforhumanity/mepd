@@ -142,3 +142,33 @@ def test_forked_child_after_a_hessian_does_not_hang():
         p.kill()
     assert not alive, "forked child hung"
     assert q.get(timeout=5) > 1000
+
+
+@needs_program
+def test_kept_orbitals_are_axtbs_and_count_as_gxtb(tmp_path, monkeypatch):
+    """A job's kept SCF ($MEPD_ORBITALS_DIR) from backend "axtb" is axtb's Molden file (spherical,
+    normalized primitives): kept as method "axtb", found by a g-xTB lookup, and read with its own
+    conventions it gives the program's HOMO."""
+    from mepd import orbitals
+
+    for name, eng in (("axtb", GXTBCalculator(backend="axtb", n_parallel=1)), ("program", _program())):
+        monkeypatch.setenv("MEPD_ORBITALS_DIR", str(tmp_path / name))
+        eng.compute_energies([_node()])
+    s = Structure.from_xyz(FORMAMIDE)
+    symbols, coords = list(s.symbols), np.asarray(s.geometry) * 0.529177210903
+    ax = orbitals.find_run_orbitals([tmp_path / "axtb"], symbols, coords, "gxtb")
+    ref = orbitals.find_run_orbitals([tmp_path / "program"], symbols, coords, "gxtb")
+    assert (ax["method"], ax["label"], ref["method"]) == ("axtb", "g-xTB", "gxtb")
+    assert orbitals.find_run_orbitals([tmp_path / "axtb"], symbols, coords, "gfn2") is None
+
+    rng = np.random.default_rng(0)
+    pts = coords.mean(axis=0) / 0.529177210903 + rng.normal(scale=2.0, size=(400, 3))
+
+    def homo(hit):
+        m = hit["method"]
+        mol = orbitals.parse_molden((tmp_path / hit["dir"] / hit["file"]).read_text(), orbitals.D_NORM[m])
+        top = max((mo for mo in mol["mos"] if mo["occ"] > 0.5), key=lambda mo: mo["energy"])
+        return orbitals.evaluate(mol, [top["coef"]], pts, orbitals.D_NORM[m], orbitals.NORMALIZED_PRIMS[m])[0]
+
+    a, b = homo(ax), homo(ref)
+    assert np.abs(np.abs(a) - np.abs(b)).max() < 1e-3 * np.abs(b).max()

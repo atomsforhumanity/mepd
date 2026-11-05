@@ -89,20 +89,21 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
     with _lock(key):
         if fp.is_file():                     # built while this one waited
             return fp
-        whole = None
+        whole, whole_method = None, method
         runs = ([Path(ws.jobs_dir) / job / "orbitals"] if job else []) + \
             [orbital_store.store_dir(ws)] + orbital_store.run_dirs(ws)
         try:
             hit = orbitals.find_run_orbitals(runs, symbols, coords, method, rigid=False)
             if hit is not None:
-                whole = (Path(hit["dir"]) / hit["file"]).read_text()
+                whole, whole_method = (Path(hit["dir"]) / hit["file"]).read_text(), hit["method"]
             elif method != "terachem":
                 whole = orbitals.run_molden(symbols, np.asarray(coords, dtype=float), charge, multiplicity, method)
         except Exception:
             whole = None
         out = fo.analyze(symbols, coords, charge, multiplicity, method, engine_kwds, fragments=fragments,
                          groups=groups,
-                         reference_A=reference, whole_molden=whole, pick=pick, max_points=max_points)
+                         reference_A=reference, whole_molden=whole, whole_method=whole_method, pick=pick,
+                         max_points=max_points)
         # Which geometry the molecules were cut from (the analysis says whether the shown one splits the same way).
         out["cut"] = {**out.get("cut", {}), "from": "given" if fragments else cut_from,
                       "options": [] if fragments else list(cut_options)}

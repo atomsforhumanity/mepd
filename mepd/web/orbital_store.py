@@ -58,7 +58,7 @@ def ensure(ws, xyz_text: str, charge: int, multiplicity: int, method: str, engin
     if hit is None:
         run = orbitals.find_run_orbitals(run_dirs(ws), symbols, coords, method, rigid=False)
         if run is not None:
-            entry = orbitals.save_run_orbitals(Path(run["dir"]) / run["file"], xyz_text, method, run["label"],
+            entry = orbitals.save_run_orbitals(Path(run["dir"]) / run["file"], xyz_text, run["method"], run["label"],
                                                where=store, keep=None, source=run.get("source", "run"))
         else:
             if method == "terachem":

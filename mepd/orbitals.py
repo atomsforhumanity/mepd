@@ -636,10 +636,18 @@ def _aligned(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray]:
     return float(np.sqrt(((ac @ R - bc) ** 2).sum(axis=1).mean())), R
 
 
+def same_level(entry: dict, method: str) -> bool:
+    """Whether a kept SCF (index entry) is at `method`'s level: of that method, or for "gxtb" one
+    of axtb's g-xTB files (mepd's g-xTB engine with backend = "axtb" keeps them as method "axtb",
+    label "g-xTB"). Read a match with its own entry's method: the files' conventions differ."""
+    m = entry.get("method")
+    return m == method or (method == "gxtb" and m == "axtb" and entry.get("label") == "g-xTB")
+
+
 def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = None,
                       rigid: bool = True) -> Optional[dict]:
     """The newest kept SCF (index entry plus its folder) at this geometry in
-    any of `dirs` (and of `method`, if given), or None. With `rigid`, also
+    any of `dirs` (and at `method`'s level, if given: `same_level`), or None. With `rigid`, also
     one at the same geometry turned and moved (an IRC's frames have their
     rigid motion taken out): then `align` = {"R", "from", "to"} maps the asked
     geometry onto the kept one, (x - from) @ R + to (Angstrom).
@@ -666,7 +674,7 @@ def find_run_orbitals(dirs, symbols: list, coords_A, method: Optional[str] = Non
         maybe = exact | (np.abs(R - rq).max(axis=1) <= loose) if rigid and len(xyz) > 2 else exact
         for i in np.nonzero(maybe)[0][::-1]:                  # newest first
             e = k.entries[rows[i]]
-            if (method and e.get("method") != method) or not (d / e["file"]).is_file():
+            if (method and not same_level(e, method)) or not (d / e["file"]).is_file():
                 continue
             if exact[i]:
                 hit = {**e, "dir": str(d), "align": None}

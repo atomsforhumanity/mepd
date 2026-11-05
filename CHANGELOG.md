@@ -23,6 +23,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   - Needs the `axtb` package (a wheel; not a mepd dependency). It takes only `--etemp/--acc/--iterations` in
     `extra_args` and doesn't run the program's own optimizer (`minimizer = "xtb"`).
   - The default backend is still the program (`"xtb"`).
+  - A job's kept orbitals (the viewer's Whole, Fragments and Bonds) are axtb's own Molden files, kept as method
+    `axtb` with the label g-xTB: a g-xTB session finds them, and each is read with axtb's conventions. Read as
+    the program's, formamide's HOMO was off by up to 44% of its peak value; read as axtb's it matches the program's to 2e-8.
 
 - **Molden files with spherical d and f functions in the orbital viewer** (`[5D]`, `[7F]`, `[5D7F]`,
   `[5D10F]`, in any order and case, e.g. PySCF's `[5d][7f][9g]`): `parse_molden` rewrites each orbital

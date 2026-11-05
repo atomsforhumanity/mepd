@@ -87,15 +87,17 @@ def ensure(ws, symbols: list, coords, *, charge: int, multiplicity: int, method:
             [orbital_store.store_dir(ws)] + orbital_store.run_dirs(ws)
         run = orbitals.find_run_orbitals(runs, symbols, xyz, method)
         if run is not None:
-            text = (Path(run["dir"]) / run["file"]).read_text()
+            text, kind = (Path(run["dir"]) / run["file"]).read_text(), run["method"]
             label, source, align = run["label"], run.get("source", "run"), run["align"]
         elif method == "terachem":
+            kind = method
             text = orbitals.run_terachem_molden(list(symbols), xyz, charge, multiplicity, engine_kwds)
             label, source, align = orbitals.terachem_label(engine_kwds), "single point", None
         else:
+            kind = method
             text = orbitals.run_molden(list(symbols), xyz, charge, multiplicity, method)
             label, source, align = ("g-xTB" if method == "gxtb" else "GFN2-xTB"), "single point", None
-        B = bo.BondOrbitals(text, method, int(charge), list(symbols),
+        B = bo.BondOrbitals(text, kind, int(charge), list(symbols),
                             shown_A=xyz if align is not None else None, align=align)
         try:
             B.save(fp)

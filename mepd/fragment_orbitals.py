@@ -213,7 +213,8 @@ def _block(sd: _Side, sa: _Side, S: np.ndarray, occ: list, virt: list) -> np.nda
 
 def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, method: str = "gxtb",
             engine_kwds: Optional[dict] = None, fragments: Optional[list] = None,
-            reference_A=None, whole_molden: Optional[str] = None, cubes: bool = True,
+            reference_A=None, whole_molden: Optional[str] = None, whole_method: Optional[str] = None,
+            cubes: bool = True,
             groups: Optional[list] = None,
             pick: Optional[dict] = None, max_points: int = orb.MAX_POINTS) -> dict:
     """Frontier-orbital interactions between the molecules of one geometry.
@@ -339,7 +340,7 @@ def analyze(symbols: list, coords_A, charge: int = 0, multiplicity: int = 1, met
                       "molecules": molecules, "groups": [list(g) for g in groups] if groups and not fragments else None}}
     if whole_molden is not None:
         try:
-            result["whole"] = _composition(_Side(whole_molden, method), sides)
+            result["whole"] = _composition(_Side(whole_molden, whole_method or method), sides)
         except Exception:
             pass
     if cubes and pairs:
