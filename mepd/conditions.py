@@ -267,6 +267,8 @@ def simulate_first_order(n_species: int, steps: list[tuple[int, int, float, floa
     if fastest <= 0:
         return {"t": [0.0, time_s], "c": [y0.tolist(), y0.tolist()], "final": y0.tolist()}
     t_eval = np.unique(np.concatenate([[0.0], np.geomspace(min(1e-3 / fastest, time_s), time_s, n_samples)]))
+    t_eval = t_eval[t_eval <= time_s]      # geomspace(t, t, n) can land a rounding error past the end
+    t_eval[-1] = time_s
     sol = solve_ivp(lambda t, y: K @ y, (0.0, time_s), y0, method="Radau", jac=K, t_eval=t_eval,
                     rtol=1e-8, atol=1e-14)
     c = np.clip(sol.y, 0.0, None)

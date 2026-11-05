@@ -721,6 +721,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Kinetics crashed on networks slower than their time span** ("Values in `t_eval` are not within `t_span`",
+  `mepd.discovery.kinetics.simulate` and `mepd.conditions.simulate_first_order`). With only slow steps, as just
+  after an explorer's first TS, the time samples ran from `time_s` to `time_s`, and `geomspace` could put one a
+  rounding error past the end, which `solve_ivp` refuses. This depended on the value: 2 ms (methyl formate),
+  3, 7 and 20 ms and 7200 s failed; 1 ms did not.
+  - Samples past the end are now dropped and the last is pinned to `time_s`, as `mepd.microkinetics` already did.
+
 - **Orbitals in busy workspaces are fast again.** Looking up a calculation's own SCF scanned every line its
   index.jsonl ever got (346,218 lines in one workspace's 15 jobs, for about 15,000 molden files still kept),
   fitting a rotation to each: 1.4 s per frame, serialized across threads. Now only the entries whose files

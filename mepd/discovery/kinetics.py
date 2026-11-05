@@ -148,6 +148,8 @@ def simulate(n_species: int, steps: Sequence[Step], energies: Sequence[float], *
         return KineticsResult(time_s, temperature, [0.0] * n, c.tolist(), c.tolist(), barriers(steps, energies))
     fastest = max(max(k) for k in ks)
     t_eval = np.unique(np.concatenate([[0.0], np.geomspace(min(1e-3 / fastest, time_s), time_s, n_samples)]))
+    t_eval = t_eval[t_eval <= time_s]      # geomspace(t, t, n) can land a rounding error past the end
+    t_eval[-1] = time_s
     live = [(s.a, s.b, kf, kr) for s, (kf, kr) in zip(steps, ks) if s.a != s.b]
     ia = np.array([x[0] for x in live])
     ib = np.array([x[1] for x in live])

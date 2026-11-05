@@ -76,3 +76,18 @@ def test_barrierless_and_slow_steps_together_conserve_material_and_finish_fast()
     k = simulate(n, steps, e.tolist(), temperature=333, time_s=21600)
     assert time.time() - t0 < 30
     assert sum(k.final_concentration) == pytest.approx(1.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("time_s", [1e-3, 2e-3, 3e-3, 7e-3, 2e-2, 7200.0])
+def test_a_network_slower_than_its_time_span_still_integrates(time_s):
+    """Only slow steps (just after the first TS): the samples run from time_s to time_s, and geomspace can put
+    one a rounding error past the end, which solve_ivp refuses (2 ms methyl formate runs crashed)."""
+    from mepd.conditions import simulate_first_order
+
+    step, energies = Step(0, 1, -99.8, "x", {}), [-100.0, -100.01]
+    res = simulate(2, [step], energies, temperature=1500, time_s=time_s)
+    (kf, kr), = rate_constants([step], energies, 1500)
+    exact = (kr + kf * np.exp(-(kf + kr) * time_s)) / (kf + kr)        # A <-> B from pure A
+    assert res.final_concentration[0] == pytest.approx(exact, rel=1e-5)
+    out = simulate_first_order(2, [(0, 1, 1e-12 / time_s, 1e-13 / time_s)], [1.0, 0.0], time_s=time_s)
+    assert out["t"][0] == 0.0 and out["t"][-1] == time_s and out["final"][0] == pytest.approx(1.0, abs=1e-9)
