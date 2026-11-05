@@ -1377,8 +1377,8 @@ def test_ts_rotamers_turn_the_bonds_outside_the_reacting_core():
     x0 = _ang(adduct)
     for guess, what in guesses:
         x = _ang(StructureNode(structure=guess))
-        assert all(np.linalg.norm(x[i] - x[j]) == pytest.approx(np.linalg.norm(x0[i] - x0[j]), abs=1e-9) for i, j in core)
-        assert graph_edges(StructureNode(structure=guess)) == graph_edges(adduct)
+        for i, j in core + sorted(graph_edges(adduct)):      # the core's distances and every bond's length kept
+            assert np.linalg.norm(x[i] - x[j]) == pytest.approx(np.linalg.norm(x0[i] - x0[j]), abs=1e-9)
         moved = set(np.where(np.abs(x - x0).sum(axis=1) > 1e-6)[0])
         assert moved and moved <= {7, 8, 9, 19, 20, 21}      # the ester's atoms only (6 is on the first axis)
 
