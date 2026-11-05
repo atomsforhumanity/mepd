@@ -69,9 +69,10 @@ PROVISIONAL = {
         "conditions": {"temperature_K": 1500.0, "time_s": 1e-3, "standard_state": "1atm"},
         "channels": {"dehydration": {"products": ["[C-]#[O+]", "O"]},
                      "decarboxylation": {"products": ["O=C=O", "[H][H]"]}},
-        "targets": [{"num": ["dehydration"], "den": ["decarboxylation"], "range": [1.0, 20.0],
-                     "status": "UNCONFIRMED: REFERENCES.md lists ~10 -> ~1 near 2000 K (Hsu 1982, secondary), "
-                               "~20 (Elwardany 2015, snippet), ~100 (Saito 1984, unconfirmed); the curator pins it"}],
+        "targets": [{"num": ["dehydration"], "den": ["decarboxylation"], "range": [10.0, 40.0],
+                     "status": "curator, NOTES 2026-11-05 10:50: Elwardany et al., Proc. Combust. Inst. 35, 429 (2015), "
+                               "doi:10.1016/j.proci.2014.06.141, abstract: 'branching ratio, k1/k2, of approximately 20'; "
+                               "window 10-40 = factor 2 around 20 (1-6.5 atm Ar, fall-off; the explorer is k-infinity)"}],
         "held_out": False,
     },
     "methyl_formate": {
@@ -615,7 +616,29 @@ def score_task(task: dict, sysdef: dict, dst: Path) -> dict:
                 "cpu_h": None if result.get("cpu_s") is None else result["cpu_s"] / 3600.0,
                 "settle": {"settle_s": None, "quick": False}, "budget_s": result.get("budget_s")}
     o = score_run(sysdef, dst / "run", result, dst / "snapshots", meta)
-    return {**base, "ok": True, **o}
+    return {**base, "ok": True, **o, **run_facts(dst)}
+
+
+def run_facts(dst: Path) -> dict:
+    """From the logs: the reactor temperatures the propose jobs used (expand.log), and how many propose
+    jobs ran and failed (network_aware.jsonl)."""
+    import re
+
+    out = {"reactor_T": [], "propose_jobs": {"ok": 0, "failed": 0}}
+    log = Path(dst) / "expand.log"
+    if log.is_file():
+        out["reactor_T"] = sorted({float(t) for t in re.findall(r"trajectories of [\d.]+ ps at ([\d.]+) K",
+                                                                 log.read_text(errors="replace"))})
+    na = Path(dst) / "network_aware.jsonl"
+    if na.is_file():
+        for line in na.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("event") == "job" and e.get("kind") == "propose":
+                out["propose_jobs"]["ok" if e.get("ok") else "failed"] += 1
+    return out
 
 
 # ----------------------------------------------------------------------------------------------- aggregate
@@ -674,7 +697,9 @@ def aggregate(scores: list, suite: dict) -> dict:
             "wall_s": _stats([o.get("wall_s") for o in runs]), "cpu_h": _stats([o.get("cpu_h") for o in runs]),
             "conversion": _stats([o.get("conversion") for o in runs]),
             "species": _stats([o.get("species") for o in runs]), "steps": _stats([o.get("steps") for o in runs]),
-            "stopped": sorted(str(o.get("stopped")) for o in runs), "audit_flags": flags}
+            "stopped": sorted(str(o.get("stopped")) for o in runs), "audit_flags": flags,
+            "reactor_T": sorted({t for o in runs for t in o.get("reactor_T") or []}),
+            "propose_jobs": {k: sum((o.get("propose_jobs") or {}).get(k, 0) for o in runs) for k in ("ok", "failed")}}
     return out
 
 
@@ -692,6 +717,8 @@ def table(agg: dict, scores: list) -> str:
              "(expt) | worst abs err kcal median [min, max] | settle s median [min, max] | settled <= 30 min | "
              "wall s median | CPU-h median | stopped | audit flags |", "|" + "---|" * 12]
     for key, g in agg.items():
+        if not isinstance(g, dict) or "system" not in g:
+            continue
         rec = ", ".join(f"{c} {v['found']:.0%}/{v['connected']:.0%}" for c, v in g["recall"].items())
         sel = "; ".join(f"{n}: {_f(t['selectivity']['median'], '.3g')} [{_f(t['selectivity']['min'], '.3g')}, "
                         f"{_f(t['selectivity']['max'], '.3g')}] ({_f(t['range'][0], '.3g')}-{_f(t['range'][1], '.3g')})"

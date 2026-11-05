@@ -106,9 +106,11 @@ def build(run: str, commit: str, configs: list, systems: list, replicates: int, 
             shutil.copy(BENCH / f, d / "inputs" / Path(f).name)
     shutil.copy(BENCH / "orca_steer.toml", d / "inputs" / "orca_steer.toml")
     tasks = []
-    for cname, cargs in configs:
-        for name in systems:
-            for r in range(replicates):
+    # pods start in task order: systems as given (put the long ones first), the configurations interleaved
+    # replicate by replicate, so both arms meet the same cluster load
+    for name in systems:
+        for r in range(replicates):
+            for cname, cargs in configs:
                 seeds, sargs = seed_argv(r)
                 tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
                               "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
