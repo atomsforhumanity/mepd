@@ -12,6 +12,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
+  reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
+  energies and gradients come from this process with no program start per call, and Hessians are analytic.
+  - With `"gxtb"` conventions it matches the program to ~1e-12 Eh (energies), ~1e-9 Eh/bohr (gradients) and
+    ~0.2 cm-1 (frequencies).
+  - On a formic acid explorer run (reactor, async, 4 workers, same seed) it gave the same network and selectivity
+    (27.62 against 27.61). Time inside g-xTB fell from 305 s to 13.5 s (median call 34 ms to 1.1 ms), and the run
+    from 282 s to 176 s.
+  - Needs the `axtb` package (a wheel; not a mepd dependency). It takes only `--etemp/--acc/--iterations` in
+    `extra_args` and doesn't run the program's own optimizer (`minimizer = "xtb"`).
+  - The default backend is still the program (`"xtb"`).
+
 - **Bond orbitals** (Orbitals › Bonds, beside Whole and Fragments, in every 3D view and in Design): the
   whole system's filled orbitals as its bonds and lone pairs (Knizia's intrinsic bond orbitals, built on
   intrinsic atomic orbitals; xtb's own minimal valence shells or MINAO as the reference, exponent 2), from
