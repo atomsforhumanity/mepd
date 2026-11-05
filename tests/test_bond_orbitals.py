@@ -75,6 +75,25 @@ def test_terachem_all_electron_with_minao():
     assert abs(B.charges.sum()) < 1e-3
 
 
+@pytest.mark.parametrize("name", ["gfn2_ch3cl", "gxtb2_ch3cl", "gxtb2_ceh4"])
+def test_spherical_molden_files_give_the_same_bond_orbitals(name):
+    """axtb's files with spherical d and f functions give the bond orbitals of the Cartesian file of the same
+    calculation. CeH4 (g-xTB, Ce s, d and f valence shells): four Ce-H bonds, polarized to H, and
+    charges that add up (Ce's 54 core electrons left out)."""
+    data = Path(__file__).parent / "data"
+    syms = CH3CL[0] if name.endswith("ch3cl") else ["Ce", "H", "H", "H", "H"]
+    a, b = (bo.BondOrbitals((data / f"axtb_{name}_{kind}.molden").read_text(), "axtb", 0, syms)
+            for kind in ("spherical", "cartesian"))
+    assert np.abs(a.pop - b.pop).max() < 1e-8 and np.abs(a.charges - b.charges).max() < 1e-8
+    assert np.abs(np.array([o["centre"] for o in a.orbitals]) - [o["centre"] for o in b.orbitals]).max() < 1e-6
+    if name.endswith("ch3cl"):
+        assert _kinds(a) == [(1, (1,)), (1, (1,)), (1, (1,)), (2, (0, 1)), (2, (0, 2)), (2, (0, 3)), (2, (0, 4))]
+    else:
+        assert _kinds(a) == [(2, (0, 1)), (2, (0, 2)), (2, (0, 3)), (2, (0, 4))]
+        assert all(o["atoms"][0][0] != 0 and o["atoms"][0][1] > 0.6 for o in a.orbitals)   # polarized to H
+        assert abs(a.charges.sum()) < 1e-3 and 1.0 < a.charges[0] < 2.5
+
+
 def test_localization_reaches_the_optimum():
     """Every pair rotation is at the maximum of the functional (a scan finds nothing better), and the
     functional beats the canonical orbitals'."""

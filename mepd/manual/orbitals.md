@@ -258,7 +258,9 @@ on O; ethylene gives four C–H bonds and the C–C σ and π.
    - xtb's basis (g-xTB, GFN2-xTB) is already a minimal valence basis. The
      reference is its own minimal valence shells per atom (s for H and the
      alkali and alkaline-earth metals; s and p for the p block; s and d for
-     transition metals). Polarization shells, such as Cl 3d, are left out.
+     transition metals; s, d and f for the lanthanides from Ce and the
+     actinides from Th), with d and f shells as their five and seven pure
+     functions. Polarization shells, such as Cl 3d, are left out.
    - All-electron bases (TeraChem): MINAO, the minimal basis Knizia made from
      the cc-pVTZ sets (as distributed with PySCF), H to Kr except K. Core
      orbitals (C 1s, Cl 1s–2p, …) are left out of the bond orbitals.
