@@ -1695,6 +1695,71 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("the frames must have the same atoms")
         return {"pairs": fragment_store.profile(ws, geoms, **_fragment_args(ws, body, symbols))}
 
+    def _bond_args(ws, body: dict) -> dict:
+        method, engine_kwds = _fragment_method(ws, body)
+        return {"charge": int(body.get("charge") or 0), "multiplicity": int(body.get("multiplicity") or 1),
+                "method": method, "engine_kwds": engine_kwds, "job": str(body["job"]) if body.get("job") else None}
+
+    @app.post("/api/bond-orbitals")
+    def bond_orbitals(body: dict, request: Request):
+        """The whole system's filled orbitals as bonds and lone pairs (intrinsic bond orbitals,
+        mepd.bond_orbitals) at a geometry {xyz, charge, multiplicity, job, orbital (which to draw:
+        its number in this geometry's list; default the most spread out, else the highest),
+        follow (a path's frame: coarser grid)}: per orbital its atoms, charge centre and energy,
+        the atoms' IAO charges, and the drawn orbital's cube. Built from the orbitals the whole
+        view uses, and kept (mepd.web.bond_store)."""
+        import gzip
+
+        from mepd import bond_orbitals as bo
+        from mepd import orbitals
+        from mepd.web import bond_store
+
+        ws = W()
+        symbols, coords = _orbital_geometry(body.get("xyz"))
+        try:
+            B, label, source = bond_store.ensure(ws, symbols, coords, **_bond_args(ws, body))
+            k = body.get("orbital")
+            k = int(k) if isinstance(k, int) and 0 <= k < len(B.orbitals) else bo.default_pick(B)
+            cube = B.cube(k, orbitals.LIVE_POINTS if body.get("follow") else orbitals.MAX_POINTS)
+        except WorkspaceError:
+            raise
+        except Exception as exc:
+            raise WorkspaceError(f"no bond orbitals: {exc}") from None
+        data = json.dumps({**B.summary(), "label": label, "source": source, "drawn": {"index": k, "cube": cube}}).encode()
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(gzip.compress(data, 5), media_type="application/json", headers={"Content-Encoding": "gzip"})
+        return Response(data, media_type="application/json")
+
+    @app.post("/api/bond-orbitals/path")
+    def bond_orbitals_path(body: dict):
+        """Along a path {frames: [xyz], charge, multiplicity, job}: every frame's bond orbitals
+        built and kept, and each of the first frame's followed through the frames
+        (mepd.bond_orbitals.follow): per orbital its number and sign in every frame, how far it
+        has changed from the first frame, its charge centre; `active` the ones that change (the
+        curly arrows), most changed first; the atoms' charges per frame."""
+        from mepd import bond_orbitals as bo
+        from mepd.web import bond_store
+
+        ws = W()
+        frames = list(body.get("frames") or [])
+        if not frames:
+            raise WorkspaceError("following orbitals needs the path's frames")
+        if len(frames) > 400:
+            raise WorkspaceError(f"{len(frames)} frames: bond orbitals follow up to 400")
+        geoms = [_orbital_geometry(f) for f in frames]
+        symbols = geoms[0][0]
+        if any(g[0] != symbols for g in geoms):
+            raise WorkspaceError("the frames must have the same atoms")
+        built = bond_store.frames(ws, geoms, **_bond_args(ws, body))
+        try:
+            out = bo.follow([b[0] if b else None for b in built])
+        except Exception as exc:
+            raise WorkspaceError(f"no bond orbitals: {exc}") from None
+        first = next(b for b in built if b)
+        out.update(label=first[1], source=first[2], failed=[i for i, b in enumerate(built) if b is None],
+                   active_from=bo.ACTIVE)
+        return out
+
     # ------------------------------------------------------------ edges
     @app.post("/api/edges")
     def add_edge(body: EdgeIn):

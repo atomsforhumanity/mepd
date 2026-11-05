@@ -12,6 +12,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Bond orbitals** (Orbitals › Bonds, beside Whole and Fragments, in every 3D view and in Design): the
+  whole system's filled orbitals as its bonds and lone pairs (Knizia's intrinsic bond orbitals, built on
+  intrinsic atomic orbitals; xtb's own minimal valence shells or MINAO as the reference, exponent 2), from
+  the same orbitals the Whole view uses. On a finished path every orbital is followed from frame to frame;
+  the few that change are the mechanism's curly arrows, drawn as the path of each one's centroid, with how
+  much each has moved frame by frame and the atoms' charge change (Knizia & Klein's electron flow). Kept in
+  `<workspace>/orbitals/bonds/`. `POST /api/bond-orbitals`, `POST /api/bond-orbitals/path`,
+  `mepd.bond_orbitals`; manual: /manual/orbitals#bond-orbitals.
 - **Harmonic distance restraints** (`[[restraints]]` in a profile: `atoms = [i, j]`, `distance` in Å,
   `force_constant` in kcal/mol/Å², 500 by default) on any engine; on QM/MM inside the QM/MM energy, so
   microiterative optimizations hold them (QM atoms cannot be frozen). E.g. hold a C-H at 1.10 Å while a
