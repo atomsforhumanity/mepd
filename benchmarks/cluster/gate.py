@@ -1,7 +1,7 @@
 """Gate: does a candidate (commit, configuration) do at least as well as a base one, per system?
 
     P=/home/user/astera/mepd/.venv/bin/python
-    $P benchmarks/cluster/gate.py BASE_RUN:CONFIG CAND_RUN:CONFIG [--json OUT]
+    $P benchmarks/cluster/gate.py BASE_RUN:CONFIG CAND_RUN:CONFIG [--only sys1,sys2] [--json OUT]
 
 Each side is a scored cluster run (`bench.py score RUN` wrote results/RUN/aggregate.json) and one of
 its configurations. Systems in both are compared; held-out systems count like the others (they are
@@ -97,6 +97,10 @@ def main(argv: list) -> int:
         return 2
     base, bi = _load(argv[0])
     cand, ci = _load(argv[1])
+    if "--only" in argv:
+        keep = set(argv[argv.index("--only") + 1].split(","))
+        base = {k: v for k, v in base.items() if k in keep}
+        cand = {k: v for k, v in cand.items() if k in keep}
     verdict = compare(base, cand)
     print(f"gate: base {bi['run']}:{bi['config']} ({(bi['commit'] or '')[:7]}) vs candidate "
           f"{ci['run']}:{ci['config']} ({(ci['commit'] or '')[:7]})")

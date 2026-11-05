@@ -62,15 +62,25 @@ SETTLE_KCAL = 0.5
 QUICK_S = 1800.0
 
 # What the harness adds to each system of the curator's benchmarks/systems.yaml: the seed geometry and the
-# explorer profile (paths relative to benchmarks/). Seeds: hcooh, methyl formate (playgroud exp_benchmarks),
-# f0007 (the Finding's start complex); acetic acid and the Cp + lactone complex built for the suite
-# (benchmarks/cluster/suite/README in NOTES: RDKit/MMFF, the lactone's C=C placed where F0007's acrylate C=C is).
+# explorer profile (paths relative to benchmarks/), and where the curator leaves it open, the kinetics time.
+# Seeds: hcooh, methyl formate (playgroud exp_benchmarks), f0007 (the Finding's start complex), the rest built
+# by benchmarks/cluster/suite/make_seeds.py. Profiles: the gas-phase small molecules and the ring opening use
+# hcooh_profile.toml (g-xTB, FSM-TS = the defaults); the Diels-Alder systems F0007's (MLP-GI on g-xTB).
+# unattributable_kcal: |error| up to this is within what the experiment's own caveat can't pin on the explorer
+# (formic and acetic acid: k-infinity model vs 1-6.5 atm fall-off data, curator's fair_comparison).
 HARNESS = {
-    "hcooh": {"seed": "hcooh.xyz", "profile": "hcooh_profile.toml"},
-    "acetic_acid": {"seed": "cluster/suite/acetic_acid.xyz", "profile": "hcooh_profile.toml"},
+    "hcooh": {"seed": "hcooh.xyz", "profile": "hcooh_profile.toml", "unattributable_kcal": 1.0},
+    "acetic_acid": {"seed": "cluster/suite/acetic_acid.xyz", "profile": "hcooh_profile.toml",
+                    "unattributable_kcal": 1.0},
     "methyl_formate": {"seed": "cluster/suite/methyl_formate.xyz", "profile": "hcooh_profile.toml"},
     "f0007": {"seed": "f0007_start_complex.xyz", "profile": "f0007_mlpgi.toml"},
     "cp_mbl": {"seed": "cluster/suite/cp_mbl_start_complex.xyz", "profile": "f0007_mlpgi.toml"},
+    "isoprene_ma": {"seed": "cluster/suite/isoprene_ma_start_complex.xyz", "profile": "f0007_mlpgi.toml"},
+    # target = initial formation rate constants at 300 K; no time given: 1 h (initial-rate regime, k ~ 2e-5
+    # L/mol/s at ~1 M forms ~7 % in 1 h, before retro-Diels-Alder matters)
+    "furan_maleimide": {"seed": "cluster/suite/furan_maleimide_start_complex.xyz", "profile": "f0007_mlpgi.toml",
+                        "time_s": 3600.0},
+    "cb_diester": {"seed": "cluster/suite/cb_diester.xyz", "profile": "hcooh_profile.toml"},
 }
 SUITE_SOURCE = "benchmarks/systems.yaml"
 
@@ -79,8 +89,9 @@ def load_systems(fp: Path | None = None) -> dict:
     """The suite: the curator's benchmarks/systems.yaml (schema_version 1) plus HARNESS, as
     {id: {seed, profile, charge, multiplicity, conditions{temperature_K, time_s, standard_state},
     channels{name: {products, racemic}}, targets[{num, den, range, ...}], required[channels], held_out}}.
-    Required channels (recall, settle time): the target's numerator, and its denominator unless the target
-    is one-sided (an open upper bound: finding the minor channels only lowers the ratio)."""
+    Required channels (full recall, settle time): the target's numerator, and its denominator unless the target
+    is one-sided (an open upper bound: finding the minor channels only lowers the ratio). Every scored channel
+    counts for per-channel recall (and the gate's no-drop rule); only the target gives an error."""
     import yaml
 
     raw = yaml.safe_load(Path(fp or HERE / "systems.yaml").read_text())
@@ -97,11 +108,13 @@ def load_systems(fp: Path | None = None) -> dict:
         num, den = list(t["numerator"]), list(t["denominator"])
         out[sid] = {**HARNESS[sid], "name": sd.get("name"),
                     "charge": sum(int(r.get("charge", 0)) for r in sd.get("reactants", [])), "multiplicity": 1,
-                    "conditions": {"temperature_K": float(c["score_temperature_K"]), "time_s": float(c["score_time_s"]),
+                    "conditions": {"temperature_K": float(c["score_temperature_K"]),
+                                   "time_s": float(c["score_time_s"] if c.get("score_time_s") is not None
+                                                   else HARNESS[sid]["time_s"]),
                                    "standard_state": c["standard_state"]},
-                    "channels": {k: {"products": v["products"], "racemic": bool(v.get("racemic")),
-                                     **({"reactants": v["reactants"]} if v.get("reactants") else {})}
-                                 for k, v in sd["channels"].items()},
+                    # a side channel of other reactants (F0007's Cp dimerization) can't form from the seed: not scored
+                    "channels": {k: {"products": v["products"], "racemic": bool(v.get("racemic"))}
+                                 for k, v in sd["channels"].items() if not v.get("reactants")},
                     "targets": [{"num": num, "den": den, "range": rng, "value": t.get("value"),
                                  "quantity": t.get("quantity"), "status": t.get("status")}],
                     "required": num + (den if math.isfinite(rng[1]) else []),
@@ -621,6 +634,10 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
            "required": req, "full_recall": all(rec["found"][c] and rec["connected"][c] for c in req),
            "targets": targets, "worst_error_kcal": worst,
            "worst_abs_error_kcal": None if worst is None else abs(worst),
+           # |error| inside the experiment's own caveat (k-infinity vs fall-off): not attributable to the explorer
+           "unattributable_kcal": sysdef.get("unattributable_kcal"),
+           "within_unattributable": None if worst is None or sysdef.get("unattributable_kcal") is None
+           else abs(worst) <= float(sysdef["unattributable_kcal"]),
            "conversion": (1.0 - amounts.get(0, (0.0, 0.0))[0]) if amounts else None,
            "stopped": kin.get("stopped"), "kinetics_T": (s.get("steering") or {}).get("temperature_K"),
            "conditions_match": abs(float((s.get("steering") or {}).get("temperature_K") or 0) - temp) < 0.5
@@ -733,6 +750,9 @@ def aggregate(scores: list, suite: dict) -> dict:
             "full_recall_fraction": sum(bool(o.get("full_recall")) for o in runs) / len(runs),
             "recall": rec, "targets": targets, "worst_abs_error_kcal": _stats(worst),
             "settle_s": _stats(settles),
+            "unattributable_kcal": suite[system].get("unattributable_kcal"),
+            "within_unattributable_fraction": (sum(bool(o.get("within_unattributable")) for o in runs) / len(runs)
+                                               if suite[system].get("unattributable_kcal") is not None else None),
             "settled_30min_fraction": sum(s <= QUICK_S for s in settles) / len(runs),
             "wall_s": _stats([o.get("wall_s") for o in runs]), "cpu_h": _stats([o.get("cpu_h") for o in runs]),
             "conversion": _stats([o.get("conversion") for o in runs]),
@@ -754,8 +774,9 @@ def _f(x, fmt=".2f"):
 def table(agg: dict, scores: list) -> str:
     """Markdown: one row per (system, configuration), then one per run."""
     lines = ["| system / config | n | full recall | recall found / connected per channel | selectivity median [min, max] "
-             "(expt) | worst abs err kcal median [min, max] | settle s median [min, max] | settled <= 30 min | "
-             "wall s median | CPU-h median | stopped | audit flags |", "|" + "---|" * 12]
+             "(expt) | worst abs err kcal median [min, max] | not attributable (abs err within the expt caveat) | "
+             "settle s median [min, max] | settled <= 30 min | wall s median | CPU-h median | stopped | audit flags |",
+             "|" + "---|" * 13]
     for key, g in agg.items():
         if not isinstance(g, dict) or "system" not in g:
             continue
@@ -768,6 +789,7 @@ def table(agg: dict, scores: list) -> str:
         flags = ", ".join(f"{k} {v}" for k, v in g["audit_flags"].items() if v) or "none"
         lines.append(f"| {key}{' (held out)' if g['held_out'] else ''} | {g['n']} | {g['full_recall_fraction']:.0%} | "
                      f"{rec} | {sel} | {_f(w['median'])} [{_f(w['min'])}, {_f(w['max'])}]{' (+%d inf)' % w['n_inf'] if w['n_inf'] else ''} | "
+                     f"{'-' if g.get('unattributable_kcal') is None else '%.0f%% of runs (<= %.1f kcal/mol)' % (100 * g['within_unattributable_fraction'], g['unattributable_kcal'])} | "
                      f"{_f(st['median'], '.0f')} [{_f(st['min'], '.0f')}, {_f(st['max'], '.0f')}]{' (+%d never)' % st['n_inf'] if st['n_inf'] else ''} | "
                      f"{g['settled_30min_fraction']:.0%} | {_f(g['wall_s']['median'], '.0f')} | "
                      f"{_f(g['cpu_h']['median'], '.2f')} | {stopped} | {flags} |")

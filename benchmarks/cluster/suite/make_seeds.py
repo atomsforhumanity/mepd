@@ -8,6 +8,11 @@
   (Kabsch) on the acrylate's CH2=CH-C(=O) carbons, then turned about its C=C axis to the largest closest
   contact with Cp (the ring is bulkier than the ester), so both Diels-Alder systems start from the same
   encounter geometry of the C=C. Cyclopentadiene is F0007's (atoms 0-10).
+- isoprene_ma_start_complex.xyz, furan_maleimide_start_complex.xyz: a generic encounter, no reactive atoms
+  aligned (so neither regio- nor endo/exo-chemistry is preset): each molecule's lowest of 20 RDKit ETKDG + MMFF
+  conformers, the second molecule turned by a random rotation (numpy seed 11) and its centroid put 5.0 A from
+  the first's along a random direction, redrawn until the closest contact is >= 2.5 A.
+- cb_diester.xyz: dimethyl cis-cyclobut-3-ene-1,2-dicarboxylate, lowest of 20 RDKit ETKDG + MMFF conformers.
 The explorer minimizes every seed itself before it starts.
 """
 from pathlib import Path
@@ -89,6 +94,52 @@ def cp_mbl() -> None:
           f"closest contact {dmin:.2f} A (make_seeds.py)")
 
 
+def lowest(smiles: str, n: int = 20):
+    m = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    ids = AllChem.EmbedMultipleConfs(m, numConfs=n, randomSeed=7)
+    res = AllChem.MMFFOptimizeMoleculeConfs(m, maxIters=2000)
+    best = min(range(len(ids)), key=lambda i: res[i][1])
+    return [a.GetSymbol() for a in m.GetAtoms()], m.GetConformer(ids[best]).GetPositions()
+
+
+def encounter(smiles_a: str, smiles_b: str, name: str, comment: str) -> None:
+    sa, xa = lowest(smiles_a)
+    sb, xb = lowest(smiles_b)
+    rng = np.random.default_rng(11)
+    xa = xa - xa.mean(0)
+    for _ in range(1000):
+        q = rng.normal(size=4)
+        q /= np.linalg.norm(q)
+        w, x, y, z = q
+        R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                      [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+        d = rng.normal(size=3)
+        d /= np.linalg.norm(d)
+        xb2 = (xb - xb.mean(0)) @ R.T + 5.0 * d
+        dmin = np.min(np.linalg.norm(xa[:, None, :] - xb2[None, :, :], axis=2))
+        if dmin >= 2.5:
+            break
+    write(HERE / name, sa + sb, np.vstack([xa, xb2]), f"{comment}; centroids 5.0 A, closest contact {dmin:.2f} A "
+                                                      "(make_seeds.py)")
+
+
+def cb_diester() -> None:
+    sym, x = lowest("COC(=O)[C@H]1C=C[C@H]1C(=O)OC")
+    write(HERE / "cb_diester.xyz", sym, x, "dimethyl cis-cyclobut-3-ene-1,2-dicarboxylate (RDKit + MMFF; make_seeds.py)")
+
+
 if __name__ == "__main__":
-    acetic_acid()
-    cp_mbl()
+    import sys
+
+    todo = sys.argv[1:] or ["acetic_acid", "cp_mbl", "isoprene_ma", "furan_maleimide", "cb_diester"]
+    if "acetic_acid" in todo:
+        acetic_acid()
+    if "cp_mbl" in todo:
+        cp_mbl()
+    if "isoprene_ma" in todo:
+        encounter("C=CC(=C)C", "C=CC(=O)OC", "isoprene_ma_start_complex.xyz", "isoprene + methyl acrylate")
+    if "furan_maleimide" in todo:
+        encounter("c1ccoc1", "O=C1C=CC(=O)N1", "furan_maleimide_start_complex.xyz", "furan + maleimide")
+    if "cb_diester" in todo:
+        cb_diester()

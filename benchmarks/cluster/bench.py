@@ -2,6 +2,7 @@
 
     P=/home/user/astera/mepd/.venv/bin/python; B=benchmarks/cluster/bench.py
     $P $B build  RUN --commit SHA [--config NAME[=ARGS]]... [--systems a,b] [--replicates 5]
+                 [--group 'a,b:default,T1800' --group 'c,d:default'] (instead of --systems/--config)
                  [--budget 1800] [--threads 32] [--parallelism 8] [--memory 64Gi] [--control]
     $P $B submit RUN           # afh push + afh submit
     $P $B pull   RUN           # afh pull into the run's folder
@@ -86,9 +87,12 @@ def seed_argv(replicate: int) -> tuple[dict, list]:
             ["--generator-option", f"seed={s}", "--channels-option", f"random_seed={s}"])
 
 
-def build(run: str, commit: str, configs: list, systems: list, replicates: int, budget: float, threads: int,
+def build(run: str, commit: str, groups: list, replicates: int, budget: float, threads: int,
           parallelism: int, memory: str, control: bool, hard_factor: float = 3.0) -> Path:
+    """`groups`: [(systems, [(config name, args)])] in priority order (pods start in task order)."""
     suite = score.load_systems()
+    systems = list(dict.fromkeys(n for g in groups for n in g[0]))
+    configs = list({c: a for g in groups for c, a in g[1]}.items())
     sha = _git("rev-parse", commit)
     harness = _git("rev-parse", "HEAD") + ("+dirty" if _git("status", "--porcelain", "--", "benchmarks") else "")
     d = AFH_DIR / run
@@ -106,20 +110,21 @@ def build(run: str, commit: str, configs: list, systems: list, replicates: int, 
             shutil.copy(BENCH / f, d / "inputs" / Path(f).name)
     shutil.copy(BENCH / "orca_steer.toml", d / "inputs" / "orca_steer.toml")
     tasks = []
-    # pods start in task order: replicate by replicate, every system (as given: long ones first) and
-    # configuration in each, so all arms meet the same cluster load and a run cut short has every arm
-    for r in range(replicates):
-        for name in systems:
-            for cname, cargs in configs:
-                seeds, sargs = seed_argv(r)
-                tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
-                              "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
-                              "hard_timeout": hard_factor * budget,
-                              "argv": system_argv(name, suite[name], budget) + cargs + sargs,
-                              "harness_commit": harness})
-    if control:   # replicate 0 again: what the seeds don't fix (queue timing)
-        cname, cargs = configs[0]
-        for name in systems:
+    # pods start in task order: group by group (priority), and in a group replicate by replicate, every system
+    # (as given: long ones first) and configuration in each, so all arms meet the same cluster load and a run
+    # cut short has every arm
+    order = [(r, name, c) for g_systems, g_configs in groups for r in range(replicates)
+             for name in g_systems for c in g_configs]
+    for r, name, (cname, cargs) in order:
+        seeds, sargs = seed_argv(r)
+        tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
+                      "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
+                      "hard_timeout": hard_factor * budget,
+                      "argv": system_argv(name, suite[name], budget) + cargs + sargs,
+                      "harness_commit": harness})
+    if control:   # replicate 0 again: what the seeds don't fix (queue timing); the first group, last in order
+        cname, cargs = groups[0][1][0]
+        for name in groups[0][0]:
             seeds, sargs = seed_argv(0)
             tasks.append({"id": f"{name}-{cname}-r0b", "system": name, "config": cname, "replicate": 0,
                           "control_of": f"{name}-{cname}-r0", "seeds": seeds,
@@ -192,8 +197,9 @@ def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list) -> list:
         dst.mkdir(parents=True, exist_ok=True)
         for tgz in ("run.tgz", "snapshots.tgz"):
             if (src / tgz).is_file() and not (dst / tgz.split(".")[0]).is_dir():
-                with tarfile.open(src / tgz) as tf:
-                    tf.extractall(dst, filter="data")
+                with tarfile.open(src / tgz) as tf:     # (the reactor's trajectories stay in the archive)
+                    tf.extractall(dst, members=[m for m in tf if not m.name.startswith("run/reactor/")],
+                                  filter="data")
         for f in ("result.json", "_meta.json", "expand.log", "network_aware.jsonl"):
             if (src / f).is_file():
                 shutil.copy(src / f, dst / f)
@@ -215,6 +221,8 @@ def main(argv: list) -> int:
     b.add_argument("--commit", required=True)
     b.add_argument("--config", action="append", default=[])
     b.add_argument("--systems", default="")
+    b.add_argument("--group", action="append", default=[],
+                   help="SYSTEMS:CONFIGS (comma-separated each), repeatable, in priority order; replaces --systems/--config")
     b.add_argument("--replicates", type=int, default=5)
     b.add_argument("--budget", type=float, default=1800.0)
     b.add_argument("--threads", type=int, default=32)
@@ -232,9 +240,13 @@ def main(argv: list) -> int:
     g.add_argument("cand")
     a = ap.parse_args(argv)
     if a.cmd == "build":
-        systems = [x for x in a.systems.split(",") if x] or list(score.load_systems())
-        build(a.run, a.commit, [_config(c) for c in (a.config or ["default"])], systems, a.replicates, a.budget,
-              a.threads, a.parallelism, a.memory, a.control)
+        if a.group:
+            groups = [([x for x in g.split(":")[0].split(",") if x], [_config(c) for c in g.split(":")[1].split(",")])
+                      for g in a.group]
+        else:
+            groups = [([x for x in a.systems.split(",") if x] or list(score.load_systems()),
+                       [_config(c) for c in (a.config or ["default"])])]
+        build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control)
     elif a.cmd == "submit":
         afh("push", str(AFH_DIR / a.run), a.run)
         afh("submit", a.run)
