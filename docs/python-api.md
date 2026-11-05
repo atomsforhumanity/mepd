@@ -137,9 +137,18 @@ the same folder again. It logs progress on the `mepd.channel_search` logger
 
 | Function | Returns |
 |---|---|
-| `same_molecule(a, b, *, stereo=True)` | same bond graph (atom order and conformation ignored) and, with `stereo`, the same stereochemistry |
-| `compare_structures(a, b)` | a `Comparison`: `.graph`, `.stereo` (True, False, or None when it cannot be decided), `.smiles`, `.reason`, `.method` |
-| `connects(path, start, end, *, stereo=True)` | a `Match`: `.start`, `.end`, `.both`, `.any`, `.none`, `.reversed`, `.undetermined`, `.comparisons`; `bool(match)` is `.both` |
+| `same_molecule(a, b, *, stereo=True, metal_ligand_contacts=True)` | same bond graph (atom order and conformation ignored) and, with `stereo`, the same stereochemistry |
+| `compare_structures(a, b, *, metal_ligand_contacts=True)` | a `Comparison`: `.graph`, `.stereo` (True, False, or None when it cannot be decided), `.smiles`, `.reason`, `.method`, `.metal_ligand_changed` |
+| `connects(path, start, end, *, stereo=True, metal_ligand_contacts=True)` | a `Match`: `.start`, `.end`, `.both`, `.any`, `.none`, `.reversed`, `.undetermined`, `.comparisons`; `bool(match)` is `.both` |
+
+With `metal_ligand_contacts=False`, bonds to transition metals (and lanthanides, actinides) are left out of
+both the bond graphs and the stereochemistry: a ligand that binds through another atom, or comes off the
+metal, is the same species as long as its covalent bonds and stereochemistry are, and
+`Comparison.metal_ligand_changed` says whether the contacts differ. Off by default. The idea of keeping
+dative metal-ligand contacts apart from covalent bonds follows Z. Li, H.-H. Hsu and B. M. Savoie, "Finding
+the Roads Less Calculated in Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+[doi:10.26434/chemrxiv.15006374/v1](https://doi.org/10.26434/chemrxiv.15006374/v1) (preprint, not peer
+reviewed).
 
 `same_molecule` is mepd's one definition of "the same species"; every
 command uses it. Stereochemistry is compared on stereo SMILES built from the

@@ -976,3 +976,18 @@ def test_one_sn2_ts_found_twice_counts_once():
     stretched = b.update_coords(np.asarray(b.coords) * np.array([1.0, 1.0, 1.15]))
     stretched._cached_energy = b._cached_energy
     assert not _same_ts(a, stretched, rmsd_cutoff=1.0, kcal_mol_cutoff=1.0)
+
+
+def test_a_smiles_embeds_to_the_same_geometry_whatever_ran_before():
+    """#29: RDKit's unseeded embedding followed the process's random stream, so
+    a SMILES start (and with it the conformer pool) changed with what had run
+    before; channels' worker test failed alone and passed in the suite."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from mepd.structures import smiles_to_structure
+
+    first = np.asarray(smiles_to_structure("CCCC").geometry)
+    m = Chem.AddHs(Chem.MolFromSmiles("CCCCCC"))
+    AllChem.EmbedMultipleConfs(m, numConfs=5)            # use up some of RDKit's random stream
+    assert np.allclose(np.asarray(smiles_to_structure("CCCC").geometry), first)

@@ -266,7 +266,10 @@ def free_energies(ws, jobs: dict, net: mk.Network, *, workers: int = 2) -> tuple
     report = {"method": "quasi-RRHO, GFN2-xTB single-point Hessians" + (f" ({model.upper()}, {solvent})" if solvent else ""),
               "structures": len(tasks), "computed": new, "ts_without_geometry": approx,
               "extra_imaginary": [net.names[k[1]] if k[0] == "sp" else net.steps[k[1]].label
-                                  for k, n in n_imag.items() if n > (1 if k[0] == "ts" else 0)]}
+                                  for k, n in n_imag.items() if n > (1 if k[0] == "ts" else 0)],
+              # No negative mode: the reaction coordinate stays in as a vibration (mepd#12).
+              "ts_without_imaginary": [net.steps[k[1]].label for k, fr in freqs.items()
+                                       if k[0] == "ts" and not any(x < 0 for x in fr["freqs"])]}
     return energies_at, report
 
 
@@ -315,6 +318,10 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         if fe_report["ts_without_geometry"]:
             warnings.append("TS geometry not found, thermal correction taken from the reactant side: "
                             + ", ".join(fe_report["ts_without_geometry"]))
+        if fe_report.get("ts_without_imaginary"):
+            warnings.append("No imaginary frequency in the GFN2-xTB Hessian of the TS (its soft mode counts as a "
+                            "vibration, G(TS) too low by ~0.5-1 kcal/mol): "
+                            + ", ".join(fe_report["ts_without_imaginary"]))
         if fe_report["extra_imaginary"]:
             warnings.append("Extra imaginary frequencies (below -20 cm-1) in: "
                             + ", ".join(fe_report["extra_imaginary"]))

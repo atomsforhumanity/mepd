@@ -96,7 +96,7 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
    "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
    "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
@@ -875,7 +875,7 @@
   "how": [
    "The structure (or design) is written as guess.xyz and `mepd ts --guess` runs with the job's profile.",
    "mepd.find_ts: for g-xTB, Sella (order 1) started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
-   "With IRC: Sella IRC both ways (fmax 0.1 eV/Å, 1000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
+   "With IRC: Sella IRC both ways (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
   ],
   "default": "IRC on (the CLI default is off).",
   "swap": [
@@ -903,7 +903,7 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
    "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
    "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
@@ -931,7 +931,7 @@
   "how": [
    "The design's molblock is converted to xyz (web.design.to_xyz) and written as inputs/guess.xyz.",
    "mepd.find_ts: for g-xTB, Sella (order 1) started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
-   "With IRC: Sella IRC both ways (fmax 0.1 eV/Å, 1000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
+   "With IRC: Sella IRC both ways (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
   ],
   "default": "IRC on.",
   "swap": [
@@ -952,7 +952,7 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.1 eV/Å, up to 1000 steps per direction; g-xTB runs both branches at once in two threads.",
+   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
    "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
    "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
@@ -1334,7 +1334,7 @@
   "how": [
    "Passed as Sella's dx for g-xTB/ASE engines (discovery.cli._run_vri_irc); other engines use their own IRC defaults, or geomeTRIC on failure."
   ],
-  "default": "0.05, with stopping force 0.01 eV/Å (mepd's usual IRC uses Sella defaults and fmax 0.1).",
+  "default": "0.05, with stopping force 0.01 eV/Å (mepd's usual IRC uses Sella's default step and fmax 0.01).",
   "code": [
    "mepd/discovery/cli.py:_run_vri_irc"
   ],
@@ -2318,7 +2318,7 @@
    },
    {
     "option": "CPCM-X",
-    "where": "this field (--model cpcmx)"
+    "where": "this field (--model cpcmx), with gas-phase geometries only: xtb's CPCM-X has no gradient; not for methanol, acetone, dioxane"
    }
   ],
   "caveats": [
@@ -3090,8 +3090,8 @@
     "where": "this choice (mepd/solvation.py:SOLVENTS)"
    },
    {
-    "option": "GBSA or CPCM-X instead of ALPB",
-    "where": "TOML [solvation] model = \"gbsa\" | \"cpcmx\""
+    "option": "GBSA instead of ALPB",
+    "where": "TOML [solvation] model = \"gbsa\" (CPCM-X has no gradient: only in Solvent effects, gas-phase geometries)"
    },
    {
     "option": "Force correction even when native is possible",

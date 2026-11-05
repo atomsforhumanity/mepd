@@ -1542,18 +1542,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
 
         from mepd import orbitals
 
-        lines = [ln.split() for ln in str(body.get("xyz") or "").strip().splitlines()]
-        try:
-            n = int(lines[0][0])
-            atoms = lines[2:2 + n]
-            symbols = [a[0] for a in atoms]
-            coords = [[float(x) for x in a[1:4]] for a in atoms]
-        except (IndexError, ValueError):
-            raise WorkspaceError("orbitals need a geometry as xyz text") from None
-        if len(symbols) != n or not n:
-            raise WorkspaceError("orbitals need a geometry as xyz text")
-        if demo is not None and n > demo.max_atoms:
-            raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
+        symbols, coords = _orbital_geometry(body.get("xyz"))
         from mepd.web import orbital_store
 
         ws = W()
@@ -1611,6 +1600,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("orbitals need a geometry as xyz text")
         if demo is not None and n > demo.max_atoms:
             raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
+        if W().qmmm_system_of_symbols(symbols) is not None:
+            # A whole QM/MM system (a protein, a solvent box): the QM program
+            # cannot take it (xtb crashed on 3,951 atoms after 3 s), and cutting
+            # it into molecules tried Lewis structures of the protein for minutes.
+            raise WorkspaceError("orbitals are not computed for a whole QM/MM system")
         return symbols, coords
 
     def _fragment_method(ws, body: dict) -> tuple[str, dict]:
@@ -2791,10 +2785,14 @@ def attach_conformers(ws: Workspace, job: dict, result: dict) -> int:
     else:
         return 0
     added = 0
+    if job["op"] == "conformers":   # a TS's (`--ts`): TS-optimized, one imaginary mode each
+        owner["tsconf_"] = owner["conf_"]
     for group in result.get("groups", []):
-        if group.get("kind") != "conformers":
+        if group.get("kind") != "conformers" and not (group.get("kind") == "ts" and job["op"] == "conformers"):
             continue
         for entry in group["entries"]:
+            if entry.get("same_core") is False:
+                continue   # its core moved: optimized to another TS, not a conformer of this one
             sid = next((s for prefix, s in owner.items() if entry["id"].startswith(prefix)), None)
             if sid is None or sid not in ws.snapshot()["structures"] or not entry.get("frames"):
                 continue

@@ -32,11 +32,12 @@ def test_msreact_fragments_keep_the_atoms_in_order(tmp_path):
     assert all(list(p.symbols) == list(seed.symbols) and p.charge == 0 for p in products)
 
 
-def test_the_network_card_offers_six_methods_and_msreact_builds_its_command():
+def test_the_network_card_offers_five_methods_and_msreact_builds_its_command():
     methods = [(op, m) for op in OPERATIONS.values() if (op.family or {}).get("key") == "network" for m in op.methods]
     ordered = sorted(methods, key=lambda x: x[1]["rank"])
     labels = [m["label"] for _, m in ordered if not m.get("group") and not m.get("qmmm_only")]
-    assert labels == ["Nanoreactor", "Bond rules", "CREST msreact", "Hessian sampling", "Reactor, live", "Basin hopping"]
+    assert labels == ["Nanoreactor", "Bond rules", "CREST msreact", "Hessian sampling", "Reactor, live",
+                      "Basin hopping"]
     # On a QM/MM system the nanoreactor is a generator of the expansion (its own operation needs molecules).
     assert [m["label"] for _, m in ordered if m.get("qmmm_only")] == ["Nanoreactor"]
     # Retrosynthesis has its own card, with its methods.

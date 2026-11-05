@@ -29,7 +29,17 @@ import numpy as np
 from qcref.constants import ANGSTROM_TO_BOHR
 
 OPTIONS = {"temperature": 2500.0, "time_ps": 10.0, "compress": 0.7, "period_ps": 1.0, "md_method": "auto",
-           "seed": 0, "n_seeds": 1, "parallel": 0, "workdir": ""}
+           "seed": 0, "n_seeds": 1, "parallel": 0, "workdir": "", "anchors": ""}
+
+
+def parse_anchors(value) -> list[int]:
+    """`anchors`: atom indices (0-based, of the structure the MD runs on)
+    as a list or "1,5,9"; "" or "none" = no anchors."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "false", "0")):
+        return []
+    if isinstance(value, str):
+        return [int(v) for v in value.replace(" ", ",").split(",") if v]
+    return [int(v) for v in value]
 
 
 def _md_method(name: str) -> tuple[str, Optional[str]]:
@@ -66,34 +76,54 @@ def run_dir(workdir: str) -> Optional[Path]:
 
 
 def write_live_events(run: Optional[Path], *, total_charge: int, dt_fs: float, atoms=None) -> None:
-    """The reactor's events so far, for the Reactor view (never fails the run).
-    `atoms`: only these react (a QM/MM system's QM atoms, `total_charge` theirs):
-    events are found among them alone, with indices back in the whole system's
-    numbering. Bond detection and molecule labels over a whole protein, every
-    segment, would take longer than the MD."""
+    """The reactor's events so far, for the Reactor view (never fails the
+    run). `atoms`: only these react (a QM/MM reactor's QM atoms): the
+    events are found among them, with their indices into the whole system,
+    instead of perceiving bonds and species over the whole protein."""
     if run is None:
         return
     import json
 
-    from mepd.discovery.nanoreactor import DetectSettings, events_in_frames, live_events, read_segments
+    from mepd.discovery.nanoreactor import DetectSettings, events_in_frames, read_segments
 
     try:
         if atoms is None:
-            data = live_events(run / "md", total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
-        else:
-            idx = [int(a) for a in atoms]
             symbols, frames = read_segments(run / "md")
-            data = events_in_frames([symbols[i] for i in idx], frames[:, idx], total_charge=total_charge,
-                                    detect=DetectSettings(), dt_fs=dt_fs)
-            for rec in data.get("events") or []:
-                rec["atoms"] = [idx[a] for a in rec.get("atoms") or []]
+        else:
+            atoms = [int(a) for a in atoms]
+            symbols, frames = _subset_segments(run / "md", atoms)
+        data = events_in_frames(symbols, frames, total_charge=total_charge, detect=DetectSettings(), dt_fs=dt_fs)
+        if atoms is not None:
+            for rec in data["events"]:
+                rec["atoms"] = [atoms[a] for a in rec["atoms"]]
                 for c in rec.get("bond_changes") or []:
-                    c["atoms"] = [idx[a] for a in c["atoms"]]
+                    c["atoms"] = [atoms[a] for a in c["atoms"]]
         tmp = run / "live_events.json.tmp"
         tmp.write_text(json.dumps(data))
         tmp.replace(run / "live_events.json")
     except Exception:
         pass
+
+
+_SUBSET_CACHE: dict = {}
+
+
+def _subset_segments(md_dir: Path, atoms: list) -> tuple[list, np.ndarray]:
+    """read_segments for these atoms only; each finished segment file is
+    parsed once (a QM/MM reactor's segments hold the whole system)."""
+    from mepd.discovery.nanoreactor import read_xyz_frames
+
+    symbols, parts = [], []
+    for fp in sorted(Path(md_dir).glob("segment_*.xyz")):
+        key = (str(fp), fp.stat().st_mtime_ns, tuple(atoms))
+        if key not in _SUBSET_CACHE:
+            syms, xyz, _ = read_xyz_frames(fp)
+            _SUBSET_CACHE[key] = ([syms[a] for a in atoms] if syms else [], xyz[:, atoms] if len(xyz) else None)
+        syms, xyz = _SUBSET_CACHE[key]
+        symbols = syms or symbols
+        if xyz is not None:
+            parts.append(xyz)
+    return symbols, (np.concatenate(parts) if parts else np.zeros((0, len(atoms), 3)))
 
 
 def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=None, atoms=None,
@@ -118,7 +148,7 @@ def segment_hook(run: Optional[Path], total_charge: int, dt_fs: float, on_event=
 
 def reactor_products(structure, *, max_products: int = 20, temperature: float = 2500.0, time_ps: float = 10.0,
                      compress: float = 0.7, period_ps: float = 1.0, md_method: str = "auto", seed: int = 0,
-                     n_seeds: int = 1, parallel: int = 0, workdir: str = "", on_event=None) -> list:
+                     n_seeds: int = 1, parallel: int = 0, workdir: str = "", on_event=None, anchors="") -> list:
     """Product structures (input atom order) of hot piston MD of `structure`:
     the structure right after each reaction event, one per distinct bond
     graph, in the order they appeared, at most `max_products`.
@@ -128,14 +158,18 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     their states: one trajectory samples one sequence of events, so several
     short ones cover more of the first-step chemistry than one long one
     (which mostly goes on to fragment). Products are taken earliest-event
-    first across trajectories, de-duplicated by bond graph."""
+    first across trajectories, de-duplicated by bond graph. `anchors`: atoms
+    held where they are relative to each other (for a QM/MM system's QM
+    region, its link H: the expansion sets them), the piston pushing only
+    the molecules without one."""
     n_seeds = max(1, int(n_seeds))
     if n_seeds > 1:
         from concurrent.futures import ThreadPoolExecutor
 
         width = max(1, int(parallel) or n_seeds)
         kw = dict(max_products=max_products, temperature=temperature, time_ps=time_ps, compress=compress,
-                  period_ps=period_ps, md_method=md_method, workdir=workdir, on_event=on_event)
+                  period_ps=period_ps, md_method=md_method, workdir=workdir, on_event=on_event,
+                  anchors=anchors)
         with ThreadPoolExecutor(max_workers=width) as pool:
             runs = list(pool.map(lambda k: _reactor_states(structure, seed=int(seed) + k, **kw), range(n_seeds)))
         # earliest event first across trajectories, one product per bond graph
@@ -153,11 +187,12 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         return out
     return [prod for _, _, prod in _reactor_states(
         structure, max_products=max_products, temperature=temperature, time_ps=time_ps, compress=compress,
-        period_ps=period_ps, md_method=md_method, seed=seed, workdir=workdir, on_event=on_event)]
+        period_ps=period_ps, md_method=md_method, seed=seed, workdir=workdir, on_event=on_event, anchors=anchors)]
 
 
 def _reactor_states(structure, *, max_products: int, temperature: float, time_ps: float, compress: float,
-                    period_ps: float, md_method: str, seed: int, workdir: str, on_event=None) -> list:
+                    period_ps: float, md_method: str, seed: int, workdir: str, on_event=None,
+                    anchors="") -> list:
     """One trajectory: [(event rank, bond set, product structure)], earliest first."""
     from mepd.discovery.nanoreactor import (DetectSettings, ReactorSettings, auto_radius, bond_history,
                                             detect_events, read_xyz_frames, run_reactor_md)
@@ -172,22 +207,28 @@ def _reactor_states(structure, *, max_products: int, temperature: float, time_ps
                                radius=max(auto_radius(len(symbols)), extent + 1.5))
     detect = DetectSettings()
     run = run_dir(workdir)
-    unstable = []
+    broke, ran = [], []
 
     def hook(event, payload):
-        if event == "warning" and "MD is unstable" in str(payload.get("message", "")):
-            unstable.append(payload)
+        if event == "md_segment":
+            ran.append(payload)
+        message = str(payload.get("message", "")) if event == "warning" else ""
+        if "MD broke down" in message:
+            broke.append(payload)
+        elif "piston now closes" in message or "ended early" in message:
+            warn(message)
         segment_hook(run, int(structure.charge), settings.dump_fs, on_event)(event, payload)
 
     with tempfile.TemporaryDirectory(prefix="mepd_reactor_gen_") as tmp:
         d = run / "md" if run is not None else Path(tmp)
         traj = run_reactor_md(symbols, xyz, charge=int(structure.charge), multiplicity=int(structure.multiplicity),
-                              settings=settings, workdir=d, executable=exe, on_event=hook)
+                              settings=settings, workdir=d, executable=exe, on_event=hook,
+                              anchors=parse_anchors(anchors))
         _, frames, _ = read_xyz_frames(traj)
     write_live_events(run, total_charge=int(structure.charge), dt_fs=settings.dump_fs)
-    if unstable:
-        warn(f"xtb stopped {len(unstable)} of {len(piston_segments(settings))} MD segments early (\"MD is unstable\"): "
-             f"{settings.temperature:g} K is too hot; the trajectory has gaps. Lower the temperature.")
+    if broke:
+        warn(f"xtb's MD broke down {len(broke)} time(s) in {len(ran) or len(piston_segments(settings))} segments (an SCC that "
+             f"failed or jumped, at {settings.temperature:g} K); each time it went on from the last good frame.")
     hist = bond_history(symbols, frames, detect, settings.dump_fs)
     events = detect_events(len(symbols), hist, detect, settings.dump_fs)
     out, torn, keys = select_states(structure, frames, hist, events, max_products, with_keys=True)

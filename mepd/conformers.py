@@ -53,7 +53,7 @@ class CrestInputs:
 
     `timeout_s`: wall-clock ceiling for one CREST call; None disables it.
 
-    `extra_args`: appended verbatim (e.g. "--quick", "--alpb water").
+    `extra_args`: appended, one argument per word (e.g. "--quick", "--alpb water").
 
     `nci_for_complexes`: run CREST in its NCI mode (`--nci`: an ellipsoidal
         wall around the complex) whenever the endpoint is more than one
@@ -61,6 +61,20 @@ class CrestInputs:
         apart during the metadynamics, and every separation distance comes
         back as a "distinct" conformer -- a butadiene + ethylene endpoint
         gave 764, of which 744 were the two molecules 5-70 A apart.
+
+    `constrain_pairs`: atom pairs (0-based) held at their distance in the
+        input while the rest samples -- a transition state's reacting core
+        (`ts_reactive_core`): its forming and breaking bonds. CREST then runs
+        with these as `$constrain` distances (`--cinp`) and without its
+        topology checks (`--noreftopo --notopo`: partial TS bonds count as
+        topology, and the filter empties the ensemble), so mepd checks
+        instead: a frame whose bonds changed (other than the constrained
+        pairs) or whose constrained distances moved more than
+        `constraint_tolerance_ang` is dropped.
+
+    `force_constant`: of the constraints (xtb's units, Eh/bohr^2). xtb's
+        default, 0.05, is too soft for a TS core, which falls away from the
+        saddle when it can.
     """
 
     executable: str = "crest"
@@ -70,6 +84,9 @@ class CrestInputs:
     timeout_s: Optional[float] = 3600
     extra_args: tuple[str, ...] = ()
     nci_for_complexes: bool = True
+    constrain_pairs: tuple[tuple[int, int], ...] = ()
+    force_constant: float = 1.0
+    constraint_tolerance_ang: float = 0.05
 
     def copy(self) -> "CrestInputs":
         return CrestInputs(**self.__dict__)
@@ -407,7 +424,9 @@ def _build_crest_argv(
     # CREST takes the number of unpaired electrons, not the multiplicity.
     if multiplicity and int(multiplicity) > 1:
         argv += ["--uhf", str(int(multiplicity) - 1)]
-    argv += list(crest_inputs.extra_args)
+    from mepd.engines.gxtb import _split_args
+
+    argv += _split_args(crest_inputs.extra_args)   # "--alpb water" as one entry would be ignored
     return argv
 
 
@@ -419,6 +438,55 @@ def _crest_env(threads: int) -> dict:
     for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         env[var] = str(int(threads))
     return env
+
+
+def ts_reactive_core(structure: Structure, mode, *, share: float = 0.5, reach: float = 1.8) -> list[tuple[int, int]]:
+    """The reacting core of a transition state: the atom pairs (0-based)
+    whose distance its imaginary `mode` (Cartesian, one row per atom)
+    changes most -- the forming and breaking bonds, and a moving atom's
+    distances to where it comes from and goes to. A pair counts when it is
+    within `reach` times its covalent radius sum and its distance changes at
+    least `share` of the fastest pair's rate."""
+    from mepd.discovery.nanoreactor import COVALENT_RADII
+
+    x = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    v = np.asarray(mode, dtype=float).reshape(x.shape)
+    r = np.array([COVALENT_RADII.get(s, 1.5) for s in structure.symbols])
+    diff = x[:, None] - x[None]
+    d = np.linalg.norm(diff, axis=2)
+    np.fill_diagonal(d, np.inf)
+    rate = np.abs(np.einsum("ijk,ijk->ij", diff, v[:, None] - v[None])) / d
+    rate[d > reach * (r[:, None] + r[None])] = 0.0
+    top = rate.max()
+    if not np.isfinite(top) or top <= 0:
+        return []
+    i, j = np.nonzero(np.triu(rate >= share * top, 1))
+    return [(int(a), int(b)) for a, b in zip(i, j)]
+
+
+def constraint_file(pairs, force_constant: Optional[float]) -> str:
+    """xtb `$constrain` block (CREST's `--cinp`) holding each 0-based pair at
+    its starting distance; `force_constant` None leaves xtb's default."""
+    lines = ["$constrain"]
+    if force_constant is not None:
+        lines.append(f" force constant={float(force_constant):g}")
+    lines += [f" distance: {i + 1}, {j + 1}, auto" for i, j in pairs]
+    return "\n".join(lines + ["$end", ""])
+
+
+def _crest_frame_problem(symbols, start_ang: np.ndarray, coords_ang: np.ndarray, pairs, tolerance: float,
+                         start_bonds: set) -> Optional[str]:
+    """Why a constrained CREST frame is not a conformer of the start: a
+    constrained distance moved, or other bonds changed; None when it is."""
+    from mepd.discovery.nanoreactor import perceive_bonds
+
+    for i, j in pairs:
+        if abs(np.linalg.norm(coords_ang[i] - coords_ang[j]) - np.linalg.norm(start_ang[i] - start_ang[j])) > tolerance:
+            return "constraint"
+    held = {tuple(sorted(p)) for p in pairs}
+    if perceive_bonds(symbols, coords_ang) - held != start_bonds - held:
+        return "bonds"
+    return None
 
 
 def _generate_conformers_crest(
@@ -433,7 +501,8 @@ def _generate_conformers_crest(
     metadynamics. A frame whose element sequence still differs from the
     input's is dropped: `node.graph`'s indices refer to the input order, and
     pairing a permuted conformer would hand MSMEP two differently-indexed
-    endpoints."""
+    endpoints. With `constrain_pairs` the topology check is off and mepd's
+    own replaces it (`CrestInputs`)."""
     crest_inputs = inputs.crest
     executable = shutil.which(crest_inputs.executable)
     if executable is None:
@@ -460,15 +529,38 @@ def _generate_conformers_crest(
             argv.append("--nci")
         if stats is not None:
             stats["crest_nci"] = bool(nci or any(a.lstrip("-") == "nci" for a in argv))
-        try:
-            proc = subprocess.run(
-                argv, cwd=workdir, capture_output=True, text=True,
-                timeout=crest_inputs.timeout_s, env=_crest_env(crest_inputs.threads),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise CrestError(
-                f"CREST timed out after {crest_inputs.timeout_s}s ({' '.join(argv)})."
-            ) from exc
+        pairs = [tuple(int(a) for a in p) for p in crest_inputs.constrain_pairs]
+        bad = [p for p in pairs if len(p) != 2 or p[0] == p[1] or not all(0 <= a < len(symbols) for a in p)]
+        if bad:
+            raise CrestError(f"constrain_pairs {bad}: each pair is two different atoms, 0-based, of {len(symbols)}.")
+        force_constant = crest_inputs.force_constant
+        if pairs:
+            (workdir / "constrain.inp").write_text(constraint_file(pairs, force_constant))
+            # Never --notopo last: CREST 3.0.2 reads the next argument as atoms
+            # to exclude unless it starts with "-", and then checks topology after all.
+            argv += ["--cinp", "constrain.inp", "--notopo", "--noreftopo"]
+
+        def run_crest():
+            try:
+                return subprocess.run(
+                    argv, cwd=workdir, capture_output=True, text=True,
+                    timeout=crest_inputs.timeout_s, env=_crest_env(crest_inputs.threads),
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise CrestError(
+                    f"CREST timed out after {crest_inputs.timeout_s}s ({' '.join(argv)})."
+                ) from exc
+
+        proc = run_crest()
+        if pairs and proc.returncode and "parse_xtbinput" in proc.stderr and force_constant is not None:
+            # Some CREST 3.0.2 builds fail to allocate on a `force constant=`
+            # line; xtb's default (0.05) is what is left.
+            force_constant = None
+            (workdir / "constrain.inp").write_text(constraint_file(pairs, None))
+            proc = run_crest()
+        if stats is not None and pairs:
+            stats["crest_constrained_pairs"] = [list(p) for p in pairs]
+            stats["crest_force_constant"] = 0.05 if force_constant is None else float(force_constant)
 
         ensemble = workdir / "crest_conformers.xyz"
         if not ensemble.is_file():
@@ -480,9 +572,21 @@ def _generate_conformers_crest(
         frames = _parse_multiframe_xyz(ensemble.read_text())
 
     scored: list[tuple[float, int, StructureNode]] = []
+    start_ang = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    if pairs:
+        from mepd.discovery.nanoreactor import perceive_bonds
+
+        start_bonds = perceive_bonds(symbols, start_ang)
+        dropped = {"constraint": 0, "bonds": 0}
     for rank, (frame_symbols, coords, energy) in enumerate(frames):
         if frame_symbols != symbols:
             continue
+        if pairs:
+            problem = _crest_frame_problem(symbols, start_ang, np.asarray(coords, dtype=float), pairs,
+                                           crest_inputs.constraint_tolerance_ang, start_bonds)
+            if problem:
+                dropped[problem] += 1
+                continue
         new_structure = Structure(
             geometry=[[x * ANGSTROM_TO_BOHR for x in xyz] for xyz in coords],
             symbols=symbols,
@@ -496,6 +600,9 @@ def _generate_conformers_crest(
         # CREST applies its own --ewin before writing the ensemble.
         stats["n_generated"] = len(frames)
         stats["n_in_window"] = len(scored)
+        if pairs:
+            stats["n_dropped_constraint_moved"] = dropped["constraint"]
+            stats["n_dropped_bonds_changed"] = dropped["bonds"]
     return [node] + [n for _, _, n in scored]
 
 

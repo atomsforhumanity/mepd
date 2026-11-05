@@ -55,54 +55,61 @@ def test_side_chain_charge_follows_the_hydrogens():
     assert [side_chain_charge(r) for r in top.residues()] == [-1, 0, 1, 0, 0]
 
 
-def test_xtb_retries_a_failed_scc_and_holds_a_fixed_etemp(monkeypatch, tmp_path):
+def _fake_xtb(monkeypatch, converges):
+    """xtb runs recorded as their argv; `converges(argv)` decides each."""
+    from types import SimpleNamespace
+
     from mepd.engines import gfnff
 
     calls = []
 
-    def run(self, workdir, symbols, coords, charge, grad=True, uhf=0, point_charges=None, extra=()):
-        calls.append(tuple(extra))
-        if "--etemp" not in extra:
-            raise ElectronicStructureError(msg="-1- scf: Self consistent charge iterator did not converge")
-        return -1.0, np.zeros((len(symbols), 3))
+    def run(argv, **kw):
+        calls.append(list(argv))
+        if converges(argv):
+            return SimpleNamespace(returncode=0, stdout="| TOTAL ENERGY  -1.0 Eh |\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="scf: Self consistent charge iterator did not converge\n",
+                               stderr="")
 
-    monkeypatch.setattr(gfnff.GFNFFEngine, "_run", run)
-    eng = gfnff.XTBEngine(method="gfn2", executable="xtb")
-    xyz = np.zeros((1, 3))
-    assert eng.energy_gradient(["H"], xyz, 0, 2)[0] == -1.0
-    assert calls == [(), ("--iterations", "1000", "--etemp", "1000")]
-    calls.clear()
-    eng.etemp = 3000.0
-    eng.energy_gradient(["H"], xyz, 0, 2)
-    assert calls == [("--etemp", "3000")]                  # fixed: no ladder, one run
+    monkeypatch.setattr(gfnff.subprocess, "run", run)
+    return calls
 
 
-def test_xtb_gives_up_after_the_last_fallback(monkeypatch):
+def test_xtb_retries_a_failed_scc_and_holds_a_fixed_electronic_temperature(monkeypatch, tmp_path):
     from mepd.engines import gfnff
 
-    def run(self, *a, **k):
-        raise ElectronicStructureError(msg="scf: Self consistent charge iterator did not converge")
+    calls = _fake_xtb(monkeypatch, lambda argv: "--etemp" in argv)
+    eng = gfnff.XTBEngine(method="gfn2", executable="xtb")
+    assert eng._run(tmp_path, ["H"], np.zeros((1, 3)), 0, grad=False, uhf=1)[0] == -1.0
+    assert len(calls) == 2 and calls[1][-4:] == ["--etemp", "1000.0", "--iterations", "1000"]
+    calls.clear()
+    eng._run(tmp_path, ["H"], np.zeros((1, 3)), 0, grad=False, uhf=1, etemp=3000.0)
+    assert len(calls) == 1 and calls[0][-2:] == ["--etemp", "3000.0"]   # one surface: no other etemp
 
-    monkeypatch.setattr(gfnff.GFNFFEngine, "_run", run)
+
+def test_xtb_gives_up_after_the_last_fallback(monkeypatch, tmp_path):
+    from mepd.engines import gfnff
+
+    _fake_xtb(monkeypatch, lambda argv: False)
     with pytest.raises(ElectronicStructureError):
-        gfnff.XTBEngine(method="gfn2", executable="xtb").energy_gradient(["H"], np.zeros((1, 3)), 0, 2)
+        gfnff.XTBEngine(method="gfn2", executable="xtb")._run(tmp_path, ["H"], np.zeros((1, 3)), 0, grad=False)
 
 
-def test_electronic_temperature_is_set_on_the_qm_level_only_inside():
-    from mepd.discovery.qmmm_reactor import electronic_temperature
-
-    class Level:
-        etemp = None
+def test_hot_scc_is_set_on_the_qm_level_only_inside():
+    from mepd.discovery.qmmm_reactor import _hot_scc, _xtb_qm_engine
+    from mepd.engines.gfnff import XTBEngine
 
     class Wrapper:
         def __init__(self, base):
             self.base = base
 
-    level = Level()
-    with electronic_temperature(Wrapper(Wrapper(level)), 3000.0):
-        assert level.etemp == 3000.0
-    assert level.etemp is None
-    with electronic_temperature(Wrapper(object()), 3000.0):   # no xtb level: nothing to set
+    level = XTBEngine(method="gfn2", executable="xtb")
+    xtb = _xtb_qm_engine(Wrapper(Wrapper(level)))
+    assert xtb is level
+    with _hot_scc(xtb, 3000.0):
+        assert level.electronic_temperature == 3000.0
+    assert level.electronic_temperature is None
+    assert _xtb_qm_engine(Wrapper(object())) is None     # no xtb level: nothing to set
+    with _hot_scc(None, 3000.0):
         pass
 
 

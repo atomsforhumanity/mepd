@@ -163,6 +163,14 @@ export function edgeStatus(edge, jobs = state.jobs) {
 export const complexKey = (ids) => `cx:${[...ids].sort().join('+')}`;
 
 export const isComplex = (rec) => rec?.role === 'complex';
+
+// Complexes a delete of these structures takes with it: a complex is drawn
+// as its molecules, so it goes with any of them (the server does the same).
+export function complexesGoingWith(ws, ids) {
+  const gone = new Set(ids);
+  return Object.values(ws?.structures || {}).filter((r) => isComplex(r) && !gone.has(r.id)
+    && (r.members || []).some((m) => gone.has(m)));
+}
 // A molecule node: not a transition state, not a complex.
 export const isSpecies = (rec) => !!rec && rec.role !== 'ts' && rec.role !== 'complex';
 

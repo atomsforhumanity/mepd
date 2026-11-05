@@ -208,8 +208,9 @@ class MicroIterations:
         return calc.trajectory
 
     def transition_state(self, node: StructureNode, keywords: dict | None = None) -> StructureNode:
-        from sella import Sella
+        from mepd.engines._sella import sella
 
+        Sella = sella().Sella
         fmax, steps, kw = self._run_kwargs(keywords, 0.01, 500)
         opt_kw = dict(kw.pop("optimizer_kwds", kw.pop("optimizer_kwargs", {})) or {})
         opt_kw.setdefault("order", 1)
@@ -255,27 +256,8 @@ class MicroIterations:
         other negative eigenvalues are made positive, so order-1 Sella follows
         the reaction rather than, say, a methyl rotation."""
         echo = echo or (lambda *_: None)
-        x = np.asarray(x, dtype=float)
-        n = 3 * len(self.outer)
-        h = step * ANGSTROM_TO_BOHR
-        echo(f"Exact QM-region Hessian at the TS guess: {2 * n} QM/MM gradients...")
-        cols = []
-        for k in range(n):
-            a, c = divmod(k, 3)
-            grads = []
-            for sgn in (1, -1):
-                y = x.copy()
-                y[self.outer[a], c] += sgn * h
-                res = self.qmmm.evaluate([StructureNode(structure=structure.model_copy(update={"geometry": y}),
-                                                        has_molecular_graph=False)])[0]
-                self.calls["qm"] += 1
-                grads.append(np.asarray(res["gradient"], dtype=float)[self.outer].ravel())
-            cols.append((grads[0] - grads[1]) / (2 * h))
-            if (k + 1) % 12 == 0 or k + 1 == n:
-                echo(f"  {k + 1}/{n} coordinates")
-        H = np.array(cols)
-        H = 0.5 * (H + H.T) * HARTREE_EV * ANGSTROM_TO_BOHR ** 2      # Eh/bohr² -> eV/Å²
-        w, V = np.linalg.eigh(H)
+        echo(f"Exact QM-region Hessian at the TS guess: {6 * len(self.outer)} QM/MM gradients...")
+        w, V = self.qm_modes(structure, x, step, echo)
         neg = [i for i in range(len(w)) if w[i] < 0]
         keep = None
         if direction is not None and neg:
@@ -296,10 +278,37 @@ class MicroIterations:
                     w[i] = abs(w[i])
         return (V * w) @ V.T
 
-    def irc(self, ts_node: StructureNode, keywords: dict | None = None) -> Chain:
-        from sella import IRC
+    def qm_modes(self, structure, x, step: float = 0.005, echo=None) -> tuple[np.ndarray, np.ndarray]:
+        """Eigenvalues (eV/Å², ascending) and eigenvectors (columns, over the
+        `outer` atoms' Cartesians) of the central finite-difference Hessian of
+        the atoms the outer optimizer moves, with the environment held."""
+        echo = echo or (lambda *_: None)
+        x = np.asarray(x, dtype=float)
+        n = 3 * len(self.outer)
+        h = step * ANGSTROM_TO_BOHR
+        cols = []
+        for k in range(n):
+            a, c = divmod(k, 3)
+            grads = []
+            for sgn in (1, -1):
+                y = x.copy()
+                y[self.outer[a], c] += sgn * h
+                res = self.qmmm.evaluate([StructureNode(structure=structure.model_copy(update={"geometry": y}),
+                                                        has_molecular_graph=False)])[0]
+                self.calls["qm"] += 1
+                grads.append(np.asarray(res["gradient"], dtype=float)[self.outer].ravel())
+            cols.append((grads[0] - grads[1]) / (2 * h))
+            if (k + 1) % 12 == 0 or k + 1 == n:
+                echo(f"  {k + 1}/{n} coordinates")
+        H = np.array(cols)
+        H = 0.5 * (H + H.T) * HARTREE_EV * ANGSTROM_TO_BOHR ** 2      # Eh/bohr² -> eV/Å²
+        return np.linalg.eigh(H)
 
-        fmax, steps, kw = self._run_kwargs(keywords, 0.1, 1000)
+    def irc(self, ts_node: StructureNode, keywords: dict | None = None) -> Chain:
+        from mepd.engines._sella import sella
+
+        IRC = sella().IRC
+        fmax, steps, kw = self._run_kwargs(keywords, 0.01, 3000)
         echo = kw.pop("echo", None) or (lambda *_: None)
         opt_kw = dict(kw.pop("optimizer_kwds", kw.pop("optimizer_kwargs", {})) or {})
         for key in ("dx", "eta", "gamma", "keep_going"):

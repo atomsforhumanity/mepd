@@ -977,10 +977,15 @@ class ChannelsOptions:
     pairs_per_mechanism: int = 3
     workers: int = 0
     search_budget: float = 0.0
+    max_path_searches: int = 0
     direct_only: Optional[bool] = None
     validate_minima_with_hessian: bool = True
     hessian_minimum_frequency_cutoff: float = -20.0
     hessian_minima_rescue_displacement: float = 0.3
+    # QM/MM profiles: QM-region conformers by MD of the QM region in its environment
+    # (mepd.qmmm_conformers) at this temperature (K), for this long (ps).
+    qmmm_temperature: float = 400.0
+    qmmm_md_ps: float = 1.0
 
     @property
     def sampled_sides(self) -> tuple[str, ...]:
@@ -1036,6 +1041,10 @@ class ChannelsOptions:
             raise InputsError("--rebuild-splits-from must be none, start or end.")
         if self.search_budget < 0:
             raise InputsError("--search-budget must be >= 0.")
+        if self.max_path_searches < 0:
+            raise InputsError("--max-path-searches must be >= 0.")
+        if self.qmmm_temperature <= 0 or self.qmmm_md_ps <= 0:
+            raise InputsError("--qmmm-temperature and --qmmm-md-ps must be positive.")
 
 
 def apply_options(run_inputs: RunInputs, options: ChannelsOptions) -> None:
@@ -1113,6 +1122,7 @@ def run_channels(
     pairs_per_mechanism = options.pairs_per_mechanism
     workers = options.workers
     search_budget = options.search_budget
+    max_path_searches = int(options.max_path_searches)
 
     import os
     import time
@@ -1126,7 +1136,18 @@ def run_channels(
     from mepd.NetworkBuilder import NetworkBuilder
 
     apply_options(run_inputs, options)
+    from mepd.qmmm_conformers import qmmm_region
 
+    region = qmmm_region(run_inputs)
+    if region is not None:
+        # A QM/MM step: both ends are the same system (atom for atom), and its
+        # conformers are the QM region's in its environment, not a molecule's.
+        if pair_from != "both":
+            raise InputsError("--pair-from start/end builds molecules; on a QM/MM system use --pair-from both.")
+        if atom_mapping:
+            _log("QM/MM system: the ends share their atom order, so no atom mapping (as --no-atom-mapping).")
+        atom_mapping = False
+        run_inputs.atom_mapping_inputs.explore_mechanisms = 0
 
     if minimize_ends and endpoints_are_guesses:
         _log(
@@ -1156,7 +1177,7 @@ def run_channels(
     # can otherwise dominate the energy delta the veto decision is based on.
     # With an endpoint built from the other (--pair-from), the mapping is
     # chosen per conformer by the built pairs (_built_pairs_by_mechanism).
-    if not (atom_mapping and pair_from != "both"):
+    if region is None and not (atom_mapping and pair_from != "both"):
         realigned_end_structure = _check_endpoint_atom_mapping(
             start_node.structure, end_node.structure, atom_mapping, run_inputs,
             debug_dump=debug_dump, output=output,
@@ -1208,8 +1229,27 @@ def run_channels(
             _log(f"Using {len(pool)} saved {label} conformer(s) from {fp} (not re-sampled or re-minimized).")
         else:
             _log(f"No usable saved {label} conformers in {fp}; sampling them instead.")
+    preminimized: set = set()
     if len(reused) == 2:
         start_confs, end_confs = reused["start"], reused["end"]
+    elif region is not None:
+        from mepd.qmmm_conformers import sample_qm_region_conformers
+
+        sampled = {}
+        for label in ("start", "end"):
+            if label in reused or label not in sampled_sides:
+                sampled[label] = reused.get(label, [endpoints[label]])
+                continue
+            _log(f"Sampling {'reactant' if label == 'start' else 'product'} conformers of the QM region in its "
+                 "environment (QM/MM MD)...")
+            sampled[label] = sample_qm_region_conformers(
+                endpoints[label], run_inputs, n_conformers=n_conformers, temperature=options.qmmm_temperature,
+                time_ps=options.qmmm_md_ps, rmsd_cutoff=rmsd_cutoff, seed=random_seed,
+                stats=stats["conformers"].setdefault(label, {}),
+                minimize=lambda nodes, label=label: _minimize_conformer_pool(nodes, label, run_inputs), echo=_log)
+            preminimized.add(label)
+        start_confs, end_confs = sampled["start"], sampled["end"]
+        _log(f"  {len(start_confs)} reactant and {len(end_confs)} product conformer(s).")
     else:
         _log(f"Sampling conformers ({conformer_inputs.backend})...")
         if not reused:
@@ -1234,7 +1274,7 @@ def run_channels(
     pools = {"start": start_confs, "end": end_confs}
     for label in ("start", "end"):
         side = stats["conformers"].setdefault(label, {})
-        if minimize_ends and label not in reused and label in sampled_sides:
+        if minimize_ends and label not in reused and label not in preminimized and label in sampled_sides:
             side_name = "reactant" if label == "start" else "product"
             _log(f"Minimizing the {len(pools[label])} {side_name} conformer(s) at the profile's "
                        "level of theory...")
@@ -1286,7 +1326,9 @@ def run_channels(
     # combinations, and merging both pools would keep only (R, P) and lose
     # the other. Merging one pool drops exactly the redundant pairs; pick
     # whichever leaves fewer.
-    merged = {label: merge_mirror_images(pools[label], rmsd_cutoff) for label in pools}
+    # (Not on QM/MM: the environment is not achiral, so no conformer has a mirror twin.)
+    merged = {label: merge_mirror_images(pools[label], rmsd_cutoff) if region is None else list(pools[label])
+              for label in pools}
     n_if = {
         "start": len(merged["start"]) * len(pools["end"]),
         "end": len(pools["start"]) * len(merged["end"]),
@@ -1488,6 +1530,14 @@ def run_channels(
         # pairs); forked pair workers inherit it with run_inputs.
         setattr(run_inputs.path_min_inputs, "recursive_split_deadline", search_deadline)
         stats["search_budget_seconds"] = search_budget
+    if max_path_searches > 0:
+        from mepd import search_control
+
+        # Counted in a file, so forked pair workers share it; pairs run in a fixed order, so with
+        # one pair at a time the same inputs stop at the same search on every machine.
+        search_control.start_path_search_count(run_inputs.path_min_inputs, output / "path_searches.count",
+                                               max_path_searches)
+        stats["max_path_searches"] = max_path_searches
     # Each pair's TS optimizations and IRCs start as soon as its search is
     # done, in processes of their own (one serial chain of gradients each):
     # alongside the searches still running, a few at a time; once none are
@@ -1530,6 +1580,9 @@ def run_channels(
     stats["msmep_seconds"] = round(time.perf_counter() - t0, 3)
     if search_deadline is not None:
         stats["search_budget_reached"] = time.time() > search_deadline
+    if max_path_searches > 0:
+        stats["path_searches"] = search_control.path_searches(run_inputs.path_min_inputs)
+        stats["max_path_searches_reached"] = stats["path_searches"] >= max_path_searches
     from mepd import search_control
 
     if search_control.stop_requested():   # Stop & analyze: what follows runs on the paths found so far

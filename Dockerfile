@@ -126,7 +126,7 @@ ENV MEPD_RETRO_DATA=/opt/mepd/retro
 # The files pinned (SHA-256) in retro-data.txt: from our mirror, else from
 # Zenodo/figshare, and only ever if the checksum matches. DATA_MIRROR="" skips
 # the mirror. A file used twice (mepd's and AiZynthFinder's copy) is hard-linked.
-ARG DATA_MIRROR=https://public.atomsforhumanity.org/mepd/retro
+ARG DATA_MIRROR=https://public.afh.org/mepd/retro
 COPY deploy/docker/retro-data.txt deploy/docker/fetch_data.py /tmp/build/
 RUN "$(uv python find 3.12)" -I /tmp/build/fetch_data.py /tmp/build/retro-data.txt "$MEPD_RETRO_DATA" \
       --mirror "$DATA_MIRROR"

@@ -134,13 +134,13 @@ jobs:
             kubectl -n mepd rollout status deploy/mepd --timeout=20m
             exit 1
           fi
-          echo "Deployed $IMAGE:$TAG to mepd.atomsforhumanity.org" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed $IMAGE:$TAG to mepd.afh.org" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check the public site
         run: |
           for _ in $(seq 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' https://mepd.atomsforhumanity.org/login) || true
-            [ "$code" = 200 ] && { echo "https://mepd.atomsforhumanity.org/login: 200"; exit 0; }
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://mepd.afh.org/login) || true
+            [ "$code" = 200 ] && { echo "https://mepd.afh.org/login: 200"; exit 0; }
             sleep 10
           done
-          echo "::error::https://mepd.atomsforhumanity.org/login answered $code"; exit 1
+          echo "::error::https://mepd.afh.org/login answered $code"; exit 1

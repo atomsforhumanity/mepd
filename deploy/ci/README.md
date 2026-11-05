@@ -17,7 +17,7 @@ GHCR and deploys it to the beta cluster:
 - **A deploy** applies `deploy/k8s` with that tag, then waits for the new server to be ready. The old server
   keeps serving until then, so the site stays up. If the new one isn't ready within 20 minutes, the deploy is
   rolled back to the previous version and the run fails. It then
-  checks that https://mepd.atomsforhumanity.org/login answers. Calculations running at the moment of a
+  checks that https://mepd.afh.org/login answers. Calculations running at the moment of a
   deploy become *interrupted*, and testers can resume them.
 
 Deploy with the workflow, not by hand. `kubectl apply -k deploy/k8s` from a checkout uses the tag committed

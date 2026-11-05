@@ -267,6 +267,51 @@ def test_real_alpb_correction_on_water(tmp_path):
     assert dg_hex[0] > dg[0]                                 # ...and less so in hexane
 
 
+def test_cpcmx_gets_its_own_solvent_names_and_only_where_it_has_them():
+    from mepd.solvation import SOLVENTS, get_solvent
+
+    assert get_solvent("thf").flag("cpcmx") == ["--cpcmx", "tetrahydrofuran"]
+    assert get_solvent("thf").flag("alpb") == ["--alpb", "thf"]
+    assert get_solvent("dcm").flag("cpcmx") == ["--cpcmx", "methylenechloride"]
+    # Not in CPCM-X's database (xtb 6.7.1 stops after the SCF).
+    assert not {k for k, sv in SOLVENTS.items() if "cpcmx" in sv.models} & {"methanol", "acetone", "dioxane"}
+
+
+def test_cpcmx_energy_is_the_cpcmx_total_not_the_cosmo_scf(tmp_path):
+    """With --cpcmx, xtb's `energy` file holds the conductor-like SCF energy,
+    the same for every solvent; the CPCM-X total is only printed."""
+    from mepd.engines.gxtb import GXTBCalculator
+
+    (tmp_path / "energy").write_text("$energy\n     1    -5.39890740903    -5.39890740903    -5.39890740903\n$end\n")
+    stdout = ("         :: total energy              -5.398907402245 Eh    ::\n"
+              "          |      CPCM-X post-SCF solvation evaluation       |\n"
+              "     solvation free energy (dG_solv):             -0.90015E-02    -5.64850\n"
+              "          | TOTAL ENERGY               -5.396758643761 Eh   |\n")
+    assert GXTBCalculator._parse_energy(workdir=tmp_path, stdout=stdout) == pytest.approx(-5.396758643761)
+    assert GXTBCalculator._parse_energy(workdir=tmp_path, stdout="") == pytest.approx(-5.39890740903)
+
+
+def test_cpcmx_is_refused_where_gradients_are_needed():
+    from mepd.solvation import solvate_engine
+
+    with pytest.raises(ValueError, match="CPCM-X has no gradient"):
+        solvate_engine(_Base(), {"solvent": "thf", "model": "cpcmx"})
+    with pytest.raises(ValueError, match="no GBSA parameters"):
+        solvate_engine(_Base(), {"solvent": "octanol", "model": "gbsa"})
+
+
+@pytest.mark.skipif(not (shutil.which("xtb") or os.getenv("XTB_EXECUTABLE")), reason="needs xtb")
+def test_real_cpcmx_single_points_depend_on_the_solvent():
+    from mepd.solvation import SolvationCorrection
+
+    n = _node(0.0)
+    water = SolvationCorrection("water", "cpcmx").compute([n])[0][0]
+    hexane = SolvationCorrection("hexane", "cpcmx").compute([n])[0][0]
+    thf = SolvationCorrection("thf", "cpcmx").compute([n])[0][0]   # runs as --cpcmx tetrahydrofuran
+    # Before, every solvent gave the conductor-like SCF's value (-7.0 kcal/mol on HCN in each).
+    assert water < hexane < 0 and thf < 0 and len({round(x, 6) for x in (water, thf, hexane)}) == 3
+
+
 @pytest.fixture
 def client(tmp_path):
     pytest.importorskip("fastapi")

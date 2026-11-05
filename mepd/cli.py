@@ -325,6 +325,30 @@ def _run_network_completion(
     )
 
 
+def _verified_fsm_ts(leaf, tree_path: Optional[Path] = None):
+    """The TS FSM-TS optimized and verified for an elementary leaf, or None.
+    In memory it is the minimizer's `ts_node`; for a tree read back from disk,
+    the middle of the leaf's final [reactant, TS, product] chain when tree.json
+    records the pseudo-IRC verdict "elementary" for it."""
+    data = getattr(leaf, "data", None)
+    ts = getattr(data, "ts_node", None)
+    if ts is not None:
+        return ts
+    record = None
+    if tree_path is not None and (Path(tree_path) / "tree.json").exists():
+        import json
+
+        try:
+            nodes = json.loads((Path(tree_path) / "tree.json").read_text()).get("nodes", [])
+            record = next((n for n in nodes if int(n.get("index", -1)) == int(leaf.index)), None)
+        except Exception:
+            record = None
+    if not record or (record.get("pseudo_irc") or {}).get("verdict") != "elementary":
+        return None
+    chain = data.chain_trajectory[-1] if data is not None and data.chain_trajectory else None
+    return chain[1] if chain is not None and len(chain) == 3 else None
+
+
 def _ts_guess(chain, run_inputs):
     """The TS guess of a converged path: its highest image, or, for a QM/MM
     system, the interpolated maximum with the path's tangent there as the
@@ -453,6 +477,19 @@ def run(
         help="--cutoff-temperature: kcal/mol added for the method's error (electronic vs free energies, xTB vs a "
         "reference level).",
     ),
+    max_depth: Optional[int] = typer.Option(
+        None, "--max-depth", min=0,
+        help="With --recursive/--parallel: split at most this many levels deep. A path at that depth that "
+        "is still not elementary is optimized to convergence and kept as one step (leaf status "
+        "'max_depth_reached'). Default: the profile's recursive_split_max_depth (none).",
+    ),
+    search_budget: float = typer.Option(
+        0.0, "--search-budget",
+        help="With --recursive/--parallel: wall-clock seconds (from the start of the command) after which "
+        "no search is split further. Each one that finishes is kept as a 'time_budget' leaf with its own "
+        "path, and --use-tsopt/--irc then run on what was found. Searches already running finish first. "
+        "0 (default) = no budget.",
+    ),
     use_tsopt: bool = typer.Option(
         False, "--use-tsopt",
         help="After the NEB/MSMEP run, automatically optimize a transition state "
@@ -541,6 +578,9 @@ def run(
     ),
 ) -> None:
     """Run a NEB optimization between two endpoint structures."""
+    import time
+
+    _command_started = time.time()
     from mepd.nodes.node import StructureNode
     import mepd.chainhelpers as ch
 
@@ -588,6 +628,11 @@ def run(
         run_inputs.path_min_inputs.cutoff_temperature = num(cutoff_temperature)
         run_inputs.path_min_inputs.cutoff_time_s = num(cutoff_time, 86400.0)
         run_inputs.path_min_inputs.cutoff_margin_kcal = num(cutoff_margin, 10.0)
+    if isinstance(max_depth, int):   # (typer's OptionInfo when called directly)
+        run_inputs.path_min_inputs.recursive_split_max_depth = max_depth
+    if isinstance(search_budget, (int, float)) and search_budget > 0:
+        # Read by MSMEP: no further splits after it (search_control.search_over).
+        run_inputs.path_min_inputs.recursive_split_deadline = _command_started + float(search_budget)
     run_inputs.atom_mapping_inputs.n_candidates = atom_mapping_candidates
     run_inputs.atom_mapping_inputs.metric = atom_mapping_metric
     run_inputs.atom_mapping_inputs.veto_margin = atom_mapping_veto_margin
@@ -782,7 +827,13 @@ def run(
                     typer.echo(f"ts_leaf_{leaf.index}: above the barrier cutoff ({getattr(leaf, 'na_route', {})}); "
                                "no TS search.")
                     continue
-                guess, direction = _ts_guess(leaf.data.chain_trajectory[-1], run_inputs)
+                verified = _verified_fsm_ts(leaf, tree_path)
+                if verified is not None:
+                    # FSM-TS already optimized this leaf's TS and checked it (one imaginary
+                    # mode, pseudo-IRC joins the ends): take it as is, no second search.
+                    guess, direction = verified, None
+                else:
+                    guess, direction = _ts_guess(leaf.data.chain_trajectory[-1], run_inputs)
                 _optimize_ts_and_irc(
                     guess,
                     run_inputs,
@@ -790,6 +841,7 @@ def run(
                     run_irc=irc,
                     label=f"ts_leaf_{leaf.index}",
                     direction=direction,
+                    already_optimized=verified is not None,
                 )
         return
 
@@ -1676,6 +1728,11 @@ def optimize(
             chain.write_to_disk(output / f"opt_{i}.xyz")
             energy = getattr(node, "_cached_energy", None)
             rec["energy"] = float(energy) if energy is not None else None
+            if run_inputs.restraints:
+                from mepd.restraints import parse_restraints, restraint_report
+
+                rec["restraints"] = restraint_report(parse_restraints(run_inputs.restraints), node.coords)
+                typer.echo(f"  restraints {sources[i]}: " + "; ".join(rec["restraints"]))
         summary.append(rec)
     (output / "summary.json").write_text(json.dumps({"structures": summary}, indent=1))
     n_ok = sum(r["converged"] for r in summary)

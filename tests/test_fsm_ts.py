@@ -212,3 +212,47 @@ def test_fsm_ts_is_a_path_method_with_its_aliases():
         assert _normalize_path_method(name) == "FSM-TS"
     p = RunInputs(path_min_method="fsm-ts").path_min_inputs
     assert p.min_images == 3 and p.max_min_iter == 3 and p.max_grow_iter == 20 and p.pseudo_irc_amplitude == 0.3 and p.fallback == "GSM"
+
+
+# ---- run --use-tsopt after FSM-TS (issue #22): its verified TS, not a new search from the string
+
+
+def test_use_tsopt_takes_the_ts_fsm_ts_verified(monkeypatch):
+    from mepd.cli import _verified_fsm_ts
+
+    m, result, _ = _run(monkeypatch, [R, P])
+    leaf = SimpleNamespace(index=3, data=m)
+    assert _verified_fsm_ts(leaf) is m.ts_node
+    m.ts_node = None   # a fallback leaf: no verified TS
+    assert _verified_fsm_ts(leaf) is None
+
+
+def test_use_tsopt_reads_the_verified_ts_of_a_tree_from_disk(tmp_path):
+    import json
+
+    from mepd.cli import _verified_fsm_ts
+    from mepd.inputs import ChainInputs
+
+    chain = Chain.model_validate({"nodes": [R.copy(), TS.copy(), P.copy()], "parameters": ChainInputs()})
+    leaf = SimpleNamespace(index=2, data=SimpleNamespace(chain_trajectory=[chain]))
+    for verdict, expected in (("elementary", True), ("split", False)):
+        (tmp_path / "tree.json").write_text(json.dumps(
+            {"version": 1, "nodes": [{"index": 2, "pseudo_irc": {"verdict": verdict}}]}))
+        got = _verified_fsm_ts(leaf, tmp_path)
+        assert (got is chain[1]) is expected
+    (tmp_path / "tree.json").unlink()
+    assert _verified_fsm_ts(leaf, tmp_path) is None   # no record (e.g. an NEB tree): search as before
+
+
+def test_an_already_optimized_ts_is_not_searched_again(monkeypatch, tmp_path):
+    from mepd.cli_common import _optimize_ts_and_irc
+
+    def no_search(*a, **k):
+        raise AssertionError("the TS was searched again")
+
+    monkeypatch.setattr("mepd.compute.find_ts", no_search)
+    ts = TS.copy()
+    ts._cached_energy = -76.3
+    ri = SimpleNamespace(engine=_Engine(), ts_inputs=None)
+    out = _optimize_ts_and_irc(ts, ri, tmp_path, run_irc=False, label="ts_leaf_1", already_optimized=True)
+    assert out.ts_node is ts and (tmp_path / "ts_leaf_1.xyz").exists()

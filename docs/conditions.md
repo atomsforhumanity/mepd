@@ -31,12 +31,21 @@ parameters found*. Worse, with `--cpcmx` it silently returns the gas-phase
 energy. `SolvationCorrection` therefore refuses to continue when the
 solvent model leaves the energy unchanged.
 
+CPCM-X in xtb is a correction after the SCF: it changes the energy and
+leaves the gradient at the gas phase's (xtb 6.7.1). It is therefore for
+single points only (`mepd solvent --model cpcmx`, gas-phase geometries); a
+profile or `--mode reoptimize` with it is refused. xtb also names CPCM-X
+solvents in full (`--cpcmx tetrahydrofuran`), and its `energy` file holds
+the conductor-like SCF energy CPCM-X starts from, the same for every
+solvent: mepd passes each solvent's CPCM-X name and reads the printed
+CPCM-X total. Methanol, acetone and 1,4-dioxane have no CPCM-X parameters.
+
 A profile runs in solvent with:
 
 ```toml
 [solvation]
 solvent = "water"      # see mepd.solvation.SOLVENTS
-model = "alpb"         # alpb | gbsa | cpcmx
+model = "alpb"         # alpb | gbsa
 method = "auto"        # auto (native for GFN2-xTB, else correction) | native | correction
 ```
 

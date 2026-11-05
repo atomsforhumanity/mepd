@@ -66,7 +66,7 @@ ENGINES = [
 XTB_DEFAULTS = {"method": "gfn2", "n_parallel": 4}
 TERACHEM_DEFAULTS = {"method": "b3lyp", "basis": "6-31gs", "command": None, "timeout": 3600.0}
 PSI4_DEFAULTS = {"method": "b3lyp", "basis": "def2-svp", "threads": 4, "memory": "4 GB"}
-MLIP_DEFAULTS = {"device": "", "checkpoint": None, "family": "", "geometry_optimizer": "LBFGSLineSearch"}
+MLIP_DEFAULTS = {"device": "", "checkpoint": None, "family": "", "geometry_optimizer": "LBFGS"}
 MLIP_PACKAGES = {"aimnet2": "aimnet", "orb": "orb_models", "ani": "torchani", "mace": "mace", "fairchem": "fairchem"}
 PROGRAMS = ["xtb", "terachem", "psi4", "pyscf", "orca", "crest"]
 INTERPOLATIONS = [
@@ -104,7 +104,7 @@ OPTIMIZER_ALIASES = {"conjugate_gradient": "cg", "velocity_projected": "vpo", "s
 GXTB_DEFAULTS = {"executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
                  "timeout_s": 3600.0, "add_gxtb_flag": True, "keep_workdirs": False}
 FAIRCHEM_DEFAULTS = {"model": "uma-s-1p2p1", "task": "omol", "device": "", "checkpoint": None,
-                     "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGSLineSearch"}
+                     "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGS"}
 GEOMOPT_DEFAULTS = {"coordsys": "cart", "maxit": 500, "convergence_set": "GAU_TIGHT"}
 GI_DEFAULTS = {"nimages": 10, "friction": 0.001, "nudge": 0.1, "random_seed": 0, "align": True}
 # TS optimization (mepd.inputs.TSInputs) of channels / ts / run --use-tsopt

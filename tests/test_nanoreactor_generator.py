@@ -126,3 +126,23 @@ def test_qmmm_reactor_md_holds_frozen_atoms_and_keeps_two_temperatures(tmp_path,
                                              workdir=str(tmp_path / "md2"))
     assert set(counts) == {"events", "products", "mm_changed", "boundary", "torn"}
     assert all(len(p.symbols) == len(s.symbols) for p in products)
+
+
+def test_live_events_of_a_qmmm_reactor_are_found_among_its_qm_atoms_with_system_indices(tmp_path):
+    import json
+
+    from mepd.discovery.nanoreactor_generator import write_live_events
+
+    run = tmp_path / "run_00"
+    (run / "md").mkdir(parents=True)
+    # Two environment atoms (an O2 that never changes), then two QM H atoms that meet.
+    lines = []
+    for f in range(200):
+        d = 3.0 if f < 100 else 0.74
+        xyz = [("O", 10, 0, 0), ("O", 11.2, 0, 0), ("H", 0, 0, 0), ("H", d, 0, 0)]
+        lines += ["4", " energy: -1.0"] + [f"{s} {x} {y} {z}" for s, x, y, z in xyz]
+    (run / "md" / "segment_000.xyz").write_text("\n".join(lines) + "\n")
+    write_live_events(run, total_charge=0, dt_fs=2.0, atoms=[2, 3])
+    events = json.loads((run / "live_events.json").read_text())["events"]
+    assert len(events) == 1 and events[0]["atoms"] == [2, 3]
+    assert [c["atoms"] for c in events[0]["bond_changes"]] == [[2, 3]]

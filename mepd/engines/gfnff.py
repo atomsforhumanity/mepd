@@ -17,7 +17,9 @@ doi:10.1002/anie.202004239.
 """
 from __future__ import annotations
 
+import contextvars
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -38,8 +40,53 @@ from mepd.errors import ElectronicStructureError
 from mepd.fakeoutputs import FakeQCIOOutput, FakeQCIOResults
 from mepd.nodes.nodehelpers import update_node_cache
 
+log = logging.getLogger(__name__)
+
 _TOPO_LOCKS: dict[str, threading.Lock] = {}
 _TOPO_GUARD = threading.Lock()
+_SCC_GUARD = threading.Lock()
+# Set while an outer engine call is keeping its nodes on one SCC surface, so
+# the engines it wraps (QM/MM -> xtb) do not recompute the same nodes again.
+_ONE_SURFACE = contextvars.ContextVar("mepd_xtb_one_surface", default=False)
+
+
+def scc_epoch(engine, _depth: int = 0) -> int:
+    """How many times the xtb engines inside `engine` (itself, or wrapped by
+    QM/MM, frozen-atom or similar engines) have raised their electronic
+    temperature after a failed SCC. A change means calculations made before
+    and after it sit on different surfaces."""
+    if engine is None or _depth > 6:
+        return 0
+    total = int(getattr(engine, "_scc_epoch", 0) or 0)
+    for attr in ("base", "engine", "_low"):
+        inner = getattr(engine, attr, None)
+        if inner is not None and inner is not engine:
+            total += scc_epoch(inner, _depth + 1)
+    return total
+
+
+def on_one_surface(engine, nodes: list, compute):
+    """Run `compute()` (which fills the nodes' caches) so that all `nodes`
+    end on one xtb surface: if a calculation needed a higher electronic
+    temperature meanwhile (the engine then holds it for everything after),
+    the nodes computed before it are computed again at that temperature.
+    Only the outermost engine call does this."""
+    if _ONE_SURFACE.get():
+        return compute()
+    token = _ONE_SURFACE.set(True)
+    try:
+        for _ in range(len(SCC_RUNGS) + 1):
+            before = scc_epoch(engine)
+            out = compute()
+            if scc_epoch(engine) == before:
+                return out
+            log.warning("xtb needed a higher electronic temperature for one calculation; recomputing the other "
+                        "%d structure(s) of this batch at it, so they share one surface", len(nodes))
+            for n in nodes:
+                n._cached_result = n._cached_energy = n._cached_gradient = None
+        return out
+    finally:
+        _ONE_SURFACE.reset(token)
 
 
 def _xyz(symbols, coords_bohr) -> str:
@@ -88,6 +135,10 @@ def cache_dir() -> Path:
     return Path(base) / "mepd" / "gfnff_topo"
 
 
+# Electronic temperatures (K) an SCC that will not converge is retried at, in turn.
+SCC_RUNGS = (1000.0, 3000.0)
+
+
 @dataclass
 class GFNFFEngine(Engine):
     """`topology_reference`: xyz text whose GFN-FF topology every geometry
@@ -100,6 +151,11 @@ class GFNFFEngine(Engine):
     topology_reference: Optional[str] = None
     timeout: float = 3600.0
     _topologies: dict = field(default_factory=dict, repr=False)
+    # Electronic temperature (K) every calculation now runs at, at least: raised for good
+    # when an SCC converged only with Fermi smearing (SCC_RUNGS), so a path, Hessian or
+    # optimization does not mix surfaces; _scc_epoch counts the raises.
+    _scc_floor: float = field(default=0.0, repr=False)
+    _scc_epoch: int = field(default=0, repr=False)
 
     def __post_init__(self):
         if self.executable is None:
@@ -112,12 +168,16 @@ class GFNFFEngine(Engine):
         if self.method not in ("gfnff", "gfn2", "gfn1"):
             raise ValueError(f"xtb method must be gfnff, gfn2 or gfn1, got {self.method!r}")
 
+    @property
+    def _label(self) -> str:
+        return {"gfnff": "GFN-FF", "gfn2": "GFN2-xTB", "gfn1": "GFN1-xTB"}[self.method]
+
     # ------------------------------------------------------------ program
     def _run(self, workdir: Path, symbols, coords_bohr, charge: int, grad: bool = True,
-             uhf: int = 0, point_charges=None, extra=()) -> tuple[float, np.ndarray]:
+             uhf: int = 0, point_charges=None, etemp: Optional[float] = None) -> tuple[float, np.ndarray]:
         (workdir / "in.xyz").write_text(_xyz(symbols, coords_bohr))
         method = ["--gfnff"] if self.method == "gfnff" else ["--gfn", self.method[-1], "--uhf", str(int(uhf))]
-        argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge)), *extra]
+        argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge))]
         if point_charges is not None and len(point_charges):
             # xtb's electrostatic embedding: charge, position (bohr) and the
             # element whose chemical hardness damps its interaction at short
@@ -128,19 +188,54 @@ class GFNFFEngine(Engine):
             argv += ["--input", "xcontrol"]
         if grad:
             argv.append("--grad")
+        temperature = max(float(etemp or 0.0), float(self._scc_floor or 0.0)) if self.method != "gfnff" else 0.0
         env = {**os.environ, "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "OMP_STACKSIZE": "256M"}
-        proc = subprocess.run(argv, cwd=workdir, capture_output=True, text=True, env=env, timeout=self.timeout,
-                              preexec_fn=_raise_stack_limit)
+
+        def run(kelvin=0.0, extra=()):
+            smear = ["--etemp", f"{float(kelvin):.1f}"] if kelvin else []
+            return subprocess.run([*argv, *smear, *extra], cwd=workdir, capture_output=True, text=True, env=env,
+                                  timeout=self.timeout, preexec_fn=_raise_stack_limit)
+
+        proc = run(temperature)
         engrad = workdir / "in.engrad"
+        if proc.returncode != 0 and self.method != "gfnff":
+            # GFN1/GFN2 SCC that never settles (a bond breaking in hot MD, a
+            # stretched path image): more iterations, then Fermi smearing at
+            # rising electronic temperatures. A temperature that works is then
+            # held for every later calculation of this engine (see _scc_floor).
+            from mepd.engines.gxtb import _scf_not_converged
+
+            retries = ([(temperature, ("--iterations", "1000"))] if temperature else []) + \
+                [(t, ("--iterations", "1000")) for t in SCC_RUNGS if t > temperature]
+            for kelvin, extra in retries:
+                if proc.returncode == 0 or not _scf_not_converged(proc.stdout + proc.stderr):
+                    break
+                (workdir / "xtbrestart").unlink(missing_ok=True)   # the failed run's charges
+                proc = run(kelvin, extra)
+                if proc.returncode == 0:
+                    log.warning("%s SCC did not converge; converged with --etemp %.0f %s", self._label, kelvin,
+                                " ".join(extra))
+                    if kelvin > temperature:
+                        self._raise_scc_floor(kelvin)
         if proc.returncode != 0 or (grad and not engrad.exists()):
             tail = "\n".join((proc.stdout + proc.stderr).strip().splitlines()[-15:])
-            raise ElectronicStructureError(msg=f"GFN-FF (xtb) failed:\n{tail}")
+            raise ElectronicStructureError(msg=f"{self._label} (xtb) failed:\n{tail}")
         if grad:
             return parse_engrad(engrad.read_text())
         for line in proc.stdout.splitlines():
             if "TOTAL ENERGY" in line:
                 return float(line.split()[3]), np.zeros((len(symbols), 3))
-        raise ElectronicStructureError(msg="GFN-FF (xtb): no energy in the output")
+        raise ElectronicStructureError(msg=f"{self._label} (xtb): no energy in the output")
+
+    def _raise_scc_floor(self, kelvin: float) -> None:
+        with _SCC_GUARD:
+            if kelvin <= float(self._scc_floor or 0.0):
+                return
+            self._scc_floor = float(kelvin)
+            self._scc_epoch = int(self._scc_epoch or 0) + 1
+        log.warning("%s: from now on every calculation of this engine runs at an electronic temperature of "
+                    "%.0f K, so paths and Hessians stay on one surface (set it from the start with "
+                    "[xtb_engine_kwds] electronic_temperature = %.0f)", self._label, kelvin, kelvin)
 
     def topology(self, symbols, charge: int, reference_xyz: Optional[str] = None) -> Optional[Path]:
         """The cached gfnff_topo for these atoms (built from the reference)."""
@@ -192,14 +287,18 @@ class GFNFFEngine(Engine):
     # ------------------------------------------------------------ engine
     def _compute(self, chain: Union[Chain, List]) -> list:
         nodes = chain.nodes if isinstance(chain, Chain) else list(chain)
-        todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
-        if todo:
-            res = self.energy_gradients([(list(n.symbols), np.asarray(n.coords), int(n.structure.charge), None,
-                                          int(n.structure.multiplicity) - 1) for n in todo])
-            update_node_cache(node_list=todo, results=[
-                FakeQCIOOutput.model_validate({"results": FakeQCIOResults.model_validate(
-                    {"energy": e, "gradient": g})}) for e, g in res])
-        return nodes
+
+        def compute():
+            todo = [n for n in nodes if n._cached_energy is None or n._cached_gradient is None]
+            if todo:
+                res = self.energy_gradients([(list(n.symbols), np.asarray(n.coords), int(n.structure.charge), None,
+                                              int(n.structure.multiplicity) - 1) for n in todo])
+                update_node_cache(node_list=todo, results=[
+                    FakeQCIOOutput.model_validate({"results": FakeQCIOResults.model_validate(
+                        {"energy": e, "gradient": g})}) for e, g in res])
+            return nodes
+
+        return on_one_surface(self, nodes, compute)
 
     def compute_gradients(self, chain: Union[Chain, List]) -> NDArray:
         return np.array([n.gradient for n in self._compute(chain)])
@@ -257,21 +356,22 @@ class XTBEngine(GFNFFEngine):
 
     method: str = "gfn2"
     supports_point_charges: bool = True
-    # Electronic temperature (K, Fermi smearing) for every calculation; None:
-    # xtb's 300 K, with the fallbacks below when the SCC fails. Hot reactive
-    # MD wants ~3000 K: a bond breaking homolytically then has fractional
-    # occupations instead of an SCC that stops converging.
-    etemp: Optional[float] = None
-    # Tried in turn when the SCC does not converge (as mepd.solvation does for
-    # GFN2): smearing first, since a failing SCC usually oscillates.
-    SCC_FALLBACKS = (("--iterations", "1000", "--etemp", "1000"), ("--iterations", "1000"),
-                     ("--iterations", "1000", "--etemp", "5000"))
+    # Hot MD (the QM/MM nanoreactor) sets these: Fermi smearing at this
+    # electronic temperature from the first SCC (K; None = xtb's 300 K), and
+    # each calculation in a thread starting from that thread's last charges
+    # (consecutive MD steps differ little; a failed SCC is retried without).
+    electronic_temperature: Optional[float] = None
+    reuse_scc_guess: bool = False
 
     def __post_init__(self):
         super().__post_init__()
         if self.method == "gfnff":
             raise ValueError("engine_name = \"xtb\" is GFN2- or GFN1-xTB (method = \"gfn2\" / \"gfn1\")")
         self._local = threading.local()
+
+    def forget_scc_guess(self) -> None:
+        """This thread's next calculation starts its SCC from scratch."""
+        self._local.guess = None
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -297,22 +397,19 @@ class XTBEngine(GFNFFEngine):
         pcs = list(point_charges or [])
         els = list(elements) if elements is not None else ["H"] * len(pcs)
         pc = [(float(q), tuple(float(v) for v in xyz), _Z.get(str(el), 1)) for (q, xyz), el in zip(pcs, els)]
-        tries = [("--etemp", f"{float(self.etemp):g}")] if self.etemp else [(), *self.SCC_FALLBACKS]
-        for k, extra in enumerate(tries):
-            with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
-                try:
-                    e, g = self._run(Path(tmp), symbols, coords_bohr, charge, uhf=int(multiplicity) - 1,
-                                     point_charges=pc or None, extra=extra)
-                except ElectronicStructureError as exc:
-                    if k + 1 < len(tries) and "did not converge" in str(exc):
-                        continue
-                    raise
-                if extra and not self.etemp:
-                    print(f"xtb ({self.method}): SCC converged with {' '.join(extra)}", flush=True)
-                fp = Path(tmp) / "charges"
-                self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
-                pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
-            return e, g, pcg
+        with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
+            key = (tuple(str(x) for x in symbols), int(charge), int(multiplicity))
+            guess = getattr(self._local, "guess", None) if self.reuse_scc_guess else None
+            if guess is not None and guess[0] == key:
+                (Path(tmp) / "xtbrestart").write_bytes(guess[1])
+            e, g = self._run(Path(tmp), symbols, coords_bohr, charge, uhf=int(multiplicity) - 1,
+                             point_charges=pc or None, etemp=self.electronic_temperature)
+            if self.reuse_scc_guess and (Path(tmp) / "xtbrestart").exists():
+                self._local.guess = (key, (Path(tmp) / "xtbrestart").read_bytes())
+            fp = Path(tmp) / "charges"
+            self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
+            pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
+        return e, g, pcg
 
     def energy_gradients(self, jobs: list[tuple]) -> list[tuple[float, np.ndarray]]:
         def one(j):

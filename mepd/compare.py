@@ -4,10 +4,27 @@
 (heavy atoms, ignoring atom order) and, by default, stereochemistry, ignoring
 conformation. `connects` applies it to both ends of an IRC (or any two
 structures), in either direction.
+
+Metal-ligand contacts. By default every bond counts, metal-ligand contacts
+included, so a ligand that binds, comes off, or binds through another atom
+makes another species. With `metal_ligand_contacts=False` they are left out:
+two structures are the same species when their covalent bonds and
+stereochemistry are, whatever the coordination at the metal, and
+`Comparison.metal_ligand_changed` records whether the contacts differ. When
+they do, the configuration at atoms bonded to the metal is not compared (it
+is defined by the metal-ligand bonds); when they don't, the full comparison
+is used. This
+follows the treatment of dative metal-ligand contacts as zero-order bonds,
+kept apart from covalent bond changes, in YARP's organometallic extension
+(Z. Li, H.-H. Hsu, B. M. Savoie, "Finding the Roads Less Calculated in
+Organometallics with Automated Transition State Searches", ChemRxiv (2026),
+doi:10.26434/chemrxiv.15006374/v1; preprint), where a step that changes only
+the coordination is a conformational reorganization rather than an
+elementary step.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Sequence
 
 from mepd.nodes.node import StructureNode
@@ -36,6 +53,9 @@ class Comparison:
     #: "openbabel" (its own bond orders and stereo SMILES; used only when RDKit
     #: could not decide, and only to say "same")
     method: str = "rdkit"
+    #: with `metal_ligand_contacts=False`: whether the metal-ligand contacts
+    #: differ although the covalent bonds match (None: not checked, or no metal)
+    metal_ligand_changed: bool | None = None
 
     @property
     def same(self) -> bool:
@@ -48,21 +68,31 @@ class Comparison:
         return self.graph and self.stereo is None
 
 
-def _openbabel_stereo_smiles(node: StructureNode) -> str:
+def _openbabel_stereo_smiles(node: StructureNode, metal_ligand_contacts: bool = True) -> str:
     """OpenBabel's canonical isomeric SMILES of `node`, from its own bond-order
-    and stereo perception on the 3D geometry (independent of RDKit's)."""
+    and stereo perception on the 3D geometry (independent of RDKit's); without
+    `metal_ligand_contacts`, of the structure with its metal atoms taken out."""
     from openbabel import pybel
 
-    return pybel.readstring("xyz", node.structure.to_xyz()).write("can").split()[0]
+    from mepd.nodes.nodehelpers import _METAL_SYMBOLS
+
+    xyz = node.structure.to_xyz()
+    if not metal_ligand_contacts:
+        lines = xyz.splitlines()
+        atoms = [ln for ln in lines[2:] if ln.split() and ln.split()[0] not in _METAL_SYMBOLS]
+        xyz = "\n".join([str(len(atoms)), lines[1], *atoms]) + "\n"
+    return pybel.readstring("xyz", xyz).write("can").split()[0]
 
 
-def _second_opinion(c: Comparison, a: StructureNode, b: StructureNode) -> Comparison:
+def _second_opinion(c: Comparison, a: StructureNode, b: StructureNode, metal_ligand_contacts: bool = True) -> Comparison:
     """RDKit could not decide the stereochemistry: ask OpenBabel. Its "same" is
     accepted; its "different" is not taken as a mismatch (for the unusual
     valences RDKit rejects, OpenBabel's bond orders differ between geometries
     of one molecule too), so the comparison stays undecided."""
     try:
-        oa, ob = _openbabel_stereo_smiles(a), _openbabel_stereo_smiles(b)
+        ob_smiles = _openbabel_stereo_smiles if metal_ligand_contacts else (
+            lambda n: _openbabel_stereo_smiles(n, metal_ligand_contacts=False))
+        oa, ob = ob_smiles(a), ob_smiles(b)
     except Exception as exc:
         return Comparison(c.graph, None, c.smiles, c.bond_orders, f"{c.reason}; OpenBabel failed: {type(exc).__name__}")
     if oa == ob:
@@ -72,35 +102,76 @@ def _second_opinion(c: Comparison, a: StructureNode, b: StructureNode) -> Compar
                       f"{c.reason}; OpenBabel stereo SMILES differ ({oa} vs {ob}), not decisive")
 
 
-def compare_structures(a: StructureNode, b: StructureNode) -> Comparison:
+def compare_structures(a: StructureNode, b: StructureNode, *, metal_ligand_contacts: bool = True) -> Comparison:
     """Compare two structures: bond graphs (heavy atoms, atom order ignored),
     then stereochemistry (stereo SMILES from 3D; hydrogens' positions in the
     graph included, so a tautomer differs; plus the count of trans small-ring
     alkenes, which SMILES cannot express). Conformation is ignored. A
     comparison that cannot be decided says so (`stereo is None`) instead of
     passing. When RDKit cannot decide, OpenBabel's stereo SMILES give a second
-    opinion, which can only confirm "same" (`Comparison.method`).
+    opinion, which can only confirm "same" (`Comparison.method`). With
+    `metal_ligand_contacts=False`, two structures whose metal-ligand contacts
+    differ are compared with bonds to metal atoms left out of both the graphs
+    and the stereochemistry (see the module docstring); with the same contacts
+    the full comparison is used, which also sees the configuration at atoms
+    bonded to the metal.
 
     >>> c = mepd.compare_structures(irc_end, reactant); c.same, c.stereo, c.smiles
     """
-    c = _compare_rdkit(a, b)
+    c = _compare(a, b, True)
+    if metal_ligand_contacts or not (_has_metal(a) or _has_metal(b)):
+        return c
+    if c.graph:
+        # Same contacts: the full comparison stands. It also sees the configuration at
+        # atoms bonded to the metal, which the covalent-only one cannot.
+        return replace(c, metal_ligand_changed=False)
+    c = _compare(a, b, False)
+    return replace(c, metal_ligand_changed=True) if c.graph else c
+
+
+def _compare(a: StructureNode, b: StructureNode, metal_ligand_contacts: bool) -> Comparison:
+    c = _compare_rdkit(a, b, metal_ligand_contacts)
     if c.graph and c.stereo is None and max(len(a.coords), len(b.coords)) < 100:
-        return _second_opinion(c, a, b)
+        c = _second_opinion(c, a, b, metal_ligand_contacts)
     return c
 
 
-def _compare_rdkit(a: StructureNode, b: StructureNode) -> Comparison:
+def _has_metal(node: StructureNode) -> bool:
+    from mepd.nodes.nodehelpers import _METAL_SYMBOLS
+
+    return any(s in _METAL_SYMBOLS for s in node.structure.symbols)
+
+
+def _covalent(graph):
+    """`graph` without its bonds to metal atoms (the metal atoms stay, unbonded)."""
+    from mepd.nodes.nodehelpers import _METAL_SYMBOLS
+
+    metal = {i for i, d in graph.nodes(data=True) if d.get("element") in _METAL_SYMBOLS}
+    if not metal:
+        return graph
+    g = graph.copy()
+    g.remove_edges_from([(u, v) for u, v in graph.edges() if u in metal or v in metal])
+    g.set_neighbors()
+    return g
+
+
+def _compare_rdkit(a: StructureNode, b: StructureNode, metal_ligand_contacts: bool = True) -> Comparison:
     """`compare_structures` with RDKit only (bond orders from RDKit's DetermineBondOrders)."""
     from mepd.nodes.nodehelpers import _n_trans_small_ring_alkenes, _stereo_smiles
 
     if getattr(a, "graph", None) is None or getattr(b, "graph", None) is None:
         return Comparison(graph=False, stereo=None, reason="a structure has no bond graph")
-    if not a.graph.remove_Hs().is_bond_isomorphic_to(b.graph.remove_Hs()):
-        return Comparison(graph=False, stereo=None, reason="heavy-atom bond graphs differ")
+    ga, gb = (n.graph if metal_ligand_contacts else _covalent(n.graph) for n in (a, b))
+    # the keyword only when it is off, so the default calls are exactly as before
+    smiles = _stereo_smiles if metal_ligand_contacts else (
+        lambda n, bond_orders=True: _stereo_smiles(n, bond_orders, metal_ligand_contacts=False))
+    if not ga.remove_Hs().is_bond_isomorphic_to(gb.remove_Hs()):
+        return Comparison(graph=False, stereo=None, reason="heavy-atom bond graphs differ" if metal_ligand_contacts
+                          else "heavy-atom covalent bond graphs differ (metal-ligand contacts left out)")
     if max(len(a.coords), len(b.coords)) >= 100:
         return Comparison(graph=True, stereo=None, reason="100+ atoms: stereo SMILES are not built")
     try:
-        (sa, oa), (sb, ob) = _stereo_smiles(a), _stereo_smiles(b)
+        (sa, oa), (sb, ob) = (smiles(n) for n in (a, b))
     except Exception as exc:
         return Comparison(graph=True, stereo=None, reason=f"stereo SMILES failed: {type(exc).__name__}: {exc}"[:300])
     if not (oa and ob):
@@ -108,7 +179,7 @@ def _compare_rdkit(a: StructureNode, b: StructureNode) -> Comparison:
         # Without bond orders, E/Z is invisible: compare what can be seen, but
         # a "same" there is not a decision.
         try:
-            ta, tb = _stereo_smiles(a, False)[0], _stereo_smiles(b, False)[0]
+            ta, tb = (smiles(n, False)[0] for n in (a, b))
         except Exception:
             ta = tb = None
         if ta is not None and ta != tb:
@@ -129,16 +200,18 @@ def _compare_rdkit(a: StructureNode, b: StructureNode) -> Comparison:
     return Comparison(graph=True, stereo=True, smiles=(sa, sb), bond_orders=(oa, ob), reason="same")
 
 
-def same_molecule(a: StructureNode, b: StructureNode, *, stereo: bool = True) -> bool:
+def same_molecule(a: StructureNode, b: StructureNode, *, stereo: bool = True,
+                  metal_ligand_contacts: bool = True) -> bool:
     """True when `a` and `b` are the same molecule (or set of molecules):
     isomorphic bond graphs without hydrogens, atom order ignored, and with
     `stereo` the same stereochemistry too (`mepd.compare_structures`). A stereochemistry
     that cannot be compared (see `Comparison.stereo`) is not the same.
-    Conformation is ignored. Structures without a graph never match.
+    Conformation is ignored. Structures without a graph never match. With
+    `metal_ligand_contacts=False`, bonds to metal atoms are not compared.
 
     >>> mepd.same_molecule(irc_end, reactant)
     """
-    c = compare_structures(a, b)
+    c = compare_structures(a, b, metal_ligand_contacts=metal_ligand_contacts)
     return c.graph if not stereo else c.same
 
 
@@ -190,7 +263,8 @@ def _ends(path) -> tuple[StructureNode, StructureNode]:
     return nodes[0], nodes[-1]
 
 
-def connects(path, start: StructureNode, end: StructureNode, *, stereo: bool = True) -> Match:
+def connects(path, start: StructureNode, end: StructureNode, *, stereo: bool = True,
+             metal_ligand_contacts: bool = True) -> Match:
     """Which of `start` and `end` the two ends of `path` are (`same_molecule`).
 
     `path` is an `IRCResult`, a `Chain`, or any sequence of structures (its
@@ -206,10 +280,11 @@ def connects(path, start: StructureNode, end: StructureNode, *, stereo: bool = T
     def side(c: Comparison) -> bool:
         return c.same if stereo else c.graph
 
-    fwd = (compare_structures(a, start), compare_structures(b, end))
+    cmp = lambda x, y: compare_structures(x, y, metal_ligand_contacts=metal_ligand_contacts)  # noqa: E731
+    fwd = (cmp(a, start), cmp(b, end))
     if all(side(c) for c in fwd):
         return Match(True, True, False, fwd)
-    rev = (compare_structures(b, start), compare_structures(a, end))
+    rev = (cmp(b, start), cmp(a, end))
     # More matched sides wins; then more sides whose graphs match (an undecided
     # stereochemistry must not flip the direction); forward on a tie.
     score = lambda cs: (sum(side(c) for c in cs), sum(c.graph for c in cs))  # noqa: E731

@@ -257,7 +257,9 @@ def _executable(method: str) -> list[str]:
             exe = gxtb_executable()
         if not exe:
             raise OrbitalError("g-xTB is not available")
-        return [exe] + ([] if Path(exe).name == "gxtb" else ["--gxtb"])
+        from mepd.programs import standalone_gxtb
+
+        return [exe] + ([] if standalone_gxtb(exe) else ["--gxtb"])
     from mepd.programs import xtb_executable
 
     exe = xtb_executable()
