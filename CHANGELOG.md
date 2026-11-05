@@ -616,6 +616,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Explorer: one TS found twice counts as one channel.** A TS asked for one pair whose IRC lands on the ends
+  of a step with that very TS (or a channel search finding it again) was kept as a parallel channel, and each
+  copy got its own mirror-image twin: formic acid's dehydration TS counted 3x (develop) or 4x (reactor at
+  2200 K) against decarboxylation's 2x, so dehydration:decarboxylation read 41.4 or 55.2 where the network
+  gives 27.6 (g-xTB, 1500 K). A step is now the same TS as another between the same two species when their
+  energies agree within 0.1 kcal/mol and their geometries superimpose (proper rotation, identical atoms in
+  any order); it is checked when the step is added and again when its IRC gives it its real ends. A mirror
+  image (the twin TS) and another conformer's TS stay distinct channels. `mirror.superimposable` now matches
+  identical atoms in any order (the isomorphisms of the two structures' graphs, not only one structure's
+  automorphisms), so a twin found under another numbering is recognised as that twin. Rescored offline:
+  develop's HCOOH run 41.4 -> 27.6, integration's 2200 K run 55.2 -> 27.6, integration at 1800 K 27.6
+  unchanged.
+
 - **Explorer free energies: a TS's spectators count apart, as in its species.** A species of several molecules
   counts them apart at the standard state; a TS counted as one complex, so in a cluster seed a step between two
   molecules paid its spectators' association entropy on top of its barrier (about +20 to +50 kcal/mol at

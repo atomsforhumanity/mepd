@@ -1364,8 +1364,7 @@ def expand_network(
         # Two path searches can find the same TS; counting it twice would
         # double that channel's rate. Distinct TSs between the same pair
         # stay (parallel channels).
-        if any({st.a, st.b} == {a, b} and abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL < 0.1
-               for st in result.steps):
+        if any({st.a, st.b} == {a, b} and _same_ts(st, ts_e, found["ts"].structure) for st in result.steps):
             return
         # A path's highest image (no TS found) only bounds a barrier: a pair keeps one, and only while it
         # lies under every other step of the pair (a lower step makes the bound say nothing).
@@ -1390,6 +1389,20 @@ def expand_network(
                 "event": "step", "a": a, "b": b, "label": found.get("label", ""), "ts_energy": ts_e,
                 "barrier_kcal": [fwd, rev],
                 "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev)})
+
+    def _same_ts(st, ts_e: float, ts_structure) -> bool:
+        """Whether step `st`'s TS is this one (`ts_e`, Hartree; its Structure): the same energy (0.1 kcal/mol)
+        and geometry (superimposable by a proper rotation and a permutation of identical atoms, so a mirror
+        image -- the twin TS -- or another conformer's TS is another channel); energy alone when a geometry
+        is missing or undecided."""
+        from mepd.discovery.mirror import _angstrom, superimposable
+
+        if abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL >= 0.1:
+            return False
+        other = _ts_structure(st)
+        if other is None or ts_structure is None or list(map(str, other.symbols)) != list(map(str, ts_structure.symbols)):
+            return True
+        return superimposable(list(map(str, other.symbols)), _angstrom(other), _angstrom(ts_structure)) is not False
 
     live_kin = {"n_steps": -1, "hot": set(), "version": 0}
     live_steer = [None]   # schedule async: queues a steering single point (the live kinetics are steered too)
@@ -1767,6 +1780,7 @@ def expand_network(
         asked = tuple(st.files.get("pair") or ())
         piece = (st.a, st.b)
         dropped = start is None
+        duplicate = False
         if dropped:
             missed = asked
         else:
@@ -1777,6 +1791,9 @@ def expand_network(
             else:
                 st.a, st.b = a, b
                 st.files["verified"] = True
+                # its real ends may be those of a step with this very TS (found from another pair): one channel
+                duplicate = any(o is not st and {o.a, o.b} == {a, b} and _same_ts(o, st.ts_energy, _ts_structure(st))
+                                for o in result.steps)
                 irc_fp = Path(st.files["ts"]).with_name(f"{Path(st.files['ts']).stem}_irc.xyz") \
                     if st.files.get("ts") else None
                 if irc_fp is not None and irc_fp.exists() and not st.files.get("irc"):
@@ -1787,7 +1804,7 @@ def expand_network(
         # path search -- the steps between them, intermediates included.
         if len(missed) == 2 and tuple(missed) not in searched:
             retry.append(tuple(missed))
-        if dropped:
+        if dropped or duplicate:
             result.steps[:] = [x for x in result.steps if x is not st]
         # A path-search piece whose TS turned out to belong to another motion (both IRC ends one
         # species, or other species) keeps its path's highest image, as when no TS is found at all.

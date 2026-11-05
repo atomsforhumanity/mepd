@@ -101,19 +101,21 @@ def _heavy_graph(symbols: Sequence[str], X: np.ndarray, scale: float = 1.3, hydr
 
 def superimposable(symbols: Sequence[str], X: np.ndarray, Y: np.ndarray, *,
                    tol_angstrom: float = TOL_ANGSTROM) -> Optional[bool]:
-    """Whether geometry Y (Angstrom, the same atoms as X) superimposes on X
-    by a proper rotation and a permutation of equivalent atoms. None when
-    the heavy-atom graph has more than MAX_AUTOMORPHISMS automorphisms and no
-    match was found among the first ones (undecided)."""
+    """Whether geometry Y (Angstrom, the same atoms as X, in any order of
+    identical atoms) superimposes on X by a proper rotation and a permutation
+    of equivalent atoms (over the isomorphisms of the two heavy-atom graphs:
+    the automorphisms of X's when Y is X's mirror image). None when there are
+    more than MAX_AUTOMORPHISMS and no match was found among the first ones
+    (undecided)."""
     from networkx.algorithms.isomorphism import GraphMatcher
     from scipy.optimize import linear_sum_assignment
 
     symbols = [str(s) for s in symbols]
     X, Y = np.asarray(X, dtype=float), np.asarray(Y, dtype=float)
-    G, heavy, hyd = _heavy_graph(symbols, X)
-    if len(heavy) < 3:   # one or two heavy atoms fix no orientation: permute the hydrogens too
-        G, heavy, hyd = _heavy_graph(symbols, X, hydrogens=True)
-    matcher = GraphMatcher(G, G, node_match=lambda a, b: a["label"] == b["label"])
+    few = sum(s != "H" for s in symbols) < 3   # one or two heavy atoms fix no orientation: permute the H too
+    G, heavy, hyd = _heavy_graph(symbols, X, hydrogens=few)
+    GY, _, hyd_y = _heavy_graph(symbols, Y, hydrogens=few)
+    matcher = GraphMatcher(G, GY, node_match=lambda a, b: a["label"] == b["label"])
     for k, mapping in enumerate(matcher.isomorphisms_iter()):
         if k >= MAX_AUTOMORPHISMS:
             return None
@@ -123,7 +125,7 @@ def superimposable(symbols: Sequence[str], X: np.ndarray, Y: np.ndarray, *,
             continue
         if not hyd:
             return True
-        Yh = (Y[hyd] - cp) @ R.T + cq
+        Yh = (Y[hyd_y] - cp) @ R.T + cq
         cost = np.linalg.norm(Yh[:, None, :] - X[hyd][None, :, :], axis=2)
         r, c = linear_sum_assignment(cost)
         total = rmsd ** 2 * len(heavy) + float((cost[r, c] ** 2).sum())

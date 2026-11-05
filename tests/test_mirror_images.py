@@ -104,3 +104,26 @@ def test_enantiomers_both_found_share_the_lower_energy_and_the_reach():
     assert mirrors.virtual_of == [] and mirrors.twins == [(0, 0, 2)]
     _, _, g = mirrors.extend(steps, [0.0, -0.01, -0.005], 300.0)
     assert g[1] == g[2] == -0.01
+
+
+# a chiral TS-like geometry with two oxygens (formic-acid atoms, puckered): O C O H H
+_OCOHH = ["O", "C", "O", "H", "H"]
+_PUCKERED = np.array([[0.27, -0.94, -0.48], [-0.43, 0.14, -0.27], [0.14, 1.02, 0.54], [1.03, 0.70, 0.80],
+                      [-1.00, -0.92, -0.59]])
+
+
+def test_a_geometry_superimposes_with_its_identical_atoms_in_another_order():
+    from mepd.discovery.mirror import superimposable
+
+    order = [2, 1, 0, 4, 3]               # the two O and the two H swap labels (another search's numbering)
+    rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    assert superimposable(_OCOHH, _PUCKERED, _PUCKERED[order] @ rot.T + 0.3)
+    assert is_chiral(Structure(symbols=_OCOHH, geometry=_PUCKERED * ANGSTROM_TO_BOHR, charge=0, multiplicity=1))
+    mirror = _PUCKERED * [-1.0, 1.0, 1.0]
+    assert not superimposable(_OCOHH, _PUCKERED, mirror[order])          # its mirror image is another TS
+    species = [_node(FLAT), _node(APART)]
+    ts = Structure(symbols=_OCOHH, geometry=_PUCKERED * ANGSTROM_TO_BOHR, charge=0, multiplicity=1)
+    twin = ts.model_copy(update={"geometry": mirror[order] * ANGSTROM_TO_BOHR})
+    # the twin found under another numbering is recognised (not given a twin of its own as well)
+    steps = [Step(0, 1, 0.025, "s", {}), Step(1, 0, 0.025, "t", {})]
+    assert MirrorFinder()(species, steps, [ts, twin]).found_twins == [(0, 1)]

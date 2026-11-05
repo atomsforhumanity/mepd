@@ -260,6 +260,35 @@ def test_the_same_ts_found_by_two_searches_counts_once():
     assert [s.label for s in res.steps] == ["0", "2"]
 
 
+def test_a_ts_found_again_counts_once_but_its_mirror_image_and_another_conformer_stay(tmp_path):
+    """One TS, by energy and geometry: the same TS under another numbering of its identical atoms counts once;
+    its mirror image (the twin TS) and another conformer's TS at the same energy are other channels."""
+    import mepd
+
+    rng = np.random.default_rng(0)
+
+    def connect(pairs, nodes):
+        base = nodes[0].copy()
+        x = np.asarray(base.structure.geometry) + rng.normal(scale=0.4, size=(len(base.structure.symbols), 3))
+        h = [k for k, s in enumerate(base.structure.symbols) if s == "H"]
+        swapped = x.copy()
+        swapped[[h[0], h[1]]] = x[[h[1], h[0]]]
+        conformer = x.copy()
+        conformer[h[-1]] += [0.0, 1.5, 0.0]       # its OH (or one H) elsewhere: > 0.15 A RMSD
+        out = []
+        for k, g in enumerate((x, swapped, conformer, x * [-1.0, 1.0, 1.0])):
+            ts = StructureNode(structure=base.structure.model_copy(update={"geometry": g}))
+            ts._cached_energy = nodes[0].energy + 0.05 + 1e-7 * k
+            fp = tmp_path / f"{k}.xyz"
+            if not fp.exists():
+                mepd.write_xyz(fp, ts)
+            out.append({"start": nodes[0], "end": nodes[1], "ts": ts, "label": str(k), "files": {"ts": str(fp)}})
+        return out
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, steer="flux", connect=connect)
+    assert [s.label for s in res.steps] == ["0", "2", "3"]
+
+
 class _ShiftEngine(_GraphEngine):
     """Energies also fall as atom 0 moves along +x (so a translated copy of a
     species is a lower 'conformer'); minimizing a structure lowers it by a
@@ -458,6 +487,37 @@ def test_a_fast_step_whose_irc_fails_is_dropped():
                          connect=_unverified_connector(5.0), verify=lambda items: [(i, None, None) for i, _ in items],
                          access_cutoff_kcal=30.0)
     assert res.steps == []
+
+
+def test_a_fast_step_whose_irc_lands_on_a_step_with_the_same_ts_counts_once(tmp_path):
+    """Fast TSs asked for different pairs can be one TS: once their IRCs give them the same ends, one channel."""
+    import mepd
+
+    seen = {}
+
+    def connect(pairs, nodes, search=False):
+        if search:          # the pairs the fast TSs missed: no other TS
+            return []
+        seen["nodes"] = nodes
+        seen.setdefault("pairs", []).extend(pairs)
+        fp = tmp_path / "ts.xyz"
+        out = []
+        for i, j in pairs:
+            ts = nodes[0].copy()
+            ts._cached_energy = nodes[0].energy + 5.0 / 627.509
+            if not fp.exists():
+                mepd.write_xyz(fp, ts)
+            out.append({"start": nodes[i], "end": nodes[j], "pair": (i, j), "ts": ts, "label": f"fast_{i}_{j}",
+                        "files": {"ts": str(fp), "verified": False, "pair": [i, j]}})
+        return out
+
+    def verify(items):     # every TS's IRC: the seed <-> species 1
+        return [(idx, seen["nodes"][0].copy(), seen["nodes"][1].copy()) for idx, _ in items]
+
+    res = expand_network(_node("CO"), _GraphEngine(), rounds=1, allow_zwitterions=True, steer="access",
+                         connect=connect, verify=verify, access_cutoff_kcal=30.0)
+    assert len(seen["pairs"]) > 1                              # several pairs asked, so several fast TSs
+    assert [(st.a, st.b) for st in res.steps] == [(0, 1)]
 
 
 def test_structure_generator_runs_frontier_species_at_once(monkeypatch):
