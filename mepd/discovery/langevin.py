@@ -23,14 +23,25 @@ def capped(f: np.ndarray) -> np.ndarray:
     return f * (MAX_PULL / norm) if norm > MAX_PULL else f
 
 
-def pull_pairs(x: np.ndarray, pairs, k: float) -> np.ndarray:
+def pull_pairs(x: np.ndarray, pairs, k: float, masses=None) -> np.ndarray:
     """The gradient of pulling each pair's two atoms toward their moving
-    midpoint with a spring `k` (Eh/bohr^2), the force capped."""
+    midpoint with a spring `k` (Eh/bohr^2), the force capped. A pair
+    (i, j, A, B) of atoms of two molecules moves the molecules instead: the
+    same force, along i-j, on each whole molecule (atom lists A and B), spread
+    over its atoms by mass (`masses`), so the two come together as wholes,
+    aimed so that i meets j, and nothing is dragged out of either."""
     g = np.zeros_like(x)
-    for i, j in pairs:
+    for i, j, *mols in pairs:
         mid = 0.5 * (x[i] + x[j])
-        for a in (i, j):
-            g[a] += capped(k * (x[a] - mid))
+        if not mols:
+            for a in (i, j):
+                g[a] += capped(k * (x[a] - mid))
+            continue
+        f = capped(k * (x[i] - mid))
+        for atoms, sign in zip(mols, (1.0, -1.0)):
+            atoms = list(atoms)
+            w = np.asarray(masses, dtype=float)[atoms]
+            g[atoms] += sign * f * (w / w.sum())[:, None]
     return g
 
 

@@ -3,9 +3,10 @@
 What a person does in the Reactor (mepd.web.sandbox) with the piston on and
 "keep colliding" ticked: Langevin dynamics on GFN2-xTB (tblite) inside the
 nanoreactor's soft wall, which the piston swings between a wide and a
-squeezed radius, while Collide every so often pulls two atoms chosen at
-random toward their moving midpoint for a moment and lets go. Nothing picks
-the chemistry: the piston and the random pulls supply the energy, and the
+squeezed radius, while Collide every so often pulls two molecules chosen at
+random together for a moment (whole: the force spread over each by mass,
+aimed at an atom of each), or two atoms of one molecule, and lets go.
+Nothing picks the chemistry: the piston and the random pulls supply the energy, and the
 kinetics decide afterwards which of the reactions matter.
 
 The trajectory is read like the nanoreactor's (its bond hysteresis, minimum
@@ -41,13 +42,16 @@ OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
 
 
-def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[int, int]]:
+def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
     """The Reactor's Collide pick (Sandbox.js collisionPair), with `rng`: two
-    heavy atoms of two different molecules, any two with no species preferred
-    (neither pick avoids pairing two waters any more); or, 30% of the time and always with one
-    molecule, two atoms of one molecule at least `intra_hops` bonds apart.
-    Unlike the Reactor's (3 bonds, a heavy atom first, heavy pairs preferred),
-    any such pair, two hydrogens too: a person drags whatever looks promising, an unattended run must not
+    heavy atoms of two different molecules, any two with no species preferred,
+    with the two molecules' atoms, (i, j, A, B): the whole molecules are pushed
+    together along i-j (langevin.pull_pairs); or, 30% of the time and always
+    with one molecule, two atoms of one molecule at least `intra_hops` bonds
+    apart (pulled themselves: a lone molecule has no partner, and without these
+    pulls formic acid made nothing in 240 ps at 2200 K). Unlike the Reactor's
+    (3 bonds, a heavy atom first, heavy pairs preferred), any such pair, two
+    hydrogens too: a person drags whatever looks promising, an unattended run must not
     leave out the four-centre eliminations and H2 losses of a small molecule
     (formic acid: the Reactor's rule leaves one pair, an H shift)."""
     from mepd.discovery.collide_generator import _bonds, _hops
@@ -70,7 +74,7 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[i
     a = pick(mols)
     b = pick([m for m in mols if m is not a])
     hv = lambda m: [i for i in m if heavy(i)] or m
-    return int(pick(hv(a))), int(pick(hv(b)))
+    return int(pick(hv(a))), int(pick(hv(b))), tuple(a), tuple(b)
 
 
 def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, compress, period_ps, duty, pull_fs,
@@ -79,6 +83,7 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     a new <workdir>/run_kk laid out like a nanoreactor job (md/segment_kkk.xyz every LIVE_FRAMES frames,
     md/schedule.json, live_events.json): the web UI's Reactor view shows it live."""
     from mepd.discovery.langevin import LangevinMD, pull_pairs
+    from mepd.discovery.nanoreactor import _masses
     from mepd.discovery.nanoreactor import auto_radius
     from mepd.web.sandbox import piston_radius
 
@@ -89,9 +94,9 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     piston = {"period_ps": float(period_ps), "compress": float(compress), "duty": float(duty), "t0": 0.0} \
         if float(compress) < 1 else None
     k_au = float(k) / KCAL * BOHR * BOHR
-    pair = [None]
+    pair, masses = [None], _masses(symbols)
     md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature, wall=wide, seed=seed,
-                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au))
+                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
     rng = md.rng
     md.start()
     frames, t_fs = [md.pos * BOHR], 0.0
