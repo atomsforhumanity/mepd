@@ -43,11 +43,11 @@ LIVE_FRAMES = 125                # frames per segment file a live viewer reads (
 
 def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[int, int]]:
     """The Reactor's Collide pick (Sandbox.js collisionPair), with `rng`: two
-    heavy atoms of two different molecules (not both water when there is a
-    choice); or, 30% of the time and always with one molecule, two atoms of one
-    molecule at least `intra_hops` bonds apart. Unlike the Reactor's (3 bonds,
-    a heavy atom first, heavy pairs preferred), any such pair, two hydrogens
-    too: a person drags whatever looks promising, an unattended run must not
+    heavy atoms of two different molecules, any two with no species preferred
+    (neither pick avoids pairing two waters any more); or, 30% of the time and always with one
+    molecule, two atoms of one molecule at least `intra_hops` bonds apart.
+    Unlike the Reactor's (3 bonds, a heavy atom first, heavy pairs preferred),
+    any such pair, two hydrogens too: a person drags whatever looks promising, an unattended run must not
     leave out the four-centre eliminations and H2 losses of a small molecule
     (formic acid: the Reactor's rule leaves one pair, an H shift)."""
     from mepd.discovery.collide_generator import _bonds, _hops
@@ -66,12 +66,9 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[i
     pick_intra = (lambda: tuple(int(x) for x in pool[rng.integers(len(pool))])) if pool else (lambda: None)
     if len(mols) < 2 or (pool and rng.random() < 0.3):
         return pick_intra()
-    water = lambda m: len(m) == 3 and sorted(symbols[i] for i in m) == ["H", "H", "O"]
     pick = lambda xs: xs[rng.integers(len(xs))]
-    solutes = [m for m in mols if not water(m)]
-    a = pick(solutes or mols)
-    others = [m for m in solutes if m is not a]
-    b = pick(others if others and rng.random() < 0.6 else [m for m in mols if m is not a])
+    a = pick(mols)
+    b = pick([m for m in mols if m is not a])
     hv = lambda m: [i for i in m if heavy(i)] or m
     return int(pick(hv(a))), int(pick(hv(b)))
 

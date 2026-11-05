@@ -26,6 +26,22 @@ def test_pulls_between_molecules_take_two_heavy_atoms_of_different_molecules():
     assert inter and all(SYM[a % 5] != "H" and SYM[b % 5] != "H" for a, b in inter)
 
 
+def test_pulls_between_molecules_prefer_no_species():
+    """Two waters and a methane: every molecule is picked alike, so two waters meet in about a third of the
+    pulls between molecules (the Reactor's own pick avoided pairing two waters; user 2026-11-05: no species
+    preferred in an unattended run)."""
+    sym = ["O", "H", "H"] * 2 + ["C", "H", "H", "H", "H"]
+    water = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    methane = np.array([[0.0, 0.0, 0.0], [0.63, 0.63, 0.63], [-0.63, -0.63, 0.63], [-0.63, 0.63, -0.63],
+                        [0.63, -0.63, -0.63]])
+    xyz = np.vstack([water, water + [6.0, 0, 0], methane + [0, 6.0, 0]])
+    rng = np.random.default_rng(3)
+    mol = lambda i: 0 if i < 3 else (1 if i < 6 else 2)
+    inter = [(a, b) for a, b in (collision_pair(sym, xyz, rng) for _ in range(3000)) if mol(a) != mol(b)]
+    both_water = sum(mol(a) < 2 and mol(b) < 2 for a, b in inter) / len(inter)
+    assert both_water == pytest.approx(1 / 3, abs=0.05)
+
+
 def test_the_reactor_finds_both_formic_acid_channels():
     pytest.importorskip("tblite")
     from types import SimpleNamespace

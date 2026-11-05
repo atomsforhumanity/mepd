@@ -57,9 +57,9 @@ function hops(nb, a) {
 }
 // Collide: what a person does by hand (drag an atom of one molecule into
 // another and hold it), done for them: two heavy atoms of two different
-// molecules (not both water, when there is a choice), or of one molecule
-// three or more bonds apart (a ring closing, an H moving across), are pulled
-// together. With everything in one molecule, only the second is left.
+// molecules (any two, no species preferred), or of one molecule three or more
+// bonds apart (a ring closing, an H moving across), are pulled together. With
+// everything in one molecule, only the second is left.
 const COLLIDE_MS = 1600, COLLIDE_K = 100, INTRA_HOPS = 3;
 function intraPair(symbols, nb, mols) {
   const pairs = [];
@@ -82,13 +82,10 @@ export function collisionPair(symbols, pos) {
   const mols = molecules(nb);
   const intra = intraPair(symbols, nb, mols);
   if (mols.length < 2 || (intra && Math.random() < 0.3)) return intra;
-  const isWater = (m) => m.length === 3 && m.filter((i) => symbols[i] === 'O').length === 1 && m.filter((i) => symbols[i] === 'H').length === 2;
   const heavy = (m) => { const h = m.filter((i) => symbols[i] !== 'H'); return h.length ? h : m; };
   const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
-  const solutes = mols.filter((m) => !isWater(m));
-  const a = pick(solutes.length ? solutes : mols);
-  const rest = mols.filter((m) => m !== a);
-  const b = pick(solutes.filter((m) => m !== a).length && Math.random() < 0.6 ? solutes.filter((m) => m !== a) : rest);
+  const a = pick(mols);
+  const b = pick(mols.filter((m) => m !== a));
   return [pick(heavy(a)), pick(heavy(b))];
 }
 

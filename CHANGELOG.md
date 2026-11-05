@@ -432,6 +432,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
+  (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).
+  It used to avoid pairing two waters: water was never the first partner when there was another molecule, and a
+  non-water second partner was preferred 60% of the time. That was a rule about one species, so it's gone (user,
+  2026-11-05). Any two molecules are now equally likely. Generator trajectories of seeds with several molecules
+  change, since one random draw fewer is used per pick.
+
 - **Reactor generator: products the access cutoff can't reach don't hold up its convergence.** With `--steer access`,
   the explorer passes the reactor what is left of the access cutoff above the species it expands; a product whose
   quenched GFN2-xTB energy is further above that species (a step to it can't be lower than its reaction energy) is
