@@ -106,10 +106,10 @@ def build(run: str, commit: str, configs: list, systems: list, replicates: int, 
             shutil.copy(BENCH / f, d / "inputs" / Path(f).name)
     shutil.copy(BENCH / "orca_steer.toml", d / "inputs" / "orca_steer.toml")
     tasks = []
-    # pods start in task order: systems as given (put the long ones first), the configurations interleaved
-    # replicate by replicate, so both arms meet the same cluster load
-    for name in systems:
-        for r in range(replicates):
+    # pods start in task order: replicate by replicate, every system (as given: long ones first) and
+    # configuration in each, so all arms meet the same cluster load and a run cut short has every arm
+    for r in range(replicates):
+        for name in systems:
             for cname, cargs in configs:
                 seeds, sargs = seed_argv(r)
                 tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
@@ -150,13 +150,35 @@ def afh(*args, check=True):
     return subprocess.run(["afh", *args], check=check)
 
 
-def score_run(run: str, rescore: bool = False) -> dict:
-    """Unpack and score every finished task of RUN; aggregate per (system, configuration)."""
+def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
+    """Unpack and score every finished task of the run(s); aggregate per (system, configuration) into
+    results/<name> (default: the run's own name; several runs of one commit = one result set)."""
+    import tarfile
+
+    runs = [runs] if isinstance(runs, str) else list(runs)
+    name = name or runs[0]
+    suite = score.load_systems()
+    manifests, scores = [], []
+    for run in runs:
+        scores += _score_tasks(run, suite, rescore, manifests)
+    commits = sorted({m["commit"] for m in manifests})
+    agg = score.aggregate(scores, suite)
+    agg["run"], agg["runs"], agg["commit"] = name, runs, commits[0] if len(commits) == 1 else commits
+    agg["harness_commit"] = sorted({m["harness_commit"] for m in manifests})
+    agg["suite_source"] = score.SUITE_SOURCE
+    res = RESULTS / name
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "aggregate.json").write_text(json.dumps(agg, indent=1, default=str))
+    (res / "table.md").write_text(score.table(agg, scores))
+    print(score.table(agg, scores))
+    return agg
+
+
+def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list) -> list:
     import tarfile
 
     d, res = AFH_DIR / run, RESULTS / run
-    manifest = json.loads((d / "manifest.json").read_text())
-    suite = score.load_systems()
+    manifests.append(json.loads((d / "manifest.json").read_text()))
     tasks = [json.loads(line) for line in (d / "tasks.jsonl").read_text().splitlines() if line.strip()]
     scores = []
     for t in tasks:
@@ -177,15 +199,10 @@ def score_run(run: str, rescore: bool = False) -> dict:
                 shutil.copy(src / f, dst / f)
         o = score.score_task(t, suite[t["system"]], dst)
         o["afh"] = "output" if src.parent.name == "output" else "errors"
+        o["run"] = run
         (dst / "score.json").write_text(json.dumps(o, indent=1, default=str))
         scores.append(o)
-    agg = score.aggregate(scores, suite)
-    agg["run"], agg["commit"], agg["harness_commit"] = run, manifest["commit"], manifest["harness_commit"]
-    (res).mkdir(parents=True, exist_ok=True)
-    (res / "aggregate.json").write_text(json.dumps(agg, indent=1, default=str))
-    (res / "table.md").write_text(score.table(agg, scores))
-    print(score.table(agg, scores))
-    return agg
+    return scores
 
 
 def main(argv: list) -> int:
@@ -207,8 +224,9 @@ def main(argv: list) -> int:
     for name in ("submit", "pull", "status"):
         sub.add_parser(name).add_argument("run")
     s = sub.add_parser("score")
-    s.add_argument("run")
+    s.add_argument("run", nargs="+")
     s.add_argument("--rescore", action="store_true")
+    s.add_argument("--as", dest="name", default=None, help="results name for several runs (default: the first)")
     g = sub.add_parser("gate")
     g.add_argument("base")
     g.add_argument("cand")
@@ -225,7 +243,7 @@ def main(argv: list) -> int:
     elif a.cmd == "status":
         afh("status", a.run, check=False)
     elif a.cmd == "score":
-        score_run(a.run, a.rescore)
+        score_run(a.run, a.rescore, a.name)
     elif a.cmd == "gate":
         import gate
         return gate.main([a.base, a.cand])
