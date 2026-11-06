@@ -4,7 +4,7 @@ import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
 import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
-import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, playgroundFitMargins, reactionOfEdge, variantScope } from '../util.js';
+import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
 import { VariantTools } from './Variants.js';
@@ -88,7 +88,7 @@ function fitCapped(c, padding = 70) {
 
 // The view fitted to the graph, as the layout in use wants it.
 function fitView(c) {
-  if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+  fitCapped(c);
 }
 
 // Fit everything into the canvas minus margins (px) kept free for overlays.
@@ -950,7 +950,7 @@ export function Graph() {
     })
       .on('layoutstop', () => {
         arranging.current = false;
-        if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+        fitCapped(c);
         savePositions(c);
       }).run();
   };
@@ -978,13 +978,13 @@ export function Graph() {
       name: 'preset', positions: (n) => pos[n.id()], animate: true, animationDuration: 450, fit: false,
     }).on('layoutstop', () => {
       arranging.current = false;
-      if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+      fitCapped(c);
       savePositions(c);
     }).run();
   };
   treeRef.current = treeLayout;
 
-  // Commands from outside the graph (the playground layout's bottom dock):
+  // Commands from outside the graph:
   // 'arrange', 'select-all', or {cmd: 'fit', margins: {l, t, r, b}} to fit
   // into the part of the canvas that floating controls leave free.
   useEffect(() => {

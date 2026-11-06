@@ -108,7 +108,7 @@ function startPreset(p) {
 // Done first, then what is new, then what comes next, then the unknown.
 const ORDER = { done: 0, open: 1, all: 1, locked: 2, far: 3 };
 
-function QuestMap() {
+export function QuestMap() {
   const map = useMap();
   const near = (q) => q.after.some((a) => map.done.has(a));
   // "Show everything": every tool unlocked and usable, none marked new.

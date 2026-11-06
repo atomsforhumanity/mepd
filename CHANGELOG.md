@@ -10,6 +10,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ## [Unreleased]
 
+### Changed
+
+- **Web: the Workbench shell.** One screen instead of seven top tabs.
+  - **Layout:** a thin top bar (mepd → Home, the workspace, Learn, Settings); the structure list and inspector only on the workspace pages (Explore, Reactions, Kinetics, Calculations); a Calculations bar along the bottom (what is running, the level of theory, units).
+  - **Drawers:** Settings (profiles, level of theory) and Learn (manual, references, your tools) open over the canvas, so the page underneath stays.
+  - **Modes:** Design and the reactor get a mode bar with one way out (Done / Exit).
+  - **Addresses:** every page has one (`#/explore`, `#/calc/<id>/live`, `#/design?d=settings`, …), so it can be linked, bookmarked and reloaded. Back and forward work as before.
+  - **Esc:** goes up one level: the selection, then a drawer, then the page.
+  - **Quests:** they still unlock tools, but no longer lock whole pages or bounce to the first screen.
+  - **Removed:** the Playground layout and its font, because the Workbench replaces both layouts.
+  - Design tokens (spacing, type, motion, chart colours) start in `static/shell.css`.
+
 ### Added
 
 - **Explorer, async: the rotamers of every TS the kinetics use.** Once a step's TS has its IRC (open within the

@@ -10,10 +10,8 @@ const _pref = (k, d) => { try { const v = localStorage.getItem('mepd:' + k); ret
 
 export const state = {
   connected: false,
-  // 'classic' (sidebars) or 'playground' (full-screen graph, floating controls; after the UMA playground).
-  layout: _pref('layout', 'classic'),
-  pgBg: _pref('pgBg', 'light'),          // playground background: 'light' | 'dark'
-  pgPanel: null,                         // playground: which sheet is open ('add' | 'settings' | null)
+  theme: _pref('theme', 'auto'),         // 'auto' | 'light' | 'dark'
+  tray: false,                           // the Calculations bar opened into its table
   // The 'How it works' panel, once dismissed, stays away (per browser).
   howToHidden: (() => { try { return localStorage.getItem('mepd:hideHowTo') === 'true'; } catch { return false; } })(),
   // Getting-started steps done (molecule, reactor, reaction) and whether they are hidden (Welcome.js).
@@ -37,7 +35,10 @@ export const state = {
   maxConcurrent: 1,
   progress: {},          // job id -> latest progress payload (merged)
   selection: { structures: [], edges: [] },  // click order preserved
-  view: { tab: 'graph', jobId: null },
+  // What the canvas shows (tab: 'welcome' Home, 'graph' Explore, 'analyze', 'jobs', 'job',
+  // 'design' and 'sandbox' modes) and which drawer is open over it ('settings' | 'learn' | null).
+  // The old Settings ('profiles') and References ('refs') pages open as drawers (see `set`).
+  view: { tab: 'graph', jobId: null, drawer: null },
   connectMode: false,
   network: '',           // which network Explore shows: '' the parent, else a variant id (mepd.web.variants)
   toasts: [],
@@ -49,7 +50,21 @@ export function update(fn) {
   for (const l of [...listeners]) l();
 }
 
+// Settings and References are drawers over the canvas now, not pages: a view
+// asking for one keeps the page underneath and opens the drawer instead.
+const DRAWER_OF = { profiles: 'settings', refs: 'learn' };
+export function normalizeView(v, current = state.view) {
+  if (!v) return v;
+  const drawer = DRAWER_OF[v.tab];
+  if (drawer) {
+    const under = current && !DRAWER_OF[current.tab] ? current : { tab: 'graph', jobId: null };
+    return { ...under, drawer };
+  }
+  return { drawer: null, ...v };
+}
+
 export function set(patch) {
+  if (patch.view) patch = { ...patch, view: normalizeView(patch.view) };
   update((s) => Object.assign(s, patch));
 }
 
@@ -193,7 +208,54 @@ export function familyOf(jobs, id) {
 // a step that the browser's back and forward (and a phone's back gesture)
 // walk through; the job page's ← does the same while there is a step to go
 // back to.
-const viewKey = (v) => `${v.tab}|${v.jobId || ''}|${v.run || ''}|${v.sandbox?.id || v.sandbox || ''}`;
+// Every page has an address (#/explore, #/calc/<id>/live, #/design?d=settings),
+// so a page can be linked, bookmarked and reloaded.
+const sandboxId = (v) => v.sandbox?.id || v.sandbox || '';
+export function formatHash(v, analyze = state.analyze) {
+  let path;
+  switch (v.tab) {
+    case 'welcome': path = '/home'; break;
+    case 'analyze': path = `/${analyze?.view === 'kinetics' ? 'kinetics' : 'reactions'}`; break;
+    case 'jobs': path = '/calculations'; break;
+    case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
+    case 'design': path = '/design'; break;
+    case 'sandbox': path = `/reactor/${encodeURIComponent(sandboxId(v))}`; break;
+    default: path = '/explore';
+  }
+  const q = [];
+  if (v.tab === 'job' && v.run) q.push(`run=${encodeURIComponent(v.run)}`);
+  if (v.drawer) q.push(`d=${v.drawer}`);
+  return `#${path}${q.length ? `?${q.join('&')}` : ''}`;
+}
+// The view a hash names (null when it names none). A reactor link only keeps
+// its id: the app looks the reactor up again (it may have ended).
+export function parseHash(hash) {
+  const m = /^#\/([^?]*)(?:\?(.*))?$/.exec(hash || '');
+  if (!m) return null;
+  const parts = m[1].split('/').filter(Boolean).map(decodeURIComponent);
+  const q = Object.fromEntries((m[2] || '').split('&').filter(Boolean).map((kv) => kv.split('=').map(decodeURIComponent)));
+  const drawer = ['settings', 'learn'].includes(q.d) ? q.d : null;
+  const base = { jobId: null, drawer };
+  switch (parts[0]) {
+    case 'home': return { ...base, tab: 'welcome' };
+    case 'explore': return { ...base, tab: 'graph' };
+    case 'reactions': return { ...base, tab: 'analyze', analyze: 'reactions' };
+    case 'kinetics': return { ...base, tab: 'analyze', analyze: 'kinetics' };
+    case 'calculations': return { ...base, tab: 'jobs' };
+    case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
+    case 'design': return { ...base, tab: 'design' };
+    case 'reactor': return { ...base, tab: 'sandbox', sandbox: parts[1] ? { id: parts[1] } : null };
+    default: return null;
+  }
+}
+function viewFromHash(hash) {
+  const v = parseHash(hash);
+  if (!v) return null;
+  const { analyze, ...view } = v;
+  if (analyze) state.analyze = { ...(state.analyze || {}), view: analyze };
+  return view;
+}
+const viewKey = (v) => formatHash(v);
 let shownKey = null, restoring = false, replacing = false;
 export function historyDepth() { return (typeof history !== 'undefined' && history.state?.mepdDepth) || 0; }
 // A redirect the app makes on its own (first screen, a locked tab, back to a
@@ -206,25 +268,38 @@ export function replaceView(view, extra = {}) { asRedirect(() => set({ ...extra,
 export function goBack(fallback) {
   if (historyDepth() > 0) history.back(); else set({ view: fallback });
 }
+// Up one level: a drawer closes; a calculation goes back to the list; a mode or
+// any other page goes back to Explore.
+export function upLevel() {
+  const v = state.view;
+  if (v.drawer) { set({ view: { ...v, drawer: null } }); return; }
+  if (v.tab === 'job') { set({ view: { tab: 'jobs', jobId: null } }); return; }
+  if (v.tab !== 'graph') set({ view: { tab: 'graph', jobId: null } });
+}
 if (typeof window !== 'undefined' && window.history) {
-  // A reload stays on the page it showed (its history step remembers it).
+  // The address wins (a link, a bookmark, a reload); else the history step's own view.
+  const fromHash = viewFromHash(location.hash);
   const kept = history.state?.mepdView;
-  if (kept && kept.tab && !['welcome', 'sandbox'].includes(kept.tab)) state.view = kept;
-  try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, ''); } catch { /* not cloneable */ }
+  if (fromHash) state.view = fromHash;
+  else if (kept && kept.tab && !['welcome', 'sandbox'].includes(kept.tab)) state.view = normalizeView(kept, null);
+  try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, '', formatHash(state.view)); } catch { /* not cloneable */ }
   shownKey = viewKey(state.view);
   listeners.add(() => {
     const k = viewKey(state.view);
     if (k === shownKey) return;
     shownKey = k;
     if (restoring) return;
-    if (replacing) { try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, ''); } catch { /* not cloneable */ } return; }
-    try { history.pushState({ mepdView: state.view, mepdDepth: historyDepth() + 1 }, ''); } catch { /* not cloneable */ }
+    if (replacing) { try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, '', k); } catch { /* not cloneable */ } return; }
+    try { history.pushState({ mepdView: state.view, mepdDepth: historyDepth() + 1 }, '', k); } catch { /* not cloneable */ }
   });
   window.addEventListener('popstate', (e) => {
-    const v = e.state?.mepdView;
+    // A step this app pushed carries its view; an address typed or edited by hand only its hash.
+    const v = e.state?.mepdView || viewFromHash(location.hash);
     if (!v) return;
     restoring = true;
     try { set({ view: v }); } finally { restoring = false; }
+    shownKey = viewKey(state.view);
+    if (!e.state?.mepdView) { try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, '', shownKey); } catch { /* not cloneable */ } }
   });
 }
 
@@ -245,8 +320,12 @@ export async function confirmProfileEdits() {
 }
 
 export async function openTab(tab) {
-  if (state.view.tab === 'profiles' && tab !== 'profiles' && !(await confirmProfileEdits())) return;
+  if (state.view.drawer === 'settings' && tab !== 'profiles' && !(await confirmProfileEdits())) return;
   set({ view: { tab, jobId: state.view.jobId } });
+}
+export async function closeDrawer() {
+  if (state.view.drawer === 'settings' && !(await confirmProfileEdits())) return;
+  set({ view: { ...state.view, drawer: null } });
 }
 
 // ---- per-viewer conveniences (never required for correctness) ----------
