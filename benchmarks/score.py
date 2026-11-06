@@ -35,8 +35,9 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
   kinetics close steps) or when the live kinetics give it a population > 1e-30 (no closed step carries
   that much). No snapshot after the last change: the end of the run. Recall incomplete at the end: None.
   The reach is on the energies the cutoff was applied to when the final summary records them (`access`,
-  team4x 3a047da on: free energies, from energies[0]; partial summaries don't record them, so a partial
-  network gets the final record's energies, steps matched by label), else on electronic energies.
+  team4x 3a047da on: free energies, from energies[0]), else on electronic energies. A partial summary
+  with its own record (team5x 53bbabb on: `access` with `step_labels`) gives the live kinetics' open steps
+  directly (by label); one without gets the final record's energies on its network, steps matched by label.
 - selectivity swings (settle["swing"], per target): |RT ln(sel/final)| over the live kinetics' snapshots,
   each holding until the next one (the last until the end of the run): time-weighted mean and max over the
   snapshots with a finite, nonzero selectivity, and the time more than 0.5 kcal/mol off (a snapshot with no,
@@ -381,6 +382,7 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
     parts = sorted(snap_dir.glob("summary_partial_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
     part_t = [int(p.stem.split("_")[-1]) / 1e9 for p in parts]
     reach_cache: dict = {}
+    n_part_record = [0]
     acc = summary.get("access")
     acc_ts = {st.get("label"): float(t) for st, t in zip(summary.get("steps") or [], acc["ts_energies"])} if acc else {}
 
@@ -392,6 +394,20 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
             try:
                 ps = json.loads(parts[i].read_text())
                 sp, st = ps.get("species") or [], ps.get("steps") or []
+                pa = ps.get("access")
+                if pa and pa.get("step_labels") is not None:   # the live kinetics' own open steps (team5x 53bbabb on)
+                    labels, by_label = pa["step_labels"], {}
+                    for s in st:
+                        by_label.setdefault(s.get("label"), s)
+                    use = []
+                    for m in pa["open"]:
+                        lab = labels[m] if m < len(labels) else None
+                        s = st[m] if m < len(st) and st[m].get("label") == lab else by_label.get(lab)
+                        if s is not None:
+                            use.append(s)
+                    reach_cache[i] = reachable(len(sp), use)
+                    n_part_record[0] += 1
+                    return reach_cache[i]
                 if acc:   # the final cutoff energies on the partial network (steps by label)
                     energies = acc["energies"][:len(sp)]
                     st = [s for s in st if s.get("label") in acc_ts and s["a"] < len(energies) and s["b"] < len(energies)]
@@ -465,7 +481,8 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
             last = key
     return {"settle_s": t_settle, "quick": t_settle is not None and t_settle <= QUICK_S,
             "n_kinetics_snapshots": len(series), "n_partial_snapshots": len(parts), "swing": swing,
-            "reach_energies": "access record" if acc else "electronic", "course": course}
+            "reach_energies": "access record" if acc else "electronic", "partials_with_record": n_part_record[0],
+            "course": course}
 
 
 # ----------------------------------------------------------------------------------------------- audit
