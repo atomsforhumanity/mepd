@@ -426,13 +426,18 @@ class GXTBCalculator(Engine):
     # element ... is not symmetric"); 0.001 matches central differences of
     # g-xTB gradients to ~1e-4 for ~20% more time.
     hessian_acc: float = 0.001
-    # Minimizations: "sella" (Sella with g-xTB's exact Hessian, to `min_fmax`;
-    # the default since 2026-10-19: 100% converged and 99.4% true minima on
-    # 1000 IRC ends, vs. xtb's own optimizer whose "normal" threshold is
-    # ~0.05 eV/Angstrom), "geometric", "lbfgs", or "xtb" (xtb's ANCopt).
+    # Minimizations: "sella" (Sella, to `min_fmax`; the default since
+    # 2026-10-19: 100% converged and 99.4% true minima on 1000 IRC ends, vs.
+    # xtb's own optimizer whose "normal" threshold is ~0.05 eV/Angstrom; its
+    # minimizer uses g-xTB's Hessian only with `hessian_every`), "qcopt"
+    # (AFH's optimizer, mepd.engines._qcopt), "geometric", "lbfgs", or "xtb"
+    # (xtb's ANCopt).
     minimizer: str | None = None          # None: DEFAULT_MINIMIZER
     min_fmax: float = 0.001
     DEFAULT_MINIMIZER: ClassVar[str] = "sella"
+    # TS searches and IRCs: "sella" (through ASE) or "qcopt" (mepd.engines._qcopt).
+    ts_optimizer: str | None = None       # None: DEFAULT_TS_OPTIMIZER
+    DEFAULT_TS_OPTIMIZER: ClassVar[str] = "sella"
     # Independent calculations (a chain's images, a batch of geometry
     # optimizations) run as up to this many concurrent g-xTB processes.
     # 0 = as many as the machine has cores for at n_threads each.
@@ -457,6 +462,8 @@ class GXTBCalculator(Engine):
     axtb_conventions: str | None = None
 
     def __post_init__(self) -> None:
+        if self._ts_optimizer() not in ("sella", "qcopt"):
+            raise ValueError(f"ts_optimizer must be \"sella\" or \"qcopt\", not {self.ts_optimizer!r}.")
         if self.backend not in ("xtb", "axtb"):
             raise ValueError(f"backend must be \"xtb\" or \"axtb\", not {self.backend!r}.")
         if self.backend == "axtb":
@@ -466,7 +473,7 @@ class GXTBCalculator(Engine):
                 raise ValueError("backend = \"axtb\" computes g-xTB only (add_gxtb_flag = true).")
             if (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb":
                 raise ValueError("minimizer = \"xtb\" runs the g-xTB program's own optimizer; with backend = "
-                                 "\"axtb\" use sella, geometric or lbfgs.")
+                                 "\"axtb\" use qcopt, sella, geometric or lbfgs.")
             self._axtb_settings = axtb_backend.settings_from_args(_split_args(self.extra_args))
         # Nothing configured: $GXTB_EXECUTABLE, else `gxtb`, which (if not on
         # PATH) _resolve_executable looks up -- or fetches -- on first use.
@@ -484,6 +491,9 @@ class GXTBCalculator(Engine):
                     "Use a profile [solvation] table (method = \"correction\": GFN2-xTB solvation on top of "
                     "g-xTB) instead.")
         self.env = {str(k): str(v) for k, v in dict(self.env or {}).items()}
+
+    def _ts_optimizer(self) -> str:
+        return str(self.ts_optimizer or self.DEFAULT_TS_OPTIMIZER).lower()
 
     def _resolve_executable(self) -> None:
         """No executable configured and `gxtb` not on PATH: an installed g-xTB
@@ -860,9 +870,11 @@ class GXTBCalculator(Engine):
         keywords: dict[str, Any] | None = None,
     ) -> list[StructureNode]:
         """Minimize to a largest atomic force of `fmax` (eV/Angstrom; default
-        `min_fmax`) with `optimizer` (default `minimizer`): "sella" (Sella's
-        minimizer with g-xTB's exact Hessian, renewed every `hessian_every`
-        steps), "geometric" (geomeTRIC, TRIC coordinates) or "lbfgs"
+        `min_fmax`) with `optimizer` (default `minimizer`): "qcopt" (AFH's
+        optimizer: TRIC coordinates, Lindh's model Hessian, or g-xTB's exact
+        one renewed every `hessian_every` steps), "sella" (Sella's minimizer;
+        g-xTB's exact Hessian only with `hessian_every`), "geometric"
+        (geomeTRIC, TRIC coordinates) or "lbfgs"
         (LBFGSLineSearch). With `minimizer="xtb"` and no `fmax`/`optimizer`,
         g-xTB's own optimizer (ANCopt, "normal" thresholds). Either way an
         unconverged run raises."""
@@ -973,6 +985,10 @@ class GXTBCalculator(Engine):
         if optimizer == "xtb":
             raise ValueError("optimizer='xtb' has no force threshold: leave out `fmax` to use xtb's own optimizer.")
         every = kwds.pop("hessian_every", None)
+        if optimizer == "qcopt":
+            from mepd.engines import _qcopt
+
+            return _qcopt.minimize(self, node, fmax=fmax, maxiter=steps, hessian_every=every, **kwds)
         if optimizer == "geometric":
             from mepd.irc_geometric import minimize_with_geometric
 
@@ -989,7 +1005,7 @@ class GXTBCalculator(Engine):
             return ase_engine._run_ase_optimization(
                 node=node, optimizer_cls=Sella, keywords={"fmax": fmax, "steps": steps, "optimizer_kwds": optimizer_kwds})
         if optimizer != "lbfgs":
-            raise ValueError(f"Unknown optimizer '{optimizer}': lbfgs, sella or geometric.")
+            raise ValueError(f"Unknown optimizer '{optimizer}': qcopt, lbfgs, sella or geometric.")
         return ase_engine.compute_geometry_optimization(node, {"fmax": fmax, "steps": steps})
 
     def _map(self, fn, items: list) -> list:
@@ -1016,15 +1032,26 @@ class GXTBCalculator(Engine):
         node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> StructureNode:
-        """Optimize a TS guess through ASE/Sella using local g-xTB energies/gradients.
+        """Optimize a TS guess with `ts_optimizer` ("sella" through ASE, or
+        "qcopt") using local g-xTB energies/gradients.
 
-        Sella starts from g-xTB's own Hessian (`xtb --hess`) instead of
-        estimating the curvature from gradients, and recomputes it every
-        `hessian_every` steps (default: only at the start; 1 = every step).
-        `exact_hessian=False` restores Sella's gradient-based estimate."""
+        Either starts from g-xTB's own Hessian instead of estimating the
+        curvature from gradients, and recomputes it every `hessian_every` steps
+        (default: only at the start, and for qcopt when the updated Hessian
+        loses its negative mode; 1 = every step). `exact_hessian=False` restores
+        Sella's gradient-based estimate (qcopt: finite differences of
+        gradients)."""
         kwds = dict(keywords or {})
         exact = kwds.pop("exact_hessian", True)
         every = kwds.pop("hessian_every", None)
+        if self._ts_optimizer() == "qcopt":
+            from mepd.engines import _qcopt
+            from mepd.engines.ase import DEFAULT_FMAX
+
+            fmax = float(kwds.pop("fmax", DEFAULT_FMAX))
+            steps = int(kwds.pop("maxiter", kwds.pop("maxit", kwds.pop("steps", 500))))
+            return _qcopt.transition_state(self, node, fmax=fmax, maxiter=steps, exact_hessian=exact,
+                                           hessian_every=every, **kwds)[-1]
         if exact:
             optimizer_kwds = dict(kwds.pop("optimizer_kwds", kwds.pop("optimizer_kwargs", {})) or {})
             optimizer_kwds.setdefault("hessian_function", self._ase_hessian_function(node))
@@ -1055,7 +1082,12 @@ class GXTBCalculator(Engine):
         ts_node: StructureNode,
         keywords: dict[str, Any] | None = None,
     ) -> Chain:
-        """Compute an IRC through ASE/Sella using local g-xTB energies/gradients."""
+        """Compute an IRC with `ts_optimizer` ("sella" through ASE, or "qcopt"
+        from g-xTB's Hessian at the TS) using local g-xTB energies/gradients."""
+        if self._ts_optimizer() == "qcopt":
+            from mepd.engines import _qcopt
+
+            return _qcopt.irc(self, ts_node, keywords)
         return self._as_ase_engine_for_node(ts_node).compute_irc_chain(
             ts_node=ts_node,
             keywords=keywords,

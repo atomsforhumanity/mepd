@@ -12,6 +12,25 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **qcopt, AFH's optimizer, for g-xTB minimizations, TS searches and IRCs** (`GXTBCalculator(minimizer="qcopt",
+  ts_optimizer="qcopt")`, or `minimizer = "qcopt"` and `ts_optimizer = "qcopt"` in `[gxtb_engine_kwds]`). The
+  defaults are unchanged (Sella); `ts_optimizer` is a new field (`"sella"` or `"qcopt"`).
+  - qcopt (github.com/atomsforhumanity/qcopt, on PyPI) minimizes by RS-RFO and climbs by RS-P-RFO in TRIC
+    coordinates, with TS-BFGS updates, and follows IRCs by Gonzalez-Schlegel steps. `mepd.engines._qcopt` runs it
+    on the engine's gradients and Hessians.
+  - On qcopt's own benchmark (100 Reaction-QM reactions, g-xTB from axtb): every TS search reached a first-order
+    saddle with a median of 12 gradients (Sella 16); 196 of 200 minimizations reached a true minimum with a median
+    of 33 (Sella 192, 143); IRCs ended in the same minima as Sella's in all 100 with a median of 375 gradients,
+    ends included (Sella 2,407).
+  - Sella's keywords carry over: `fmax` (eV/Angstrom), `maxiter`/`steps`, and for IRCs `dx` (Sella's step,
+    Angstrom amu^1/2); `keep_going` is ignored. Sella-only options raise `ValueError`.
+  - A run that runs out of steps raises `GeometryOptimizationNotConvergedError` with `.structure`, so `find_ts`
+    goes on from where it stopped, as with Sella.
+  - Minimizations start from Lindh's model Hessian (an exact g-xTB Hessian costs about 38 gradients and did not pay
+    for itself on the 200 minimizations), or from g-xTB's with `hessian_every`; TS searches and IRCs start from
+    g-xTB's Hessian.
+  - Needs Python 3.11 or later, like the current qc* packages; the `gxtb` and `ase` extras install it there.
+
 - **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
   reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
   energies and gradients come from this process with no program start per call, and Hessians are analytic.
@@ -449,6 +468,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   again with NEB.
 
 ### Changed
+
+- **The qc\* packages are locked at their current versions on Python 3.11 and later**: qcdata 0.23.1, qccompute
+  0.22.0, qccodec 0.21.0, qcinf 0.5.1 and qcref 0.5.1 (qcopt needs qcdata 0.23.1). qccompute no longer has a
+  `qcengine` extra, so qcengine and qcelemental are no longer installed; mepd imports neither.
+- **The Python API docs said g-xTB minimizations use Sella with g-xTB's exact Hessian.** Sella 2.6.0's minimizer
+  ignores `hessian_function` unless `hessian_every` is set (its defaults for minima have `eig=False`), so it uses its
+  own estimate; the docs now say so.
 
 - **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
   (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).
