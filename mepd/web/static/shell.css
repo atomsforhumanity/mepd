@@ -224,3 +224,11 @@
 .ls-name { font: 13px var(--font-ui); fill: var(--text); text-anchor: middle; }
 .ls-share { font: 600 20px var(--font-serif); fill: var(--accent); text-anchor: middle; }
 .ls-foot { margin-top: 8px; }
+
+/* ---------- a calculation as a sentence (Actions.js OperationCard) */
+.calc-sentence { margin: 0 0 8px; font-size: var(--fs-md); line-height: 1.7; }
+.cs-verb { font-weight: 700; color: var(--heading); }
+.cs-pick { display: inline-block; padding: 0 6px; border-bottom: 2px solid var(--accent); background: var(--accent-soft); color: var(--heading); font-weight: 600; border-radius: var(--radius) var(--radius) 0 0; }
+.cs-usual { margin-left: 10px; font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; }
+.cs-settings > summary { cursor: pointer; color: var(--accent); font-size: var(--fs-sm); margin: 2px 0 8px; }
+.op-run .btn.primary { box-shadow: var(--key-shadow-accent); }

@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: a calculation reads as one sentence.** Each tool's card opens on what it will do, on what, and at which level: "Transition state from chloride + CBr to bromide + chloromethane at gxtb". It also shows how long it usually takes here (the median of earlier runs). Every setting stays one click away under Settings, which marks how many differ from the defaults.
+
 - **Web: Explore › Landscape, the routes that matter as one energy diagram.**
   - Built from the last kinetics run: the starting mixture is a bar, and every step that carries material (at least 1 % of the busiest) is a hump over its TS to the next mixture.
   - Line width shows how much went that way, colour the barrier band, and each product carries its final share. Energies are relative to the start, at the basis the kinetics used.
