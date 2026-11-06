@@ -14,7 +14,7 @@ import { api } from '../api.js';
 import { openJob, set, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 
-const W = 1100, H = 720, CX = W / 2, CY = H / 2, M = 64;
+const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_SEED = 88;   // card widths (px); height is 3/4 of it
 const band = (v) => (v == null ? 'var(--edge-idle)' : v < 10 ? 'var(--chart-3)' : v < 20 ? 'var(--chart-4)' : 'var(--chart-5)');
 
@@ -46,7 +46,7 @@ function layoutOf(tl) {
       big[j] = Math.max(big[j], x[0] === seed ? BOX_SEED : Math.min(BOX_MAX, BOX_MAX * Math.sqrt((x[2] || 0) / pm)));
     }
   }
-  const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.62;
+  const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.85;
   for (let it = 0; it < 260; it += 1) {
     const t = 18 * (1 - it / 260) + 0.5;
     const d = pos.map(() => [0, 0]);
@@ -54,7 +54,8 @@ function layoutOf(tl) {
       for (let j = i + 1; j < n; j += 1) {
         const dx = pos[i][0] - pos[j][0], dy = pos[i][1] - pos[j][1];
         const dd = Math.max(1, Math.hypot(dx, dy));
-        const clear = (big[i] + big[j]) / 2 + 14;   // card half-widths plus a gap
+        // Card half-widths plus a gap; a wide one between big cards (the start and the products), so they stand apart.
+        const clear = (big[i] + big[j]) / 2 + (Math.min(big[i], big[j]) > 1.5 * BOX_MIN ? 190 : 40);
         // Repulsion reaches only nearby species (else a crowd pushes loners to the walls); overlap pushes hard.
         const f = (dd < 3 * k ? (k * k) / dd : 0) + (dd < clear ? (clear - dd) * 8 : 0);
         if (!f) continue;
@@ -63,17 +64,19 @@ function layoutOf(tl) {
     }
     for (const [a, b] of E) {
       const dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1];
-      const dd = Math.max(1, Math.hypot(dx, dy)), f = (dd * dd) / k;
+      // Springs between big cards (the products and the start) are looser, so what matters spreads out;
+      // so are a hub's (one species with many steps), else a dense core knots up.
+      const dd = Math.max(1, Math.hypot(dx, dy)), f = (dd * dd) / k / ((big[a] + big[b]) / (2 * BOX_MIN)) / Math.sqrt(Math.max(deg[a], deg[b]));
       d[a][0] -= (dx / dd) * f; d[a][1] -= (dy / dd) * f; d[b][0] += (dx / dd) * f; d[b][1] += (dy / dd) * f;
     }
     for (let i = 0; i < n; i += 1) {
       // A gentle pull to the middle, so species with no step among the shown ones stay near, not in the corners.
-      const g = deg[i] ? 0.09 : 0.4;
+      const g = deg[i] ? 0.04 : 0.35;
       d[i][0] += (CX - pos[i][0]) * g; d[i][1] += (CY - pos[i][1]) * g * 1.5;
       if (ids[i] === seed) { pos[i] = [CX, CY]; continue; }
       const dl = Math.max(1, Math.hypot(d[i][0], d[i][1]));
       pos[i][0] = Math.min(W - M, Math.max(M, pos[i][0] + (d[i][0] / dl) * Math.min(dl, t)));
-      pos[i][1] = Math.min(H - M, Math.max(M, pos[i][1] + (d[i][1] / dl) * Math.min(dl, t)));
+      pos[i][1] = Math.min(H - M - 40, Math.max(M, pos[i][1] + (d[i][1] / dl) * Math.min(dl, t)));
     }
   }
   return { at: Object.fromEntries(ids.map((id, i) => [id, pos[i]])), seed };
