@@ -50,11 +50,14 @@ ORACLE = {"name": "gfn2", "device": "cuda"}     # set by main: "gfn2" (axtb) or 
 
 
 def oracle_engine(outd: Path):
-    """The oracle's engine (GFN2: axtb with the method switched; UMA: the mlip engine on ORACLE's device)."""
+    """The oracle's engine (GFN2: axtb with the method switched; g-xTB: axtb with g-xTB's conventions, the reference
+    re-optimized from its own transition states the same way; UMA: the mlip engine on ORACLE's device)."""
     if ORACLE["name"] == "gfn2":
         use_gfn2(True)
         return engine(GFN2_PROFILE, outd, ".oracle.toml")
     use_gfn2(False)
+    if ORACLE["name"] == "gxtb":
+        return engine(GXTB_PROFILE, outd, ".oracle.toml")
     return engine(UMA_PROFILE.format(device=ORACLE["device"]), outd, ".oracle.toml")
 
 
