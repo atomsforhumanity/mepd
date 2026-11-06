@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: theme switch.** Settings has Auto, Light and Dark, next to "All tools".
+
 - **Web: a calculation reads as one sentence.** Each tool's card opens on what it will do, on what, and at which level: "Transition state from chloride + CBr to bromide + chloromethane at gxtb". It also shows how long it usually takes here (the median of earlier runs). Every setting stays one click away under Settings, which marks how many differ from the defaults.
 
 - **Web: Explore › Landscape, the routes that matter as one energy diagram.**
