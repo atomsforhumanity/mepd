@@ -55,6 +55,7 @@ import score  # noqa: E402  (benchmarks/score.py: the suite, metrics and audit)
 
 CONFIGS = {
     "default": [],                                                  # the code's own reactor settings
+    "cap400": ["--max-species", "400"],
     "T1500": ["--generator-option", "temperature=1500"],
     "T1800": ["--generator-option", "temperature=1800"],
     "T2200": ["--generator-option", "temperature=2200"],
