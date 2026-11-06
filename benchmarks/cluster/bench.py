@@ -289,8 +289,12 @@ def report(name: str) -> str:
 
     res = RESULTS / name
     agg = json.loads((res / "aggregate.json").read_text())
-    scores = [json.loads(fp.read_text()) for run in agg.get("runs", [name])
-              for fp in sorted((RESULTS / run).glob("*/score.json"))]
+    by_id: dict = {}     # as score_run: a later run's task replaces an earlier one's of the same id
+    for run in agg.get("runs", [name]):
+        for fp in sorted((RESULTS / run).glob("*/score.json")):
+            o = json.loads(fp.read_text())
+            by_id[o["id"]] = o
+    scores = list(by_id.values())
     out = [f"# {name}: explorer {agg.get('commit')}, harness {agg.get('harness_commit')}, suite {agg.get('suite_source')}",
            "", (res / "table.md").read_text()]
     groups = {k: g for k, g in agg.items() if isinstance(g, dict) and "system" in g}
