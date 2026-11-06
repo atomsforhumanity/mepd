@@ -3,7 +3,7 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore, openReaction } from '../store.js';
 import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
@@ -661,10 +661,9 @@ export function Graph() {
       else select({ edges: [edgeOf(evt.target)] }, additive);
     });
     c.on('dbltap', 'edge', (evt) => {
-      // A reaction (or any) edge: open the calculation behind its barrier.
+      // A reaction: open its page (the path as a movie, its barriers).
       const edge = state.workspace.edges[edgeOf(evt.target)];
-      const job = edge && edgeStatus(edge, state.jobs).barrierJob;
-      if (job) openJob(job);
+      if (edge) openReaction(edge.id);
     });
     c.on('dbltap', 'node', (evt) => {
       const id = evt.target.id();

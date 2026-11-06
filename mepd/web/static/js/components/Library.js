@@ -2,7 +2,7 @@
 // browse the library. Library entries and graph nodes are the same thing.
 import { html, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { isNew, markAllSeen, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { isNew, markAllSeen, openReaction, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { cls, depictUrl, edgeStatus, fmtKcal, isComplex, isSpecies, levelStatus } from '../util.js';
 import { QmmmAdd } from './QMMM.js';
 import { markQuest, useMap } from '../quests.js';
@@ -189,7 +189,8 @@ function ReactionRow({ e, selected, fresh }) {
     : html`<span class="muted">no barrier yet</span>`;
   const pic = (r) => { const u = depictUrl(r.smiles, 150, 90); return u ? html`<img src=${u} alt="" loading="lazy" />` : html`<span class="small muted">${r.formula}</span>`; };
   return html`<li class=${cls('card rxn-row', selected && 'selected')} title=${`${a.name} → ${b.name}`}
-    onClick=${() => { select({ edges: [e.id] }); findInGraph(e.id, true); }}>
+    onClick=${() => { select({ edges: [e.id] }); findInGraph(e.id, true); }}
+    onDblClick=${() => openReaction(e.id)}>
     <div class="rxn-pics">${pic(a)}<span class="rxn-arrow">→</span>${pic(b)}</div>
     <div class="rxn-meta small">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}
       <span class="rxn-names">${a.name} → ${b.name}</span><span class="rxn-tag">${tag}</span></div>

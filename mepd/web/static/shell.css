@@ -154,3 +154,28 @@
 .lg-band.low { background: var(--chart-3); border-radius: 2px 0 0 2px; }
 .lg-band.mid { background: var(--chart-4); }
 .lg-band.high { background: var(--chart-5); border-radius: 0 2px 2px 0; margin-right: 6px; }
+
+/* ---------- object pages (a reaction) */
+.focus { padding: 14px 24px 28px; display: flex; flex-direction: column; gap: 12px; max-width: 1100px; }
+.crumbs { display: flex; gap: 8px; align-items: baseline; color: var(--muted); font-size: var(--fs-md); }
+.crumbs b { font: 600 22px/1.2 var(--font-serif); color: var(--heading); }
+.focus-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-k { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); font-size: var(--fs-sm); }
+.chip-k.link { color: var(--accent); box-shadow: var(--key-shadow); }
+.band-low { color: var(--chart-3); } .band-mid { color: var(--chart-4); } .band-high { color: var(--chart-5); }
+.focus-empty, .focus-missing { padding: 28px; border: 1px dashed var(--border-strong); border-radius: var(--radius); text-align: center; color: var(--muted); }
+.open-rxn { margin: 4px 0 12px; }
+.reaction-player { display: flex; flex-direction: column; gap: 10px; }
+.rp-stage { position: relative; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--viewer-bg); }
+.rp-where { position: absolute; left: 10px; top: 10px; display: flex; gap: 8px; align-items: center; pointer-events: none; }
+.rp-tag { padding: 2px 8px; border-radius: var(--radius); font-size: 12px; font-weight: 700; background: var(--accent-soft); color: var(--heading); border: 1px solid var(--border-strong); }
+.rp-tag.ts { background: var(--warn-soft); color: var(--warn); border-color: #d9ae62; }
+.rp-e { font: 500 13px var(--font-mono); color: var(--heading); }
+.rp-key { position: absolute; right: 10px; top: 10px; display: flex; gap: 12px; font-size: 12px; color: var(--muted); pointer-events: none; }
+.rp-key i { display: inline-block; width: 20px; height: 0; border-top: 3px dashed; margin-right: 5px; vertical-align: middle; }
+.rp-form { color: var(--chart-1); } .rp-break { color: var(--chart-2); }
+.rp-bonds { display: flex; flex-wrap: wrap; gap: 14px; font: 13px var(--font-mono); }
+.rp-bond.form b { color: var(--chart-1); } .rp-bond.break b { color: var(--chart-2); }
+.rp-controls { display: flex; align-items: center; gap: 8px; }
+.rp-controls input[type=range] { flex: 1; accent-color: var(--accent); }
+.rp-play { min-width: 76px; justify-content: center; box-shadow: var(--key-shadow-accent); }

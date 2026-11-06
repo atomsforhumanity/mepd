@@ -11,6 +11,7 @@ import { DesignView } from './components/Design.js';
 import { AnalyzeView } from './components/Analyze.js';
 import { SandboxView } from './components/Sandbox.js';
 import { WelcomeView } from './components/Welcome.js';
+import { ReactionFocus } from './components/ReactionPlayer.js';
 import { ActivityBar, CanvasHeader, Drawer, ModeBar, TopBar } from './components/Shell.js';
 import { announceUnlocks, markQuest, mapOf, useMap } from './quests.js';
 
@@ -24,7 +25,7 @@ function Toasts() {
 
 // Which panes each page has: the browser belongs to the workspace pages;
 // Home and the two modes (Design, the reactor) use the whole width.
-const WITH_BROWSER = new Set(['graph', 'analyze', 'jobs', 'job']);
+const WITH_BROWSER = new Set(['graph', 'analyze', 'jobs', 'job', 'reaction']);
 
 function App() {
   const view = useStore((s) => s.view);
@@ -71,7 +72,7 @@ function App() {
   const demo = state.demo;
   const nothingSelected = !state.selection.structures.length && !state.selection.edges.length;
   const browser = WITH_BROWSER.has(view.tab);
-  const showInspector = view.tab === 'graph' && !(nothingSelected && howToHidden);
+  const showInspector = (view.tab === 'graph' && !(nothingSelected && howToHidden)) || view.tab === 'reaction';
   return html`
     <${TopBar} />
     ${demo && html`<div class="demo-banner small" title=${`Limits: ${demo.max_atoms} atoms per structure, ${demo.max_active_jobs} calculations at a time, ${Math.round(demo.job_timeout_s / 60)} min per calculation${demo.op_timeout_s?.vri ? ` (VRI searches ${Math.round(demo.op_timeout_s.vri / 60)} min)` : ''}. The built-in profiles are fixed; Settings › Save as… makes your own.`}>${`Demo · your private workspace · up to ${demo.max_atoms} atoms, ${demo.max_active_jobs} calculations at a time`}</div>`}
@@ -84,6 +85,7 @@ function App() {
           <div class="center-view" hidden=${view.tab !== 'graph'}><${Graph} /></div>
           ${view.tab === 'jobs' && html`<${JobsView} />`}
           ${view.tab === 'job' && html`<${JobView} jobId=${view.jobId} />`}
+          ${view.tab === 'reaction' && html`<${ReactionFocus} edgeId=${view.edgeId} />`}
           ${view.tab === 'design' && html`<${DesignView} />`}
           ${view.tab === 'analyze' && html`<${AnalyzeView} />`}
           ${view.tab === 'sandbox' && (view.sandbox?.symbols ? html`<${SandboxView} />` : html`<p class="boot">Finding the reactor…</p>`)}

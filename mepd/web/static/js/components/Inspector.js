@@ -1,7 +1,7 @@
 // Right panel: what is selected, what we know about it, what can be run on it.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { clearSelection, openJob, openReaction, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { complexesGoingWith, complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
@@ -400,6 +400,13 @@ function InspectorProducts({ sids }) {
   return html`<${ProductPicker} reactants=${reactants} onReactants=${setReactants} />`;
 }
 
+// On Explore, a selected reaction opens on its own page (its path as a movie).
+function openBtn(eid) {
+  if (state.view.tab === 'reaction') return null;
+  return html`<button class="bulb open-rxn" onClick=${() => openReaction(eid)}>
+    <span class="bulb-mark" aria-hidden="true">▶</span><b>Open: play its path</b></button>`;
+}
+
 // The empty inspector: big counts, the lowest verified barrier as the thing
 // to look at next, and how to start when there is nothing yet.
 function WorkspaceSummary({ workspace }) {
@@ -422,7 +429,7 @@ function WorkspaceSummary({ workspace }) {
         <span><b>${es.length}</b>reactions</span>
         <span><b>${Object.keys(jobs).length}</b>calculations</span>
       </div>
-      ${best ? html`<button class="bulb" onClick=${() => select({ edges: [best.e.id] })} title=${`${name(best.e.source)} → ${name(best.e.target)}`}>
+      ${best ? html`<button class="bulb" onClick=${() => openReaction(best.e.id)} title=${`${name(best.e.source)} → ${name(best.e.target)}`}>
           <span class="bulb-mark" aria-hidden="true">◆</span><b>Watch the fastest step</b><span class="bulb-num">${fmtKcal(best.v)}</span></button>`
         : !ss.length ? html`<button class="bulb" onClick=${() => set({ view: { tab: 'welcome', jobId: null } })}>
           <span class="bulb-mark" aria-hidden="true">◆</span><b>Add a molecule</b></button>` : null}
@@ -469,12 +476,12 @@ export function Inspector() {
     head = 'Reaction';
     const r = reactionOfEdge(workspace, sel.edges[0]);
     extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
-    body = html`<${ReactionCard} key=${r.id} r=${r} compact />
+    body = html`${openBtn(sel.edges[0])}<${ReactionCard} key=${r.id} r=${r} compact />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
     head = 'Edge';
-    body = html`<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
+    body = html`${openBtn(sel.edges[0])}<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
     extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
   } else if (nS && nE) {
     head = 'Mixed selection';

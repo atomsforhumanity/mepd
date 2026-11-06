@@ -12,6 +12,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: reaction pages and the reaction player.**
+  - Double-click a reaction (in Explore or the list), or use "Open: play its path", for its own page at `#/reaction/<edge>`.
+  - The page shows the forward and reverse barriers and plays the path: 3D, energy profile and the bonds that form (blue) and break (orange), with their live lengths, all on one scrubber.
+  - Space plays and the arrow keys step; there are Start / TS / End jumps.
+
 - **Web: Explore shows what matters.**
   - Edges are coloured by barrier on one scale: under 10 kcal/mol teal, 10–20 amber, above 20 red and thinner.
   - After a kinetics run, a node's area grows with the material that passes through it and an edge's width with its net extent, both capped.

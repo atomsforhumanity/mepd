@@ -218,6 +218,7 @@ export function formatHash(v, analyze = state.analyze) {
     case 'analyze': path = `/${analyze?.view === 'kinetics' ? 'kinetics' : 'reactions'}`; break;
     case 'jobs': path = '/calculations'; break;
     case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
+    case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;
     case 'design': path = '/design'; break;
     case 'sandbox': path = `/reactor/${encodeURIComponent(sandboxId(v))}`; break;
     default: path = '/explore';
@@ -243,6 +244,7 @@ export function parseHash(hash) {
     case 'kinetics': return { ...base, tab: 'analyze', analyze: 'kinetics' };
     case 'calculations': return { ...base, tab: 'jobs' };
     case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
+    case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1] } : { ...base, tab: 'graph' };
     case 'design': return { ...base, tab: 'design' };
     case 'reactor': return { ...base, tab: 'sandbox', sandbox: parts[1] ? { id: parts[1] } : null };
     default: return null;
@@ -274,6 +276,7 @@ export function upLevel() {
   const v = state.view;
   if (v.drawer) { set({ view: { ...v, drawer: null } }); return; }
   if (v.tab === 'job') { set({ view: { tab: 'jobs', jobId: null } }); return; }
+  if (v.tab === 'reaction') { set({ view: { tab: 'graph', jobId: null } }); return; }
   if (v.tab !== 'graph') set({ view: { tab: 'graph', jobId: null } });
 }
 if (typeof window !== 'undefined' && window.history) {
@@ -301,6 +304,11 @@ if (typeof window !== 'undefined' && window.history) {
     shownKey = viewKey(state.view);
     if (!e.state?.mepdView) { try { history.replaceState({ mepdView: state.view, mepdDepth: historyDepth() }, '', shownKey); } catch { /* not cloneable */ } }
   });
+}
+
+// A reaction's own page: its barriers and its path as a movie (ReactionPlayer.js).
+export function openReaction(edgeId) {
+  set({ view: { tab: 'reaction', jobId: null, edgeId } });
 }
 
 export function openJob(jobId, tab = null) {
