@@ -23,6 +23,25 @@ On a remote machine, run it there and use an SSH tunnel:
 submission and file reading to anyone who can reach the port. The page's JavaScript libraries are
 vendored under `mepd/web/static/vendor/`, so it works without internet access.
 
+## The Workbench
+
+The page is one screen:
+
+| Part | What it holds |
+|---|---|
+| **Top bar** | `mepd` (back to Home), the workspace (switch sessions), **Learn** (manual, references, your tools), the gear (**Settings**: level of theory, profiles, All tools, theme). |
+| **Home** (`#/home`) | Three doors. **Learn**: the step-by-step path (molecule → reactor → reaction → network). **Start working**: a SMILES, name or reaction straight into Explore, recent sessions, the *All tools* switch. **Examples**: finished studies (`mepd/web/showcase/`) that open as your own copy. |
+| **Structure list** (left) | Molecules and reactions, one status mark each (● checked minimum, ◌ not optimized, ‡ TS, ✕ failed; the words are the tooltip), *+ Add* (SMILES, xyz, QM/MM system) and *Draw*. |
+| **Canvas** (centre) | Explore (the graph: edges coloured by barrier; after a kinetics run, nodes and edges sized by the material that passes), Reactions, Kinetics, Landscape (the routes that carry material as one energy diagram), a reaction's page, a calculation's page. |
+| **Inspector** (right) | **Tools** (what you can run on the selection; each card reads as one sentence, settings folded), **Results** (what is known), **Method** (level, pipeline, settings vs defaults, the command that reproduces it). Nothing selected: the workspace's counts and its fastest step. |
+| **Calculations bar** (bottom) | What is running, the level of theory, units; click it for the full list. |
+
+**Design and the Reactor are modes** over the canvas, each with one way out (Done / Exit). Design's Move tool drags atoms into place by hand.
+
+**Addresses:** every page has one: `#/explore`, `#/reactions`, `#/kinetics`, `#/landscape`, `#/reaction/<edge>`, `#/calculations`, `#/calc/<job>[/<tab>]`, `#/design`, `#/reactor/<id>`, `#/home`. Add `?d=settings` or `?d=learn` for a drawer. Back and forward walk them, a reload stays, and a link opens the same page. **Esc** goes up one level: the selection, then a drawer, then the page.
+
+**Reaction pages** (double-click a reaction) play its path: 3D, energy profile and the bonds that form and break, on one scrubber (Space plays, ←/→ step).
+
 ## Mental model
 
 | Concept | What it is |
@@ -31,7 +50,7 @@ vendored under `mepd/web/static/vendor/`, so it works without internet access.
 | **Structure** | A library entry and, equally, a graph node. It is added from SMILES (one per line, `SMILES name`), pasted XYZ (multi-frame means several structures), dropped `.xyz`/`.smi` files, or imported from a result. |
 | **Edge** | A pair of structures declared as connected, with a direction (start → end). It is drawn with **Connect** (or the `C` key), made by *Connect as edge* on two selected structures, created implicitly by running a pair calculation, or imported from a result. Atom counts must match. |
 | **Operation** | A mepd command the UI can run: TS / MEP (`mepd run`), reaction channels (`mepd channels`), TS from a guess (`mepd ts`), reaction network expansion (`mepd discovery expand`, `hessian-sample`, `hessian-global`: one card with the methods Bond rules, CREST msreact, Hessian sampling and Basin hopping), and all-pairs network (`mepd network-splits`). |
-| **Profile** | A `RunInputs` TOML (the `--inputs` file): engine, level of theory, path minimizer and thresholds. It is edited and validated in the Profiles tab; *Validate* actually builds the engine in a scratch process. |
+| **Profile** | A `RunInputs` TOML (the `--inputs` file): engine, level of theory, path minimizer and thresholds. It is edited and validated in the Settings drawer; *Validate* actually builds the engine in a scratch process. |
 | **Job** | One `mepd …` subprocess with its own folder. |
 | **Level of theory** | Each workspace has one: a chosen profile (Structures panel → *Level of theory*). Its fingerprint is the engine, program, method and basis settings. Every structure records the level its geometry and energy belong to. |
 | **Known minimum** | A structure that is a minimum at a stated level: optimized on entry, or imported from a minima or conformer result of a job. A pair job skips endpoint minimization only when both endpoints are minima **at that job's level**; anything else (force-field embeddings, raw XYZ, structures from another level or an external output) is re-minimized first. |
@@ -117,7 +136,7 @@ was kept, or an NEB that never converged) are shown above the results.
 
 Build or edit a structure in 3D: from scratch (click empty space to drop an atom, with its hydrogens; click a hydrogen to grow a new atom in its place), from SMILES, a reaction SMILES (above), an XYZ file (upload, drop or paste, with its charge), or a graph node. *Add molecule* places a preset, any SMILES, or an uploaded XYZ (kept rigid, as in the file) next to the atom you click.
 
-A new, empty workspace opens on Design; an empty Explore points there too.
+A new, empty workspace opens on Home; an empty Explore points there too.
 
 ### QM/MM systems
 
