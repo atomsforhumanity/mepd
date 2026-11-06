@@ -28,6 +28,7 @@ function stylesheet() {
       'text-valign': 'bottom', 'text-margin-y': 6 * L, 'text-wrap': 'ellipsis', 'text-max-width': 140 * L,
       'text-background-color': css('--bg'), 'text-background-opacity': 0.85, 'text-background-padding': 2,
     } },
+    { selector: 'node[fw]', style: { width: 'data(fw)', height: 'data(fh)' } },
     { selector: 'node[?noimg]', style: { 'background-image': 'none', label: 'data(label)', 'text-valign': 'center', 'text-margin-y': 0 } },
     { selector: 'node:selected', style: { 'border-width': 3, 'border-color': css('--accent') } },
     { selector: 'node.connect-source', style: { 'border-width': 3, 'border-style': 'dashed', 'border-color': css('--accent') } },
@@ -41,6 +42,11 @@ function stylesheet() {
     { selector: 'edge[status = "done"]', style: { 'line-style': 'solid', 'line-color': css('--ok'), 'target-arrow-color': css('--ok') } },
     // Only a multi-step route joins the two ends (no single step does): not drawn as a step.
     { selector: 'edge[status = "done"][route = "yes"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [2, 5] } },
+    // Barriers on one colour scale; the label takes the edge's colour.
+    { selector: 'edge[status = "done"][band = "low"]', style: { 'line-color': css('--chart-3'), 'target-arrow-color': css('--chart-3'), color: css('--chart-3'), width: 3.2 } },
+    { selector: 'edge[status = "done"][band = "mid"]', style: { 'line-color': css('--chart-4'), 'target-arrow-color': css('--chart-4'), color: css('--chart-4'), width: 2.4 } },
+    { selector: 'edge[status = "done"][band = "high"]', style: { 'line-color': css('--chart-5'), 'target-arrow-color': css('--chart-5'), color: css('--chart-5'), width: 1.6, opacity: 0.75 } },
+    { selector: 'edge[fx]', style: { width: 'data(fx)' } },
     { selector: 'edge[status = "running"]', style: { 'line-style': 'solid', 'line-color': css('--accent'), 'target-arrow-color': css('--accent'), width: 3.5 } },
     { selector: 'edge[status = "queued"]', style: { 'line-color': css('--warn'), 'target-arrow-color': css('--warn') } },
     { selector: 'edge[status = "failed"]', style: { 'line-color': css('--danger'), 'target-arrow-color': css('--danger') } },
@@ -495,9 +501,12 @@ const REV = '~rev';
 function reverseEdge(e, st, source, target) {
   if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return null;
   return { id: e.id + REV, of: e.id, source: target, target: source, status: edgeDrawStatus(st), label: st.barrierRev.toFixed(1),
-    runs: '', route: st.routeSteps ? 'yes' : '' };
+    runs: '', route: st.routeSteps ? 'yes' : '', band: barrierBand(st.barrierRev) };
 }
 const edgeOf = (el) => el.data('of') || el.id();
+// One energy scale everywhere (shell.css --chart-*): a barrier under 10 kcal/mol
+// reads green-teal, 10-20 amber, above 20 red. Width grows as the barrier falls.
+export const barrierBand = (v) => (v == null ? '' : v < 10 ? 'low' : v < 20 ? 'mid' : 'high');
 
 // Frame these edges: their reverse arrows, their ends, and a complex end's molecules.
 function fitToEdges(c, ids) {
@@ -785,7 +794,7 @@ export function Graph() {
         ids.add(e.id);
         const st = edgeStatus(e, state.jobs);
         const data = { id: e.id, source, target, status: edgeDrawStatus(st), label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
-          route: st.routeSteps ? 'yes' : '' };
+          route: st.routeSteps ? 'yes' : '', band: st.levels?.length > 1 ? '' : barrierBand(st.barrierFwd ?? st.barrier) };
         let rev = reverseEdge(e, st, source, target);
         if (cond && !['running', 'queued'].includes(st.status)) {
           const info = edgeUnderSetup(e, state.jobs, cond);
@@ -798,7 +807,7 @@ export function Graph() {
         const cur = c.getElementById(e.id);
         if (cur.nonempty()) {
           if (cur.data('status') !== data.status || cur.data('label') !== data.label || cur.data('runs') !== data.runs
-            || cur.data('route') !== data.route) cur.data(data);
+            || cur.data('route') !== data.route || cur.data('band') !== data.band) cur.data(data);
         } else c.add({ group: 'edges', data });
         if (rev) {
           ids.add(rev.id);
@@ -806,7 +815,7 @@ export function Graph() {
           if (r.nonempty() && (r.data('source') !== rev.source || r.data('target') !== rev.target)) r.remove();
           const now = c.getElementById(rev.id);
           if (now.nonempty()) {
-            if (now.data('status') !== rev.status || now.data('label') !== rev.label || now.data('route') !== rev.route) now.data(rev);
+            if (now.data('status') !== rev.status || now.data('label') !== rev.label || now.data('route') !== rev.route || now.data('band') !== rev.band) now.data(rev);
           } else c.add({ group: 'edges', classes: 'rev', data: rev });
         }
       }
@@ -1051,6 +1060,41 @@ export function Graph() {
     window.addEventListener('mepd:graph', on);
     return () => window.removeEventListener('mepd:graph', on);
   }, []);
+  // After a kinetics run (Reactions › Kinetics): what carries the material is
+  // drawn bigger. Node area grows with the amount that passes through it,
+  // edge width with the step's net extent; both capped so nothing vanishes or swamps.
+  const kin = useStore((s) => s.kinetics?.res || null);
+  useEffect(() => {
+    const c = cy.current;
+    if (!c) return;
+    c.batch(() => {
+      c.nodes().removeData('fw fh');
+      c.edges().removeData('fx');
+      if (!kin?.steps?.length) return;
+      const through = {};
+      const edgeFlux = {};
+      for (const st of kin.steps) {
+        const x = Math.abs(st.extent || 0);
+        if (!st.edge || !x) continue;
+        edgeFlux[st.edge] = (edgeFlux[st.edge] || 0) + x;
+        const el = c.getElementById(st.edge);
+        if (el.empty()) continue;
+        for (const n of [el.source(), el.target()]) {
+          through[n.id()] = (through[n.id()] || 0) + x;
+          n.connectedEdges('.member').connectedNodes().forEach((m) => { if (m.id() !== n.id()) through[m.id()] = (through[m.id()] || 0) + x; });
+        }
+      }
+      for (const sp of kin.species || []) through[sp.id] = Math.max(through[sp.id] || 0, sp.c0 || 0);
+      const top = Math.max(1e-30, ...Object.values(through));
+      const etop = Math.max(1e-30, ...Object.values(edgeFlux));
+      const scale = (f) => Math.min(1.6, Math.max(0.6, 1.6 * Math.sqrt(f / top)));
+      c.nodes(':not(.cx)').forEach((n) => { const k = scale(through[n.id()] || 0); n.data({ fw: 96 * k, fh: 72 * k }); });
+      c.edges(':not(.member)').forEach((e) => {
+        const f = edgeFlux[e.data('of') || e.id()] || 0;
+        e.data('fx', Math.min(9, Math.max(1.2, 9 * Math.sqrt(f / etop))));
+      });
+    });
+  }, [kin, workspace, statusKey]);
   const empty = Object.keys(workspace.structures).length === 0;
 
   return html`
@@ -1087,7 +1131,7 @@ export function Graph() {
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
       ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified; when both directions are known, each direction is its own arrow with its own barrier. No TS: searched, but no transition state joins the two ends (click it for the path's highest point). Dotted: no single step joins the two, only a route through intermediates (its highest step).">
-        <span><i class="lg done"></i>barrier</span>
+        <span class="lg-scale"><i class="lg-band low"></i><i class="lg-band mid"></i><i class="lg-band high"></i>${'barrier <10 · 10–20 · >20'}</span>
         <span><i class="lg idle"></i>not computed</span>
         <span><i class="lg route"></i>route</span>
       </div>`}

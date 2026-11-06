@@ -147,3 +147,10 @@
 .ws-tip { margin-top: 14px; }
 .card-body { flex: 1; }
 .card-name { width: 100%; }
+
+/* the barrier colour scale's key */
+.lg-scale { display: inline-flex; align-items: center; gap: 0; }
+.lg-band { display: inline-block; width: 14px; height: 4px; }
+.lg-band.low { background: var(--chart-3); border-radius: 2px 0 0 2px; }
+.lg-band.mid { background: var(--chart-4); }
+.lg-band.high { background: var(--chart-5); border-radius: 0 2px 2px 0; margin-right: 6px; }

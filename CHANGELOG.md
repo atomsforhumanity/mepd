@@ -12,6 +12,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: Explore shows what matters.**
+  - Edges are coloured by barrier on one scale: under 10 kcal/mol teal, 10–20 amber, above 20 red and thinner.
+  - After a kinetics run, a node's area grows with the material that passes through it and an edge's width with its net extent, both capped.
+  - Reactions and Kinetics are now the canvas's view tabs, so the Analyze page lost its own switch.
+
 - **Web: Home has three doors.**
   - **Learn:** the step-by-step path, as before.
   - **Start working:** type a SMILES, a name or a reaction and land in Explore; recent sessions; an "All tools" switch.

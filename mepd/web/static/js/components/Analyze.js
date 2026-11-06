@@ -99,15 +99,10 @@ function ExportAll() {
 // ------------------------------------------------------------ the view
 export function AnalyzeView() {
   const mode = useStore((s) => (s.analyze || {}).view) || 'reactions';
-  const nav0 = useStore((s) => s.analyze) || {};
   useEffect(() => { if (mode === 'kinetics') markQuest('kinetics'); }, [mode]);
-  const toggle = html`<div class="segmented an-mode">
-    <button class=${mode === 'reactions' ? 'on' : ''} onClick=${() => set({ analyze: { ...nav0, view: 'reactions' } })}>Reactions</button>
-    <button class=${mode === 'kinetics' ? 'on' : ''} onClick=${() => set({ analyze: { ...nav0, view: 'kinetics' } })}
-      title="The network as a kinetic model: what forms, what controls it, and how it moves with temperature">Kinetics</button>
-  </div>`;
-  if (mode === 'kinetics') return html`<div class="analyze-wrap">${toggle}<${KineticsView} /></div>`;
-  return html`<div class="analyze-wrap">${toggle}<${ReactionsAnalyze} /></div>`;
+  // (Reactions and Kinetics are the canvas's own view tabs: Shell.js CanvasHeader.)
+  if (mode === 'kinetics') return html`<div class="analyze-wrap"><${KineticsView} /></div>`;
+  return html`<div class="analyze-wrap"><${ReactionsAnalyze} /></div>`;
 }
 
 function ReactionsAnalyze() {
