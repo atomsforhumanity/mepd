@@ -1523,3 +1523,22 @@ def test_async_a_species_first_found_as_an_irc_end_is_connected_from_the_species
     k = next(i for i, sp in enumerate(res.species) if graph_edges(sp.node) == graph_edges(torn))
     assert not any(e.target == k and e.source != k for e in res.edges)    # no proposal made it
     assert (0, k) in forked.pairs                              # connected from the seed all the same
+
+
+def test_async_schedule_at_max_species_ends_with_what_it_has():
+    """An async run stopped by max_species, like one out of time, doesn't go on to sample channels or IRC-check
+    steps after its queue (unbudgeted, outside the queue: F0007 reached 200 species at 1459 s of a 1800 s budget,
+    then ran whole channel searches for 40 minutes and failed queueing a steering single point into the closed
+    queue)."""
+    asked = []
+
+    def refine(items):
+        asked.extend(items)
+        return [{"direct": [], "other": [], "conformers": []} for _ in items]
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=_AsyncConnector(),
+                         access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6}, schedule="async",
+                         refine=refine, max_species=4)
+    assert res.rounds[0]["stopped"] == "max species" and res.steps
+    assert asked == []

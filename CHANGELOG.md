@@ -804,6 +804,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Explorer, async: a run stopped by `max_species` ends with what it has**, as one out of time does: no IRC checks or
+  whole channel searches after its queue (unbudgeted), and no steering single point queued into the closed queue
+  (`AttributeError: 'NoneType' object has no attribute 'submit'`). F0007 with a version of this branch that
+  channel-sampled every IRC-end pair reached 200 species at 1459 s of 1800, then ran channel searches for 40 minutes
+  and failed without a summary.
+
 - **Kinetics crashed on networks slower than their time span** ("Values in `t_eval` are not within `t_span`",
   `mepd.discovery.kinetics.simulate` and `mepd.conditions.simulate_first_order`). With only slow steps, as just
   after an explorer's first TS, the time samples ran from `time_s` to `time_s`, and `geomspace` could put one a

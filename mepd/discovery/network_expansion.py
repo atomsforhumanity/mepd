@@ -2614,6 +2614,7 @@ def expand_network(
         result.rounds[-1]["iced_pieces"] = len(connect.iced)
         # why it ended: "converged" (the kinetics asked for nothing more), or the budget that ran out
         result.rounds[-1]["stopped"] = stopped[0] or "converged"
+        live_steer[0] = None    # the queue is closed: missing steering single points are computed here, not queued
         _emit(on_event, "phase", round=cycle, phase=f"ended: {result.rounds[-1]['stopped']}")
         _kinetics_record([])
         _save(force=True)
@@ -2771,9 +2772,10 @@ def expand_network(
         _save(force=True)
         if checkpoint is not None:
             checkpoint(result)   # a run cut off later keeps the rounds it finished
-    # an async run that ran out of time (or was stopped) ends with what it has: these would run on unbudgeted
+    # an async run that ran out of time, was stopped or reached max_species ends with what it has: these would run
+    # on unbudgeted (F0007, 200 species at 1459 s of 1800: an hour more of whole channel searches)
     out_of_time = schedule == "async" and result.rounds and \
-        result.rounds[-1].get("stopped") in ("time budget", "stop requested")
+        result.rounds[-1].get("stopped") in ("time budget", "stop requested", "max species")
     if steer == "access" and t_idx is not None and connect is not None and result.rounds and not out_of_time:
         # Searches towards the target that the last round's network opened up
         # would have joined the next round's queue: there is none, so run them now.
