@@ -95,7 +95,7 @@ def seed_argv(replicate: int) -> tuple[dict, list]:
 
 def build(run: str, commit: str, groups: list, replicates: int, budget: float, threads: int,
           parallelism: int, memory: str, control: bool, hard_factor: float = 3.0, image: str = IMAGE,
-          interleave: bool = False) -> Path:
+          interleave: bool = False, first_replicate: int = 0) -> Path:
     """`groups`: [(systems, [(config name, args)], replicates or None, commit or None)] in priority order (pods
     start in task order); None = `replicates` / `commit`. A group with its own commit runs from code-<sha7>/ and
     labels its configurations <config>-<sha7>, so several commits share one run (and its queue)."""
@@ -135,6 +135,8 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
     else:
         order = [(r, name, c, g_commit) for g_systems, g_configs, g_reps, g_commit in groups
                  for r in range(g_reps or replicates) for name in g_systems for c in g_configs]
+    # more replicates of an earlier run: numbered (and seeded, 1000 x r) from first_replicate on
+    order = [(r + first_replicate, name, c, g) for r, name, c, g in order]
     for r, name, (cname, cargs), g_commit in order:
         seeds, sargs = seed_argv(r)
         tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
@@ -413,6 +415,8 @@ def main(argv: list) -> int:
                    help="SYSTEMS:CONFIGS[:REPLICATES[:COMMIT]] (comma-separated lists), repeatable, in priority "
                         "order; replaces --systems/--config. A COMMIT of its own labels the configurations <config>-<sha7>")
     b.add_argument("--image", default=IMAGE)
+    b.add_argument("--first-replicate", type=int, default=0,
+                   help="number (and seed) replicates from this one, to add replicates to an earlier run")
     b.add_argument("--interleave", action="store_true",
                    help="order tasks replicate by replicate and system by system across all groups")
     b.add_argument("--replicates", type=int, default=5)
@@ -444,7 +448,7 @@ def main(argv: list) -> int:
             groups = [([x for x in a.systems.split(",") if x] or list(score.load_systems()),
                        [_config(c) for c in (a.config or ["default"])])]
         build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control,
-              image=a.image, interleave=a.interleave)
+              image=a.image, interleave=a.interleave, first_replicate=a.first_replicate)
     elif a.cmd == "submit":
         record_digest(a.run, after_submit=False)
         afh("push", str(AFH_DIR / a.run), a.run)
