@@ -1100,8 +1100,8 @@ export function JobView({ jobId: openedId }) {
           : html`<${JobControls} job=${run} />`}
       </div>
       ${job.op === 'graph-enumeration' && html`<p class="ln-link"><a class="btn primary" href=${`#/network/${job.id}`}
-        onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'network', jobId: job.id } }); }}>Watch the network ›</a>
-        <span class="small muted">species appearing, barriers correcting, material flowing</span></p>`}
+        onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'network', jobId: job.id } }); }}>‹ The live network</a>
+        <span class="small muted">the network this calculation is growing</span></p>`}
       ${family.length > 1 && html`<div class="segmented run-picker" title="Live, Log, Files and Command show this run; the other tabs cover all of them">
         ${family.map((j, i) => html`<button class=${j.id === run.id ? 'on' : ''} onClick=${() => setRunId(j.id)}>
           ${runLabel(j, i)}${j.status !== 'done' ? html` <span class=${`pill ${j.status}`}>${STATUS_LABEL[j.status]}</span>` : ''}</button>`)}

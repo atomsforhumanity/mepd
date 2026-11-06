@@ -863,7 +863,7 @@ class JobManager:
                     from mepd.web import live_network
 
                     if fp.stem == "kinetics":
-                        live_network.record(jdir, raw["data"])
+                        live_network.record(jdir, raw["data"], t0=job.get("started"))
                     else:
                         live_network.record_selectivity(jdir, raw["data"])
                 except Exception:

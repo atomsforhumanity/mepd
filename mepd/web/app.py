@@ -2831,10 +2831,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """A network expansion as the live network view plays it (mepd/web/live_network.py)."""
         from mepd.web import live_network
 
-        tl = live_network.from_job(J().job_dir(jid))
-        if tl is None:
-            raise HTTPException(404, "no live network recorded for this calculation")
-        return tl
+        job = J().get(jid)
+        if job is None:
+            raise HTTPException(404, "no such calculation")
+        return live_network.from_job(J().job_dir(jid), running=job.get("status") in ("running", "queued"),
+                                     t0=job.get("started"))
 
     @app.get("/api/examples/{slug}/timeline")
     def example_timeline(slug: str):

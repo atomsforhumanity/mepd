@@ -11,7 +11,7 @@
 // are marked, and never taken as the answer.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
-import { openJob, set, useStore } from '../store.js';
+import { openJob, set, update, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
@@ -46,7 +46,7 @@ function layoutOf(tl) {
       big[j] = Math.max(big[j], x[0] === seed ? BOX_SEED : Math.min(BOX_MAX, BOX_MAX * Math.sqrt((x[2] || 0) / pm)));
     }
   }
-  const k = Math.sqrt((W * H) / Math.max(1, n)) * 0.85;
+  const k = Math.min(170, Math.sqrt((W * H) / Math.max(1, n)) * 0.85);   // capped: a small network stays together
   for (let it = 0; it < 260; it += 1) {
     const t = 18 * (1 - it / 260) + 0.5;
     const d = pos.map(() => [0, 0]);
@@ -107,13 +107,14 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [hover, setHover] = useState(null);   // species id under the pointer: drawn large on top
-  const running = useStore((s) => (jobId ? ['running', 'queued'].includes(s.jobs[jobId]?.status) : false));
+  const job = useStore((s) => (jobId ? s.jobs[jobId] : null));
+  const running = ['running', 'queued'].includes(job?.status);
   const url = example ? `/api/examples/${encodeURIComponent(example)}/timeline` : `/api/jobs/${jobId}/network-timeline`;
   useEffect(() => {
     let alive = true;
     const load = () => api.get(url).then((d) => { if (alive) { setTl(d); setError(null); } }).catch((e) => alive && setError(e.message));
     load();
-    const t = running ? setInterval(load, 5000) : null;
+    const t = running ? setInterval(load, 4000) : null;
     return () => { alive = false; if (t) clearInterval(t); };
   }, [url, running]);
   const lay = useMemo(() => (tl?.frames?.length ? layoutOf(tl) : null), [tl]);
@@ -131,7 +132,20 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   const flowKey = useRef(0);
 
   if (error) return html`<div class="ln-empty"><p>${error}</p>${jobId && html`<button class="btn" onClick=${() => openJob(jobId)}>Back to the calculation</button>`}</div>`;
-  if (!tl || !lay) return html`<p class="boot">Loading the network…</p>`;
+  if (!tl) return html`<p class="boot">Loading the network…</p>`;
+  if (!lay) {
+    return html`<div class="live-network">
+      <div class="ln-main">
+        <div class="ln-head"><h2>Live network</h2>${running && html`<span class="ln-live">● live</span>`}</div>
+        <div class="ln-stage ln-waiting">
+          <div class="ln-seed-pulse"></div>
+          <p>${running ? 'Looking for the first reactions…' : 'This calculation found no network.'}</p>
+          <p class="small muted">${running ? 'Species appear here as the explorer finds them.' : ''}</p>
+        </div>
+      </div>
+      <aside class="ln-side">${jobId && html`<${Closer} jobId=${jobId} job=${job} activity=${tl.activity} running=${running} />`}</aside>
+    </div>`;
+  }
   const f = tl.frames[cur];
   const prev = cur > 0 ? tl.frames[cur - 1] : null;
   const prevIds = new Set(prev ? prev.species.map((s) => s[0]) : []);
@@ -217,11 +231,13 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   return html`<div class="live-network">
     <div class="ln-main">
       <div class="ln-head">
-        <h2>${example ? 'Live network · example' : 'Live network'}</h2>
+        <h2>${example ? 'Live network · example' : job?.title?.replace(/^Reaction network expansion:\s*/, 'Network: ') || 'Live network'}</h2>
+        ${running && html`<span class="ln-live" title="Updating as the explorer works">● live</span>`}
+        ${f.growing && running && html`<span class="small muted" title="Found since the last kinetics refresh: their amounts come with the next one">new species waiting for kinetics</span>`}
         ${!f.steered && html`<span class="ln-pending" title="These energies wait for their DFT single points (the seed just moved to a lower conformer): not a real swing">steering pending</span>`}
         <span class="spacer"></span>
         <span class="small muted">${f.basis}</span>
-        ${jobId && html`<a href=${`#/calc/${jobId}`} onClick=${(e) => { e.preventDefault(); openJob(jobId); }}>Calculation ›</a>`}
+
       </div>
       <div class=${`ln-stage ${f.steered ? '' : 'unsteered'}`}>
         <svg viewBox=${`0 0 ${W} ${H}`} width="100%" role="img" aria-label="The network: species as their structures, on cards sized by the material they held; steps as lines coloured by barrier and as wide as their flux">
@@ -269,6 +285,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
       </div>
     </div>
     <aside class="ln-side">
+      ${jobId && html`<${Closer} jobId=${jobId} job=${job} activity=${tl.activity} running=${running} />`}
       <section>
         <span class="section-title">What forms</span>
         ${tops.length ? tops.map((x) => html`<div class="ln-prod" title=${tl.smiles[x.id]}>
@@ -303,4 +320,40 @@ export function LiveNetworkView({ jobId = null, example = null }) {
 
 export function openLiveNetwork({ jobId = null, example = null }) {
   set({ view: { tab: 'network', jobId, example } });
+}
+
+// What the explorer is doing now, and the ways in for a closer look: the
+// simulations under the network (reactor MD, path searches), its results, log.
+const WORK = { propose: 'proposing', fast: 'quick paths', channels: 'channels', irc: 'IRCs', piece: 'path pieces', ts: 'TS searches', rotamer: 'rotamers' };
+function Closer({ jobId, job, activity, running }) {
+  const q = activity?.queue;
+  const sims = activity?.sims || [];
+  const reactor = ['nanoreactor', 'reactor'].includes(job?.params?.generator);
+  const openSim = (stream) => {
+    update((s) => { s.liveSelection = { ...(s.liveSelection || {}), [jobId]: stream }; });
+    openJob(jobId, 'live');
+  };
+  const done = q?.finished ? Object.entries(q.finished).filter(([, v]) => v.done || v.failed) : [];
+  return html`<section class="ln-closer">
+    ${running && q && html`<span class="section-title">Now</span>
+      <div class="ln-workers" title=${`${q.busy || 0} of ${q.workers} workers busy`}>
+        ${Array.from({ length: q.workers || 0 }, (_, k) => html`<i class=${k < (q.busy || 0) ? 'on' : ''}></i>`)}
+        <span class="small muted">${q.busy || 0}/${q.workers} busy</span>
+      </div>
+      ${(q.running || []).slice(0, 4).map((r) => html`<div class="small ln-now">${WORK[r.kind] || r.kind} · <span class="mono">${r.what}</span></div>`)}`}
+    ${done.length > 0 && html`<span class="section-title">${running ? 'Done so far' : 'Work done'}</span><div class="ln-done small muted">${done.map(([k, v]) => html`<span title=${v.failed ? `${v.failed} failed` : ''}><b>${v.done}</b> ${WORK[k] || k}</span>`)}</div>`}
+    <span class="section-title">Look closer</span>
+    <div class="ln-doors">
+      ${reactor && html`<button class="btn small" onClick=${() => openJob(jobId, 'reactor')} title="The molecular dynamics that proposes the reactions">Reactor MD</button>`}
+      <button class="btn small" onClick=${() => openJob(jobId, 'live')} title="Each proposed reaction and its path search, live">Path searches</button>
+      <button class="btn small" onClick=${() => openJob(jobId, 'result')} disabled=${job?.status === 'queued'}>Results</button>
+      <button class="btn small" onClick=${() => openJob(jobId, 'log')}>Log</button>
+    </div>
+    ${sims.length > 0 && html`<div class="ln-sims">${sims.slice(0, 5).map((m) => html`<button class="ln-sim" onClick=${() => openSim(m.stream)} title=${`${m.label}${m.caption ? ` · ${m.caption}` : ''}: open it`}>
+      ${m.from ? html`<img src=${depictUrl(m.from, 120, 90)} alt=${m.from} />` : html`<span>?</span>`}
+      <span class="ln-sim-arrow">→</span>
+      ${m.to ? html`<img src=${depictUrl(m.to, 120, 90)} alt=${m.to} />` : html`<span>?</span>`}
+      <span class="small muted">${(m.label || '').replace(/ from species.*/, '')}</span>
+    </button>`)}</div>`}
+  </section>`;
 }

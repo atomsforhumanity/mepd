@@ -84,3 +84,47 @@ def test_every_packed_replay_opens():
     for e in replays:
         tl = ln.example_timeline(e["slug"])
         assert tl["frames"] and "names" in tl and 0 <= tl["final"] < len(tl["frames"])
+
+
+def _legacy_job(tmp_path):
+    (tmp_path / "inputs").mkdir()
+    (tmp_path / "inputs" / "seed.xyz").write_text("3\n\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n")
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "events.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"event": "species", "index": 1, "parent": 0, "smiles": "", "rel_energy_kcal": 3.0,
+         "xyz": "2\n\nH 0 0 0\nH 0.74 0 0\n"},
+        {"event": "step", "a": 0, "b": 1, "label": "fast_0_1", "barrier_kcal": [30.0, 27.0]},
+    ]) + "\n")
+    (live / "queue.json").write_text(json.dumps({"kind": "queue", "data": {"workers": 4, "busy": 1,
+                                                 "running": [{"kind": "ts", "what": "0→1"}], "finished": {}}}))
+    (live / "rxn0001.json").write_text(json.dumps({"kind": "morph", "label": "#1 from species 0",
+                                                   "plot": {"reactant_smiles": "O", "product_smiles": "[H][H]", "source": 0}}))
+    return live
+
+
+def test_a_running_network_shows_from_its_first_species_before_any_kinetics(tmp_path):
+    """develop's explorer (older kinetics schema): the page grows from events.jsonl
+    at once, perceives the SMILES the explorer left empty, and says what runs now."""
+    _legacy_job(tmp_path)
+    tl = ln.from_job(tmp_path, running=True, t0=0.0)
+    f = tl["frames"][-1]
+    assert f["growing"] and {s[0] for s in f["species"]} == {"0", "1"}
+    assert [s[0] for s in f["steps"]] == ["fast_0_1"]
+    assert tl["smiles"]["0"] == "O" and tl["smiles"]["1"] == "[H][H]"   # from the seed / the event's xyz
+    assert f["steered"]                                                 # no DFT steering in this run: nothing pending
+    assert tl["activity"]["queue"]["busy"] == 1
+    assert tl["activity"]["sims"][0]["stream"] == "rxn0001"
+
+
+def test_older_kinetics_refreshes_are_recorded_with_the_jobs_clock(tmp_path):
+    _legacy_job(tmp_path)
+    kin = {"basis": "free energy (1000 K, 1M)", "steps": 1, "species": [
+        {"index": 0, "smiles": "", "rel_kcal": 0.0, "max_concentration": 1.0, "final": 0.4, "populated": True},
+        {"index": 1, "smiles": "", "rel_kcal": 3.0, "max_concentration": 0.6, "final": 0.6, "populated": True}]}
+    import time
+    assert ln.record(tmp_path, kin, t0=time.time() - 42)
+    tl = ln.from_job(tmp_path)
+    f = tl["frames"][0]
+    assert 41 <= f["t"] <= 60 and f.get("legacy")
+    assert tl["smiles"]["1"] == "[H][H]"

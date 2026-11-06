@@ -281,7 +281,7 @@ export function upLevel() {
   if (v.drawer) { set({ view: { ...v, drawer: null } }); return; }
   if (v.tab === 'job') { set({ view: { tab: 'jobs', jobId: null } }); return; }
   if (v.tab === 'reaction') { set({ view: { tab: 'graph', jobId: null } }); return; }
-  if (v.tab === 'network') { set({ view: v.jobId ? { tab: 'job', jobId: v.jobId } : { tab: 'welcome', jobId: null } }); return; }
+  if (v.tab === 'network') { set({ view: v.jobId ? { tab: 'graph', jobId: null } : { tab: 'welcome', jobId: null } }); return; }
   if (v.tab !== 'graph') set({ view: { tab: 'graph', jobId: null } });
 }
 if (typeof window !== 'undefined' && window.history) {
@@ -317,6 +317,8 @@ export function openReaction(edgeId) {
 }
 
 export function openJob(jobId, tab = null) {
+  // A network expansion lands on its live network; the calculation's own tabs are a click away.
+  if (!tab && state.jobs[jobId]?.op === 'graph-enumeration') { set({ view: { tab: 'network', jobId } }); return; }
   const page = pageJobId(jobId);
   set({ view: { tab: 'job', jobId: page, run: page !== jobId ? jobId : null, jobTab: tab } });
 }

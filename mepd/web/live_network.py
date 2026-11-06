@@ -182,7 +182,11 @@ def timeline(frames: list, events: list, selectivity: Optional[dict], *, source:
     (a trailing unsteered refresh is not the answer)."""
     smiles = {}
     for f in frames:
-        smiles.update(f.pop("smiles", {}))
+        smiles.update({k: v for k, v in f.pop("smiles", {}).items() if v or k not in smiles})
+    # A run without DFT steering has nothing to wait for: none of its frames is "pending".
+    if frames and not any(f["steered"] for f in frames):
+        for f in frames:
+            f["steered"] = True
     final = max((i for i, f in enumerate(frames) if f["steered"]), default=len(frames) - 1)
     return {"source": source, "frames": frames, "smiles": smiles, "names": names_of(smiles), "events": events,
             "selectivity": selectivity, "final": final}
@@ -233,16 +237,127 @@ def from_snapshots(snap_dir: Path, selectivity_file: Optional[Path] = None) -> d
     return timeline(frames, events, sel, source={"kind": "replay", "path": snap_dir.name})
 
 
-def record(job_dir: Path, kin: dict) -> bool:
-    """Append one live kinetics refresh of a running job to its frames."""
+PERCEIVED = "perceived_smiles.json"
+
+
+def _events(job_dir: Path) -> list:
+    fp = Path(job_dir) / "live" / "events.jsonl"
+    return fp.read_text().splitlines() if fp.exists() else []
+
+
+def _perceived(job_dir: Path, lines: list) -> dict:
+    """SMILES the explorer left empty (radicals, odd valences), perceived from
+    each species' xyz in events.jsonl (the seed from inputs/seed.xyz); cached."""
+    job_dir = Path(job_dir)
+    fp = job_dir / "live" / PERCEIVED
+    try:
+        known = json.loads(fp.read_text()) if fp.exists() else {}
+    except ValueError:
+        known = {}
+    todo = {}
+    seed = job_dir / "inputs" / "seed.xyz"
+    if "0" not in known and seed.exists():
+        todo["0"] = seed.read_text()
+    for line in lines:
+        if '"species"' not in line[:40]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        sid = str(ev.get("index"))
+        if ev.get("event") == "species" and not ev.get("smiles") and ev.get("xyz") and sid not in known:
+            todo[sid] = ev["xyz"]
+    if not todo:
+        return known
+    from qcdata import Structure
+    from mepd.web.chem import perceive_smiles
+
+    for sid, xyz in todo.items():
+        try:
+            known[sid] = perceive_smiles(Structure.from_xyz(xyz)) or ""
+        except Exception:
+            known[sid] = ""
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        fp.write_text(json.dumps(known))
+    except OSError:
+        pass
+    return known
+
+
+def _fill_smiles(f: dict, perceived: dict) -> dict:
+    for sid, smi in list(f.get("smiles", {}).items()):
+        if not smi and perceived.get(sid):
+            f["smiles"][sid] = perceived[sid]
+    return f
+
+
+def _frame_of(job_dir: Path, kin: dict, lines: list) -> Optional[dict]:
+    """One refresh as a frame, in either schema (the older one takes its steps from events.jsonl)."""
     f = compact(kin)
     if f is None:
+        f = compact_legacy(kin, _legacy_steps(lines))
+    return _fill_smiles(f, _perceived(job_dir, lines)) if f is not None else None
+
+
+def record(job_dir: Path, kin: dict, t0: Optional[float] = None) -> bool:
+    """Append one live kinetics refresh of a running job to its frames (t from
+    the refresh's own clock, else the job's start `t0`)."""
+    import time
+
+    lines = _events(job_dir)
+    f = _frame_of(job_dir, kin, lines)
+    if f is None:
         return False
+    t_start = kin.get("t_start")
+    if not kin.get("t_wall") and t0:
+        f["t"], t_start = _r(time.time() - t0, 1), t0
     live = Path(job_dir) / "live"
     live.mkdir(parents=True, exist_ok=True)
     with open(live / FRAMES, "a") as fh:
-        fh.write(json.dumps({**f, "t_start": kin.get("t_start")}, separators=(",", ":")) + "\n")
+        fh.write(json.dumps({**f, "t_start": t_start}, separators=(",", ":")) + "\n")
     return True
+
+
+def _growing(job_dir: Path, lines: list, t0: Optional[float]) -> Optional[dict]:
+    """The network as events.jsonl has it now, on top of the last kinetics
+    refresh: species and steps found since then show at once (no amounts yet)."""
+    import time
+
+    try:
+        raw = json.loads((Path(job_dir) / "live" / "kinetics.json").read_text())
+        kin = dict(raw.get("data", raw))
+    except (OSError, ValueError):
+        kin = {"basis": "", "species": []}
+    if kin.get("step_list") is not None:
+        return None     # the new schema refreshes itself
+    species = list(kin.get("species") or [])
+    have = {str(s.get("index")) for s in species}
+    if "0" not in have:
+        species.insert(0, {"index": 0, "smiles": "", "rel_kcal": 0.0, "max_concentration": 1.0, "final": 1.0,
+                           "populated": True})
+        have.add("0")
+    for line in lines:
+        if '"species"' not in line[:40]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        sid = str(ev.get("index"))
+        if ev.get("event") == "species" and sid not in have:
+            have.add(sid)
+            species.append({"index": ev.get("index"), "smiles": ev.get("smiles") or "", "rel_kcal": ev.get("rel_energy_kcal"),
+                            "max_concentration": 0.0, "final": 0.0, "populated": False})
+    kin["species"] = species
+    f = compact_legacy(kin, _legacy_steps(lines))
+    if f is None:
+        return None
+    f["growing"] = True
+    f["steered"] = "single points" in (kin.get("basis") or "")
+    f["t"] = _r(time.time() - t0, 1) if t0 else 0.0
+    return _fill_smiles(f, _perceived(job_dir, lines))
 
 
 def record_selectivity(job_dir: Path, data: dict) -> None:
@@ -255,13 +370,37 @@ def record_selectivity(job_dir: Path, data: dict) -> None:
         fh.write(json.dumps({**head, "entry": entries[-1]}, separators=(",", ":")) + "\n")
 
 
-def from_job(job_dir: Path) -> Optional[dict]:
+def activity(job_dir: Path) -> dict:
+    """What the explorer is doing now (its queue) and the simulations under the
+    network (one live stream each: proposed reactions, path searches)."""
+    live = Path(job_dir) / "live"
+    out = {"queue": None, "sims": []}
+    try:
+        q = json.loads((live / "queue.json").read_text())
+        out["queue"] = q.get("data", q)
+    except (OSError, ValueError):
+        pass
+    sims = []
+    for fp in sorted(live.glob("rxn*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:12]:
+        try:
+            d = json.loads(fp.read_text())
+        except (OSError, ValueError):
+            continue
+        plot = d.get("plot") or {}
+        sims.append({"stream": fp.stem, "label": d.get("label"), "caption": plot.get("caption") or d.get("caption"),
+                     "from": plot.get("reactant_smiles"), "to": plot.get("product_smiles"), "source": plot.get("source"),
+                     "kind": d.get("kind")})
+    out["sims"] = sims
+    return out
+
+
+def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None) -> dict:
+    """A job's timeline: its recorded frames, and while it runs the network as
+    events.jsonl has it now (so it grows from the first species on)."""
     live = Path(job_dir) / "live"
     fp = live / FRAMES
-    if not fp.exists():
-        return None
     frames, t_start = [], None
-    for line in fp.read_text().splitlines():
+    for line in (fp.read_text().splitlines() if fp.exists() else []):
         try:
             f = json.loads(line)
         except ValueError:
@@ -269,15 +408,22 @@ def from_job(job_dir: Path) -> Optional[dict]:
         t_start = t_start or f.pop("t_start", None)
         f.pop("t_start", None)
         frames.append(f)
-    ev = live / "events.jsonl"
-    events = _changes(ev.read_text().splitlines(), t_start or 0.0) if ev.exists() else []
+    lines = _events(job_dir)
+    if running or not frames:
+        g = _growing(job_dir, lines, t0) if lines else None
+        if g is not None and (not frames or g["counts"]["species"] > frames[-1]["counts"]["species"]
+                              or g["counts"]["steps"] > frames[-1]["counts"]["steps"]):
+            frames.append(g)
+    events = _changes(lines, t_start or t0 or 0.0)
     sel = None
     sfp = live / SELECTIVITY_FRAMES
     if sfp.exists():
         rows = [json.loads(x) for x in sfp.read_text().splitlines() if x.strip()]
         if rows:
             sel = _selectivity(rows[-1], t_start or 0.0, entries=[r["entry"] for r in rows])
-    return timeline(frames, events, sel, source={"kind": "job"})
+    tl = timeline(frames, events, sel, source={"kind": "job"})
+    tl["activity"] = activity(job_dir)
+    return tl
 
 
 def pack_replay(snap_dir: Path, slug: str, title: str, tag: str, selectivity_file: Optional[Path] = None,

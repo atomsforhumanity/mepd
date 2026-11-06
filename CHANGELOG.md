@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: a network expansion lands on its live network, which grows while it runs.**
+  - Opening a network expansion (from Calculations, or right after Run) shows the live network, not the calculation page. Species appear as the explorer finds them, from the first one, before any kinetics.
+  - Works with the explorer as it is on this branch: its kinetics refreshes are recorded with the job's clock, steps come from `live/events.jsonl`, and SMILES the explorer leaves empty (radicals) are perceived from each species' xyz (cached in `live/perceived_smiles.json`).
+  - The side panel says what the explorer is doing now (busy workers, what each runs, work done) and has the ways in for a closer look: Reactor MD, Path searches, Results, Log, and the latest simulations as reactant → product, each opening its live view. The calculation page links back ("‹ The live network").
+  - Runs without DFT steering are no longer greyed as "steering pending". Small networks stay together (capped spring length).
+
 - **Web: the live network draws species as their structures, and works for any run.**
   - Each species is its 2D structure on a card whose area grows with the material it held (46–112 px). Hover a card for a large view with its name, energy and peak. Labels sit above the cards.
   - The side panel is "What forms" for every run: the main products as structures, named where they have an everyday name ("water + CO"), with their shares and how much of the start is left. A benchmark's measured selectivity shows only underneath, as validation.
