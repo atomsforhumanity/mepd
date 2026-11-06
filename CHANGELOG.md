@@ -26,6 +26,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     s-trans, the four conformers of the tracing ceiling; conformer-pair channel sampling of the same steps
     gave endo s-cis once in 16 pairs.
 
+- **Explorer, async: a species first found as an IRC's end is connected from the species the search was asked
+  from.** When a fast TS (or a conformer pair's) of pair (i, j) has an IRC ending in a species no proposal made,
+  within the cutoff, the pair (i, that species) joins the queue like a proposal's. In the develop baseline 11 of
+  the 16 channels found but not connected (F0007 6, isoprene_ma 2, cb_diester 2, cp_mbl 1) were such species:
+  adducts that entered only as the end of a TS between two other species, 48-81 kcal/mol up.
+
 - **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
   reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
   energies and gradients come from this process with no program start per call, and Hessians are analytic.

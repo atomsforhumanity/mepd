@@ -1482,3 +1482,44 @@ def test_async_channel_sampling_is_queued_lowest_step_first():
     floor = lambda a, b: (max(res.species[a].node.energy, res.species[b].node.energy) - e0) * 627.509474
     queued = [(label, p) for kind, label, p in connect.at_submit if kind == "channels"]
     assert queued and all(p == pytest.approx(floor(*pair_of("channels", label))) for label, p in queued)
+
+def test_async_a_species_first_found_as_an_irc_end_is_connected_from_the_species_asked(monkeypatch, tmp_path):
+    """The seed's single TS towards HNC turns out, by its IRC, to join HNC and H + CN, a species no proposal made.
+    That species is then a pair of its own from the seed (whose reaction the search was asked for): otherwise its
+    only route is the step that found it (F0007: adducts found only as the ends of TSs between two other species,
+    48-81 kcal/mol up, were 11 of the baseline's 16 channels found but not connected)."""
+    import mepd
+    from mepd.discovery import generators
+
+    calls = []
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", _hcn_reactor(calls), kind="structures"))
+    seed = _node("C#N")
+    hnc = StructureNode(structure=_hcn_reactor([])(seed.structure, max_products=1, options={})[0])
+    x = _ang(seed)
+    x[2] = x[1] + (x[1] - x[0]) / np.linalg.norm(x[1] - x[0]) * 3.0       # the H 3 A past the N: H + CN apart
+    torn = StructureNode(structure=_structure_with(seed.structure, x))
+
+    def verify(items):
+        out = []
+        for idx, fp in items:
+            if Path(fp).stem == "fast_0_1":
+                mepd.write_xyz(Path(fp).with_name("fast_0_1_irc.xyz"), [hnc, torn])
+                out.append((idx, hnc.copy(), torn.copy()))
+            else:
+                out.append((idx, None, None))
+        return out
+
+    from pathlib import Path
+
+    forked = _TSFileAsyncConnector(tmp_path)
+    try:
+        res = expand_network(seed.copy(), _GraphEngine(), connect=forked, verify=verify, steer="access",
+                             access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+                             schedule="async", generator="reactor", generator_options={"n_seeds": 1},
+                             allow_zwitterions=True)
+    finally:
+        forked.close()
+    k = next(i for i, sp in enumerate(res.species) if graph_edges(sp.node) == graph_edges(torn))
+    assert not any(e.target == k and e.source != k for e in res.edges)    # no proposal made it
+    assert (0, k) in forked.pairs                              # connected from the seed all the same

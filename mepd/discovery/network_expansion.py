@@ -1880,8 +1880,16 @@ def expand_network(
         if dropped:
             missed = asked
         else:
-            a, _ = _species_for(start)
-            b, _ = _species_for(end)
+            a, new_a = _species_for(start)
+            b, new_b = _species_for(end)
+            # A species no proposal made, found as this IRC's end: a product of the species the search was asked
+            # from, with no route to it but this step (F0007: an adduct as the end of a TS between two other
+            # species, 48-81 kcal/mol up, in 11 of the 16 baseline cases of a channel found but not connected)
+            if asked:
+                for k, new in ((a, new_a), (b, new_b)):
+                    if new and k not in asked and result.species[k].rel_energy_kcal <= (
+                            access_cutoff_kcal if access_cutoff_kcal is not None else float("inf")):
+                        irc_products.append((int(asked[0]), k))
             if a < 0 or b < 0 or a == b:
                 dropped = True
             else:
@@ -2128,6 +2136,7 @@ def expand_network(
     connected: set[tuple[int, int]] = set()
     deferred_iced: list = []                # channel-search pieces no material reached yet (_search_deferred)
     retry: list = []                        # pairs whose single TS turned out to belong elsewhere
+    irc_products: list = []                 # (asked source, species first found as an IRC end): connected (async)
     searched: set[tuple[int, int]] = set()  # pairs that already had their full path search
     expanded: set[int] = set()
     frontier = [0]
@@ -2530,6 +2539,13 @@ def expand_network(
                         n += 1
             todo = [p for p in dict.fromkeys(retry) if p not in searched]   # pairs an IRC check sent back
             retry.clear()
+            ends = [p for p in dict.fromkeys(irc_products) if p not in connected and p[::-1] not in connected]
+            irc_products.clear()
+            if ends:                                # each new IRC-end species from the species it was asked from
+                connected.update(ends)
+                pending.update(ends)
+                connect.add_pairs(ends)
+                n += len(ends)
             if todo:
                 searched.update(todo)
                 connected.update(todo)
