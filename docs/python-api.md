@@ -89,12 +89,13 @@ unconverged structure: an optimization that runs out of steps raises
 `ConvergenceError` (its `.structure` is where it stopped), and `find_ts`
 first goes on from there `continue_unconverged` times. A converged TS without
 exactly one imaginary mode, or a minimum still on a saddle, raises
-`WrongStationaryPointError`. With g-xTB, TS searches start from g-xTB's own
-Hessian (`exact_hessian=True`, `hessian_every=n` to renew it) and
-minimizations use Sella, which uses g-xTB's Hessian only with `hessian_every`
-(`optimizer="qcopt"`, `"geometric"`, `"lbfgs"`; `GXTBCalculator(minimizer="xtb")`
-for xtb's own optimizer). `GXTBCalculator(minimizer="qcopt", ts_optimizer="qcopt")`
-runs minimizations, TS searches and IRCs with qcopt, AFH's optimizer. `irc` minimizes
+`WrongStationaryPointError`. With g-xTB, minimizations, TS searches and IRCs
+run on qcopt, AFH's optimizer; TS searches start from g-xTB's own Hessian
+(`exact_hessian=True`, `hessian_every=n` to renew it) and minimizations from
+Lindh's model Hessian (`optimizer="sella"`, `"geometric"`, `"lbfgs"`;
+`GXTBCalculator(minimizer="sella", ts_optimizer="sella")` for Sella throughout,
+`minimizer="xtb"` for xtb's own optimizer; Sella's minimizer uses g-xTB's Hessian
+only with `hessian_every`). `irc` minimizes
 both ends by default, since an IRC stops short of the minimum.
 `barrier_kcal` takes every reactant structure you have, e.g. all conformers
 found, and measures from the lowest, so barriers from different searches

@@ -484,6 +484,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **g-xTB minimizations, TS searches and IRCs use qcopt by default** (`GXTBCalculator.DEFAULT_MINIMIZER` and
+  `DEFAULT_TS_OPTIMIZER`), for the numbers under Added. `minimizer = "sella"` and `ts_optimizer = "sella"` restore
+  Sella. Without qcopt installed (Python 3.10, or neither the `gxtb` nor the `ase` extra), g-xTB optimizations stop
+  with an error that says to install it or choose Sella.
+
 - **The qc\* packages are locked at their current versions on Python 3.11 and later**: qcdata 0.23.1, qccompute
   0.22.0, qccodec 0.21.0, qcinf 0.5.1 and qcref 0.5.1 (qcopt needs qcdata 0.23.1). qccompute no longer has a
   `qcengine` extra, so qcengine and qcelemental are no longer installed; mepd imports neither.

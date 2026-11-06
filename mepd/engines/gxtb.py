@@ -426,18 +426,20 @@ class GXTBCalculator(Engine):
     # element ... is not symmetric"); 0.001 matches central differences of
     # g-xTB gradients to ~1e-4 for ~20% more time.
     hessian_acc: float = 0.001
-    # Minimizations: "sella" (Sella, to `min_fmax`; the default since
-    # 2026-10-19: 100% converged and 99.4% true minima on 1000 IRC ends, vs.
-    # xtb's own optimizer whose "normal" threshold is ~0.05 eV/Angstrom; its
-    # minimizer uses g-xTB's Hessian only with `hessian_every`), "qcopt"
-    # (AFH's optimizer, mepd.engines._qcopt), "geometric", "lbfgs", or "xtb"
-    # (xtb's ANCopt).
+    # Minimizations: "qcopt" (AFH's optimizer, mepd.engines._qcopt, to
+    # `min_fmax`; the default since 2026-11-06: on 100 Reaction-QM reactions
+    # inside mepd, TS searches and IRCs with half of Sella's gradients and 69
+    # against 50 IRCs connecting; see CHANGELOG), "sella" (Sella, to
+    # `min_fmax`; the default from 2026-10-19: 100% converged and 99.4% true
+    # minima on 1000 IRC ends; its minimizer uses g-xTB's Hessian only with
+    # `hessian_every`), "geometric", "lbfgs", or "xtb" (xtb's ANCopt, whose
+    # "normal" threshold is ~0.05 eV/Angstrom).
     minimizer: str | None = None          # None: DEFAULT_MINIMIZER
     min_fmax: float = 0.001
-    DEFAULT_MINIMIZER: ClassVar[str] = "sella"
+    DEFAULT_MINIMIZER: ClassVar[str] = "qcopt"
     # TS searches and IRCs: "sella" (through ASE) or "qcopt" (mepd.engines._qcopt).
     ts_optimizer: str | None = None       # None: DEFAULT_TS_OPTIMIZER
-    DEFAULT_TS_OPTIMIZER: ClassVar[str] = "sella"
+    DEFAULT_TS_OPTIMIZER: ClassVar[str] = "qcopt"
     # Independent calculations (a chain's images, a batch of geometry
     # optimizations) run as up to this many concurrent g-xTB processes.
     # 0 = as many as the machine has cores for at n_threads each.
