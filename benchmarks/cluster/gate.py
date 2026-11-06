@@ -13,8 +13,9 @@ marked); a system run on one side only fails ("not run"). Per system, all three 
 2. recall: the fraction of replicates with every channel found and connected does not drop, and no
    channel's connected fraction drops (strict: 5 replicates resolve 20 % steps, so one replicate less
    fails the gate; its counts are printed);
-3. speed: median settle time of the candidate <= 1.2 x the base's (a replicate that never settled
-   counts as +inf; both +inf passes, base finite and candidate +inf fails).
+3. speed: median settle time of the candidate <= the base's + max(20 % of it, 2 x the same-seed rerun spread
+   of the settle time (the base's controls, per system; else the largest), 60 s) (coordinator, 2026-11-05;
+   a replicate that never settled counts as +inf; both +inf passes, base finite and candidate +inf fails).
 The verdicts follow these rules as the brief states them; a failure that is a single replicate (recall) or
 within the larger interquartile range of the two sides (settle) is marked so, for a human to judge.
 
@@ -29,7 +30,8 @@ from pathlib import Path
 
 RESULTS = Path("/home/user/astera/data/runs/explorer-team/scoreboard/results")
 FLOOR_KCAL = 0.5
-SETTLE_GROWTH = 1.2
+SETTLE_GROWTH_FRAC = 0.2     # settle may grow by max(20 %, 2 x the same-seed rerun spread, 60 s) (coordinator)
+SETTLE_FLOOR_S = 60.0
 
 
 def _load(spec: str) -> tuple[dict, dict]:
@@ -38,15 +40,18 @@ def _load(spec: str) -> tuple[dict, dict]:
     per = {g["system"]: g for g in agg.values() if isinstance(g, dict) and g.get("config") == config}
     if not per:
         raise SystemExit(f"{spec}: no configuration {config!r} in results/{run}/aggregate.json")
-    return per, {"run": run, "config": config, "commit": agg.get("commit")}
+    return per, {"run": run, "config": config, "commit": agg.get("commit"),
+                 "control_settle_spread_s": agg.get("control_settle_spread_s") or {}}
 
 
 def _fmt(x, f=".2f"):
     return "-" if x is None else ("inf" if isinstance(x, float) and math.isinf(x) else format(x, f))
 
 
-def compare(base: dict, cand: dict) -> dict:
-    """{system: verdict} for two {system: aggregate entry} maps."""
+def compare(base: dict, cand: dict, rerun_spread: dict | None = None) -> dict:
+    """{system: verdict} for two {system: aggregate entry} maps; `rerun_spread`: {system: same-seed rerun spread of
+    the settle time, s} (the controls'; a system without one takes the largest)."""
+    rerun_spread = rerun_spread or {}
     out = {}
     for system in sorted(set(base) | set(cand)):
         b, c = base.get(system), cand.get(system)
@@ -86,13 +91,13 @@ def compare(base: dict, cand: dict) -> dict:
         bs, cs = b["settle_s"]["median"], c["settle_s"]["median"]
         bs = math.inf if bs is None else bs
         cs = math.inf if cs is None else cs
-        ok_s = cs <= SETTLE_GROWTH * bs if math.isfinite(bs) else True
-        s_spread = max([x for x in (b["settle_s"].get("iqr"), c["settle_s"].get("iqr")) if x is not None] or [0.0])
-        checks["settle"] = {"pass": ok_s, "base_median_s": bs, "cand_median_s": cs, "spread_s": s_spread}
+        rs = rerun_spread.get(system, max(rerun_spread.values()) if rerun_spread else 0.0)
+        s_tol = max(SETTLE_GROWTH_FRAC * bs if math.isfinite(bs) else 0.0, 2.0 * rs, SETTLE_FLOOR_S)
+        ok_s = cs <= bs + s_tol if math.isfinite(bs) else True
+        checks["settle"] = {"pass": ok_s, "base_median_s": bs, "cand_median_s": cs, "tolerance_s": s_tol,
+                            "rerun_spread_s": rs}
         if not ok_s:
-            noise = (math.isfinite(cs) and cs - bs <= s_spread)
-            why.append(f"settle median {_fmt(cs, '.0f')} s > 1.2 x base {_fmt(bs, '.0f')} s"
-                       + (f" (within the replicate spread, IQR {s_spread:.0f} s)" if noise else ""))
+            why.append(f"settle median {_fmt(cs, '.0f')} s > base {_fmt(bs, '.0f')} s + {s_tol:.0f} s")
         out[system] = {"pass": not why, "held_out": bool(b.get("held_out") or c.get("held_out")), "why": why,
                        "checks": checks, "n": [b["n"], c["n"]]}
     return out
@@ -108,7 +113,7 @@ def main(argv: list) -> int:
         keep = set(argv[argv.index("--only") + 1].split(","))
         base = {k: v for k, v in base.items() if k in keep}
         cand = {k: v for k, v in cand.items() if k in keep}
-    verdict = compare(base, cand)
+    verdict = compare(base, cand, bi.get("control_settle_spread_s"))
     print(f"gate: base {bi['run']}:{bi['config']} ({(bi['commit'] or '')[:7]}) vs candidate "
           f"{ci['run']}:{ci['config']} ({(ci['commit'] or '')[:7]})")
     for system, v in verdict.items():
@@ -120,7 +125,8 @@ def main(argv: list) -> int:
             a, r, s = ch["accuracy"], ch["recall"], ch["settle"]
             detail = (f" | worst|err| {_fmt(a['base_median'])} -> {_fmt(a['cand_median'])} (tol {a['tolerance']:.2f})"
                       f" | full recall {r['base_full']:.0%} -> {r['cand_full']:.0%}"
-                      f" | settle {_fmt(s['base_median_s'], '.0f')} -> {_fmt(s['cand_median_s'], '.0f')} s")
+                      f" | settle {_fmt(s['base_median_s'], '.0f')} -> {_fmt(s['cand_median_s'], '.0f')} s"
+                      f" (tol {s['tolerance_s']:.0f})")
         print(f"  {system}{held}: {mark}{detail}")
         for w in v["why"]:
             print(f"      {w}")

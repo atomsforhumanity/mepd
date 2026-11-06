@@ -853,6 +853,20 @@ def _job_time(runs: list) -> dict:
     return out
 
 
+def control_spread(scores: list) -> dict:
+    """{system: |settle(control) - settle(replicate it repeats)|} from the same-seed reruns (max per system)."""
+    by_id = {o["id"]: o for o in scores}
+    out: dict = {}
+    for o in scores:
+        a = by_id.get(o.get("control_of") or "")
+        if a is None:
+            continue
+        x, y = (o.get("settle") or {}).get("settle_s"), (a.get("settle") or {}).get("settle_s")
+        if x is not None and y is not None:
+            out[o["system"]] = max(out.get(o["system"], 0.0), abs(x - y))
+    return out
+
+
 def aggregate(scores: list, suite: dict) -> dict:
     """Per (system, configuration): medians and spreads over the replicates (controls excluded)."""
     groups: dict = {}
@@ -860,7 +874,7 @@ def aggregate(scores: list, suite: dict) -> dict:
         if o.get("control_of"):
             continue
         groups.setdefault((o["system"], o["config"]), []).append(o)
-    out = {}
+    out = {"control_settle_spread_s": control_spread(scores)}
     for (system, config), runs in sorted(groups.items()):
         targets = {}
         for i, t in enumerate(suite[system]["targets"]):

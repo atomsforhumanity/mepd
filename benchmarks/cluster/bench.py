@@ -305,7 +305,8 @@ def report(name: str) -> str:
         per = {c: {g["system"]: g for g in groups.values() if g["config"] == c} for c in configs}
         both = sorted(set(per[configs[0]]) & set(per[configs[1]]))
         for b, c in ((configs[0], configs[1]), (configs[1], configs[0])):
-            v = gate.compare({k: per[b][k] for k in both}, {k: per[c][k] for k in both})
+            v = gate.compare({k: per[b][k] for k in both}, {k: per[c][k] for k in both},
+                             agg.get("control_settle_spread_s"))
             out.append(f"## gate: base {b} -> candidate {c} ({', '.join(both)})")
             out += [f"- {k}: {'PASS' if x['pass'] else 'FAIL'}" + (f" ({'; '.join(x['why'])})" if x["why"] else "")
                     for k, x in v.items()]
