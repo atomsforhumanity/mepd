@@ -44,7 +44,7 @@ LIVE_FRAMES = 125                # frames per segment file a live viewer reads (
 
 
 def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
-    """The Reactor's Collide pick (Sandbox.js collisionPair), with `rng`: two
+    """The Reactor's Collide pick (mepd/web/sandbox.py runs this one too), with `rng`: two
     heavy atoms of two different molecules, any two with no species preferred,
     with the two molecules' atoms, (i, j, A, B): the whole molecules are pushed
     together along i-j (langevin.pull_pairs); or, 30% of the time and always

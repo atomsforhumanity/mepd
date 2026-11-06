@@ -214,3 +214,30 @@ def test_a_reactor_exits_when_its_server_is_killed():
     finally:
         if server.poll() is None:
             server.kill()
+
+
+def test_collide_pushes_whole_molecules_as_the_network_generator_does():
+    """Collide is reactor_generator's own move: two molecules picked at random,
+    pushed together as wholes (langevin.pull_pairs with (i, j, A, B)), or two
+    atoms of one molecule; the frames say which, and auto repeats it."""
+    box = sandbox.start("t_collide", [chem.structure_from_smiles("O")] * 3, temperature=300)
+    try:
+        f = _wait(box, 0, 2.0)
+        box.command({"op": "auto_collide", "value": True})
+        seen = []
+        t0 = time.time()
+        while time.time() - t0 < 6 and len(seen) < 3:
+            f = box.frame(f["seq"])
+            c = f.get("collide")
+            if c and c.get("i") is not None:
+                seen.append(c)
+        assert seen and all(c["auto"] for c in seen)
+        between = [c for c in seen if "a" in c]
+        for c in between:   # whole molecules: each water's three atoms, the two atoms one of each
+            assert len(c["a"]) == 3 and len(c["b"]) == 3 and c["i"] in c["a"] and c["j"] in c["b"]
+            assert not set(c["a"]) & set(c["b"])
+        box.command({"op": "release_all"})            # stops the pushes and the repeats
+        f = _wait(box, f["seq"], 1.0)
+        assert not (f.get("collide") or {}).get("auto")
+    finally:
+        sandbox.stop("t_collide")

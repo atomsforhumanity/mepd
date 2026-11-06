@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: the Reactor's Collide is the unbiased network generator's move.**
+  - Between molecules, it pushes the two whole molecules into each other, where it used to drag one atom of each to their midpoint. The push is a capped force along one atom of each, spread over each molecule by mass (`langevin.pull_pairs` with `(i, j, A, B)`). With one molecule, or 30 % of the time, two of its atoms are pulled together.
+  - The pick is `reactor_generator.collision_pair` itself, run inside the reactor process and timed in simulated fs (300 fs pushes). "keep colliding" repeats it on the generator's own schedule (gaps of ~200 fs).
+  - The page shows the two molecules being pushed (blue and orange) and the line the push acts along.
+  - New reactor commands `collide` and `auto_collide`. The browser-side picker is gone.
+
 - **Web: theme switch.** Settings has Auto, Light and Dark, next to "All tools".
 
 - **Web: a calculation reads as one sentence.** Each tool's card opens on what it will do, on what, and at which level: "Transition state from chloride + CBr to bromide + chloromethane at gxtb". It also shows how long it usually takes here (the median of earlier runs). Every setting stays one click away under Settings, which marks how many differ from the defaults.

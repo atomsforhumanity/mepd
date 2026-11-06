@@ -23,72 +23,6 @@ const COARSE = window.matchMedia?.('(pointer: coarse)').matches;   // a touch sc
 const wallOf = (v) => WALL_MIN * Math.exp(Math.log(WALL_MAX / WALL_MIN) * v);
 const sliderOf = (r) => Math.log(r / WALL_MIN) / Math.log(WALL_MAX / WALL_MIN);
 
-// Bonds in a frame (Angstrom): atoms closer than a bond, as neighbour lists.
-const HEAVY_BOND = 1.95, H_BOND = 1.3;
-function bonds(symbols, pos) {
-  const n = pos.length, nb = Array.from({ length: n }, () => []);
-  for (let i = 0; i < n; i += 1) {
-    for (let j = i + 1; j < n; j += 1) {
-      if (symbols[i] === 'H' && symbols[j] === 'H') continue;
-      const cut = symbols[i] === 'H' || symbols[j] === 'H' ? H_BOND : HEAVY_BOND;
-      const d = Math.hypot(pos[i][0] - pos[j][0], pos[i][1] - pos[j][1], pos[i][2] - pos[j][2]);
-      if (d < cut) { nb[i].push(j); nb[j].push(i); }
-    }
-  }
-  return nb;
-}
-// Molecules: the connected groups of the bond graph.
-function molecules(nb) {
-  const seen = new Array(nb.length).fill(false), out = [];
-  for (let s0 = 0; s0 < nb.length; s0 += 1) {
-    if (seen[s0]) continue;
-    const m = [s0];
-    seen[s0] = true;
-    for (let k = 0; k < m.length; k += 1) for (const j of nb[m[k]]) if (!seen[j]) { seen[j] = true; m.push(j); }
-    out.push(m);
-  }
-  return out;
-}
-// Bonds between atom a and every atom of its molecule (breadth first).
-function hops(nb, a) {
-  const d = { [a]: 0 }, q = [a];
-  for (let k = 0; k < q.length; k += 1) for (const j of nb[q[k]]) if (d[j] == null) { d[j] = d[q[k]] + 1; q.push(j); }
-  return d;
-}
-// Collide: what a person does by hand (drag an atom of one molecule into
-// another and hold it), done for them: two heavy atoms of two different
-// molecules (any two, no species preferred), or of one molecule three or more
-// bonds apart (a ring closing, an H moving across), are pulled together. With
-// everything in one molecule, only the second is left.
-const COLLIDE_MS = 1600, COLLIDE_K = 100, INTRA_HOPS = 3;
-function intraPair(symbols, nb, mols) {
-  const pairs = [];
-  for (const m of mols) {
-    if (m.length < 4) continue;
-    const heavy = m.filter((i) => symbols[i] !== 'H');
-    for (const a of heavy) {
-      const d = hops(nb, a);
-      for (const b of m) if (b > a || symbols[b] === 'H') { if (d[b] >= INTRA_HOPS && b !== a) pairs.push([a, b, symbols[b] !== 'H']); }
-    }
-  }
-  if (!pairs.length) return null;
-  const hh = pairs.filter((p) => p[2]);   // two heavy atoms first; else a heavy atom and an H
-  const pool = hh.length ? hh : pairs;
-  const [a, b] = pool[Math.floor(Math.random() * pool.length)];
-  return [a, b];
-}
-export function collisionPair(symbols, pos) {
-  const nb = bonds(symbols, pos);
-  const mols = molecules(nb);
-  const intra = intraPair(symbols, nb, mols);
-  if (mols.length < 2 || (intra && Math.random() < 0.3)) return intra;
-  const heavy = (m) => { const h = m.filter((i) => symbols[i] !== 'H'); return h.length ? h : m; };
-  const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
-  const a = pick(mols);
-  const b = pick(mols.filter((m) => m !== a));
-  return [pick(heavy(a)), pick(heavy(b))];
-}
-
 // "C=O + [H] -> [CH]=O + [H][H]" (a reaction label) -> each side's molecules,
 // a count each, with the ones on both sides (water carrying an H across) left out.
 function sidesOf(label) {
@@ -127,7 +61,6 @@ export function SandboxView() {
   const eventsRef = useRef([]);
   // Until someone has caught a first reaction, Collide keeps going by itself.
   const [autoCollide, setAutoCollide] = useState(() => !state.tour?.reaction);
-  const colliding = useRef(null);       // {pair, until}
   // The piston: off at first; its cycle (as the nanoreactor's) behind "cycle".
   const [piston, setPiston] = useState({ on: false, period_ps: 1, compress: 0.7, duty: 0.75 });
   const [cycleOpen, setCycleOpen] = useState(false);
@@ -139,33 +72,17 @@ export function SandboxView() {
   strengthRef.current = strength;
 
   const send = (cmd) => api.post(`/api/sandbox/${sb.id}/command`, cmd).catch((e) => setDead(String(e.message || e)));
-  // Pull the pair toward each other (their midpoint, as they move) for a moment, then let go.
-  const collide = () => {
-    const f = frame.current;
-    if (!f?.pos || colliding.current) return;
-    const pair = collisionPair(sb.symbols, f.pos);
-    if (!pair) return;
-    colliding.current = { pair, until: Date.now() + COLLIDE_MS };
-    const step = () => {
-      const c = colliding.current, g = frame.current;
-      if (!c) return;
-      if (Date.now() > c.until || !g?.pos) {
-        c.pair.forEach((atom) => send({ op: 'release', atom }));
-        colliding.current = null;
-        return;
-      }
-      const [i, j] = c.pair, p = g.pos[i], q = g.pos[j];
-      const mid = [0, 1, 2].map((x) => (p[x] + q[x]) / 2);
-      c.pair.forEach((atom) => send({ op: 'pull', atom, target: mid, k: COLLIDE_K }));
-      setTimeout(step, 150);
-    };
-    step();
-  };
+  // Collide is the unbiased network generator's move, run inside the reactor
+  // (mepd/web/sandbox.py, reactor_generator.collision_pair + langevin.pull_pairs):
+  // two molecules picked at random are pushed into each other as wholes for
+  // 300 fs of dynamics (a capped force along one atom of each, spread over each
+  // molecule by mass), or, with one molecule or 30% of the time, two of its atoms
+  // pulled together. "keep colliding" repeats it on the generator's own schedule.
+  const collide = () => send({ op: 'collide' });
   useEffect(() => {
-    if (!autoCollide || !sb) return undefined;
-    collide();
-    const t = setInterval(collide, COLLIDE_MS + 1200);
-    return () => clearInterval(t);
+    if (!sb) return undefined;
+    send({ op: 'auto_collide', value: !!autoCollide });
+    return undefined;
   }, [autoCollide, sb?.id]);
 
   // Draw the latest frame (positions, the wall, the pull lines).
@@ -182,9 +99,19 @@ export function SandboxView() {
       vv.addModel(xyzText(sb.symbols, flat), 'xyz');
       vv.setStyle({}, FULL);
       if (drag.current) vv.setStyle({ index: drag.current.atom }, { stick: { radius: 0.12 }, sphere: { scale: 0.35, color: cssVar('--warn', '#b7791f') } });
-    }, { extent: wide + 1, shapes: Object.keys(pulls).length > 0 });
+      if (f.collide?.a) {   // the two molecules being pushed together
+        vv.setStyle({ index: f.collide.a }, { stick: { radius: 0.12, color: cssVar('--chart-1', '#3868b8') }, sphere: { scale: 0.26 } });
+        vv.setStyle({ index: f.collide.b }, { stick: { radius: 0.12, color: cssVar('--chart-2', '#c26a1f') }, sphere: { scale: 0.26 } });
+      }
+    }, { extent: wide + 1, shapes: Object.keys(pulls).length > 0 || f.collide?.i != null });
     stage.setWall(r, cssVar('--accent', '#3868b8'));
     const viewer = stage.viewer();
+    if (viewer && f.collide?.i != null) {   // the line the push acts along
+      const p = f.pos[f.collide.i], q = f.pos[f.collide.j];
+      viewer.addCylinder({ start: { x: p[0], y: p[1], z: p[2] }, end: { x: q[0], y: q[1], z: q[2] }, radius: 0.07,
+        dashed: true, color: cssVar('--accent', '#3868b8'), fromCap: 1, toCap: 1 });
+      if (!Object.keys(pulls).length) viewer.render();
+    }
     if (viewer && Object.keys(pulls).length) {
       for (const [atom, t] of Object.entries(pulls)) {
         const p = f.pos[+atom];
@@ -362,7 +289,7 @@ export function SandboxView() {
           <div class="rx-legend small">drag an atom into another: pull it · drag elsewhere: rotate</div>
           <div class="rx-collide">
             <button class="btn primary key" onClick=${collide} title="Pull two atoms together for a moment, as you would by dragging one: of two molecules, or far apart in one">Collide</button>
-            <label class="small" title="Collide again every few seconds"><input type="checkbox" checked=${autoCollide}
+            <label class="small" title="Push molecules together again and again, on the network generator's schedule (300 fs pushes, ~200 fs apart)"><input type="checkbox" checked=${autoCollide}
               onChange=${(e) => setAutoCollide(e.target.checked)} /> keep colliding</label>
           </div>
         </div>
@@ -397,7 +324,7 @@ export function SandboxView() {
             </span>`}
           </span>
           <button class="btn small" onClick=${() => { send({ op: 'pause', value: !paused }); setPaused(!paused); }}>${paused ? '▶ Resume' : '❚❚ Pause'}</button>
-          <button class="btn small" onClick=${() => { setAutoCollide(false); colliding.current = null; send({ op: 'release_all' }); }}>Release all</button>
+          <button class="btn small" onClick=${() => { setAutoCollide(false); send({ op: 'release_all' }); }}>Release all</button>
           <button class="btn small" title="Keep this geometry in Explore (not minimized; several molecules become a complex)"
             onClick=${() => attempt(() => api.post(`/api/sandbox/${sb.id}/snapshot`), 'This frame added to Explore')}>Save this frame</button>
         </div>
