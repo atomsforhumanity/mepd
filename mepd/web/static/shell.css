@@ -203,3 +203,24 @@
 .method-pane .section-title { margin: 8px 0 0; }
 .m-row { display: flex; justify-content: space-between; gap: 12px; }
 .m-k { color: var(--muted); }
+
+/* ---------- Explore › Landscape: the routes that matter */
+.landscape { padding: 16px 24px; }
+.landscape svg { display: block; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+.landscape-empty { margin: 48px auto; max-width: 520px; text-align: center; display: grid; gap: 10px; justify-items: center; }
+.ls-grid { stroke: var(--border); stroke-width: 1; }
+.ls-zero { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 4; }
+.ls-tick { font: 11px var(--font-mono); fill: var(--muted); text-anchor: end; }
+.ls-axis { font: 600 12px var(--font-ui); fill: var(--heading); }
+.ls-axis.end { text-anchor: end; font-weight: 400; fill: var(--muted); }
+.ls-path { fill: none; opacity: .35; stroke-linecap: round; }
+.ls-flow { fill: none; stroke-dasharray: 2 14; stroke-linecap: round; animation: ls-flow 1s linear infinite; }
+@keyframes ls-flow { to { stroke-dashoffset: -32; } }
+.ls-route { cursor: pointer; }
+.ls-route:hover .ls-path { opacity: .6; }
+.ls-ts { font: 600 12px var(--font-mono); text-anchor: middle; }
+.ls-bar { stroke: var(--heading); stroke-width: 5; }
+.ls-bar.start { stroke: var(--accent-strong); stroke-width: 6; }
+.ls-name { font: 13px var(--font-ui); fill: var(--text); text-anchor: middle; }
+.ls-share { font: 600 20px var(--font-serif); fill: var(--accent); text-anchor: middle; }
+.ls-foot { margin-top: 8px; }

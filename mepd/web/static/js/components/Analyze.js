@@ -12,6 +12,7 @@ import { api, attempt } from '../api.js';
 import { openJob, select, set, state, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
 import { NO_TS_SHORT, ReactionCard, findTs, noTsHint, noTsWhy } from './Reactions.js';
+import { LandscapeView } from './Landscape.js';
 import { KineticsView } from './Kinetics.js';
 import { ReactionMaker } from './NewReaction.js';
 import { markQuest } from '../quests.js';
@@ -102,6 +103,7 @@ export function AnalyzeView() {
   useEffect(() => { if (mode === 'kinetics') markQuest('kinetics'); }, [mode]);
   // (Reactions and Kinetics are the canvas's own view tabs: Shell.js CanvasHeader.)
   if (mode === 'kinetics') return html`<div class="analyze-wrap"><${KineticsView} /></div>`;
+  if (mode === 'landscape') return html`<div class="analyze-wrap"><${LandscapeView} /></div>`;
   return html`<div class="analyze-wrap"><${ReactionsAnalyze} /></div>`;
 }
 

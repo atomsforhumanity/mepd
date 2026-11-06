@@ -86,12 +86,12 @@ export function CanvasHeader() {
   const analyzeView = useStore((s) => s.analyze?.view || 'reactions');
   const map = useMap();
   if (!['graph', 'analyze'].includes(view.tab)) return null;
-  const at = view.tab === 'graph' ? 'explore' : analyzeView === 'kinetics' ? 'kinetics' : 'reactions';
+  const at = view.tab === 'graph' ? 'explore' : ['kinetics', 'landscape'].includes(analyzeView) ? analyzeView : 'reactions';
   const go = (k) => {
     if (k === 'explore') openTab('graph');
     else set({ analyze: { ...(state.analyze || {}), compose: false, view: k }, view: { tab: 'analyze', jobId: null } });
   };
-  const views = [['explore', 'Explore'], ...(map.tab('analyze') ? [['reactions', 'Reactions'], ['kinetics', 'Kinetics']] : [])];
+  const views = [['explore', 'Explore'], ...(map.tab('analyze') ? [['reactions', 'Reactions'], ['kinetics', 'Kinetics'], ['landscape', 'Landscape']] : [])];
   return html`<nav class="canvas-tabs" aria-label="Views">
     ${views.map(([k, l]) => html`<button class=${cls(at === k && 'on')} onClick=${() => go(k)}>${l}</button>`)}
   </nav>`;

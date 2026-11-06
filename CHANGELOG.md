@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: Explore › Landscape, the routes that matter as one energy diagram.**
+  - Built from the last kinetics run: the starting mixture is a bar, and every step that carries material (at least 1 % of the busiest) is a hump over its TS to the next mixture.
+  - Line width shows how much went that way, colour the barrier band, and each product carries its final share. Energies are relative to the start, at the basis the kinetics used.
+  - Click a route to open its reaction.
+  - The SN2 example now ships with its molecules optimized, so kinetics runs on it.
+
 - **Web: Design's Move tool.**
   - Drag an atom to place it by hand: in the screen plane, or toward and away from you with Alt-drag. Nothing else moves or relaxes, so a TS guess or a contact stays as drawn.
   - New design edit `move` (`mepd/web/design.py`).
