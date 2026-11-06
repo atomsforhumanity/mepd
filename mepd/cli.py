@@ -1674,6 +1674,21 @@ def optimize(
                 _progress.end_minimization(stream, trajectory=traj)
 
     typer.echo(f"Optimizing {len(nodes)} structure(s) with {type(engine).__name__}...")
+    # A single atom (an ion such as Cl-) has no geometry to optimize and no
+    # vibrations: its energy is all there is, and it is a minimum by definition.
+    # (Optimizers and Hessians assert on one atom.)
+    atoms = [i for i, nd in enumerate(nodes) if len(nd.structure.symbols) == 1]
+    for i in atoms:
+        try:
+            import numpy as _np
+
+            energy = _np.asarray(engine.compute_energies([nodes[i]])).ravel()[0]
+            nodes[i]._cached_energy = float(energy)
+            results[i] = nodes[i]
+        except Exception as exc:
+            errors[i] = f"{type(exc).__name__}: {exc}"
+        typer.echo(f"  {sources[i]}: one atom, single point only ({'ok' if results[i] is not None else errors[i]})")
+    todo = [i for i in range(len(nodes)) if i not in atoms]
     batch = getattr(engine, "compute_geometry_optimizations", None)
     batched = False
     # Local QCCompute "batches" one structure at a time anyway: going through
@@ -1681,14 +1696,15 @@ def optimize(
     # parallel and ChemCloud's remotely, so those keep batching.)
     if live and getattr(engine, "compute_program", None) == "qccompute":
         batch = None
-    if callable(batch) and len(nodes) > 1:
+    if callable(batch) and len(todo) > 1:
         try:
+            todo_nodes = [nodes[i] for i in todo]
             try:
-                trajs = batch(nodes, keywords=keywords)
+                trajs = batch(todo_nodes, keywords=keywords)
             except TypeError:
-                trajs = batch(nodes)
-            if isinstance(trajs, (list, tuple)) and len(trajs) == len(nodes):
-                for i, traj in enumerate(trajs):
+                trajs = batch(todo_nodes)
+            if isinstance(trajs, (list, tuple)) and len(trajs) == len(todo):
+                for i, traj in zip(todo, trajs):
                     if traj:
                         results[i] = traj[-1]
                     else:
@@ -1699,7 +1715,7 @@ def optimize(
             # the failure is attributed and the rest still get optimized.
             typer.echo(f"Batch optimization failed ({type(exc).__name__}: {exc}); retrying one at a time.")
     if not batched:
-        for i in range(len(nodes)):
+        for i in todo:
             _single(i)
             typer.echo(f"  [{i + 1}/{len(nodes)}] {sources[i]}: {'ok' if results[i] is not None else errors[i]}")
 
@@ -1709,6 +1725,9 @@ def optimize(
 
         for i, node in enumerate(results):
             if node is None:
+                continue
+            if i in atoms:
+                validations[i] = {"is_minimum": True, "validation": "one atom: a minimum by definition"}
                 continue
             typer.echo(f"  Hessian check {sources[i]} ({len(node.structure.symbols)} atoms; for a large or floppy "
                        "structure, e.g. with explicit solvent, this and any rescue can take minutes)...")

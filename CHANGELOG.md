@@ -847,6 +847,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **`mepd optimize` on a single atom** (an ion such as Cl⁻, Br⁻, H⁻) failed with an AssertionError in the optimizer, which left halide ions without energies and kept them out of kinetics. An atom now gets one single point and counts as a minimum by definition (no Hessian).
+
 - **Explorer, async: a run stopped by `max_species` ends with what it has**, as one out of time does: no IRC checks or
   whole channel searches after its queue (unbudgeted), and no steering single point queued into the closed queue
   (`AttributeError: 'NoneType' object has no attribute 'submit'`). F0007 with a version of this branch that
