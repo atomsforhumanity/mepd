@@ -11,7 +11,7 @@ const _pref = (k, d) => { try { const v = localStorage.getItem('mepd:' + k); ret
 export const state = {
   connected: false,
   theme: _pref('theme', 'auto'),         // 'auto' | 'light' | 'dark'
-  tray: false,                           // the Calculations bar opened into its table
+  inspectorTab: _pref('inspectorTab', 'tools'),   // the inspector's tab: 'tools' | 'results' | 'method'
   // The 'How it works' panel, once dismissed, stays away (per browser).
   howToHidden: (() => { try { return localStorage.getItem('mepd:hideHowTo') === 'true'; } catch { return false; } })(),
   // Getting-started steps done (molecule, reactor, reaction) and whether they are hidden (Welcome.js).

@@ -19,6 +19,8 @@ function useEntries() {
 }
 
 export function hasWhy(id) { return !!entries?.[id]; }
+// The explain.json entries (null until loaded; re-renders when they arrive).
+export { useEntries as useExplain };
 
 // The first id that has an entry (e.g. a field of this operation, else the field anywhere).
 export function Why({ id, ids, label, fallback = null }) {

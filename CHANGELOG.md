@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: the inspector has three tabs: Tools · Results · Method.**
+  - **Tools:** what you can run on the selection.
+  - **Results:** what is known (the detail, the 3D view, its calculations).
+  - **Method:** how the selection's numbers were computed: level of theory, profile, wall time, what the calculation does and its pipeline, the settings that differ from the defaults (all of them on demand), caveats, and the command that reproduces it, with links to the calculation, its files, the manual and what to cite.
+  - The chosen tab stays as the selection changes.
+
 - **Web: reaction pages and the reaction player.**
   - Double-click a reaction (in Explore or the list), or use "Open: play its path", for its own page at `#/reaction/<edge>`.
   - The page shows the forward and reverse barriers and plays the path: 3D, energy profile and the bonds that form (blue) and break (orange), with their live lengths, all on one scrubber.

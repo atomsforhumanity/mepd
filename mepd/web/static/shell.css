@@ -179,3 +179,27 @@
 .rp-controls { display: flex; align-items: center; gap: 8px; }
 .rp-controls input[type=range] { flex: 1; accent-color: var(--accent); }
 .rp-play { min-width: 76px; justify-content: center; box-shadow: var(--key-shadow-accent); }
+
+/* ---------- inspector tabs: Tools · Results · Method */
+.insp-tabs { display: flex; gap: 18px; padding: 0 18px; border-bottom: 1px solid var(--border); flex: none; }
+.insp-tabs button { border: 0; background: none; padding: 8px 0; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: var(--fs-md); }
+.insp-tabs button.on { color: var(--heading); font-weight: 600; border-bottom-color: var(--accent); }
+.inspector .inspector-scroll { padding-top: 12px; }
+.more-calcs > summary { font-size: var(--fs-sm); color: var(--muted); cursor: pointer; margin-bottom: 8px; }
+.method-pane { display: flex; flex-direction: column; gap: 10px; font-size: 14px; }
+.m-head { display: flex; justify-content: space-between; align-items: baseline; }
+.m-head b { font: 600 18px var(--font-serif); color: var(--heading); }
+.m-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.m-does { margin: 0; color: var(--text); }
+.m-fold summary { cursor: pointer; color: var(--accent); font-size: var(--fs-sm); }
+.m-steps, .m-fold ul { margin: 6px 0 0; padding-left: 20px; font-size: var(--fs-sm); color: var(--muted); display: grid; gap: 4px; }
+.m-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; margin: 0; font-size: var(--fs-sm); }
+.m-kv dt { color: var(--muted); }
+.m-kv dd { margin: 0; text-align: right; font-family: var(--font-mono); }
+.m-kv.all { margin-top: 6px; }
+.m-cmd { display: flex; gap: 6px; align-items: flex-start; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); }
+.m-cmd code { flex: 1; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.m-more { margin: 4px 0 0; }
+.method-pane .section-title { margin: 8px 0 0; }
+.m-row { display: flex; justify-content: space-between; gap: 12px; }
+.m-k { color: var(--muted); }

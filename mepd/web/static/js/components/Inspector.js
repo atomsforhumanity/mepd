@@ -6,6 +6,7 @@ import { complexesGoingWith, complexNodes, complexOfStructure, conformerLabel, c
 
 export { conformerLabel, conformerRows };
 import { ActionPanel } from './Actions.js';
+import { MethodPane, methodJobFor } from './Method.js';
 import { QuestIcon } from '../icons.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
@@ -443,13 +444,16 @@ export function Inspector() {
   const map = useMap();
   // On phones the sheet opens on what you came for -- the calculations -- with
   // the viewer/properties one tap away; desktop shows both stacked.
-  const [pane, setPane] = useState('run');
+  // Tools (what you can do), Results (what is known), Method (how it was computed):
+  // the choice stays as the selection changes. A reaction opens on its results.
+  const itab = useStore((s) => s.inspectorTab || 'tools');
+  const setItab = (t) => { prefs.set('inspectorTab', t); set({ inspectorTab: t }); };
   const sel = useStore((s) => s.selection);
   // Phones show this panel as a bottom sheet; tapping its header folds it
   // down to a bar (to look at the graph) and back up. Re-opens on every new
   // selection.
   const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => { setCollapsed(false); setPane('run'); }, [sel]);
+  useEffect(() => { setCollapsed(false); }, [sel]);
   const structures = useStore((s) => s.workspace.structures);
   const edges = useStore((s) => s.workspace.edges);
   const workspace = useStore((s) => s.workspace);
@@ -524,17 +528,18 @@ export function Inspector() {
         <h2>${head}${collapsed ? html` <span class="small muted">· tap to show options</span>` : ''}</h2>
         <button class="btn-icon" title="Clear selection (Esc)" onClick=${(e) => { e.stopPropagation(); clearSelection(); }}>✕</button>
       </div>
-      ${phone && html`<div class="segmented wide sheet-tabs">
-        <button class=${pane === 'run' ? 'on' : ''} onClick=${() => setPane('run')}>Calculations</button>
-        <button class=${pane === 'details' ? 'on' : ''} onClick=${() => setPane('details')}>Details</button>
-      </div>`}
+      <nav class="insp-tabs" role="tablist">
+        ${[['tools', 'Tools'], ['results', 'Results'], ['method', 'Method']].map(([k, l]) => html`<button role="tab" aria-selected=${itab === k}
+          class=${itab === k ? 'on' : ''} onClick=${() => setItab(k)}>${l}</button>`)}
+      </nav>
       <div class="inspector-scroll">
-        <${NavLinks} links=${links} />
-        ${(!phone || pane === 'details') && body}
-        ${(!phone || pane === 'run') && (moreCalcs
-          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
-          : html`<${ActionPanel} sel=${sel} extras=${extras} />`)}
-        ${(!phone || pane === 'details') && tail}
+        ${itab === 'tools' && html`<${NavLinks} links=${links} />
+          ${moreCalcs
+            ? html`<details class="more-calcs" open><summary>Calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
+            : html`<${ActionPanel} sel=${sel} extras=${extras} />`}`}
+        ${itab === 'results' && html`${body}${tail}`}
+        ${itab === 'method' && html`<${MethodPane} jobId=${methodJobFor(sel, workspace, state.jobs)}
+          rec=${nS === 1 && !nE ? structures[sel.structures[0]] : null} />`}
       </div>
     </aside>`;
 }
