@@ -47,7 +47,7 @@ def test_a_pull_between_molecules_moves_them_whole():
 
 
 def test_pushes_between_two_molecules_lose_no_step_of_a_trajectory(monkeypatch):
-    pytest.importorskip("tblite")
+    pytest.importorskip("axtb")
     import mepd.discovery.reactor_generator as rg
 
     picks, pick = [], rg.collision_pair
@@ -77,7 +77,7 @@ def test_pulls_between_molecules_prefer_no_species():
 
 
 def test_the_reactor_finds_both_formic_acid_channels():
-    pytest.importorskip("tblite")
+    pytest.importorskip("axtb")
     from types import SimpleNamespace
 
     from mepd.discovery.reactor_generator import reactor_products
@@ -176,7 +176,7 @@ def test_the_explorer_passes_the_reactor_what_is_left_of_the_access_cutoff():
 
 
 def test_an_event_that_only_renumbers_identical_atoms_is_no_product(monkeypatch):
-    pytest.importorskip("tblite")
+    pytest.importorskip("axtb")
     import mepd.discovery.reactor_generator as rg
 
     # formic acid's two hydrogens trade places: new bonds by atom number, the same molecule

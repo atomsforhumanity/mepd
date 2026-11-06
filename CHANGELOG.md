@@ -590,6 +590,19 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **The proposal MD (reactor, collide, the interactive Reactor) runs on axtb instead of tblite,** with the method an
+  option: `md_method` = `"gfn2"` (default; GFN2-xTB in tblite's conventions, tblite's energies to ~1e-10 Eh),
+  `"gxtb-v2.0.1"` (g-xTB, the program's conventions) or `"uma"` (fairchem uma-s-1p2; with several trajectories
+  at once their steps go to one model server, batched on the GPU). One calculator per trajectory process, one
+  thread; an SCF that fails is retried at 6000 K, then 1000 K Fermi smearing (g-xTB at 3000 K oscillates for some
+  torn geometries, e.g. CO + OH + H). GFN2-xTB on axtb gives tblite's trajectories statistically (HCOOH at
+  2200 K, 96 trajectories each: CO + H2O in 14% vs 15%, CO2 + H2 in 75% vs 75%; F0007, 48 each: endo 6 vs 6,
+  exo 2 vs 1) at ~2x the speed: a batch of 32 trajectories of 5 ps at 32 workers (AFH node) takes 67 s instead of
+  136 s for F0007, 53 s instead of 115 s for (HCOOH)4, 9 s instead of 17 s for methyl formate, 3 s instead of 10 s
+  for HCOOH. g-xTB MD costs 451, 41 and 17 s there and proposes no more (F0007 exo in 0 of 64 trajectories).
+  UMA MD, 32 trajectories per GPU through the model server: ~1000 s per batch for F0007 and (HCOOH)4 (16-18x
+  GFN2 on axtb), stable, F0007 exo in 0 of 64.
+
 - **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
   (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).
   It used to avoid pairing two waters: water was never the first partner when there was another molecule, and a

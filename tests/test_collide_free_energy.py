@@ -61,7 +61,7 @@ def test_a_collision_of_two_molecules_moves_them_whole_and_no_move_is_a_template
 
 
 def test_collisions_find_both_formic_acid_channels():
-    pytest.importorskip("tblite")
+    pytest.importorskip("axtb")
     from types import SimpleNamespace
 
     from mepd.discovery.collide_generator import collide_products

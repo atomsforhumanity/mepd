@@ -3,8 +3,8 @@ live MD the user steers -- drag an atom and it is pulled toward the
 pointer, scroll to grow or shrink the wall, set the temperature.
 
 The MD runs in its own process (one per sandbox): Langevin dynamics
-(BAOAB) on GFN2-xTB from tblite (in-process, the wavefunction carried from
-step to step: ~15 ms a step for 40 atoms), inside the nanoreactor's soft
+(BAOAB) on GFN2-xTB from axtb (in-process, the wavefunction carried from
+step to step), inside the nanoreactor's soft
 logfermi wall, which a piston can swing between the user's radius and a
 squeezed one (the nanoreactor's cycle: wide, a short ramp in, narrow). Pulls are harmonic springs from an atom to a target point,
 their force capped so a fast drag cannot blow the system up. The page

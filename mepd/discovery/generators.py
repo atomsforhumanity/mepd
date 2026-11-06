@@ -142,28 +142,29 @@ GENERATORS: dict[str, Generator] = {
                      "160, 114110 (2024), doi:10.1063/5.0197592"]}}),
     "collide": Generator(
         "collide", "Collisions (the Reactor's Collide)",
-        "Langevin MD on GFN2-xTB at a moderate temperature in which two atoms of a molecule, or two whole "
+        "Langevin MD on GFN2-xTB (or g-xTB: md_method) at a moderate temperature in which two atoms of a molecule, or two whole "
         "molecules, are pulled together for a moment, then let go -- the interactive Reactor's Collide, run "
         "unattended over many pairs. Finds unimolecular decompositions and rearrangements the piston nanoreactor "
         "rarely makes, and bimolecular reactions (cycloadditions included) without templates.",
-        _collide, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
+        _collide, kind="structures", package="axtb", install="axtb (github.com/atomsforhumanity/axtb; part of mepd's environment)",
         options=dict(__import__("mepd.discovery.collide_generator", fromlist=["OPTIONS"]).OPTIONS),
         references={"collide": {
             "method": "steered Langevin MD (a capped harmonic pull between two atoms, or between two whole molecules, "
-                      "then a free run and a quench) on GFN2-xTB (tblite)",
+                      "then a free run and a quench) on GFN2-xTB or g-xTB (axtb)",
             "cite": ["C. Bannwarth, S. Ehlert, S. Grimme, J. Chem. Theory Comput. 15, 1652-1671 (2019), "
                      "doi:10.1021/acs.jctc.8b01176"]}}),
     "reactor": Generator(
         "reactor", "The Reactor, unattended (piston and random collisions)",
-        "The interactive Reactor with the piston on and Collide repeating: Langevin MD on GFN2-xTB in a wall that "
+        "The interactive Reactor with the piston on and Collide repeating: Langevin MD on GFN2-xTB (or g-xTB: "
+        "md_method) in a wall that "
         "periodically squeezes the structure, while two molecules (or two atoms of one) picked at random are pulled "
         "together for a moment every so often. Nothing chooses the chemistry; the kinetics sort out what matters.",
-        _reactor, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
+        _reactor, kind="structures", package="axtb", install="axtb (github.com/atomsforhumanity/axtb; part of mepd's environment)",
         propose_batch=_reactor_batch,
         options={k: v for k, v in __import__("mepd.discovery.reactor_generator", fromlist=["OPTIONS"]).OPTIONS.items()
                  if k not in ("workdir", "cutoff_kcal")},   # set by the explorer
         references={"reactor": {
-            "method": "piston-compressed Langevin MD with random steered collisions on GFN2-xTB (tblite); events "
+            "method": "piston-compressed Langevin MD with random steered collisions on GFN2-xTB or g-xTB (axtb); events "
                       "detected as in mepd's reimplementation of the ab initio nanoreactor",
             "cite": ["L.-P. Wang, A. Titov, R. McGibbon, F. Liu, V. S. Pande, T. J. Martinez, Nat. Chem. 6, 1044-1048 "
                      "(2014), doi:10.1038/nchem.2099",

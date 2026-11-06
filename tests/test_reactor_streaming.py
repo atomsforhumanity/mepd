@@ -115,3 +115,24 @@ def test_the_reactor_in_batches_keeps_its_convergence_rule_and_proposes_each_pro
         out, state, done = rg.reactor_batch(s, state, n_seeds=1, parallel=1, max_batches=5, max_products=2)
         got.append(len(out))
     assert got == [2, 0, 0]
+
+
+def test_the_explorer_hands_md_method_to_every_reactor_batch(monkeypatch):
+    """md_method (axtb's GFN2-xTB by default) reaches each batch's trajectory jobs, from the explorer's
+    generator options through Generator.propose_batch and reactor_batch."""
+    pytest.importorskip("axtb")
+    import mepd.discovery.reactor_generator as rg
+
+    methods = []
+
+    def fake(jobs, width):
+        methods.extend((j[5]["md_method"], j[5]["md_server"]) for j in jobs)
+        return [{"states": [], "keys": [], "events": 0, "torn": 0} for _ in jobs]
+
+    monkeypatch.setattr(rg, "_run_in_processes", fake)
+    for opts, want in (({}, "gfn2"), ({"md_method": "gxtb-v2.0.1"}, "gxtb-v2.0.1")):
+        methods.clear()
+        kw = _kw()
+        kw["generator_options"] = {"n_seeds": 1, "max_batches": 2, **opts}
+        expand_network(_node("C#N"), _GraphEngine(), connect=_AsyncConnector(), **kw)
+        assert len(methods) == 2 and set(methods) == {(want, None)}     # both batches, no UMA server

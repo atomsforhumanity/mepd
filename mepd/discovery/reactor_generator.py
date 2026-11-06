@@ -1,7 +1,7 @@
 """The interactive Reactor, unattended, as a network-expansion product generator.
 
 What a person does in the Reactor (mepd.web.sandbox) with the piston on and
-"keep colliding" ticked: Langevin dynamics on GFN2-xTB (tblite) inside the
+"keep colliding" ticked: Langevin dynamics on GFN2-xTB (axtb; or g-xTB, `md_method`) inside the
 nanoreactor's soft wall, which the piston swings between a wide and a
 squeezed radius, while Collide every so often pushes two molecules chosen at
 random together for a moment (whole: a capped force along the line between a
@@ -39,7 +39,8 @@ TRAJ_FS = 2.0                    # frame spacing read by the event detection (th
 
 OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
            "pull_fs": 300.0, "gap_fs": 200.0, "k": 100.0, "intra_hops": 2, "n_seeds": 0, "seed": 0,
-           "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": "", "cutoff_kcal": None}
+           "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": "", "cutoff_kcal": None,
+           "md_method": "gfn2"}
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
 
 
@@ -79,7 +80,8 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
 
 
 def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, compress, period_ps, duty, pull_fs,
-                gap_fs, k, intra_hops, seed, workdir: str = "") -> np.ndarray:
+                gap_fs, k, intra_hops, seed, workdir: str = "", md_method: str = "gfn2",
+                md_server: Optional[str] = None) -> np.ndarray:
     """One Reactor run: frames (Angstrom) every TRAJ_FS fs. With `workdir`, it is also written as it runs into
     a new <workdir>/run_kk laid out like a nanoreactor job (md/segment_kkk.xyz every LIVE_FRAMES frames,
     md/schedule.json, live_events.json): the web UI's Reactor view shows it live."""
@@ -97,6 +99,7 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     k_au = float(k) / KCAL * BOHR * BOHR
     pair, masses = [None], _masses(symbols)
     md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature, wall=wide, seed=seed,
+                    method=md_method, server=md_server,
                     bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
     rng = md.rng
     md.start()
@@ -171,13 +174,15 @@ class _LiveRun:
         self.written, self.k = len(frames), self.k + 1
 
 
-def _quench(symbols, xyz_A, charge, multiplicity) -> tuple[np.ndarray, Optional[float]]:
-    """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on GFN2-xTB, no new chemistry), Angstrom,
-    and its GFN2-xTB energy (kcal/mol); the snapshot itself and None if the SCF fails."""
+def _quench(symbols, xyz_A, charge, multiplicity, md_method: str = "gfn2",
+            md_server: Optional[str] = None) -> tuple[np.ndarray, Optional[float]]:
+    """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on the MD's method, no new chemistry),
+    Angstrom, and its energy (kcal/mol); the snapshot itself and None if the SCF fails."""
     from mepd.discovery.langevin import LangevinMD
 
     try:
-        md = LangevinMD(symbols, np.asarray(xyz_A, dtype=float) / BOHR, charge, multiplicity, temperature=300.0)
+        md = LangevinMD(symbols, np.asarray(xyz_A, dtype=float) / BOHR, charge, multiplicity, temperature=300.0,
+                        method=md_method, server=md_server)
         md.relax(200)
         return md.pos * BOHR, md.forces(md.pos, biased=False)[0] * KCAL
     except Exception:
@@ -186,8 +191,8 @@ def _quench(symbols, xyz_A, charge, multiplicity) -> tuple[np.ndarray, Optional[
 
 def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict:
     """One trajectory's reactor states, [(event frame, key, xyz Angstrom)] earliest first, and every event's
-    [key, whether it left the seed's state, its quenched energy above the quenched seed (kcal/mol, GFN2-xTB;
-    None if unknown)], repeats included. The structure after each event is quenched and
+    [key, whether it left the seed's state, its quenched energy above the quenched seed (kcal/mol, at the MD's
+    method; None if unknown)], repeats included. The structure after each event is quenched and
     keyed by its stereo SMILES: a hot snapshot's bonds (a third of the events in (HCOOH)4 at 1800 K fall back to
     the seed on quenching) and the atom numbering (the same reaction in another of four identical molecules)
     are no new product. An event whose quenched state is the one before it changed nothing and is not counted."""
@@ -203,7 +208,8 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
     structure = Structure(symbols=list(symbols), geometry=np.asarray(xyz_A) * ANGSTROM_TO_BOHR,
                           charge=int(charge), multiplicity=int(multiplicity))
     seed = prev = stereo_key(structure)
-    _, e_seed = _quench(symbols, xyz_A, int(charge), int(multiplicity))
+    method, server = options.get("md_method", "gfn2"), options.get("md_server")
+    _, e_seed = _quench(symbols, xyz_A, int(charge), int(multiplicity), method, server)
     bonded0 = {a for p in hist.initial for a in p}
     states, seen, keys, torn = [], {seed}, [], 0
     for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
@@ -212,7 +218,7 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
         if bonded0 - {a for p in hist.bonds_at(ev.product_frame) for a in p}:
             torn += 1
             continue
-        x, e = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity))
+        x, e = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity), method, server)
         key = stereo_key(structure.model_copy(update={"geometry": x * ANGSTROM_TO_BOHR}))
         if key is None or key == prev:
             continue
@@ -228,7 +234,7 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
                      compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75, pull_fs: float = 300.0,
                      gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2, n_seeds: int = 0, seed: int = 0,
                      unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "",
-                     cutoff_kcal: Optional[float] = None) -> list:
+                     cutoff_kcal: Optional[float] = None, md_method: str = "gfn2") -> list:
     """Product structures (input atom order) of batches of `n_seeds` Reactor
     runs of `structure` (default: one per process), `parallel` at a time
     (default: all CPUs), until converged (the module's docstring). With
@@ -240,7 +246,8 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     over as it ends.)"""
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
-    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir)
+    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
+                          md_method, _md_server(md_method, min(width, n)))
     runs, errors = [], []
     for batch in range(max(1, int(max_batches))):
         got, bad = _run_batch(structure, batch, n, width, max_products, seed, options)
@@ -269,7 +276,7 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
                   time_ps: float = 5.0, compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75,
                   pull_fs: float = 300.0, gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2,
                   n_seeds: int = 0, seed: int = 0, unseen: float = 0.05, max_batches: int = 4, parallel: int = 0,
-                  workdir: str = "", cutoff_kcal: Optional[float] = None) -> tuple:
+                  workdir: str = "", cutoff_kcal: Optional[float] = None, md_method: str = "gfn2") -> tuple:
     """The next batch of `reactor_products` for a caller that takes each batch's products the moment it
     ends (the explorer's async queue: they are optimized and connected while the next batch runs).
     `state` is what the previous batches left (None: the first); returns (this batch's products not
@@ -281,7 +288,8 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
                         "events": 0, "torn": 0, "errors": []})
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
-    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir)
+    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
+                          md_method, _md_server(md_method, min(width, n)))
     batch = int(st["batch"])
     runs, errors = _run_batch(structure, batch, n, width, max_products, seed, options)
     first = Counter(st["first"]) + _first(runs, cutoff_kcal)
@@ -307,10 +315,12 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
     return out, st, done
 
 
-def _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir) -> dict:
+def _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
+                md_method, md_server) -> dict:
     return dict(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
                 period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
-                k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""))
+                k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""), md_method=str(md_method),
+                md_server=md_server)
 
 
 def _run_batch(structure, batch: int, n: int, width: int, max_products, seed, options) -> tuple:
@@ -346,6 +356,15 @@ def _report_end(n_out, n_runs, events, torn, time_ps, temperature, errors) -> No
           f"{temperature:g} K ({events} events, {torn} states with a loose atom skipped).", flush=True)
     if errors:
         print(f"reactor: {len(errors)} trajectory(ies) failed, the first: {errors[0]}", flush=True)
+
+
+def _md_server(md_method: str, width: int) -> Optional[str]:
+    """UMA with several trajectories at once: a model server (one per process, kept) that batches their steps."""
+    if md_method != "uma" or width <= 1:
+        return None
+    from mepd.discovery.langevin import uma_server
+
+    return uma_server()
 
 
 def _run_in_processes(jobs: list, width: int) -> list:

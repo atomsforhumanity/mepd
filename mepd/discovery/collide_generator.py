@@ -34,7 +34,7 @@ KCAL = 627.509474
 AUTO_MAX = 96                    # n_collisions 0: every move up to this many
 
 OPTIONS = {"n_collisions": 0, "temperature": 1000.0, "pull_fs": 300.0, "relax_fs": 300.0, "k": 100.0,
-           "min_hops": 2, "seed": 0, "parallel": 0}
+           "min_hops": 2, "seed": 0, "parallel": 0, "md_method": "gfn2"}
 
 def _bonds(symbols, xyz_A, scale: float = 1.3) -> frozenset:
     from rdkit import Chem
@@ -139,7 +139,8 @@ def _turn_partner(symbols, xyz_A, atom, rng) -> np.ndarray:
     return xyz
 
 
-def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None):
+def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None,
+             md_method: str = "gfn2", md_server: Optional[str] = None):
     """One collision: pull `pair` together, and drag the bond `push` apart
     until it lets go; between two molecules, push the whole molecules together
     along the pair's direction, from a random orientation of the partner. The quenched end geometry (Angstrom),
@@ -181,7 +182,8 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
 
     try:
         md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature,
-                        wall=(float(np.max(np.linalg.norm(pos, axis=1))) + 4.0 / BOHR) * BOHR, seed=seed, bias=bias)
+                        wall=(float(np.max(np.linalg.norm(pos, axis=1))) + 4.0 / BOHR) * BOHR, seed=seed, bias=bias,
+                        method=md_method, server=md_server)
         md.start()
         n_pull, n_all = int(pull_fs / md.dt), int((pull_fs + relax_fs) / md.dt)
         done = 0
@@ -196,7 +198,7 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
 
 def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0, temperature: float = 1000.0,
                      pull_fs: float = 300.0, relax_fs: float = 300.0, k: float = 100.0, min_hops: int = 2,
-                     seed: int = 0, parallel: int = 0) -> list:
+                     seed: int = 0, parallel: int = 0, md_method: str = "gfn2") -> list:
     """Product structures (input atom order) from `n_collisions` pulls of
     pairs Collide could pick (all of them when there are fewer; a random
     sample otherwise), `parallel` at a time (default: all CPUs)."""
@@ -218,8 +220,11 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
     n = int(n_collisions) or min(len(order), AUTO_MAX)
     jobs = [(order[m % len(order)], int(seed) + m) for m in range(max(n, 1))]
     width = max(1, int(parallel) or available_cpus())
+    from mepd.discovery.reactor_generator import _md_server
+
+    server = _md_server(md_method, min(width, len(jobs)))
     args = [(symbols, xyz, int(structure.charge), int(structure.multiplicity), (mv[0], mv[1]), float(temperature),
-             float(pull_fs), float(relax_fs), float(k), s, mv[2]) for mv, s in jobs]
+             float(pull_fs), float(relax_fs), float(k), s, mv[2], str(md_method), server) for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
     from mepd.discovery.nanoreactor_generator import stereo_key
 
@@ -268,7 +273,7 @@ def _run_in_processes(args: list, width: int) -> list:
 
     def run(idx):
         payload = [[a[0], np.asarray(a[1]).tolist(), *a[2:4], list(a[4]), *a[5:10],
-                    list(a[10]) if a[10] is not None else None]
+                    list(a[10]) if a[10] is not None else None, *a[11:13]]
                    for a in (args[i] for i in idx)]
         r = subprocess.run([sys.executable, "-c", "from mepd.discovery.collide_generator import _worker; _worker()"],
                            input=json.dumps(payload), capture_output=True, text=True,
@@ -295,7 +300,8 @@ def _worker() -> None:
     jobs = json.loads(sys.stdin.read())
     ends = []
     for j in jobs:
-        sym, xyz, q, m, pair, T, pf, rf, k, seed, push = j
-        e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None)
+        sym, xyz, q, m, pair, T, pf, rf, k, seed, push, method, server = j
+        e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None,
+                     method, server)
         ends.append(e if e is None or isinstance(e, str) else np.asarray(e).tolist())
     print(json.dumps(ends))
