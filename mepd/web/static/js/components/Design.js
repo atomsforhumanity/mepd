@@ -57,6 +57,7 @@ function Steps({ steps }) {
 }
 const TOOLS = [
   ['view', 'View', 'Rotate and zoom; click an atom to see what it is.'],
+  ['move', 'Move', 'Drag an atom to place it by hand (in the screen plane; Alt-drag moves it toward or away from you). Nothing else moves or relaxes, so a TS guess or a contact stays as drawn.'],
   ['element', 'Element', 'Click an atom to turn it into the chosen element (hydrogens are re-added to fit).'],
   ['add', 'Add atom', 'Click an atom to bond a new atom of the chosen element to it (it takes a hydrogen\'s place), click a hydrogen to replace it, or click empty space to drop a new atom there.'],
   ['place', 'Add molecule', 'Click empty space to put a whole molecule or ion there, or click an atom to put it next to that atom, not bonded: a metal ion or Lewis acid to coordinate it, or several waters to solvate it.'],
@@ -127,7 +128,9 @@ function molblockXyz(mb) {
   return `${n}\ndesign\n${atoms.join('\n')}\n`;
 }
 
-function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable, onBackground = null, orbital = null, iso = 0.05, orbital2 = null, iso2 = 0.05, sign2 = 1 }) {
+function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable, onBackground = null, orbital = null, iso = 0.05, orbital2 = null, iso2 = 0.05, sign2 = 1, onDragAtom = null }) {
+  const dragRef = useRef(onDragAtom);
+  dragRef.current = onDragAtom;
   const host = useRef(null);
   const viewer = useRef(null);
   const last = useRef({ n: 0 });
@@ -161,9 +164,57 @@ function Canvas({ molblock, liveXyz, picked, changed, onAtom, labels, clickable,
     };
     host.current.addEventListener('pointerdown', onDown);
     host.current.addEventListener('pointerup', onClick);
+    // The Move tool: press on an atom and drag it. Caught before 3Dmol sees the
+    // press (capture phase), so the view does not rotate meanwhile.
+    let drag = null;
+    const nearestAtom = (e) => {
+      const v = viewer.current, model = v?.getModel();
+      if (!model) return null;
+      let best = null;
+      for (const a of model.selectedAtoms({})) {
+        const s = v.modelToScreen({ x: a.x, y: a.y, z: a.z });
+        const d = Math.hypot(s.x - e.pageX, s.y - e.pageY);
+        if (d < 22 && (!best || d < best.d)) best = { a, d };
+      }
+      return best?.a || null;
+    };
+    const onDragStart = (e) => {
+      if (!dragRef.current || !e.isPrimary) return;
+      const a = nearestAtom(e);
+      if (!a) return;
+      e.stopPropagation(); e.preventDefault();
+      host.current.setPointerCapture?.(e.pointerId);
+      const v = viewer.current;
+      const ax = v.screenOffsetToModel(1, 0), ay = v.screenOffsetToModel(0, 1);
+      const n = [ax.y * ay.z - ax.z * ay.y, ax.z * ay.x - ax.x * ay.z, ax.x * ay.y - ax.y * ay.x];
+      const nl = Math.hypot(...n) || 1;
+      drag = { a, p0: [a.x, a.y, a.z], s0: [e.pageX, e.pageY], normal: n.map((x) => x / nl), unit: Math.hypot(ay.x, ay.y, ay.z) };
+    };
+    const onDragMove = (e) => {
+      if (!drag) return;
+      e.stopPropagation(); e.preventDefault();
+      const v = viewer.current;
+      const dx = e.pageX - drag.s0[0], dy = e.pageY - drag.s0[1];
+      let p;
+      if (e.altKey) p = drag.p0.map((c, k) => c - drag.normal[k] * dy * drag.unit);
+      else { const off = v.screenOffsetToModel(dx, dy); p = [drag.p0[0] + off.x, drag.p0[1] + off.y, drag.p0[2] + off.z]; }
+      [drag.a.x, drag.a.y, drag.a.z] = p;
+      highlight.current();
+    };
+    const onDragEnd = (e) => {
+      if (!drag) return;
+      e.stopPropagation();
+      const { a } = drag;
+      drag = null;
+      dragRef.current?.(a.index, [a.x, a.y, a.z]);
+    };
+    host.current.addEventListener('pointerdown', onDragStart, true);
+    host.current.addEventListener('pointermove', onDragMove, true);
+    host.current.addEventListener('pointerup', onDragEnd, true);
     const el = host.current;
     return () => {
       ro.disconnect(); el.removeEventListener('pointerdown', onDown); el.removeEventListener('pointerup', onClick);
+      el.removeEventListener('pointerdown', onDragStart, true); el.removeEventListener('pointermove', onDragMove, true); el.removeEventListener('pointerup', onDragEnd, true);
       viewer.current?.clear(); viewer.current = null;
     };
   }, []);
@@ -490,7 +541,13 @@ export function DesignView() {
     if (tool === 'place') edit({ ...placeOp(), point: xyz });
     else edit({ op: 'drop', element, xyz, hydrogens: dropH });
   };
+  // Move: an atom dragged by hand goes exactly there (one side only, never mirrored).
+  const onMoveAtom = (idx, xyz, side = 'reactant') => {
+    setInfo(`Atom ${idx + 1} moved`);
+    return apply(() => api.post('/api/design/edit', { op: { op: 'move', atom: idx, xyz }, side, linked: false }));
+  };
   const onAtom = (idx, side = 'reactant') => {
+    if (tool === 'move') return;
     if (running) { toast('Wait for the minimization to finish (or stop it) before editing', 'info'); return; }
     const e = (op, done) => edit(op, done, side);
     if (tool === 'view') { setPickSide(side); setPicked([idx]); setInfo(`${rx ? `${side === 'product' ? 'Product' : 'Reactant'} a` : 'A'}tom ${idx + 1}`); return; }
@@ -673,14 +730,16 @@ export function DesignView() {
               ${[['reactant', 'Reactant', design.molblock, design.smiles, pickedR, changed], ['product', 'Product', rx.product.molblock, rx.product.smiles, pickedP, changedP]]
                 .map(([side, label, mb, smi, pk, ch]) => html`<div class=${`design-side-pane ${pickSide === side && picked.length ? 'active' : ''}`}>
                   <div class="pane-head"><b>${label}</b> <span class="mono small">${smi || ''}</span></div>
-                  <${Canvas} molblock=${mb} liveXyz=${null} picked=${pk} changed=${ch} onAtom=${(i) => onAtom(i, side)} labels=${labels} clickable=${tool !== 'view'} />
+                  <${Canvas} molblock=${mb} liveXyz=${null} picked=${pk} changed=${ch} onAtom=${(i) => onAtom(i, side)} labels=${labels} clickable=${tool !== 'view'}
+                    onDragAtom=${tool === 'move' && !running ? (i, xyz) => onMoveAtom(i, xyz, side) : null} />
                 </div>`)}
               <div class="pair-link"><button class=${`btn small ${linked ? 'on' : ''}`} title=${linked ? 'Edits are made on both molecules (on the matching atom). Click to edit one side alone.' : 'Edits change only the molecule you click. Click to edit both.'}
                 onClick=${() => { setLinked(!linked); prefs.set('designLinked', !linked); }}>${linked ? '⇄ Edit both' : '→ One side'}</button></div>
             </div>`
           : html`<div class="design-single">
               <${Canvas} molblock=${design.molblock} liveXyz=${liveXyz} picked=${picked} changed=${changed} onAtom=${onAtom} labels=${labels}
-                clickable=${tool !== 'view' || empty} onBackground=${onBackground} orbital=${mo.frag ? fmo.occ : mo.bonds ? bmo.current : mo.current} iso=${mo.frag ? isoFor(fmo.occ, mo.pct) : mo.bonds ? isoFor(bmo.current, mo.pct) : mo.iso}
+                clickable=${tool !== 'view' || empty} onBackground=${onBackground}
+                onDragAtom=${tool === 'move' && !running ? (i, xyz) => onMoveAtom(i, xyz) : null} orbital=${mo.frag ? fmo.occ : mo.bonds ? bmo.current : mo.current} iso=${mo.frag ? isoFor(fmo.occ, mo.pct) : mo.bonds ? isoFor(bmo.current, mo.pct) : mo.iso}
                 orbital2=${mo.frag ? fmo.virt : null} iso2=${isoFor(fmo.virt, mo.pct)} sign2=${fmo.virtSign} />
               ${empty && (tool === 'place'
                 ? html`<div class="design-empty-hint"><b>Click anywhere to place ${placeXyz ? placeXyz.name : placeSmiles.trim() || placeWhat}${placeCount > 1 ? ` ×${placeCount}` : ''}.</b>

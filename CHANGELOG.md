@@ -12,6 +12,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: Design's Move tool.**
+  - Drag an atom to place it by hand: in the screen plane, or toward and away from you with Alt-drag. Nothing else moves or relaxes, so a TS guess or a contact stays as drawn.
+  - New design edit `move` (`mepd/web/design.py`).
+
 - **Web: the inspector has three tabs: Tools · Results · Method.**
   - **Tools:** what you can run on the selection.
   - **Results:** what is known (the detail, the 3D view, its calculations).

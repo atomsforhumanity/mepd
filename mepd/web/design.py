@@ -798,7 +798,25 @@ def _edit_place(mol, op):
     return m, placed, warnings
 
 
-_EDITS = {"drop": _edit_drop, "place": _edit_place, "element": _edit_element, "add": _edit_add, "delete": _edit_delete, "bond": _edit_bond,
+def _edit_move(mol, op):
+    """Put an atom where it was dragged to (Angstrom), nothing else moved or
+    relaxed: a geometry made by hand stays as drawn (a TS guess, a contact).
+    Bonds stay the drawn ones."""
+    idx = int(op["atom"])
+    xyz = op.get("xyz")
+    if not isinstance(xyz, (list, tuple)) or len(xyz) != 3:
+        raise WorkspaceError("move needs xyz: [x, y, z]")
+    try:
+        xyz = [float(v) for v in xyz]
+    except (TypeError, ValueError):
+        raise WorkspaceError("move needs three numbers") from None
+    if not all(np.isfinite(xyz)):
+        raise WorkspaceError("move needs finite coordinates")
+    _set_position(mol, idx, xyz)
+    return mol, {idx}, []
+
+
+_EDITS = {"move": _edit_move, "drop": _edit_drop, "place": _edit_place, "element": _edit_element, "add": _edit_add, "delete": _edit_delete, "bond": _edit_bond,
           "group": _edit_group, "charge": _edit_charge, "hydrogens": _edit_hydrogens}
 
 
