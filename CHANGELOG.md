@@ -748,6 +748,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **The ORCA engine works with qccodec 0.21 and later.** qccodec 0.21's `encode()` returns its input files in
+  `.files` instead of `.input_file` and `.geometry_file`, so `OrcaEngine` failed with an `AttributeError`. It now
+  writes every file the codec returns, and still reads the old attributes on older qccodec (`tests/test_orca_engine.py`
+  passes on both).
 - **Kinetics crashed on networks slower than their time span** ("Values in `t_eval` are not within `t_span`",
   `mepd.discovery.kinetics.simulate` and `mepd.conditions.simulate_first_order`). With only slow steps, as just
   after an explorer's first TS, the time samples ran from `time_s` to `time_s`, and `geomspace` could put one a
