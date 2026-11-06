@@ -19,7 +19,7 @@ run on the CPU. The same image serves both.
 |---|---|---|---|
 | mepd + every `web` extra (FastAPI, ASE/Sella, tblite, fairchem-core, AIMNet2, TorchANI, OpenMM, Vina, PDBFixer, onnxruntime, rdchiral, transformers, SLAPMapper, PyTorch with CUDA) | `uv sync --locked` from `uv.lock` | `/opt/mepd/venv` | on `PATH` |
 | g-xTB 2.0.1 (also runs GFN1/GFN2-xTB) | GitHub release, SHA-256 checked | `/opt/gxtb` | `GXTB_EXECUTABLE` |
-| axtb (g-xTB 2.0.1 in process, `backend = "axtb"`), when the build has its deploy key | built from the private `atomsforhumanity/axtb` at `AXTB_COMMIT` (Rust, maturin) | `/opt/mepd/venv` | `import axtb` |
+| axtb (g-xTB 2.0.1 in process, `backend = "axtb"`) | built from source, `atomsforhumanity/axtb` at `AXTB_COMMIT` (Rust, maturin) | `/opt/mepd/venv` | `import axtb` |
 | xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 | conda-forge (micromamba) | `/opt/tools` | on `PATH` |
 | Psi4 1.11 | conda-forge (micromamba), own Python | `/opt/psi4` | `MEPD_PSI4_PYTHON` |
 | molecularGSM (ASE backend), MKL | built from source; MKL from conda-forge | `/opt/gsm` | `GSM_EXECUTABLE` |
@@ -50,15 +50,11 @@ at it.
 docker build --secret id=hf_token,env=HF_TOKEN -t mepd .        # everything, UMA included
 docker build --build-arg FAIRCHEM_MODELS= -t mepd .             # no UMA, so no token needed
 docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMNet2/ANI/ReactionT5 weights
-docker build --secret id=axtb_key,src=<key file> ...           # axtb, with a read-only deploy key of its repo
-docker build --build-arg AXTB_COMMIT= ...                       # without axtb, so no key needed
+docker build --build-arg AXTB_COMMIT= ...                       # without axtb (no Rust build)
 ```
 
-- **axtb (`AXTB_COMMIT`, default the commit mepd's tests ran).** Its repository is private, so the
-  build clones it with a deploy key, given as a build secret (never in a layer; the stage keeps only
-  the wheel). As with the token below, a build that names a commit but has no key **fails**, and
-  `AXTB_COMMIT=` leaves axtb out. CI passes the `AXTB_DEPLOY_KEY` secret, or builds without axtb when
-  there is none (deploy/ci/README.md).
+- **axtb (`AXTB_COMMIT`, default the commit mepd's tests ran)** is cloned from GitHub and built with
+  Rust in its own stage, which keeps only the wheel. `AXTB_COMMIT=` leaves it out.
 
 - **The gated FAIR-Chem models (`FAIRCHEM_MODELS`, default `uma-s-1p2p1`).**
   - **Token:** `HF_TOKEN` must belong to a Hugging Face account that has been granted access to

@@ -71,7 +71,7 @@ pretrained_mlip.get_predict_unit(sys.argv[1], device='cpu')" "$m" 2>&1)"; then
       fail fairchem "$m does not load offline: $(tail -1 <<<"$out")"
     fi
   done
-  # axtb (g-xTB in process, backend = "axtb"), when the build had its deploy key:
+  # axtb (g-xTB in process, backend = "axtb"), unless built with AXTB_COMMIT=:
   # the same g-xTB energy as the program.
   if [ -n "${MEPD_AXTB_COMMIT:-}" ]; then
     if out="$(python -c "
@@ -88,7 +88,7 @@ print(f'{e[0]:.8f}')" 2>&1)"; then
       fail axtb "$(tail -1 <<<"$out")"
     fi
   else
-    ok axtb "not in this image (built without its deploy key): backend = \"axtb\" unavailable"
+    ok axtb "not in this image (built with AXTB_COMMIT=): backend = \"axtb\" unavailable"
   fi
   # Installed is not enough: AiZynthFinder's own env must import (it broke on
   # a NumPy 1/2 mismatch once while `aizynthcli` was still there).
