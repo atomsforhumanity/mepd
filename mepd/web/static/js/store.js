@@ -219,6 +219,7 @@ export function formatHash(v, analyze = state.analyze) {
     case 'jobs': path = '/calculations'; break;
     case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
     case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;
+    case 'network': path = v.example ? `/network/example/${encodeURIComponent(v.example)}` : `/network/${encodeURIComponent(v.jobId || '')}`; break;
     case 'design': path = '/design'; break;
     case 'sandbox': path = `/reactor/${encodeURIComponent(sandboxId(v))}`; break;
     default: path = '/explore';
@@ -246,6 +247,8 @@ export function parseHash(hash) {
     case 'calculations': return { ...base, tab: 'jobs' };
     case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
     case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1] } : { ...base, tab: 'graph' };
+    case 'network': return parts[1] === 'example' && parts[2] ? { ...base, tab: 'network', example: parts[2] }
+      : parts[1] ? { ...base, tab: 'network', jobId: parts[1] } : { ...base, tab: 'graph' };
     case 'design': return { ...base, tab: 'design' };
     case 'reactor': return { ...base, tab: 'sandbox', sandbox: parts[1] ? { id: parts[1] } : null };
     default: return null;
@@ -278,6 +281,7 @@ export function upLevel() {
   if (v.drawer) { set({ view: { ...v, drawer: null } }); return; }
   if (v.tab === 'job') { set({ view: { tab: 'jobs', jobId: null } }); return; }
   if (v.tab === 'reaction') { set({ view: { tab: 'graph', jobId: null } }); return; }
+  if (v.tab === 'network') { set({ view: v.jobId ? { tab: 'job', jobId: v.jobId } : { tab: 'welcome', jobId: null } }); return; }
   if (v.tab !== 'graph') set({ view: { tab: 'graph', jobId: null } });
 }
 if (typeof window !== 'undefined' && window.history) {

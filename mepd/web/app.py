@@ -2826,6 +2826,25 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     # ----------------------------------------------------------- examples
     # Finished studies shipped with mepd (web/showcase): Home's Examples door.
     # Opening one copies it into a new session of your own.
+    @app.get("/api/jobs/{jid}/network-timeline")
+    def network_timeline(jid: str):
+        """A network expansion as the live network view plays it (mepd/web/live_network.py)."""
+        from mepd.web import live_network
+
+        tl = live_network.from_job(J().job_dir(jid))
+        if tl is None:
+            raise HTTPException(404, "no live network recorded for this calculation")
+        return tl
+
+    @app.get("/api/examples/{slug}/timeline")
+    def example_timeline(slug: str):
+        from mepd.web import live_network
+
+        tl = live_network.example_timeline(slug)
+        if tl is None:
+            raise HTTPException(404, f"no live network example {slug!r}")
+        return tl
+
     @app.get("/api/examples")
     def list_examples():
         from mepd.web import showcase_tool
@@ -2836,7 +2855,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     async def open_example(slug: str, request: Request):
         from mepd.web import showcase_tool
 
-        if slug not in {x["slug"] for x in showcase_tool.listing()}:
+        if slug not in {x["slug"] for x in showcase_tool.listing() if x["kind"] == "workspace"}:
             raise HTTPException(404, f"no example {slug!r}")
         visitor = visitor_of(request)
         if demo is not None:

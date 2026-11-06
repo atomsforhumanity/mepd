@@ -851,10 +851,23 @@ class JobManager:
             if not m or seen.get(fp.stem) == m:
                 continue
             try:
-                streams[fp.stem] = _reduce_chain_payload(json.loads(fp.read_text()))
+                raw = json.loads(fp.read_text())
+                streams[fp.stem] = _reduce_chain_payload(raw)
             except Exception:
                 continue  # mid-write on a filesystem without atomic rename; next poll
             seen[fp.stem] = m
+            # The live network view's history: every explorer kinetics refresh (and
+            # selectivity, for benchmarks) as one frame (mepd/web/live_network.py).
+            if fp.stem in ("kinetics", "selectivity") and isinstance(raw.get("data"), dict):
+                try:
+                    from mepd.web import live_network
+
+                    if fp.stem == "kinetics":
+                        live_network.record(jdir, raw["data"])
+                    else:
+                        live_network.record_selectivity(jdir, raw["data"])
+                except Exception:
+                    log.exception("could not record the live network of %s", job["id"])
         if streams:
             payload["streams"] = streams
             changed = True

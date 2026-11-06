@@ -304,5 +304,6 @@ function useExamples() {
   return list;
 }
 function openExample(x) {
+  if (x.kind === 'replay') { set({ view: { tab: 'network', jobId: null, example: x.slug } }); return null; }
   return attempt(() => api.post(`/api/examples/${encodeURIComponent(x.slug)}/open`), `Opened “${x.title}” as your own copy`);
 }

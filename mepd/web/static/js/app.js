@@ -12,6 +12,7 @@ import { AnalyzeView } from './components/Analyze.js';
 import { SandboxView } from './components/Sandbox.js';
 import { WelcomeView } from './components/Welcome.js';
 import { ReactionFocus } from './components/ReactionPlayer.js';
+import { LiveNetworkView } from './components/LiveNetwork.js';
 import { ActivityBar, CanvasHeader, Drawer, ModeBar, TopBar } from './components/Shell.js';
 import { announceUnlocks, markQuest, mapOf, useMap } from './quests.js';
 
@@ -86,6 +87,7 @@ function App() {
           ${view.tab === 'jobs' && html`<${JobsView} />`}
           ${view.tab === 'job' && html`<${JobView} jobId=${view.jobId} />`}
           ${view.tab === 'reaction' && html`<${ReactionFocus} edgeId=${view.edgeId} />`}
+          ${view.tab === 'network' && html`<${LiveNetworkView} key=${view.jobId || view.example} jobId=${view.jobId} example=${view.example} />`}
           ${view.tab === 'design' && html`<${DesignView} />`}
           ${view.tab === 'analyze' && html`<${AnalyzeView} />`}
           ${view.tab === 'sandbox' && (view.sandbox?.symbols ? html`<${SandboxView} />` : html`<p class="boot">Finding the reactor…</p>`)}

@@ -12,6 +12,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: the live network.** An explorer run (`mepd discovery expand`) watched as it grows, corrects itself and moves material: "Watch the network ›" on its calculation page, or the new example "Cp + methyl acrylate: watch the network grow" on Home.
+  - One layout for the whole run, so species appear in place, newcomers ringed.
+  - Node area grows with the material a species held. The starting mixture is a fixed mark, and a benchmark's products are named (endo, exo).
+  - Open steps are coloured by the barrier the way material flows, as wide as their net flux, with dots flowing along them. Closed and replaced steps stay as faint dashes, and corrections flash on what they moved.
+  - A selectivity gauge with the experimental range (benchmarks), counts, and a feed of corrections. A replay slider covers the whole run.
+  - Frames whose energies wait for their DFT single points are greyed and tagged "steering pending". The end state is the last steered frame.
+  - Running jobs record each kinetics refresh as a frame (`live/network_frames.jsonl`, plus `live/selectivity_frames.jsonl`). Endpoints: `GET /api/jobs/<id>/network-timeline` and `GET /api/examples/<slug>/timeline`. Replays pack with `python -m mepd.web.live_network` (`mepd/web/live_network.py`).
+
 - **Web: the Reactor's Collide is the unbiased network generator's move.**
   - Between molecules, it pushes the two whole molecules into each other, where it used to drag one atom of each to their midpoint. The push is a capped force along one atom of each, spread over each molecule by mass (`langevin.pull_pairs` with `(i, j, A, B)`). With one molecule, or 30 % of the time, two of its atoms are pulled together.
   - The pick is `reactor_generator.collision_pair` itself, run inside the reactor process and timed in simulated fs (300 fs pushes). "keep colliding" repeats it on the generator's own schedule (gaps of ~200 fs).

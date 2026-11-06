@@ -67,8 +67,10 @@ def listing() -> list[dict]:
     items = []
     for meta in sorted(SHOWCASE.glob("*.json")):
         info = json.loads(meta.read_text())
-        if (SHOWCASE / f"{info['slug']}.tar.gz").exists():
-            items.append(info)
+        kind = info.get("kind", "workspace")
+        data = SHOWCASE / (f"{info['slug']}.timeline.json.gz" if kind == "replay" else f"{info['slug']}.tar.gz")
+        if data.exists():
+            items.append({**info, "kind": kind})
     return items
 
 
