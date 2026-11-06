@@ -84,3 +84,7 @@
   .ab-run, .ab-hint, .ab-units { display: none; }
   .canvas-tabs { padding: 0 var(--space-4); overflow-x: auto; }
 }
+
+/* the structure list's own add row */
+.lib-add-row { display: flex; gap: 6px; padding: 0 18px 10px; }
+.lib-add-row .btn.on { background: var(--accent-soft); border-color: var(--accent); }

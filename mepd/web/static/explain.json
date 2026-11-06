@@ -3870,7 +3870,7 @@
    },
    {
     "option": "Your own QM/MM system (PDB/prmtop, TeraChem input)",
-    "where": "the add box's 'QM/MM system…' (Playground layout › Add), then select it"
+    "where": "the structure list's + Add › 'QM/MM system…', then select it"
    }
   ],
   "caveats": [

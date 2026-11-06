@@ -216,6 +216,7 @@ export function Library() {
   const selEdges = useStore((s) => s.selection.edges);
   useStore((s) => s.seenTick);
   const [what, setWhat] = useState('structures');   // or 'reactions'
+  const [adding, setAdding] = useState(false);       // the SMILES / xyz / QM/MM add box, opened by "+ Add"
   const [onlyNew, setOnlyNew] = useState(false);
   const [drag, setDrag] = useState(false);
   // A reaction's hidden subsystem ends (role "complex") are not library entries.
@@ -269,6 +270,11 @@ export function Library() {
           <button class="btn-link small" onClick=${() => { markAllSeen(); setOnlyNew(false); }} title="Clear the new marks">Mark seen</button>
         </div>`}
       </div>
+      <div class="lib-add-row">
+        <button class=${cls('btn small', adding && 'on')} onClick=${() => setAdding(!adding)} title="Add molecules: SMILES, names, reactions, xyz, or a QM/MM system">+ Add</button>
+        <button class="btn small ghost" onClick=${() => openTab('design')} title="Draw a molecule in Design">Draw</button>
+      </div>
+      ${adding && html`<${AddBox} onDone=${() => setAdding(false)} />`}
       <${LevelBar} status />
       ${dupes > 0 && html`<p class="level-note small">${dupes} structure${dupes > 1 ? 's are' : ' is'} the same molecule as another node.
         <button class="btn-link small" onClick=${() => attempt(() => api.post('/api/structures/merge-duplicates'), 'Merged into one node per molecule')}>Merge into conformers</button></p>`}
