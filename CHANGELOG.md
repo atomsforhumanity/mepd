@@ -12,6 +12,40 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **qcopt, AFH's optimizer, for g-xTB minimizations, TS searches and IRCs** (`GXTBCalculator(minimizer="qcopt",
+  ts_optimizer="qcopt")`, or `minimizer = "qcopt"` and `ts_optimizer = "qcopt"` in `[gxtb_engine_kwds]`). The
+  defaults are unchanged (Sella); `ts_optimizer` is a new field (`"sella"` or `"qcopt"`).
+  - qcopt (github.com/atomsforhumanity/qcopt, on PyPI) minimizes by RS-RFO and climbs by RS-P-RFO in TRIC
+    coordinates, with TS-BFGS updates, and follows IRCs by Gonzalez-Schlegel steps. `mepd.engines._qcopt` runs it
+    on the engine's gradients and Hessians.
+  - On qcopt's own benchmark (100 Reaction-QM reactions, g-xTB from axtb): every TS search reached a first-order
+    saddle with a median of 12 gradients (Sella 16); 196 of 200 minimizations reached a true minimum with a median
+    of 33 (Sella 192, 143); IRCs ended in the same minima as Sella's in all 100 with a median of 375 gradients,
+    ends included (Sella 2,407).
+  - Inside mepd (`mepd.find_ts`, then `mepd.irc` with its ends minimized and frequency-checked; g-xTB from axtb,
+    mepd's defaults otherwise; Reaction-QM rxn_000-099, both optimizers set for every step):
+
+    | | qcopt | Sella |
+    |---|---|---|
+    | Errors | 0 | 1 (an IRC end that would not minimize) |
+    | TS searches ending with one imaginary mode | 100 | 99 |
+    | TS search, median gradients (Hessians) | 14.5 (2) | 19 (2) |
+    | IRC with its ends minimized, median gradients (Hessians) | 330 (5) | 722 (2) |
+    | Total time, TS searches / IRCs | 200 s / 1,099 s | 251 s / 1,283 s |
+    | IRCs connecting Reaction-QM's reactant and product (bond graph) | 69 | 50 |
+
+    On the 99 both finished, 96 TS searches found the same saddle (within 0.01 kcal/mol and 0.01 Angstrom). Most
+    of the difference in connections is the Sella IRC issue under Known issues.
+  - Sella's keywords carry over: `fmax` (eV/Angstrom), `maxiter`/`steps`, and for IRCs `dx` (Sella's step,
+    Angstrom amu^1/2); `keep_going` is ignored, and so is geomeTRIC's `coordsys`, which mepd's CLI adds to every
+    minimization. Sella-only options raise `ValueError`.
+  - A run that runs out of steps raises `GeometryOptimizationNotConvergedError` with `.structure`, so `find_ts`
+    goes on from where it stopped, as with Sella.
+  - Minimizations start from Lindh's model Hessian (an exact g-xTB Hessian costs about 38 gradients and did not pay
+    for itself on the 200 minimizations), or from g-xTB's with `hessian_every`; TS searches and IRCs start from
+    g-xTB's Hessian.
+  - Needs Python 3.11 or later, like the current qc* packages; the `gxtb` and `ase` extras install it there.
+
 - **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
   reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
   energies and gradients come from this process with no program start per call, and Hessians are analytic.
@@ -450,6 +484,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **g-xTB minimizations, TS searches and IRCs use qcopt by default** (`GXTBCalculator.DEFAULT_MINIMIZER` and
+  `DEFAULT_TS_OPTIMIZER`), for the numbers under Added. `minimizer = "sella"` and `ts_optimizer = "sella"` restore
+  Sella. Without qcopt installed (Python 3.10, or neither the `gxtb` nor the `ase` extra), g-xTB optimizations stop
+  with an error that says to install it or choose Sella.
+
+- **The qc\* packages are locked at their current versions on Python 3.11 and later**: qcdata 0.23.1, qccompute
+  0.22.0, qccodec 0.21.0, qcinf 0.5.1 and qcref 0.5.1 (qcopt needs qcdata 0.23.1). qccompute no longer has a
+  `qcengine` extra, so qcengine and qcelemental are no longer installed; mepd imports neither.
+- **The Python API docs said g-xTB minimizations use Sella with g-xTB's exact Hessian.** Sella 2.6.0's minimizer
+  ignores `hessian_function` unless `hessian_every` is set (its defaults for minima have `eig=False`), so it uses its
+  own estimate; the docs now say so.
+
 - **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
   (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).
   It used to avoid pairing two waters: water was never the first partner when there was another molecule, and a
@@ -748,6 +794,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **The ORCA engine works with qccodec 0.21 and later.** qccodec 0.21's `encode()` returns its input files in
+  `.files` instead of `.input_file` and `.geometry_file`, so `OrcaEngine` failed with an `AttributeError`. It now
+  writes every file the codec returns, and still reads the old attributes on older qccodec (`tests/test_orca_engine.py`
+  passes on both).
 - **Kinetics crashed on networks slower than their time span** ("Values in `t_eval` are not within `t_span`",
   `mepd.discovery.kinetics.simulate` and `mepd.conditions.simulate_first_order`). With only slow steps, as just
   after an explorer's first TS, the time samples ran from `time_s` to `time_s`, and `geomspace` could put one a
@@ -1147,6 +1197,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   Paracetamol now gives 23 solved routes, led by acetic anhydride + 4-aminophenol.
 
 ### Known issues
+
+- **With Sella, a g-xTB IRC often ends both branches in the same minimum.** In the qcopt comparison above, 28 of 99
+  Sella IRCs (axtb backend) ended with both minimized ends at the same energy (within 0.01 kcal/mol): one branch
+  stopped high on the surface and its minimization rolled into the other branch's valley (rxn_004), or both
+  branches went down the same side (rxn_050). That is 28 of Sella's 49 IRCs that do not connect the reference
+  reactant and product. qcopt's IRCs did this once in 100. It also happens on main before this change (f8512aa,
+  its own lock: rxn_004 and rxn_050 the same way), so it comes from mepd's Sella IRC path, not from the qc\*
+  update. Sella's own IRC, run outside mepd with its defaults, connected 68 of these 100.
 
 - **A new AiZynthFinder environment is broken.** `mepd retro setup --aizynthfinder` now installs
   pyarrow 26 (released 2026-10), which needs NumPy 2. AiZynthFinder's RDKit needs NumPy 1, so it fails to
