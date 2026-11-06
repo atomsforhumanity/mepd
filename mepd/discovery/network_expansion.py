@@ -2416,11 +2416,13 @@ def expand_network(
         lowest_ts: dict = {"steps": -1, "pairs": {}}   # species pair -> its lowest TS energy, at that many steps
 
         def _height(key) -> float:
-            """kcal/mol above the seed of the lowest TS found between a species pair so far (inf: none yet), as
-            the queue asks it each time it orders its waiting jobs: the channels of the lowest steps are sampled
-            first. F0007's endo and exo steps, the two the selectivity rests on, waited 4-12 minutes behind the
-            conformer pairs of 35-42 steps that carry no flux, all queued with the seed's proposals before any of
-            their TSs was found."""
+            """kcal/mol above the seed of the lowest TS found between a species pair so far -- or, with none yet
+            (its single TS failed or belongs to another step), of the higher of the two species, which no TS
+            between them can lie below -- as the queue asks it each time it orders its waiting jobs: the channels
+            of the lowest steps are sampled first. F0007's endo and exo steps, the two the selectivity rests on,
+            waited 4-12 minutes behind the conformer pairs of 35-42 steps that carry no flux, all queued with the
+            seed's proposals before any of their TSs was found; an exo adduct whose single TS's IRC went
+            elsewhere waited 12 minutes more when a pair without a TS came last."""
             if lowest_ts["steps"] != len(result.steps):
                 pairs: dict = {}
                 for st in result.steps:
@@ -2428,7 +2430,9 @@ def expand_network(
                     pairs[k] = min(pairs.get(k, st.ts_energy), st.ts_energy)
                 lowest_ts.update(steps=len(result.steps), pairs=pairs)
             e = lowest_ts["pairs"].get(key)
-            return float("inf") if e is None else (e - e0) * HARTREE_TO_KCAL_PER_MOL
+            if e is None:
+                e = max(float(result.species[k].node.energy) for k in key)
+            return (e - e0) * HARTREE_TO_KCAL_PER_MOL
 
         def _queue_rotamers(st) -> int:
             """The rotamers of step `st`'s TS (`ts_rotamer_guesses`, about its rotatable bonds), each a TS search

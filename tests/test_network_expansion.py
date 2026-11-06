@@ -1057,6 +1057,7 @@ class _AsyncConnector(_IcingConnector):
         self._jobs, self.end_keywords, self.queue, self.channel_labels = {}, None, [], []
         self.job_inputs = SimpleNamespace(engine=_GraphEngine())
         self.ranks, self.priorities = {}, []     # what the explorer asked of the real queue's order
+        self.at_submit = []                      # (kind, label, priority when queued)
 
     def register(self, kind, fn, slots=1, rank=2):
         self._jobs[kind] = fn
@@ -1064,6 +1065,7 @@ class _AsyncConnector(_IcingConnector):
 
     def submit(self, kind, args, on_done, label="", priority=0.0):
         self.priorities.append((kind, label, priority))
+        self.at_submit.append((kind, label, priority() if callable(priority) else priority))
         self.queue.append(("own", kind, args, on_done))
 
     def add_pairs(self, pairs, search=False):
@@ -1453,21 +1455,18 @@ def test_async_rotamers_of_an_irc_checked_ts_join_its_step_from_a_forked_worker(
 
 def test_async_channel_sampling_is_queued_lowest_step_first():
     """Each step's conformer-pair job, and the TS searches of its pairs, take as their priority in the queue the
-    height above the seed of the lowest TS found between its species so far (asked whenever the queue orders its
-    jobs: the seed's channel jobs are queued with its proposals, before any of their TSs is found), so the steps
-    the flux runs through are sampled first (F0007: the endo and exo steps waited 4-12 minutes behind the
-    conformer pairs of 35-42 steps that carry no flux)."""
+    height above the seed of the lowest TS found between its species so far, or, before there is one (the seed's
+    channel jobs are queued with its proposals; a single TS can fail or belong to another step), of the higher of
+    the two species, which no TS between them can lie below. Asked whenever the queue orders its jobs, so the
+    steps the flux runs through are sampled first (F0007: the endo and exo steps waited 4-12 minutes behind the
+    conformer pairs of 35-42 steps that carry no flux; an exo pair whose single TS went elsewhere, 12 more)."""
     connect = _AsyncConnector()
-    first = {}
 
     def refine(items):
         raise AssertionError("the async queue never runs a whole channel search")
 
-    def pairs(item):
-        first.update({lbl: p() for kind, lbl, p in connect.priorities if kind == "channels" and lbl not in first})
-        return {"start": [item[0]], "end": [item[1]], "pairs": [(item[0].copy(), item[1].copy())]}
-
-    refine.pairs, refine.width = pairs, 3
+    refine.pairs = lambda item: {"start": [item[0]], "end": [item[1]], "pairs": [(item[0].copy(), item[1].copy())]}
+    refine.width = 3
     res = expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=connect, access_cutoff_kcal=60.0,
                          max_products=20, kinetics={"threshold": 1e-6}, schedule="async", refine=refine)
     e0 = res.species[0].node.energy
@@ -1475,9 +1474,11 @@ def test_async_channel_sampling_is_queued_lowest_step_first():
     for st in res.steps:
         key = tuple(sorted((st.a, st.b)))
         height[key] = min(height.get(key, np.inf), (st.ts_energy - e0) * 627.509474)
+    pair_of = lambda kind, label: tuple(sorted(map(int, label.split("→") if kind == "channels" else label.split("_")[1:3])))
     asked = [(kind, label, p) for kind, label, p in connect.priorities if kind in ("channels", "channel pair")]
     assert asked and len({p() for _, _, p in asked}) > 1
     for kind, label, p in asked:
-        a, b = (map(int, label.split("→")) if kind == "channels" else map(int, label.split("_")[1:3]))
-        assert p() == pytest.approx(height[tuple(sorted((a, b)))])
-    assert np.inf in first.values()        # queued before its pair had a TS: last until it has one
+        assert p() == pytest.approx(height[pair_of(kind, label)])
+    floor = lambda a, b: (max(res.species[a].node.energy, res.species[b].node.energy) - e0) * 627.509474
+    queued = [(label, p) for kind, label, p in connect.at_submit if kind == "channels"]
+    assert queued and all(p == pytest.approx(floor(*pair_of("channels", label))) for label, p in queued)

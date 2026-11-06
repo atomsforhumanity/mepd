@@ -499,9 +499,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     ~30%). Cost per trajectory unchanged.
 - **Explorer, async: the queue refines the steps the flux runs through first.** Channel sampling of a step and
   the TS searches of its conformer pairs wait in order of the height above the seed of the step's lowest TS so
-  far (asked each time the queue orders its jobs: `HorizontalConnector.submit/add_channel(..., priority=)`, a
-  number or a function); proposals of species after the seed wait behind them (rank 3, with path-search
-  pieces). In the F0007 baseline the seed's 35-42 channel jobs were queued with its proposals, before any of
+  far -- with none yet (its single TS failed or belongs to another step), of the higher of its two species, which
+  no TS between them can lie below -- asked each time the queue orders its jobs
+  (`HorizontalConnector.submit/add_channel(..., priority=)`, a number or a function); proposals of species after
+  the seed wait behind them (rank 3, with path-search pieces). In the F0007 baseline the seed's 35-42 channel jobs were queued with its proposals, before any of
   their TSs existed, and ran in species order: the endo and exo ones waited 4-12 minutes; and in 9 of 10 runs
   the reactor for the most populated product then took all 32 workers for the budget's last 6-13 minutes,
   while the TS searches of 213-396 conformer pairs never ran.
