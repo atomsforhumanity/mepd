@@ -34,6 +34,13 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
   summary's steps reach it through steps within the access cutoff (energy_refine.kinetic_reach, as the
   kinetics close steps) or when the live kinetics give it a population > 1e-30 (no closed step carries
   that much). No snapshot after the last change: the end of the run. Recall incomplete at the end: None.
+  The reach is on the energies the cutoff was applied to when the final summary records them (`access`,
+  team4x 3a047da on: free energies, from energies[0]; partial summaries don't record them, so a partial
+  network gets the final record's energies, steps matched by label), else on electronic energies.
+- selectivity swings (settle["swing"], per target): |RT ln(sel/final)| over the live kinetics' snapshots,
+  each holding until the next one (the last until the end of the run): time-weighted mean and max over the
+  snapshots with a finite, nonzero selectivity, and the time more than 0.5 kcal/mol off (a snapshot with no,
+  zero or infinite selectivity counts as off), from the first snapshot on.
 - wall, CPU (user+sys of the expand process tree), stop reason: the task wrapper's result.json.
 
 The invariant audit (flags, never fixes): duplicate species, duplicate TS steps, mirror-image TS pairs
@@ -290,9 +297,16 @@ def reachable(n: int, steps: list, use=lambda st: True) -> set:
     return seen
 
 
+def _mirror_of(summary: dict, n: int):
+    mir = (summary.get("mirror_images") or {}).get("species_mirror")
+    return [j if (j is not None and 0 <= j < n) else -1 for j in mir[:n]] if mir else None
+
+
 def open_steps(summary: dict, cutoff_kcal=None) -> list:
-    """Indices of the steps within reach (energy_refine.kinetic_reach on the summary's energies), as the
-    explorer's kinetics decide which steps they keep open."""
+    """Indices of the steps within reach (energy_refine.kinetic_reach), as the explorer's kinetics decide
+    which steps they keep open: on the energies the access cutoff was applied to when the summary records
+    them (`access`, since team4x 3a047da: free energies, from the seed's energy now, energies[0]), else on
+    the summary's electronic energies from seed_energy (older runs)."""
     from mepd.discovery.energy_refine import kinetic_reach
     from mepd.discovery.kinetics import Step
 
@@ -300,13 +314,16 @@ def open_steps(summary: dict, cutoff_kcal=None) -> list:
     steps = summary.get("steps") or []
     if not sp or not steps:
         return []
-    e0 = float(summary.get("seed_energy") if summary.get("seed_energy") is not None else sp[0]["energy"])
     cutoff = cutoff_kcal if cutoff_kcal is not None else (summary.get("steering") or {}).get("cutoff_kcal")
-    n = len(sp)
-    mir = (summary.get("mirror_images") or {}).get("species_mirror")
-    mirror_of = [j if (j is not None and 0 <= j < n) else -1 for j in mir[:n]] if mir else None
-    ks = [Step(st["a"], st["b"], float(st["ts_energy"]), st.get("label", ""), {}) for st in steps]
-    _, opened = kinetic_reach(ks, [float(s["energy"]) for s in sp], e0, cutoff, mirror_of)
+    acc = summary.get("access")
+    if acc:
+        energies, ts = [float(e) for e in acc["energies"]], [float(t) for t in acc["ts_energies"]]
+        e0 = energies[0]
+    else:
+        energies, ts = [float(s["energy"]) for s in sp], [float(st["ts_energy"]) for st in steps]
+        e0 = float(summary.get("seed_energy") if summary.get("seed_energy") is not None else sp[0]["energy"])
+    ks = [Step(st["a"], st["b"], t, st.get("label", ""), {}) for st, t in zip(steps, ts)]
+    _, opened = kinetic_reach(ks, energies, e0, cutoff, _mirror_of(summary, len(energies)))
     return opened
 
 
@@ -364,6 +381,8 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
     parts = sorted(snap_dir.glob("summary_partial_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
     part_t = [int(p.stem.split("_")[-1]) / 1e9 for p in parts]
     reach_cache: dict = {}
+    acc = summary.get("access")
+    acc_ts = {st.get("label"): float(t) for st, t in zip(summary.get("steps") or [], acc["ts_energies"])} if acc else {}
 
     def reach_at(t):
         i = int(np.searchsorted(part_t, t, side="right")) - 1
@@ -373,9 +392,16 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
             try:
                 ps = json.loads(parts[i].read_text())
                 sp, st = ps.get("species") or [], ps.get("steps") or []
-                e0 = float(ps.get("seed_energy") if ps.get("seed_energy") is not None else sp[0]["energy"])
-                ks = [Step(s["a"], s["b"], float(s["ts_energy"]), s.get("label", ""), {}) for s in st]
-                _, opened = kinetic_reach(ks, [float(s["energy"]) for s in sp], e0, cutoff, None)
+                if acc:   # the final cutoff energies on the partial network (steps by label)
+                    energies = acc["energies"][:len(sp)]
+                    st = [s for s in st if s.get("label") in acc_ts and s["a"] < len(energies) and s["b"] < len(energies)]
+                    ks = [Step(s["a"], s["b"], acc_ts[s["label"]], s.get("label", ""), {}) for s in st]
+                    e0 = energies[0]
+                else:
+                    energies = [float(s["energy"]) for s in sp]
+                    e0 = float(ps.get("seed_energy") if ps.get("seed_energy") is not None else sp[0]["energy"])
+                    ks = [Step(s["a"], s["b"], float(s["ts_energy"]), s.get("label", ""), {}) for s in st]
+                _, opened = kinetic_reach(ks, energies, e0, cutoff, None)
                 reach_cache[i] = reachable(len(sp), [st[m] for m in opened])
             except (ValueError, KeyError, IndexError, OSError):
                 reach_cache[i] = set()
@@ -406,6 +432,22 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         ok = all(found[c] and conn[c] for c in req) and all(
             _within(s, f, temp) for s, f in zip(sels, final_sel))
         series.append((t - t0, sels, found, conn, ok))
+    swing = []
+    t_stop = t_end - t0
+    for j, f in enumerate(final_sel):
+        num = den = mx = off = 0.0
+        for k, (t, sels, *_r) in enumerate(series):
+            dt = max(0.0, (series[k + 1][0] if k + 1 < len(series) else t_stop) - t)
+            x = sels[j]
+            fin = x is not None and f is not None and 0 < x < math.inf and 0 < f < math.inf
+            dev = abs(R_KCAL * temp * math.log(x / f)) if fin else None
+            if dev is None:
+                off += dt if not (x == f and x is not None) else 0.0
+                continue
+            num, den, mx = num + dev * dt, den + dt, max(mx, dev)
+            off += dt if dev > SETTLE_KCAL else 0.0
+        swing.append({"mean_kcal": num / den if den > 0 else None, "max_kcal": mx if den > 0 else None,
+                      "time_off_s": round(off, 1), "span_s": round(t_stop - series[0][0], 1) if series else None})
     if not complete:
         t_settle = None
     else:
@@ -422,7 +464,8 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
             course.append({"t": round(t, 1), "sel": sels, "found": found, "connected": conn, "ok": ok})
             last = key
     return {"settle_s": t_settle, "quick": t_settle is not None and t_settle <= QUICK_S,
-            "n_kinetics_snapshots": len(series), "n_partial_snapshots": len(parts), "course": course}
+            "n_kinetics_snapshots": len(series), "n_partial_snapshots": len(parts), "swing": swing,
+            "reach_energies": "access record" if acc else "electronic", "course": course}
 
 
 # ----------------------------------------------------------------------------------------------- audit
@@ -566,7 +609,8 @@ def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict, na
                                                  "linked": rec["linked"][c]})
     reach_any = reachable(n, steps)
     info["species_unreachable"] = sorted(set(range(n)) - reach_any)
-    # 5. barriers reported for closed steps (closed = out of reach, recomputed with kinetic_reach)
+    # 5. barriers reported for closed steps (closed = out of reach, recomputed with kinetic_reach on the
+    #    cutoff's recorded energies, summary["access"], or on electronic energies for older runs)
     try:
         opened = set(open_steps(summary))
     except Exception as exc:
@@ -579,6 +623,11 @@ def audit(sysdef: dict, summary: dict, paths: Paths, rec: dict, result: dict, na
         elif opened is not None and m not in opened and kb is not None:
             flags["closed_with_barrier"].append({"step": st["label"], "kinetics_barrier_kcal": kb,
                                                  "why": "out of reach (kinetic_reach) but a barrier is reported"})
+    info["reach_energies"] = (summary["access"].get("basis") or "access") if summary.get("access") else "electronic"
+    if opened is not None and summary.get("access") and "open" in summary["access"]:
+        # the instrument against the explorer's own record
+        info["open_vs_record"] = {"extra": sorted(opened - set(summary["access"]["open"])),
+                                  "missing": sorted(set(summary["access"]["open"]) - opened)}
     if opened is not None:
         info["open_without_barrier"] = [st["label"] for m, st in enumerate(steps)
                                         if m in opened and st.get("kinetics_barrier_kcal") is None]
