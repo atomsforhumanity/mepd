@@ -12,6 +12,17 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: Home has three doors.**
+  - **Learn:** the step-by-step path, as before.
+  - **Start working:** type a SMILES, a name or a reaction and land in Explore; recent sessions; an "All tools" switch.
+  - **Examples:** finished studies that open as your own copy. The first is the SN2 study.
+  - Examples ship in `mepd/web/showcase/` and are packed with `python -m mepd.web.showcase_tool pack`; `GET /api/examples`, `POST /api/examples/<slug>/open`.
+- **Web: lighter Explore.**
+  - Structures show one status mark (● checked minimum, ◌ not optimized, ‡ TS, ✕ failed), with the words in the tooltip.
+  - The graph toolbar is icons.
+  - The legend has three entries.
+  - With nothing selected, the right panel shows the workspace's counts and its fastest step.
+
 - **Web: the Workbench shell.** One screen instead of seven top tabs.
   - **Layout:** a thin top bar (mepd → Home, the workspace, Learn, Settings); the structure list and inspector only on the workspace pages (Explore, Reactions, Kinetics, Calculations); a Calculations bar along the bottom (what is running, the level of theory, units).
   - **Drawers:** Settings (profiles, level of theory) and Learn (manual, references, your tools) open over the canvas, so the page underneath stays.

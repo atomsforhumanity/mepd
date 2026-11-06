@@ -95,6 +95,15 @@ export function LevelChip({ rec }) {
   return html`<span class=${`level-chip level-${st.kind}`} title=${st.title}>${st.text}</span>`;
 }
 
+// The same status as one mark (the words are its tooltip): ● a checked minimum
+// at the workspace level, ◌ not optimized, ◐ another level, ‡ a TS, ✕ failed.
+const GLYPH = { ok: '●', none: '◌', other: '◐', ts: '‡', busy: '◔', failed: '✕', changed: '!' };
+export function StatusGlyph({ rec }) {
+  useStore((s) => [s.levelProfile, s.levels]);
+  const st = levelStatus(rec);
+  return html`<span class=${`status-glyph glyph-${st.kind}`} title=${`${st.text}: ${st.title}`} aria-label=${st.text}>${GLYPH[st.kind] || '·'}</span>`;
+}
+
 // `status`: only the line saying what is not at the level yet (the sidebar's);
 // the choice itself lives in Settings.
 export function LevelBar({ status = false, always = false }) {
@@ -155,13 +164,12 @@ function Card({ rec, selected, order, fresh }) {
         ${order > 0 && html`<span class="order-badge" title="Selection order (1 = start)">${order}</span>`}
       </div>
       <div class="card-body">
-        <div class="card-name">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}${rec.name}</div>
+        <div class="card-name">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}<span class="card-name-text">${rec.name}</span><${StatusGlyph} rec=${rec} /></div>
         <div class="card-meta">
           <span>${rec.formula}</span>
           ${(rec.conformers || []).length > 1 && html`<span class="badge" title="Conformers of this molecule; the lowest-energy one represents it">${rec.conformers.length} conformers</span>`}
           ${rec.charge !== 0 && html`<span class="badge" title=${`Charge ${rec.charge > 0 ? '+' : ''}${rec.charge}`}>${rec.charge > 0 ? '+' : '−'}${Math.abs(rec.charge) > 1 ? Math.abs(rec.charge) : ''}</span>`}
           ${rec.multiplicity !== 1 && html`<span class="badge" title=${`Spin multiplicity ${rec.multiplicity}: ${rec.multiplicity - 1} unpaired electron${rec.multiplicity > 2 ? 's' : ''}`}>${rec.multiplicity === 2 ? 'radical' : rec.multiplicity === 3 ? 'triplet' : `mult. ${rec.multiplicity}`}</span>`}
-          ${levelStatus(rec).kind !== 'ok' && html`<${LevelChip} rec=${rec} />`}
         </div>
       </div>
     </li>`;

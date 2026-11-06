@@ -2821,6 +2821,34 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         await sessions.open(Path(body.path))
         return sessions.listing()
 
+    # ----------------------------------------------------------- examples
+    # Finished studies shipped with mepd (web/showcase): Home's Examples door.
+    # Opening one copies it into a new session of your own.
+    @app.get("/api/examples")
+    def list_examples():
+        from mepd.web import showcase_tool
+
+        return showcase_tool.listing()
+
+    @app.post("/api/examples/{slug}/open")
+    async def open_example(slug: str, request: Request):
+        from mepd.web import showcase_tool
+
+        if slug not in {x["slug"] for x in showcase_tool.listing()}:
+            raise HTTPException(404, f"no example {slug!r}")
+        visitor = visitor_of(request)
+        if demo is not None:
+            vdir = sessions.visitor_session_path(visitor, "main").parent
+            have = [d for d in vdir.glob("*") if (d / "workspace.json").exists()] if vdir.exists() else []
+            if len(have) >= demo.max_sessions:
+                raise WorkspaceError(f"the demo allows {demo.max_sessions} sessions per visitor; delete one first")
+            dest = showcase_tool.free_name(vdir, slug)
+        else:
+            dest = showcase_tool.free_name(sessions.default_root(), slug)
+        await asyncio.to_thread(showcase_tool.unpack, slug, dest)
+        await sessions.open(dest, visitor=visitor)
+        return sessions.listing(visitor)
+
     # ----------------------------------------------------------- static
     @app.get("/")
     def index():

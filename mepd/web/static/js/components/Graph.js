@@ -538,6 +538,19 @@ function edgeLabel(e, st, reaction = null) {
   return parts.join(' · ');
 }
 
+// Toolbar marks (24px strokes); each button's words are its tooltip.
+const svg = (d) => html`<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+const TB = {
+  connect: svg(html`<circle cx="5" cy="12" r="2.6"/><circle cx="19" cy="12" r="2.6"/><path d="M8 12h8"/>`),
+  arrange: svg(html`<rect x="3" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><path d="M10 6.5h4v7.5"/>`),
+  tree: svg(html`<circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6c6 0 6 6 10 6M7 18c6 0 6-6 10-6"/>`),
+  fit: svg(html`<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>`),
+  all: svg(html`<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 3"/><path d="M9 12l2 2 4-4"/>`),
+  view: svg(html`<path d="M4 5h16l-6 7v6l-4 2v-8z"/>`),
+  conditions: svg(html`<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>`),
+  del: svg(html`<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>`),
+};
+
 export function Graph() {
   const host = useRef(null);
   const cy = useRef(null);
@@ -1047,25 +1060,26 @@ export function Graph() {
       onDrop=${(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); }}>
       <div class="graph" ref=${host}></div>
       <div class="graph-toolbar">
-        <button class=${`btn small ${connectMode ? 'primary' : 'ghost'}`} onClick=${() => set({ connectMode: !state.connectMode })}
-          title="Click a start structure, then an end structure, to draw an edge (C)">
-          ${connectMode ? 'Connecting… Esc to stop' : '＋ Connect'}</button>
-        <button class="btn small ghost" onClick=${layout} title="Auto-arrange the graph">Arrange</button>
-        <button class="btn small ghost phone-hide" onClick=${treeLayout}
-          title="Lay reactions out as a synthesis tree: each target on the right, the steps that make it to its left, building blocks at the far left">Tree</button>
-        <button class="btn small ghost" onClick=${() => fitCapped(cy.current)} title="Fit everything in view">Fit</button>
-        <button class="btn small ghost phone-hide" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
-          title="Select every structure shown (then delete, download, or run one calculation on all)">Select all</button>
-        <button class=${`btn small ${panel ? 'primary' : 'ghost'}`} onClick=${() => { setSetupPanel(false); setPanel(!panel); }}
-          title="Filter what the graph shows, and fold branches away">View${counts.shown < counts.total ? ` · ${counts.shown}/${counts.total}` : ''}</button>
-        <button class=${`btn small ${setupPanel || setup ? 'primary' : 'ghost'}`} onClick=${() => { setPanel(false); setSetupPanel(!setupPanel); }}
+        <button class=${`gt-btn ${connectMode ? 'on' : ''}`} onClick=${() => set({ connectMode: !state.connectMode })}
+          title=${connectMode ? 'Connecting: click the start, then the end (Esc to stop)' : 'Connect two structures (C)'} aria-label="Connect">
+          ${TB.connect}${connectMode && html`<span>Esc to stop</span>`}</button>
+        <button class="gt-btn" onClick=${layout} title="Auto-arrange the graph" aria-label="Arrange">${TB.arrange}</button>
+        <button class="gt-btn phone-hide" onClick=${treeLayout} aria-label="Tree"
+          title="Lay reactions out as a synthesis tree: each target on the right, the steps that make it to its left, building blocks at the far left">${TB.tree}</button>
+        <button class="gt-btn" onClick=${() => fitCapped(cy.current)} title="Fit everything in view" aria-label="Fit">${TB.fit}</button>
+        <button class="gt-btn phone-hide" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
+          aria-label="Select all" title="Select every structure shown (then delete, download, or run one calculation on all)">${TB.all}</button>
+        <span class="gt-sep"></span>
+        <button class=${`gt-btn ${panel ? 'on' : ''}`} onClick=${() => { setSetupPanel(false); setPanel(!panel); }} aria-label="View"
+          title="Filter what the graph shows, and fold branches away">${TB.view}${counts.shown < counts.total && html`<span>${counts.shown}/${counts.total}</span>`}</button>
+        <button class=${`gt-btn ${setupPanel || setup ? 'on' : ''}`} onClick=${() => { setPanel(false); setSetupPanel(!setupPanel); }} aria-label="Conditions"
           title="Experimental conditions: solvent, temperature, reaction time. See which steps run, and predict the outcome.">
-          ${setup ? `Conditions · ${setup.name}` : 'Conditions'}</button>
+          ${TB.conditions}${setup && html`<span>${setup.name}</span>`}</button>
         <${NetworkPicker} workspace=${workspace} network=${network} />
-        ${howToHidden && html`<button class="btn small ghost" title="Show 'How it works'" aria-label="How it works"
+        ${howToHidden && html`<button class="gt-btn" title="Show 'How it works'" aria-label="How it works"
           onClick=${() => { prefs.set('hideHowTo', false); set({ howToHidden: false }); }}>?</button>`}
-        ${nSelected > 0 && html`<button class="btn small ghost danger-text" onClick=${deleteSelection}
-          title="Delete the selected structures and edges (Delete key)">Delete ${nSelected}</button>`}
+        ${nSelected > 0 && html`<button class="gt-btn danger-text" onClick=${deleteSelection} aria-label=${`Delete ${nSelected}`}
+          title="Delete the selected structures and edges (Delete key)">${TB.del}<span>${nSelected}</span></button>`}
       </div>
       ${!empty && setup && html`<div class="legend" title=${`Under ${setup.name}: barrier ΔE‡ (kcal/mol) and half-life; (gas) = no barrier in this solvent yet`}>
         <span><i class="lg done"></i>runs in ${setup.time_s >= 86400 ? `${+(setup.time_s / 86400).toFixed(1)} d` : setup.time_s >= 3600 ? `${+(setup.time_s / 3600).toFixed(1)} h` : `${Math.round(setup.time_s / 60)} min`}</span>
@@ -1073,12 +1087,9 @@ export function Graph() {
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
       ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified; when both directions are known, each direction is its own arrow with its own barrier. No TS: searched, but no transition state joins the two ends (click it for the path's highest point). Dotted: no single step joins the two, only a route through intermediates (its highest step).">
+        <span><i class="lg done"></i>barrier</span>
         <span><i class="lg idle"></i>not computed</span>
-        <span><i class="lg running"></i>running</span>
-        <span><i class="lg done"></i>barrier, kcal/mol</span>
-        <span><i class="lg nots"></i>no TS found</span>
-        <span><i class="lg route"></i>multi-step route</span>
-        <span><i class="lg failed"></i>failed</span>
+        <span><i class="lg route"></i>route</span>
       </div>`}
       ${setupPanel && html`<${SetupPanel} onClose=${() => setSetupPanel(false)} />`}
       ${panel && html`<${ViewPanel} view=${view} setView=${setView} collapsed=${collapsed} setCollapsed=${setCollapsed}
