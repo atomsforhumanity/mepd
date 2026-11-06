@@ -45,6 +45,9 @@ function bestEntry(result) {
 }
 
 export function ReactionPlayer({ jobId, compact = false }) {
+  const job = useStore((s) => s.jobs[jobId]);
+  // The orbitals of each frame, from this calculation's own run (Viewer3D's Orbitals bar).
+  const chem = job ? { charge: job.charge, multiplicity: job.multiplicity, job: job.id } : null;
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [frame, setFrame] = useState(0);
@@ -95,7 +98,7 @@ export function ReactionPlayer({ jobId, compact = false }) {
   const toggle = () => { if (!playing && frame >= n - 1) setFrame(0); setPlaying(!playing); };
   return html`<div class=${cls('reaction-player', compact && 'compact')}>
     <div class="rp-stage">
-      <${Viewer3D} frames=${frames} frame=${frame} height=${compact ? 220 : 340} labelBase=${1} />
+      <${Viewer3D} frames=${frames} frame=${frame} height=${compact ? 220 : 340} labelBase=${1} orbitals=${chem} />
       <div class="rp-where">
         ${where && html`<span class=${cls('rp-tag', frame === ts && 'ts')}>${where}</span>`}
         ${e != null && html`<span class="rp-e">${e > 0 ? '+' : ''}${e.toFixed(1)} kcal/mol</span>`}

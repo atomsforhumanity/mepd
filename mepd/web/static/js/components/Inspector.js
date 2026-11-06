@@ -528,6 +528,7 @@ export function Inspector() {
         <h2>${head}${collapsed ? html` <span class="small muted">· tap to show options</span>` : ''}</h2>
         <button class="btn-icon" title="Clear selection (Esc)" onClick=${(e) => { e.stopPropagation(); clearSelection(); }}>✕</button>
       </div>
+      <div class="insp-top">${body}</div>
       <nav class="insp-tabs" role="tablist">
         ${[['tools', 'Tools'], ['results', 'Results'], ['method', 'Method']].map(([k, l]) => html`<button role="tab" aria-selected=${itab === k}
           class=${itab === k ? 'on' : ''} onClick=${() => setItab(k)}>${l}</button>`)}
@@ -537,7 +538,7 @@ export function Inspector() {
           ${moreCalcs
             ? html`<details class="more-calcs" open><summary>Calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
             : html`<${ActionPanel} sel=${sel} extras=${extras} />`}`}
-        ${itab === 'results' && html`${body}${tail}`}
+        ${itab === 'results' && (tail || html`<p class="small muted">No calculations on this selection yet.</p>`)}
         ${itab === 'method' && html`<${MethodPane} jobId=${methodJobFor(sel, workspace, state.jobs)}
           rec=${nS === 1 && !nE ? structures[sel.structures[0]] : null} />`}
       </div>

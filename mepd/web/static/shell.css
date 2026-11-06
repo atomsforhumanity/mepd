@@ -234,3 +234,4 @@
 .op-run .btn.primary { box-shadow: var(--key-shadow-accent); }
 .prefs-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .drawer .profiles-view .view-head { padding-top: 0; }
+.insp-top { overflow: auto; max-height: 55%; padding: 0 18px 8px; flex: none; }
