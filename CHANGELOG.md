@@ -12,6 +12,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: the live network draws species as their structures, and works for any run.**
+  - Each species is its 2D structure on a card whose area grows with the material it held (46–112 px). Hover a card for a large view with its name, energy and peak. Labels sit above the cards.
+  - The side panel is "What forms" for every run: the main products as structures, named where they have an everyday name ("water + CO"), with their shares and how much of the start is left. A benchmark's measured selectivity shows only underneath, as validation.
+  - A benchmark's named product (e.g. endo, both mirror twins) is one card. Species the explorer could not identify show only once they hold material.
+  - Runs recorded before per-step flux (`step_list`) replay too: species from the kinetics snapshots, steps from `events.jsonl` (one per pair, its lowest barrier), edges without flux.
+  - Three more examples from different chemistry: formic acid, acetic acid and methyl formate breaking down (1500 K explorer runs).
+
 - **Web: the live network.** An explorer run (`mepd discovery expand`) watched as it grows, corrects itself and moves material: "Watch the network ›" on its calculation page, or the new example "Cp + methyl acrylate: watch the network grow" on Home.
   - One layout for the whole run, so species appear in place, newcomers ringed.
   - Node area grows with the material a species held. The starting mixture is a fixed mark, and a benchmark's products are named (endo, exo).

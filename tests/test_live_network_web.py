@@ -50,3 +50,37 @@ def test_a_job_records_its_refreshes_and_ends_on_a_steered_one(tmp_path):
     assert tl["events"] == [[31.0, "barrier_moved", ["a"], {"from": 27.0, "to": 25.0, "src": "dft",
                                                            "why": "its TS's steering single point came back"}]]
     assert tl["smiles"]["1"] == "C1CCC1"
+
+
+def test_older_explorer_runs_replay_from_their_step_events(tmp_path):
+    """Runs before the step_list schema: species by index, steps from events.jsonl
+    (one edge per pair, its lowest barrier), no flux; everyday names come along."""
+    species = [{"index": 0, "smiles": "O=CO", "rel_kcal": 0.0, "max_concentration": 1.0, "final": 0.0, "populated": True},
+               {"index": 1, "smiles": "O.[C-]#[O+]", "rel_kcal": -5.0, "max_concentration": 0.9, "final": 0.9, "populated": True},
+               {"index": 2, "smiles": "", "rel_kcal": 40.0, "max_concentration": 0.0, "final": 0.0, "populated": False}]
+    for k, ns in ((1, 1_000_000_000), (2, 31_000_000_000)):
+        (tmp_path / f"kinetics_{ns}.json").write_text(json.dumps(
+            {"kind": "x", "data": {"basis": "free energy (1500 K); single points on 2 of 2 structures", "steps": 2,
+                                   "species": species[: k + 1]}}))
+    (tmp_path / "events.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"event": "step", "a": 0, "b": 1, "label": "s01", "barrier_kcal": [60.0, 70.0]},
+        {"event": "step", "a": 1, "b": 0, "label": "s10", "barrier_kcal": [65.0, 55.0]},   # same pair, lower
+        {"event": "step", "a": 0, "b": 2, "label": "s02", "barrier_kcal": [80.0, 40.0]},
+    ]) + "\n")
+    tl = ln.from_snapshots(tmp_path)
+    first, last = tl["frames"]
+    assert last["legacy"] and last["t"] == 30.0
+    assert [s[0] for s in first["steps"]] == ["s10"]                  # s02 waits for species 2
+    s10 = next(s for s in last["steps"] if s[0] == "s10")
+    assert (s10[1], s10[2], s10[3], s10[4]) == ("0", "1", 55.0, 65.0)  # oriented 0 -> 1
+    assert tl["names"]["0"] == "formic acid" and tl["names"]["1"] == "water + CO"
+
+
+def test_every_packed_replay_opens():
+    from mepd.web.showcase_tool import listing
+
+    replays = [e for e in listing() if e.get("kind") == "replay"]
+    assert len(replays) >= 2
+    for e in replays:
+        tl = ln.example_timeline(e["slug"])
+        assert tl["frames"] and "names" in tl and 0 <= tl["final"] < len(tl["frames"])

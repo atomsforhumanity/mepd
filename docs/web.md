@@ -40,6 +40,8 @@ The page is one screen:
 
 **Addresses:** every page has one: `#/explore`, `#/reactions`, `#/kinetics`, `#/landscape`, `#/reaction/<edge>`, `#/calculations`, `#/calc/<job>[/<tab>]`, `#/design`, `#/reactor/<id>`, `#/home`. Add `?d=settings` or `?d=learn` for a drawer. Back and forward walk them, a reload stays, and a link opens the same page. **Esc** goes up one level: the selection, then a drawer, then the page.
 
+**The live network** (`#/network/<job>`, or an example's `#/network/example/<slug>`) replays an explorer run: species as structures sized by the material they held, steps coloured by barrier and as wide as their flux, corrections as they happen, and what forms.
+
 **Reaction pages** (double-click a reaction) play its path: 3D, energy profile and the bonds that form and break, on one scrubber (Space plays, ←/→ step).
 
 ## Mental model

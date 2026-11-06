@@ -93,6 +93,49 @@ def compact(kin: dict) -> Optional[dict]:
     }
 
 
+def compact_legacy(kin: dict, known_steps: list) -> Optional[dict]:
+    """A refresh from explorer runs before the step_list schema: species by
+    index, and the steps the run reported (events.jsonl "step" lines) once
+    both their species are found. These carry no per-step flux, so their
+    edges show barriers only."""
+    species = kin.get("species") or []
+    if not species or "index" not in species[0]:
+        return None
+    kin = {**kin, "species": [{**s, "id": s["index"]} for s in species]}
+    have = {str(s["index"]) for s in species}
+    # One edge per pair of species (the lowest of its channels), lowest barriers first.
+    best = {}
+    for st in known_steps:
+        a, b = str(st["a"]), str(st["b"])
+        if a not in have or b not in have or a == b:
+            continue
+        fwd, rev = (st["dG"][0], st["dG"][1]) if a < b else (st["dG"][1], st["dG"][0])
+        key = (min(a, b), max(a, b))
+        low = min(x for x in (fwd, rev) if x is not None) if (fwd, rev) != (None, None) else None
+        if key not in best or (low is not None and low < best[key][0]):
+            best[key] = (low, {"id": st["label"], "from": key[0], "to": key[1], "dG_fwd": fwd, "dG_rev": rev,
+                               "state": "open", "energy_source": "gxtb"})
+    kin["step_list"] = [v for _, v in sorted(best.values(), key=lambda x: (x[0] is None, x[0] or 0))]
+    f = compact(kin)
+    if f is not None:
+        f["legacy"] = True
+    return f
+
+
+def _legacy_steps(lines: Iterable[str]) -> list:
+    out = []
+    for line in lines:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "step" and ev.get("barrier_kcal") and None not in (ev.get("a"), ev.get("b")):
+            bk = ev["barrier_kcal"]
+            out.append({"label": ev.get("label") or f"{ev['a']}_{ev['b']}", "a": ev["a"], "b": ev["b"],
+                        "dG": [bk[0], bk[1] if len(bk) > 1 else None]})
+    return out
+
+
 def _changes(lines: Iterable[str], t_start: float) -> list:
     """The explorer's correction events, compact: [t, kind, ids, detail]."""
     out = []
@@ -141,15 +184,32 @@ def timeline(frames: list, events: list, selectivity: Optional[dict], *, source:
     for f in frames:
         smiles.update(f.pop("smiles", {}))
     final = max((i for i, f in enumerate(frames) if f["steered"]), default=len(frames) - 1)
-    return {"source": source, "frames": frames, "smiles": smiles, "events": events, "selectivity": selectivity,
-            "final": final}
+    return {"source": source, "frames": frames, "smiles": smiles, "names": names_of(smiles), "events": events,
+            "selectivity": selectivity, "final": final}
+
+
+def names_of(smiles: dict) -> dict:
+    """Everyday names where every molecule of a mixture has one ("water + CO")."""
+    from mepd.web.chem import common_name
+
+    out = {}
+    for sid, smi in smiles.items():
+        parts = [common_name(x) for x in (smi or "").split(".")] if smi else []
+        if parts and all(parts):
+            out[sid] = " + ".join(parts)
+    return out
 
 
 def from_snapshots(snap_dir: Path, selectivity_file: Optional[Path] = None) -> dict:
     """A replay folder: kinetics_<mtime_ns>.json versions + events.jsonl."""
     snap_dir = Path(snap_dir)
     frames, t_start = [], None
-    for fp in sorted(snap_dir.glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[-1])):
+    ev_fp = snap_dir / "events.jsonl"
+    ev_lines = ev_fp.read_text().splitlines() if ev_fp.exists() else []
+    legacy_steps = None
+    snaps = sorted(snap_dir.glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
+    t0_ns = int(snaps[0].stem.split("_")[-1]) if snaps else 0
+    for fp in snaps:
         try:
             d = json.loads(fp.read_text())
         except ValueError:
@@ -157,10 +217,15 @@ def from_snapshots(snap_dir: Path, selectivity_file: Optional[Path] = None) -> d
         kin = d.get("data", d)
         t_start = t_start or kin.get("t_start")
         f = compact(kin)
+        if f is None:
+            if legacy_steps is None:
+                legacy_steps = _legacy_steps(ev_lines)
+            f = compact_legacy(kin, legacy_steps)
+            if f is not None:    # no t_wall in these: the snapshot's own time
+                f["t"] = _r((int(fp.stem.split("_")[-1]) - t0_ns) / 1e9, 1)
         if f is not None:
             frames.append(f)
-    ev_fp = snap_dir / "events.jsonl"
-    events = _changes(ev_fp.read_text().splitlines(), t_start or 0.0) if ev_fp.exists() else []
+    events = _changes(ev_lines, t_start or 0.0)
     sel = None
     if selectivity_file and Path(selectivity_file).exists():
         d = json.loads(Path(selectivity_file).read_text())
@@ -237,7 +302,10 @@ def example_timeline(slug: str) -> Optional[dict]:
     if "/" in slug or slug.startswith(".") or not fp.exists():
         return None
     with gzip.open(fp, "rt") as fh:
-        return json.load(fh)
+        tl = json.load(fh)
+    if "names" not in tl:    # packed before names were part of the timeline
+        tl["names"] = names_of(tl.get("smiles") or {})
+    return tl
 
 
 if __name__ == "__main__":
