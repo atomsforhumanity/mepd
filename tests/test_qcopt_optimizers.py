@@ -127,3 +127,10 @@ def test_minimization_with_hessian_every_uses_the_engines_hessians(monkeypatch):
     assert _largest_force_ev(traj[-1]) < 0.001
     # the starting Hessian and one every 2 steps, all from the engine
     assert len(calls) >= 1 + (len(traj) - 1) // 2 >= 2
+
+
+def test_geometric_coordsys_from_the_cli_is_ignored_like_sella_does():
+    """mepd's CLI adds coordsys="cart" (a geomeTRIC option) to every minimization."""
+    engine = _engine()
+    traj = engine.compute_geometry_optimization(_node(FORMAMIDE), {"fmax": 0.001, "coordsys": "cart", "maxit": 500})
+    assert _largest_force_ev(traj[-1]) < 0.001

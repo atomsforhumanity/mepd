@@ -37,6 +37,9 @@ _FORCE = float(c.EV_TO_HARTREE) / float(c.ANGSTROM_TO_BOHR)
 # Sella IRC options with no qcopt counterpart: `keep_going` steps past Sella's own
 # corrector failures (qcopt has no inner loop to fail); the others tune that corrector.
 _SELLA_IRC_IGNORED = ("keep_going",)
+# geomeTRIC's coordinate choice, which mepd's CLI adds to every minimization ("cart");
+# Sella ignores it too. qcopt's own is `coordinates` (TRIC by default).
+_GEOMETRIC_IGNORED = ("coordsys",)
 _SELLA_ONLY = ("eta", "gamma", "optimizer_kwds", "optimizer_kwargs", "order", "diag_every_n")
 
 
@@ -135,6 +138,7 @@ def minimize(engine, node: StructureNode, *, fmax: float, maxiter: int, hessian_
     from mepd import progress as _progress
 
     qcopt = _qcopt()
+    keywords = {k: v for k, v in keywords.items() if k not in _GEOMETRIC_IGNORED}
     _reject_sella_options(keywords, "minimizer")
     exact = bool(hessian_every)
     if exact:
@@ -160,6 +164,7 @@ def transition_state(engine, node: StructureNode, *, fmax: float, maxiter: int, 
     Returns the trajectory; its last structure is the TS.
     """
     qcopt = _qcopt()
+    keywords = {k: v for k, v in keywords.items() if k not in _GEOMETRIC_IGNORED}
     _reject_sella_options(keywords, "TS search")
     if hessian_every:
         keywords = {"hessian_every": int(hessian_every), **keywords}
@@ -186,7 +191,7 @@ def irc(engine, ts_node: StructureNode, keywords: dict[str, Any] | None = None):
 
     qcopt = _qcopt()
     kwds = dict(keywords or {})
-    for key in _SELLA_IRC_IGNORED:
+    for key in _SELLA_IRC_IGNORED + _GEOMETRIC_IGNORED:
         kwds.pop(key, None)
     _reject_sella_options(kwds, "IRC")
     if "fmax" in kwds:

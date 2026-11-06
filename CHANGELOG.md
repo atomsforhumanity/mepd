@@ -37,7 +37,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     On the 99 both finished, 96 TS searches found the same saddle (within 0.01 kcal/mol and 0.01 Angstrom). Most
     of the difference in connections is the Sella IRC issue under Known issues.
   - Sella's keywords carry over: `fmax` (eV/Angstrom), `maxiter`/`steps`, and for IRCs `dx` (Sella's step,
-    Angstrom amu^1/2); `keep_going` is ignored. Sella-only options raise `ValueError`.
+    Angstrom amu^1/2); `keep_going` is ignored, and so is geomeTRIC's `coordsys`, which mepd's CLI adds to every
+    minimization. Sella-only options raise `ValueError`.
   - A run that runs out of steps raises `GeometryOptimizationNotConvergedError` with `.structure`, so `find_ts`
     goes on from where it stopped, as with Sella.
   - Minimizations start from Lindh's model Hessian (an exact g-xTB Hessian costs about 38 gradients and did not pay
