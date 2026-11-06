@@ -22,6 +22,20 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     saddle with a median of 12 gradients (Sella 16); 196 of 200 minimizations reached a true minimum with a median
     of 33 (Sella 192, 143); IRCs ended in the same minima as Sella's in all 100 with a median of 375 gradients,
     ends included (Sella 2,407).
+  - Inside mepd (`mepd.find_ts`, then `mepd.irc` with its ends minimized and frequency-checked; g-xTB from axtb,
+    mepd's defaults otherwise; Reaction-QM rxn_000-099, both optimizers set for every step):
+
+    | | qcopt | Sella |
+    |---|---|---|
+    | Errors | 0 | 1 (an IRC end that would not minimize) |
+    | TS searches ending with one imaginary mode | 100 | 99 |
+    | TS search, median gradients (Hessians) | 14.5 (2) | 19 (2) |
+    | IRC with its ends minimized, median gradients (Hessians) | 330 (5) | 722 (2) |
+    | Total time, TS searches / IRCs | 200 s / 1,099 s | 251 s / 1,283 s |
+    | IRCs connecting Reaction-QM's reactant and product (bond graph) | 69 | 50 |
+
+    On the 99 both finished, 96 TS searches found the same saddle (within 0.01 kcal/mol and 0.01 Angstrom). Most
+    of the difference in connections is the Sella IRC issue under Known issues.
   - Sella's keywords carry over: `fmax` (eV/Angstrom), `maxiter`/`steps`, and for IRCs `dx` (Sella's step,
     Angstrom amu^1/2); `keep_going` is ignored. Sella-only options raise `ValueError`.
   - A run that runs out of steps raises `GeometryOptimizationNotConvergedError` with `.structure`, so `find_ts`
@@ -1177,6 +1191,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   Paracetamol now gives 23 solved routes, led by acetic anhydride + 4-aminophenol.
 
 ### Known issues
+
+- **With Sella, a g-xTB IRC often ends both branches in the same minimum.** In the qcopt comparison above, 28 of 99
+  Sella IRCs (axtb backend) ended with both minimized ends at the same energy (within 0.01 kcal/mol): one branch
+  stopped high on the surface and its minimization rolled into the other branch's valley (rxn_004), or both
+  branches went down the same side (rxn_050). That is 28 of Sella's 49 IRCs that do not connect the reference
+  reactant and product. qcopt's IRCs did this once in 100. It also happens on main before this change (f8512aa,
+  its own lock: rxn_004 and rxn_050 the same way), so it comes from mepd's Sella IRC path, not from the qc\*
+  update. Sella's own IRC, run outside mepd with its defaults, connected 68 of these 100.
 
 - **A new AiZynthFinder environment is broken.** `mepd retro setup --aizynthfinder` now installs
   pyarrow 26 (released 2026-10), which needs NumPy 2. AiZynthFinder's RDKit needs NumPy 1, so it fails to
