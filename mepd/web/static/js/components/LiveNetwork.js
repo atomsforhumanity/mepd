@@ -201,7 +201,8 @@ export function LiveNetworkView({ jobId = null, example = null }) {
           <span class="ln-gauge-fill" style=${`width:${pct != null ? pct * 100 : 0}%`}></span>
           ${refLo != null && html`<span class="ln-gauge-ref" style=${`left:${refLo * 100}%;width:${Math.max(0.4, (refHi - refLo) * 100)}%`} title=${ref?.citation_text || ref?.citation || 'experiment'}></span>`}
         </div>
-        ${refLo != null && html`<span class="small muted">▮ measured ${Math.round(share(ref.value) * 100)} : ${100 - Math.round(share(ref.value) * 100)}${point?.[2] ? ' · settled' : ''}</span>`}
+        ${point?.[2] && html`<span class="small muted" title="The run's own answer has stopped moving (judged from its own recent values, not from any experiment)">answer stable</span>`}
+        ${refLo != null && html`<span class="small muted" title=${`Held-out validation: the run never sees this value. ${ref?.citation_text || ref?.citation || ''}`}>▮ measured ${Math.round(share(ref.value) * 100)} : ${100 - Math.round(share(ref.value) * 100)} · validation only</span>`}
       </section>` : html`<section>
         <span class="section-title">What forms</span>
         ${tops.map((x) => html`<div class="ln-prod"><span class="mono small">${short(tl.smiles[x.id])}</span><b>${finTotal > 0 ? `${Math.round(100 * Math.max(0, x.fin) / finTotal)}%` : '—'}</b></div>`)}
