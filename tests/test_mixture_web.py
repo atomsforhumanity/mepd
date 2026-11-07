@@ -70,9 +70,9 @@ def test_the_mixture_page_reads_mixture_json_and_the_seeds_before_it(tmp_path):
         assert d["mixture"]["feed"][0]["molecule"] == "O" and d["names"]["O"] == "water"
 
 
-def test_a_real_mixture_reads_by_its_names_once_per_reaction(tmp_path):
-    """What a real `discovery mixture` writes: the feed named by its snapshot file, each reaction listed once
-    per merge, and a species of two forms ("A|B")."""
+def test_a_real_mixture_reads_by_its_names_with_mirror_images_counted(tmp_path):
+    """What a real `discovery mixture` writes: the feed named by its snapshot file, a chiral TS's step listed
+    again as its mirror image, and a species of two forms ("A|B")."""
     from fastapi.testclient import TestClient
 
     from mepd.web.app import create_app
@@ -95,9 +95,13 @@ def test_a_real_mixture_reads_by_its_names_once_per_reaction(tmp_path):
             "feed": [{"name": str(tmp_path / "jobs/j_r/inputs/feed_0.xyz"), "molecule": "[H]OC([H])=O",
                       "concentration": 1}],
             "molecules": [{"molecule": "[H]OC([H])=O"}, {"molecule": carbene}],
-            "reactions": [step, dict(step), {**step, "source": "547f/fast_0_3_rot0", "barrier_kcal": 80.0}],
+            "reactions": [step, {**step, "mirror_image": True}, {**step, "source": "547f/fast_0_3_rot0", "barrier_kcal": 80.0}],
             "seeds": []}))
         d = c.get("/api/jobs/j_r/mixture").json()
         assert d["mixture"]["feed"][0]["name"] == "formic acid"
-        assert [r["source"] for r in d["mixture"]["reactions"]] == ["547f/fast_0_3", "547f/fast_0_3_rot0"]
+        # a chiral TS's mirror image: one reaction, both channels' conversion, saying so
+        rx = d["mixture"]["reactions"]
+        assert [r["source"] for r in rx] == ["547f/fast_0_3", "547f/fast_0_3_rot0"]
+        assert rx[0]["channels"] == 2 and rx[0]["mirror_images"] and rx[0]["net_extent"] == pytest.approx(0.008)
+        assert "channels" not in rx[1] and d["mixture"]["channels"] == 3
         assert c.get("/api/depict", params={"smiles": carbene}).status_code == 200

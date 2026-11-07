@@ -160,6 +160,7 @@ export function MixtureView({ jobId }) {
                 x2=${p[0] + (pos[x][0] - p[0]) * 0.8} y2=${p[1] + (pos[x][1] - p[1]) * 0.8}
                 style=${`stroke:${col}`} class="mx-link" marker-end=${strong || on ? `url(#mx-arr-${k})` : null} />`)}
               <circle cx=${p[0]} cy=${p[1]} r=${4 + 7 * Math.sqrt(share)} style=${`fill:${col}`} class="mx-dot" />
+              ${(r.channels || 1) > 1 && html`<text x=${p[0] + 7 + 7 * Math.sqrt(share)} y=${p[1] + 4} class="mx-times">×${r.channels}</text>`}
               <circle cx=${p[0]} cy=${p[1]} r="12" class="ln-hit" />
             </g>`;
           })}
@@ -186,7 +187,8 @@ export function MixtureView({ jobId }) {
               <span><b>${(fwd ? hov.reverse_barrier_kcal : hov.barrier_kcal)?.toFixed(1)}</b>back</span>
               <span><b>${fmtC(Math.abs(hov.net_extent || 0))}</b>${unit} converted</span>
             </div>
-            <div class="small muted">free energy, kcal/mol, from the molecules apart${hov.source ? ` · found in ${hov.source}` : ''}${hov.mirror_image ? ' · mirror image' : ''}</div>
+            <div class="small muted">free energy, kcal/mol, from the molecules apart${hov.source ? ` · found in ${hov.source}` : ''}</div>
+            ${(hov.channels || 1) > 1 && html`<div class="small"><b>×${hov.channels}</b> ${hov.mirror_images ? 'mirror images: two saddles of equal energy, both counted' : 'channels, counted together'}</div>`}
           </div>`;
         })()}
       </div>
@@ -195,7 +197,7 @@ export function MixtureView({ jobId }) {
         <span class="ln-lg"><svg width="20" height="14"><circle cx="10" cy="7" r="5" class="lg-dot" /></svg>a reaction; larger = more converted</span>
         <span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l dash" /></svg>on both sides (a shuttle)</span>
         <span class="ln-lg"><svg width="40" height="16"><rect x="1" y="5" width="12" height="9" rx="2" class="lg-card" /><rect x="18" y="1" width="20" height="14" rx="2" class="lg-card" /></svg>bigger card: more of it at its peak</span>
-        <span class="ln-lg muted">${(m.molecules || []).length} molecules · ${(m.reactions || []).length} reactions in all; the most populated shown</span>
+        <span class="ln-lg muted">${(m.molecules || []).length} molecules · ${(m.reactions || []).length} reactions in all${(m.channels || 0) > (m.reactions || []).length ? ` (${m.channels} channels with mirror images)` : ''}; the most populated shown</span>
       </div>
     </div>
     <aside class="ln-side">

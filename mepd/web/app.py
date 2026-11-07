@@ -2935,13 +2935,21 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 if d.is_dir():
                     seeds.append({"name": d.name, "status": "done" if (d / "run" / "summary.json").exists() else "running"})
         if data is not None:
-            # one reaction can be listed once per place it was merged from: keep one of each
-            seen, rx = set(), []
+            # A step with a chiral TS is listed twice, plain and as its mirror image ("mirror_image": true, same
+            # source): two saddles of equal energy, both counted in the kinetics. Drawn as one reaction that says
+            # so, its conversion the two channels' together.
+            kept, rx = {}, []
             for r in data.get("reactions") or []:
                 key = (r.get("source"), tuple(r.get("reactants") or ()), tuple(r.get("products") or ()))
-                if key not in seen:
-                    seen.add(key)
-                    rx.append(r)
+                if key in kept:
+                    k = kept[key]
+                    k["channels"] = k.get("channels", 1) + 1
+                    k["net_extent"] = (k.get("net_extent") or 0) + (r.get("net_extent") or 0)
+                    k["mirror_images"] = k.get("mirror_images") or bool(r.get("mirror_image"))
+                else:
+                    kept[key] = dict(r)
+                    rx.append(kept[key])
+            data["channels"] = len(data.get("reactions") or [])
             data["reactions"] = rx
             # the feed by the names its structures have in the workspace, not the snapshot file the run was given
             targets = (job.get("targets") or {}).get("structures") or []
