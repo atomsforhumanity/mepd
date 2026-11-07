@@ -195,6 +195,17 @@ def _facts(out: Path) -> dict:
         "back_to_cp_ma": [r for r in onward if r["to"] in back],
         "lowest_steps_from_seed": onward[:8],
         "cp_ma_species": back}
+    # when the live view first had an IRC-checked step from the seed back to Cp + methyl acrylate
+    first_back = None
+    with tarfile.open(out / "snapshots.tgz") as tf:
+        tf.extractall(tmp)
+    for fp in sorted((tmp / "snapshots").glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[1])):
+        data = json.loads(fp.read_text()).get("data") or {}
+        if any({x.get("from"), x.get("to")} & {"0"} and ({x.get("from"), x.get("to")} - {"0"}) & {str(k) for k in back}
+               and x.get("irc_ok") is True and x.get("state") in ("open", "closed") for x in data.get("step_list") or []):
+            first_back = round(float(data["t_wall"]) - float(res["start"]), 1)
+            break
+    out_rec["first_back_reaction_s"] = first_back
     shutil.rmtree(tmp)
     return out_rec
 
@@ -208,7 +219,7 @@ def analyze(d: Path, dst: Path) -> None:
                                             "hessians_run", "hessians_reused", "species_reused", "steps_reused")}))
         print("  queue starts at", r["queue_start_s"], "s; main process busy", r["main_busy_s"], "s; jobs:", r["jobs"],
               r["queue"])
-        print("  back to Cp + MA:", r["back_to_cp_ma"])
+        print("  back to Cp + MA:", r["back_to_cp_ma"], "first in the live view at", r["first_back_reaction_s"], "s")
         print("  populated:", r["populated"])
 
 
