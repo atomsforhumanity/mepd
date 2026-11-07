@@ -110,7 +110,7 @@ export function MixtureView({ jobId }) {
   if (!d) return html`<p class="boot">Loading the mixture…</p>`;
   // The feed's own names (as given to the mixture), else everyday names, else the SMILES.
   const names = { ...(d.names || {}), ...Object.fromEntries(((m && m.feed) || []).filter((f) => f.name && f.name !== f.molecule).map((f) => [f.molecule, f.name])) };
-  const nameOf = (k) => names[k] || k;
+  const nameOf = (k) => names[k] || k.split('|')[0];   // "A|B": forms counted as one species
   const unit = m?.settings?.standard_state === '1atm' ? 'atm' : 'M';
   const seeds = m?.seeds || d.seeds || [];
   const doneSeeds = seeds.filter((s) => String(s.status || '').startsWith('done')).length;
@@ -208,7 +208,7 @@ export function MixtureView({ jobId }) {
         ${formed.slice(0, 5).map((x) => html`<div class="ln-prod" title=${x.molecule}>
           <img class="ln-prod-mol" src=${depictUrl(x.molecule, 160, 120)} alt=${x.molecule} />
           <span class="ln-prod-name">${nameOf(x.molecule)}</span>
-          <b>${formedTotal > 0 ? (x.final_concentration / formedTotal >= 0.995 ? '>99%' : x.final_concentration / formedTotal >= 0.01 ? `${Math.round(100 * x.final_concentration / formedTotal)}%` : `${(100 * x.final_concentration / formedTotal).toPrecision(1)}%`) : '—'}</b></div>`)}
+          <b>${formedTotal > 0 ? (x.final_concentration / formedTotal >= 0.995 ? '>99%' : x.final_concentration / formedTotal >= 0.01 ? `${Math.round(100 * x.final_concentration / formedTotal)}%` : (x.final_concentration / formedTotal >= 1e-4 ? `${(100 * x.final_concentration / formedTotal).toPrecision(1)}%` : '<0.01%')) : '—'}</b></div>`)}
         ${!formed.length && html`<span class="small muted">Nothing yet</span>`}
       </section>
       <section><span class="section-title">Seeds</span>

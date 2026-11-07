@@ -230,6 +230,8 @@ def depict_svg(smiles: str, width: int = 220, height: int = 160) -> Optional[str
         from rdkit import Chem
         from rdkit.Chem.Draw import rdMolDraw2D
 
+        # the explorer joins forms it counts as one species ("A|B": the cis and trans of a carbene); draw the first
+        smiles = str(smiles).split("|")[0]
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             mol = Chem.MolFromSmiles(smiles, sanitize=False)

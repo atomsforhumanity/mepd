@@ -68,3 +68,36 @@ def test_the_mixture_page_reads_mixture_json_and_the_seeds_before_it(tmp_path):
                                                       "molecules": [{"molecule": "O"}], "reactions": [], "seeds": []}))
         d = c.get("/api/jobs/j_m/mixture").json()
         assert d["mixture"]["feed"][0]["molecule"] == "O" and d["names"]["O"] == "water"
+
+
+def test_a_real_mixture_reads_by_its_names_once_per_reaction(tmp_path):
+    """What a real `discovery mixture` writes: the feed named by its snapshot file, each reaction listed once
+    per merge, and a species of two forms ("A|B")."""
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    app = create_app(tmp_path / "ws")
+    with TestClient(app) as c:
+        c.get("/api/state")
+        mgr = next(iter(app.state.sessions._open.values())).jobs if hasattr(app.state, "sessions") else None
+        if mgr is None:
+            pytest.skip("no session manager handle")
+        sid = c.post("/api/structures", json={"text": "OC=O", "name": "formic acid", "optimize": False}).json()[0]["id"]
+        out = tmp_path / "out"
+        out.mkdir()
+        mgr.jobs["j_r"] = {"id": "j_r", "op": "network-mixture", "status": "done", "output_dir": str(out),
+                           "targets": {"structures": [sid], "edges": []}}
+        carbene = "[H]O/[C-]=[O+]/[H]|[H]O/[C-]=[O+]\\[H]"
+        step = {"reactants": ["[H]OC([H])=O"], "products": [carbene], "barrier_kcal": 79.0,
+                "reverse_barrier_kcal": 46.5, "net_extent": 0.004, "source": "547f/fast_0_3"}
+        (out / "mixture.json").write_text(json.dumps({
+            "feed": [{"name": str(tmp_path / "jobs/j_r/inputs/feed_0.xyz"), "molecule": "[H]OC([H])=O",
+                      "concentration": 1}],
+            "molecules": [{"molecule": "[H]OC([H])=O"}, {"molecule": carbene}],
+            "reactions": [step, dict(step), {**step, "source": "547f/fast_0_3_rot0", "barrier_kcal": 80.0}],
+            "seeds": []}))
+        d = c.get("/api/jobs/j_r/mixture").json()
+        assert d["mixture"]["feed"][0]["name"] == "formic acid"
+        assert [r["source"] for r in d["mixture"]["reactions"]] == ["547f/fast_0_3", "547f/fast_0_3_rot0"]
+        assert c.get("/api/depict", params={"smiles": carbene}).status_code == 200

@@ -2934,7 +2934,24 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             for d in sorted((out / "seeds").iterdir()):
                 if d.is_dir():
                     seeds.append({"name": d.name, "status": "done" if (d / "run" / "summary.json").exists() else "running"})
-        smiles = {m["molecule"]: m["molecule"] for m in (data or {}).get("molecules") or []}
+        if data is not None:
+            # one reaction can be listed once per place it was merged from: keep one of each
+            seen, rx = set(), []
+            for r in data.get("reactions") or []:
+                key = (r.get("source"), tuple(r.get("reactants") or ()), tuple(r.get("products") or ()))
+                if key not in seen:
+                    seen.add(key)
+                    rx.append(r)
+            data["reactions"] = rx
+            # the feed by the names its structures have in the workspace, not the snapshot file the run was given
+            targets = (job.get("targets") or {}).get("structures") or []
+            for i, f in enumerate(data.get("feed") or []):
+                if i < len(targets) and (f.get("name") or "").endswith(".xyz"):
+                    try:
+                        f["name"] = W().structure(targets[i]).get("name") or f["molecule"]
+                    except Exception:   # noqa: BLE001 -- a structure deleted since: its SMILES then
+                        f["name"] = f["molecule"]
+        smiles = {m["molecule"]: m["molecule"].split("|")[0] for m in (data or {}).get("molecules") or []}
         return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles)}
 
     @app.get("/api/jobs/{jid}/network-timeline")

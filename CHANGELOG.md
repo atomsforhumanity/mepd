@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web: a real Reacting mixture reads right.** The first real run (formic acid, 1500 K) showed its feed as the snapshot file's path, every reaction twice (mixture.json lists one per place it was merged from), a two-form species ("A|B", the dihydroxycarbene's cis and trans) as a broken picture, and a 1e-9 share as "1e-7%". The page now names the feed as in the workspace, keeps one of each reaction, draws the first form, and writes "<0.01%".
+
 - **Explorer (async): the seed's reactor products arrive together, after all its batches (~400 s).** Streaming them batch by batch cut what the seed's own products got: its first batch alone (12-18 distinct products from the seed in isoprene + methyl acrylate, the rest of its 50 states reached only through other products) filled the 50-product cap, and its next batch waited behind the TS searches (rank 3, every worker), in isoprene for the whole 30 minutes. Run as one job, as before, its four batches find 42-57 products of the seed and the Diels-Alder adducts are proposed in 9 of 10 seed runs (para 5/5, meta 4/5) instead of 3 of 10 (scoreboard sb-iso 431142d vs sb-dev6 4076e41, same seeds). The seed's TS searches now start after its reactor (~400 s instead of ~190 s); later species' batches still stream.
 
 - **Web: the Landscape shows side products with their real shares.** Routes under 1 % of the main flow were left out and shares rounded to whole percent, so a run with a 0.04 % side product read as "100 %" with nothing beside it. The next few side routes are now drawn faint with their shares as they are (0.04 %, <0.01 %), and the main one reads ">99 %".
