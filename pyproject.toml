@@ -62,6 +62,7 @@ ase = [
     "ase>=3.26.0",
     "sella>=2.3.4",
     "tblite>=0.4",
+    "qcopt>=0.2.0; python_version >= '3.11'",   # minimizer/ts_optimizer = "qcopt" (qc* needs 3.11)
 ]
 # GXTBCalculator (engine_name="gxtb") wraps g-xTB as an ase.Calculator --
 # a temporary workaround until qccompute supports g-xTB natively. TS-opt/IRC
@@ -70,6 +71,7 @@ ase = [
 gxtb = [
     "ase>=3.26.0",
     "sella>=2.3.4",
+    "qcopt>=0.2.0; python_version >= '3.11'",
 ]
 # mepd.atom_mapping: SLAPMapper-based atom-to-atom mapping (WL-like iterative
 # label refinement + sequential linear assignment problems), used to sanity-
