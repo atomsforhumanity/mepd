@@ -244,15 +244,20 @@ class MirrorFinder:
             self._same[key] = "same" if c.same else "undetermined" if c.undetermined else "different"
         return self._same[key]
 
-    def _same_species(self, mirror_node, species_nodes, k: int) -> Optional[int]:
+    def _same_species(self, mirror_node, species_nodes, k: int, hashes: list) -> Optional[int]:
         """The species `mirror_node` (the mirror image of species k) is: k
-        itself first, then any other; None when none is."""
+        itself first, then any other; None when none is. `hashes`: the
+        species' graph hashes, filled in the first time they are needed."""
         # undetermined stereo: the explorer could not tell them apart either
         if self._compare(mirror_node, species_nodes[k]) != "different":
             return k
+        if not hashes:
+            # once per call, not once per species and call: hashing every species' geometry for every chiral
+            # species was half the main process's time with 380 species (--known follow-up, F0007)
+            hashes.extend(self._graph_hash(node) for node in species_nodes)
         h = self._graph_hash(mirror_node)
         for j, node in enumerate(species_nodes):
-            if j != k and self._graph_hash(node) == h and self._compare(mirror_node, node) == "same":
+            if j != k and hashes[j] == h and self._compare(mirror_node, node) == "same":
                 return j
         return None
 
@@ -261,12 +266,12 @@ class MirrorFinder:
         achiral molecule); -1 when the explorer did not find it."""
         from mepd.nodes.node import StructureNode
 
-        out = []
+        out, hashes = [], []
         for k, node in enumerate(species_nodes):
             key = _key(node.structure)
             if key not in self._mirror_key:
                 self._mirror_key[key] = StructureNode(structure=mirrored(node.structure))
-            j = self._same_species(self._mirror_key[key], species_nodes, k)
+            j = self._same_species(self._mirror_key[key], species_nodes, k, hashes)
             out.append(-1 if j is None else j)
         return out
 

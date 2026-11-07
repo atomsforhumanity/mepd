@@ -127,3 +127,17 @@ def test_a_geometry_superimposes_with_its_identical_atoms_in_another_order():
     # the twin found under another numbering is recognised (not given a twin of its own as well)
     steps = [Step(0, 1, 0.025, "s", {}), Step(1, 0, 0.025, "t", {})]
     assert MirrorFinder()(species, steps, [ts, twin]).found_twins == [(0, 1)]
+
+
+def test_species_mirrors_hashes_each_species_once_per_call(monkeypatch):
+    """Each species' graph is hashed once per call, not once per chiral species (N^2 geometry hashes: half the
+    main process's time with 380 species)."""
+    species = [_node(FLAT)] + [_node(TETRAHEDRAL + 0.01 * k) for k in range(6)]
+    finder = MirrorFinder()
+    calls = []
+    real = MirrorFinder._graph_hash
+    monkeypatch.setattr(MirrorFinder, "_graph_hash", lambda self, node: calls.append(1) or real(self, node))
+    first = finder.species_mirrors(species)
+    calls.clear()
+    assert finder.species_mirrors(species) == first
+    assert len(calls) <= 2 * len(species)      # each species once, and each mirror image looked for
