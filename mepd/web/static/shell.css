@@ -369,3 +369,5 @@
 .stage-note { margin: 0; color: var(--warn); }
 .stage-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 10px; }
 .stage-help { margin-left: auto; text-decoration: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--muted); }
+.landscape.ls-updating svg { opacity: .45; transition: opacity var(--t-med, .2s); }
+.ls-status { margin: 0 0 4px; color: var(--accent-strong); }

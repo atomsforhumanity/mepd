@@ -3,7 +3,7 @@
 // constant feed, and read: how much of the target forms, which barriers
 // control it (degree of rate control: lower these), which species are
 // traps, where the material flows, and how it all moves with temperature.
-import { html, useMemo, useState } from '../lib.js';
+import { html, useEffect, useMemo, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { set, state, useStore } from '../store.js';
 import { depictUrl, isSpecies, variantScope } from '../util.js';
@@ -124,6 +124,42 @@ function defaultMixture() {
   return Object.entries(c).map(([id, n]) => ({ id, c: n, held: false }));
 }
 
+// ------------------------------------------------------------ shared run
+// The settings a run is made from (the form's, kept in the store as a draft
+// while you edit, so the Landscape can follow them), and one way to run them:
+// whichever view runs it, both show the same result.
+const SETTING_KEYS = ['mix', 'T', 'tVal', 'tUnit', 'target', 'what', 'unverified', 'free', 'sweepOn', 'tLo', 'tHi', 'net', 'cmp'];
+export const settingsOf = (o) => Object.fromEntries(SETTING_KEYS.map((k) => [k, o?.[k] ?? null]));
+export const settingsKey = (o) => JSON.stringify(settingsOf(o));
+
+// What the kinetics are built from: steps (their TS energy, checked or not), reactions, species energies.
+export function networkKey(ws) {
+  const parts = [];
+  for (const e of Object.values(ws?.edges || {})) {
+    const o = e.origin || {};
+    parts.push(`${e.id}:${o.ts_energy_hartree ?? ''}:${o.barrier_kcal ?? ''}:${o.barrier_verified ?? ''}:${o.proposed ? 1 : 0}`);
+  }
+  for (const r of Object.values(ws?.reactions || {})) parts.push(`${r.id}:${r.edge || ''}`);
+  for (const st of Object.values(ws?.structures || {})) if (st.energy != null) parts.push(`${st.id}:${st.energy}:${st.level?.key || ''}`);
+  parts.sort();
+  let h = 5381;
+  for (const c of parts.join('|')) h = ((h * 33) ^ c.charCodeAt(0)) >>> 0;
+  return `${parts.length}:${h}`;
+}
+
+export async function runKineticsWith(cfg, over = {}) {
+  const c = { ...settingsOf(cfg), ...over };
+  const sweep = c.sweepOn ? Array.from({ length: 9 }, (_, k) => c.tLo + ((c.tHi - c.tLo) * k) / 8) : [];
+  const out = await attempt(() => api.post('/api/kinetics', {
+    initial: Object.fromEntries(c.mix.map((m) => [m.id, m.c])), held: c.mix.filter((m) => m.held).map((m) => m.id),
+    temperature: c.T, time_s: c.tVal * UNITS[c.tUnit], target: c.target || null, include_unverified: c.unverified,
+    control: !!c.target, control_what: c.what, sweep, free_energy: c.free,
+    network: c.net && !c.cmp ? c.net : null, compare: c.net && c.cmp ? c.net : null, compare_parent: c.cmp === 'parent' }));
+  const res = out ? { ...out, tUnit: c.tUnit } : state.kinetics?.res || null;
+  set({ kinetics: { ...c, res, netKey: networkKey(state.workspace) } });
+  return res;
+}
+
 // ------------------------------------------------------------ view
 export function KineticsView() {
   const structures = useStore((s) => s.workspace.structures);
@@ -154,21 +190,15 @@ export function KineticsView() {
   const [sweepOn, setSweepOn] = useState(saved.sweepOn ?? true);
   const [tLo, setTLo] = useState(saved.tLo ?? 250);
   const [tHi, setTHi] = useState(saved.tHi ?? 650);
-  const [res, setRes] = useState(saved.res || null);
+  // One result for this view and the Landscape (which re-runs it when the settings or the network change).
+  const res = useStore((s) => s.kinetics?.res || null);
   const [busy, setBusy] = useState(false);
+  const draft = { mix, T, tVal, tUnit, target, what, unverified, free, sweepOn, tLo, tHi, net, cmp };
+  useEffect(() => { set({ kineticsDraft: settingsOf(draft) }); }, [settingsKey(draft)]);
   const run = async (over = {}) => {
-    const unv = over.unverified ?? unverified;
     setBusy(true);
-    const sweep = sweepOn ? Array.from({ length: 9 }, (_, k) => tLo + ((tHi - tLo) * k) / 8) : [];
-    const out = await attempt(() => api.post('/api/kinetics', {
-      initial: Object.fromEntries(mix.map((m) => [m.id, m.c])), held: mix.filter((m) => m.held).map((m) => m.id),
-      temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unv,
-      control: !!target, control_what: what, sweep, free_energy: free,
-      network: net && !cmp ? net : null, compare: net && cmp ? net : null, compare_parent: cmp === 'parent' }));
+    await runKineticsWith(draft, over);
     setBusy(false);
-    const shown = out ? { ...out, tUnit } : res;
-    setRes(shown);
-    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified: unv, free, sweepOn, tLo, tHi, res: shown, net, cmp } });
   };
   const openReaction = (rid) => set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: rid } });
 

@@ -5,8 +5,9 @@
 // colour the barrier's band. Everything else the network holds is one count.
 // Energies are the ones the kinetics used (free or electronic, as it says),
 // relative to the separated molecules; nothing is drawn that was not computed.
-import { html, useMemo } from '../lib.js';
+import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { openReaction, set, state, useStore } from '../store.js';
+import { networkKey, runKineticsWith, settingsKey } from './Kinetics.js';
 
 const W = 960, H = 440, PAD = { l: 64, r: 30, t: 30, b: 46 };
 const band = (v) => (v < 10 ? 'var(--chart-3)' : v < 20 ? 'var(--chart-4)' : 'var(--chart-5)');
@@ -100,9 +101,30 @@ function layout(tree) {
 
 export function LandscapeView() {
   const res = useStore((s) => s.kinetics?.res || null);
+  const kin = useStore((s) => s.kinetics || null);
+  const draft = useStore((s) => s.kineticsDraft || null);
   const last = useStore((s) => s.reactionContext?.edgeId || null);   // the route opened last: marked on return
   const ws = useStore((s) => s.workspace);
-  const tree = useMemo(() => (res ? buildTree(res, ws) : null), [res, ws]);
+  const tree = useMemo(() => (res && !res.compare ? buildTree(res, ws) : null), [res, ws]);
+  // Follow Kinetics: when its settings (as now in its form) or the network (steps found, moved, checked;
+  // energies) differ from what this was drawn from, run them again -- at most every 10 s while a run grows it.
+  const netKey = useMemo(() => networkKey(ws), [ws]);
+  const settings = draft || kin;
+  const stale = !!settings?.mix?.length && !settings.cmp
+    && (!kin?.res || settingsKey(settings) !== settingsKey(kin) || netKey !== kin.netKey);
+  const [updating, setUpdating] = useState(false);
+  const lastRun = useRef(0);
+  useEffect(() => {
+    if (!stale || updating) return undefined;
+    const wait = Math.max(300, 10000 - (Date.now() - lastRun.current));
+    const t = setTimeout(async () => {
+      setUpdating(true);
+      lastRun.current = Date.now();
+      try { await runKineticsWith(settings); } finally { setUpdating(false); }
+    }, wait);
+    return () => clearTimeout(t);
+  }, [stale, updating, netKey, settingsKey(settings || {})]);
+  if ((!res || !tree) && updating) return html`<div class="landscape-empty"><p class="muted">Running the kinetics…</p></div>`;
   if (!res || !tree) {
     return html`<div class="landscape-empty">
       <h3>The routes that matter</h3>
@@ -126,7 +148,9 @@ export function LandscapeView() {
     return v >= 0.005 ? `${Math.round(v * 100)}%` : '~0%';
   };
   const basis = res.energies === 'free' ? 'free energy' : 'energy';
-  return html`<div class="landscape">
+  const startNames = (res.species || []).filter((x) => x.c0 > 0).map((x) => x.name).join(' + ');
+  return html`<div class=${`landscape ${updating ? 'ls-updating' : ''}`}>
+    ${(updating || stale) && html`<p class="small ls-status">${updating ? 'Updating to what Kinetics has now…' : 'Kinetics changed: updating shortly…'}</p>`}
     <svg viewBox=${`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Energy diagram of the routes that carry material in the last kinetics run">
       ${ticks.map((t) => html`<g><line x1=${PAD.l} x2=${W - PAD.r} y1=${Y(t)} y2=${Y(t)} class=${t === 0 ? 'ls-zero' : 'ls-grid'} />
         <text x=${PAD.l - 8} y=${Y(t) + 4} class="ls-tick">${t > 0 ? '+' : ''}${t}</text></g>`)}
@@ -146,6 +170,6 @@ export function LandscapeView() {
         ${share(n) && html`<text x=${n.x} y=${n.y + 38} class="ls-share">${share(n)}</text>`}
       </g>`)}
     </svg>
-    <p class="small muted ls-foot">relative to the start · ${res.temperature} K · ${tree.nodes.length - 1} step${tree.nodes.length === 2 ? '' : 's'} shown${tree.hidden ? ` · ${tree.hidden} carry almost nothing` : ''} · width = how much went that way</p>
+    <p class="small muted ls-foot">from ${startNames} · relative to the start · ${res.temperature} K · ${tree.nodes.length - 1} step${tree.nodes.length === 2 ? '' : 's'} shown${tree.hidden ? ` · ${tree.hidden} carry almost nothing` : ''} · width = how much went that way</p>
   </div>`;
 }

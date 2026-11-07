@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web: the Landscape follows Kinetics.** It used to draw the last Kinetics run and stay there: a mixture or temperature changed in the Kinetics form without Run, or a network growing (steps found, moved to their real pair, checked), left it showing an older answer with no sign. Now both views share one run, and the Landscape runs the kinetics again by itself when Kinetics' current settings or the network differ from what it drew (at most every 10 s while a run grows the network), the old diagram greyed meanwhile; its footer names the starting mixture.
+
 - **A running expansion's step whose IRC joins other species goes to them.** The explorer reports a step under the pair it searched before its IRC is checked; when the IRC's ends (read by molecular graph) are other species, the step leaves that pair's edge, saying where its IRC runs, and joins the edge of the two species it does connect (barriers from its TS's energy) once the run has both. Before, it stayed on the searched edge as unverified: the Wittig run's "ylide + acetone -> phosphine oxide + isobutylene" carried the oxaphosphetane's ring-opening TS (1.1 kcal/mol), the reaction page played that, and kinetics including unverified barriers used it.
 
 - **Explorer (async): a generator's proposal job reserves no more workers than it runs.** With `n_seeds` set, the reactor runs that many trajectories at a time, but its job held `parallel` (= `--workers`) slots: 4 MD runs with 10 workers showed 10/10 busy and kept the other 6 from anything else.
