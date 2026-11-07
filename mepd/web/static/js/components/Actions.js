@@ -48,7 +48,7 @@ export function ActForm({ title, summary, why, onClose, children }) {
   </div>`;
 }
 import { Why } from './Why.js';
-import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
+import { isStaged, ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { conformerLabel, conformerRows, isComplex, isTs } from '../util.js';
 import { ComplexMethodForm, memberCounts } from './ComplexBuild.js';
 
@@ -291,6 +291,9 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
     </div>`;
   }
   const formSchema = withoutFields(op.schema, Object.keys(fixed || {}));
+  // An operation in stages (network expansion): its choices are the card itself, not folded settings.
+  const staged = isStaged(formSchema);
+  const selQmmm = (sel.structures || []).some((id) => ws.structures?.[id]?.qmmm);
   // The form sees the fixed values too, so fields that depend on them show or hide.
   const formValues = { ...values, ...(fixed || {}) };
   // The calculation as one sentence (after Spartan's and WebMO's set-up
@@ -308,9 +311,11 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
   const opBody = html`
         <div class="op-body">
           <p class="calc-sentence"><span class="cs-verb">${op.title}</span> ${what} at <span class="cs-pick" title="Level of theory: change it under Settings below">${levels[profile ?? '']?.label ?? 'default'}</span>${usualTxt && html`<span class="cs-usual" title=${`Median of ${took.length} earlier run${took.length > 1 ? 's' : ''} here`}>usually ${usualTxt}</span>`}</p>
+          ${staged && html`<${ParamForm} op=${op.key} schema=${formSchema} values=${formValues} context=${{ qmmm: selQmmm }}
+            onChange=${(v) => setValues(Object.fromEntries(Object.entries(v).filter(([k]) => !(k in (fixed || {})))))} />`}
           <details class="cs-settings" open=${showAll} onToggle=${(e) => { setShowAll(e.target.open); prefs.set('cardSettingsOpen', e.target.open); }}>
-            <summary>Settings${nChanged ? html` <span class="badge accent">${nChanged} changed</span>` : ''}</summary>
-          <${ParamForm} op=${op.key} schema=${formSchema} values=${formValues} onChange=${(v) => setValues(Object.fromEntries(Object.entries(v).filter(([k]) => !(k in (fixed || {})))))} />
+            <summary>${staged ? 'Level of theory' : html`Settings${nChanged ? html` <span class="badge accent">${nChanged} changed</span>` : ''}`}</summary>
+          ${!staged && html`<${ParamForm} op=${op.key} schema=${formSchema} values=${formValues} onChange=${(v) => setValues(Object.fromEntries(Object.entries(v).filter(([k]) => !(k in (fixed || {})))))} />`}
           <${ProfilePicker} value=${profile} onChange=${setProfile} />
           </details>
           ${showConfs && html`<${EndpointConformers} ends=${ends} value=${confs} onChange=${setConfs} />`}

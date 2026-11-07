@@ -349,3 +349,23 @@
 /* Landscape: the route opened last, marked on the way back */
 .ls-route.last .ls-path { filter: drop-shadow(0 0 5px var(--accent)); opacity: 1; }
 .ls-route.last .ls-ts { text-decoration: underline; }
+
+/* A staged operation (network expansion): numbered stages, each a choice of cards */
+.param-form.staged { display: grid; gap: 14px; }
+.stage { display: grid; gap: 8px; }
+.stage header { display: flex; align-items: baseline; gap: 8px; }
+.stage header b { font-size: var(--fs-md, 15px); color: var(--heading); }
+.stage-n { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; background: var(--accent-soft); color: var(--accent-strong); font: 700 12px var(--font-ui); }
+.stage-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 6px; }
+.stage-card { display: grid; gap: 2px; align-content: start; text-align: left; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius);
+  background: var(--panel); color: var(--text); font: inherit; cursor: pointer; box-shadow: var(--key-shadow, none); }
+.stage-card b { font-size: 13px; color: var(--heading); }
+.stage-card span { font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.stage-card:hover:not(:disabled) { border-color: var(--accent); }
+.stage-card.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.stage-card.on b { color: var(--accent-strong); }
+.stage-card.blocked { opacity: .5; cursor: not-allowed; }
+.stage-card i { font-style: normal; font-size: 11px; color: var(--warn); }
+.stage-note { margin: 0; color: var(--warn); }
+.stage-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 10px; }
+.stage-help { margin-left: auto; text-decoration: none; padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--muted); }

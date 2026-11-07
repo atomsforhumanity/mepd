@@ -16,6 +16,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: network expansion in four stages, each chosen on its own.** The card's fixed presets (Bond rules, CREST msreact, "Reactor, live", Nanoreactor) are gone: **Grow** (bond enumeration, CREST msreact, collision MD, Reactor MD, the nanoreactor on QM/MM), **Connect** (Fast, path search, no TSs, plus channel sampling), **Steer** (within reach, where material flows, energy window) and **Run** (live queue or rounds) are chosen as cards, with the combinations the explorer cannot run greyed out with the reason; a stage moves to the nearest allowed choice when another rules it out, and says so. The grower is always named on the command line (the CLI's 'auto' picked an MD generator under access steering, so "Bond rules" with access steering ran collisions). A manual page (/manual/network-expansion) and the "?" entries explain each choice.
+- **Explorer (async): the reactor's products join the network after every MD batch.** Each batch's products are minimized and their pairs queued for TS searches at once, while the species' next batch runs; batches, seeds and the convergence rule are unchanged (`reactor_generator.reactor_batch`, a generator's optional `propose_batch`). Before, nothing grew until all of a species' batches had converged. A species interrupted mid-batches restarts its batches on resume.
+
 - **Web: a reaction page goes back where it was opened from.** Its breadcrumb names that page (Landscape, Kinetics, Reactions, a live network, Explore) and returns there, as does Esc (now at once: the page's own selection no longer takes a first press); the page's address keeps it (`?from=`), so reload and Back do too. Back on the Landscape, the route opened last is marked.
 
 - **Network expansions: only steps whose IRC joins their two species count; the reaction page plays the step you opened; species no Lewis structure fits are drawn.**
