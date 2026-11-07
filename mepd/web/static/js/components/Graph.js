@@ -3,8 +3,8 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
-import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, playgroundFitMargins, reactionOfEdge, variantScope } from '../util.js';
+import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore, openReaction } from '../store.js';
+import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
 import { VariantTools } from './Variants.js';
@@ -28,6 +28,7 @@ function stylesheet() {
       'text-valign': 'bottom', 'text-margin-y': 6 * L, 'text-wrap': 'ellipsis', 'text-max-width': 140 * L,
       'text-background-color': css('--bg'), 'text-background-opacity': 0.85, 'text-background-padding': 2,
     } },
+    { selector: 'node[fw]', style: { width: 'data(fw)', height: 'data(fh)' } },
     { selector: 'node[?noimg]', style: { 'background-image': 'none', label: 'data(label)', 'text-valign': 'center', 'text-margin-y': 0 } },
     { selector: 'node:selected', style: { 'border-width': 3, 'border-color': css('--accent') } },
     { selector: 'node.connect-source', style: { 'border-width': 3, 'border-style': 'dashed', 'border-color': css('--accent') } },
@@ -41,6 +42,11 @@ function stylesheet() {
     { selector: 'edge[status = "done"]', style: { 'line-style': 'solid', 'line-color': css('--ok'), 'target-arrow-color': css('--ok') } },
     // Only a multi-step route joins the two ends (no single step does): not drawn as a step.
     { selector: 'edge[status = "done"][route = "yes"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [2, 5] } },
+    // Barriers on one colour scale; the label takes the edge's colour.
+    { selector: 'edge[status = "done"][band = "low"]', style: { 'line-color': css('--chart-3'), 'target-arrow-color': css('--chart-3'), color: css('--chart-3'), width: 3.2 } },
+    { selector: 'edge[status = "done"][band = "mid"]', style: { 'line-color': css('--chart-4'), 'target-arrow-color': css('--chart-4'), color: css('--chart-4'), width: 2.4 } },
+    { selector: 'edge[status = "done"][band = "high"]', style: { 'line-color': css('--chart-5'), 'target-arrow-color': css('--chart-5'), color: css('--chart-5'), width: 1.6, opacity: 0.75 } },
+    { selector: 'edge[fx]', style: { width: 'data(fx)' } },
     { selector: 'edge[status = "running"]', style: { 'line-style': 'solid', 'line-color': css('--accent'), 'target-arrow-color': css('--accent'), width: 3.5 } },
     { selector: 'edge[status = "queued"]', style: { 'line-color': css('--warn'), 'target-arrow-color': css('--warn') } },
     { selector: 'edge[status = "failed"]', style: { 'line-color': css('--danger'), 'target-arrow-color': css('--danger') } },
@@ -88,7 +94,7 @@ function fitCapped(c, padding = 70) {
 
 // The view fitted to the graph, as the layout in use wants it.
 function fitView(c) {
-  if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+  fitCapped(c);
 }
 
 // Fit everything into the canvas minus margins (px) kept free for overlays.
@@ -495,9 +501,12 @@ const REV = '~rev';
 function reverseEdge(e, st, source, target) {
   if (st.levels?.length > 1 || st.barrierRev == null || st.barrierFwd == null) return null;
   return { id: e.id + REV, of: e.id, source: target, target: source, status: edgeDrawStatus(st), label: st.barrierRev.toFixed(1),
-    runs: '', route: st.routeSteps ? 'yes' : '' };
+    runs: '', route: st.routeSteps ? 'yes' : '', band: barrierBand(st.barrierRev) };
 }
 const edgeOf = (el) => el.data('of') || el.id();
+// One energy scale everywhere (shell.css --chart-*): a barrier under 10 kcal/mol
+// reads green-teal, 10-20 amber, above 20 red. Width grows as the barrier falls.
+export const barrierBand = (v) => (v == null ? '' : v < 10 ? 'low' : v < 20 ? 'mid' : 'high');
 
 // Frame these edges: their reverse arrows, their ends, and a complex end's molecules.
 function fitToEdges(c, ids) {
@@ -537,6 +546,19 @@ function edgeLabel(e, st, reaction = null) {
   if (e.label && !/^Channel|IRC$/.test(e.label)) parts.unshift(e.label);
   return parts.join(' · ');
 }
+
+// Toolbar marks (24px strokes); each button's words are its tooltip.
+const svg = (d) => html`<svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+const TB = {
+  connect: svg(html`<circle cx="5" cy="12" r="2.6"/><circle cx="19" cy="12" r="2.6"/><path d="M8 12h8"/>`),
+  arrange: svg(html`<rect x="3" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><path d="M10 6.5h4v7.5"/>`),
+  tree: svg(html`<circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6c6 0 6 6 10 6M7 18c6 0 6-6 10-6"/>`),
+  fit: svg(html`<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>`),
+  all: svg(html`<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 3"/><path d="M9 12l2 2 4-4"/>`),
+  view: svg(html`<path d="M4 5h16l-6 7v6l-4 2v-8z"/>`),
+  conditions: svg(html`<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/>`),
+  del: svg(html`<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>`),
+};
 
 export function Graph() {
   const host = useRef(null);
@@ -639,10 +661,9 @@ export function Graph() {
       else select({ edges: [edgeOf(evt.target)] }, additive);
     });
     c.on('dbltap', 'edge', (evt) => {
-      // A reaction (or any) edge: open the calculation behind its barrier.
+      // A reaction: open its page (the path as a movie, its barriers).
       const edge = state.workspace.edges[edgeOf(evt.target)];
-      const job = edge && edgeStatus(edge, state.jobs).barrierJob;
-      if (job) openJob(job);
+      if (edge) openReaction(edge.id);
     });
     c.on('dbltap', 'node', (evt) => {
       const id = evt.target.id();
@@ -772,7 +793,7 @@ export function Graph() {
         ids.add(e.id);
         const st = edgeStatus(e, state.jobs);
         const data = { id: e.id, source, target, status: edgeDrawStatus(st), label: edgeLabel(e, st, reactionOfEdge(workspace, e.id)), runs: '',
-          route: st.routeSteps ? 'yes' : '' };
+          route: st.routeSteps ? 'yes' : '', band: st.levels?.length > 1 ? '' : barrierBand(st.barrierFwd ?? st.barrier) };
         let rev = reverseEdge(e, st, source, target);
         if (cond && !['running', 'queued'].includes(st.status)) {
           const info = edgeUnderSetup(e, state.jobs, cond);
@@ -785,7 +806,7 @@ export function Graph() {
         const cur = c.getElementById(e.id);
         if (cur.nonempty()) {
           if (cur.data('status') !== data.status || cur.data('label') !== data.label || cur.data('runs') !== data.runs
-            || cur.data('route') !== data.route) cur.data(data);
+            || cur.data('route') !== data.route || cur.data('band') !== data.band) cur.data(data);
         } else c.add({ group: 'edges', data });
         if (rev) {
           ids.add(rev.id);
@@ -793,7 +814,7 @@ export function Graph() {
           if (r.nonempty() && (r.data('source') !== rev.source || r.data('target') !== rev.target)) r.remove();
           const now = c.getElementById(rev.id);
           if (now.nonempty()) {
-            if (now.data('status') !== rev.status || now.data('label') !== rev.label || now.data('route') !== rev.route) now.data(rev);
+            if (now.data('status') !== rev.status || now.data('label') !== rev.label || now.data('route') !== rev.route || now.data('band') !== rev.band) now.data(rev);
           } else c.add({ group: 'edges', classes: 'rev', data: rev });
         }
       }
@@ -950,7 +971,7 @@ export function Graph() {
     })
       .on('layoutstop', () => {
         arranging.current = false;
-        if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+        fitCapped(c);
         savePositions(c);
       }).run();
   };
@@ -978,13 +999,13 @@ export function Graph() {
       name: 'preset', positions: (n) => pos[n.id()], animate: true, animationDuration: 450, fit: false,
     }).on('layoutstop', () => {
       arranging.current = false;
-      if (state.layout === 'playground') fitInto(c, playgroundFitMargins()); else fitCapped(c);
+      fitCapped(c);
       savePositions(c);
     }).run();
   };
   treeRef.current = treeLayout;
 
-  // Commands from outside the graph (the playground layout's bottom dock):
+  // Commands from outside the graph:
   // 'arrange', 'select-all', or {cmd: 'fit', margins: {l, t, r, b}} to fit
   // into the part of the canvas that floating controls leave free.
   useEffect(() => {
@@ -1038,6 +1059,41 @@ export function Graph() {
     window.addEventListener('mepd:graph', on);
     return () => window.removeEventListener('mepd:graph', on);
   }, []);
+  // After a kinetics run (Reactions › Kinetics): what carries the material is
+  // drawn bigger. Node area grows with the amount that passes through it,
+  // edge width with the step's net extent; both capped so nothing vanishes or swamps.
+  const kin = useStore((s) => s.kinetics?.res || null);
+  useEffect(() => {
+    const c = cy.current;
+    if (!c) return;
+    c.batch(() => {
+      c.nodes().removeData('fw fh');
+      c.edges().removeData('fx');
+      if (!kin?.steps?.length) return;
+      const through = {};
+      const edgeFlux = {};
+      for (const st of kin.steps) {
+        const x = Math.abs(st.extent || 0);
+        if (!st.edge || !x) continue;
+        edgeFlux[st.edge] = (edgeFlux[st.edge] || 0) + x;
+        const el = c.getElementById(st.edge);
+        if (el.empty()) continue;
+        for (const n of [el.source(), el.target()]) {
+          through[n.id()] = (through[n.id()] || 0) + x;
+          n.connectedEdges('.member').connectedNodes().forEach((m) => { if (m.id() !== n.id()) through[m.id()] = (through[m.id()] || 0) + x; });
+        }
+      }
+      for (const sp of kin.species || []) through[sp.id] = Math.max(through[sp.id] || 0, sp.c0 || 0);
+      const top = Math.max(1e-30, ...Object.values(through));
+      const etop = Math.max(1e-30, ...Object.values(edgeFlux));
+      const scale = (f) => Math.min(1.6, Math.max(0.6, 1.6 * Math.sqrt(f / top)));
+      c.nodes(':not(.cx)').forEach((n) => { const k = scale(through[n.id()] || 0); n.data({ fw: 96 * k, fh: 72 * k }); });
+      c.edges(':not(.member)').forEach((e) => {
+        const f = edgeFlux[e.data('of') || e.id()] || 0;
+        e.data('fx', Math.min(9, Math.max(1.2, 9 * Math.sqrt(f / etop))));
+      });
+    });
+  }, [kin, workspace, statusKey]);
   const empty = Object.keys(workspace.structures).length === 0;
 
   return html`
@@ -1047,25 +1103,26 @@ export function Graph() {
       onDrop=${(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); }}>
       <div class="graph" ref=${host}></div>
       <div class="graph-toolbar">
-        <button class=${`btn small ${connectMode ? 'primary' : 'ghost'}`} onClick=${() => set({ connectMode: !state.connectMode })}
-          title="Click a start structure, then an end structure, to draw an edge (C)">
-          ${connectMode ? 'Connecting… Esc to stop' : '＋ Connect'}</button>
-        <button class="btn small ghost" onClick=${layout} title="Auto-arrange the graph">Arrange</button>
-        <button class="btn small ghost phone-hide" onClick=${treeLayout}
-          title="Lay reactions out as a synthesis tree: each target on the right, the steps that make it to its left, building blocks at the far left">Tree</button>
-        <button class="btn small ghost" onClick=${() => fitCapped(cy.current)} title="Fit everything in view">Fit</button>
-        <button class="btn small ghost phone-hide" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
-          title="Select every structure shown (then delete, download, or run one calculation on all)">Select all</button>
-        <button class=${`btn small ${panel ? 'primary' : 'ghost'}`} onClick=${() => { setSetupPanel(false); setPanel(!panel); }}
-          title="Filter what the graph shows, and fold branches away">View${counts.shown < counts.total ? ` · ${counts.shown}/${counts.total}` : ''}</button>
-        <button class=${`btn small ${setupPanel || setup ? 'primary' : 'ghost'}`} onClick=${() => { setPanel(false); setSetupPanel(!setupPanel); }}
+        <button class=${`gt-btn ${connectMode ? 'on' : ''}`} onClick=${() => set({ connectMode: !state.connectMode })}
+          title=${connectMode ? 'Connecting: click the start, then the end (Esc to stop)' : 'Connect two structures (C)'} aria-label="Connect">
+          ${TB.connect}${connectMode && html`<span>Esc to stop</span>`}</button>
+        <button class="gt-btn" onClick=${layout} title="Auto-arrange the graph" aria-label="Arrange">${TB.arrange}</button>
+        <button class="gt-btn phone-hide" onClick=${treeLayout} aria-label="Tree"
+          title="Lay reactions out as a synthesis tree: each target on the right, the steps that make it to its left, building blocks at the far left">${TB.tree}</button>
+        <button class="gt-btn" onClick=${() => fitCapped(cy.current)} title="Fit everything in view" aria-label="Fit">${TB.fit}</button>
+        <button class="gt-btn phone-hide" onClick=${() => select({ structures: cy.current.nodes().filter((n) => !n.hasClass('vhidden') && !n.data('cx')).map((n) => n.id()) })}
+          aria-label="Select all" title="Select every structure shown (then delete, download, or run one calculation on all)">${TB.all}</button>
+        <span class="gt-sep"></span>
+        <button class=${`gt-btn ${panel ? 'on' : ''}`} onClick=${() => { setSetupPanel(false); setPanel(!panel); }} aria-label="View"
+          title="Filter what the graph shows, and fold branches away">${TB.view}${counts.shown < counts.total && html`<span>${counts.shown}/${counts.total}</span>`}</button>
+        <button class=${`gt-btn ${setupPanel || setup ? 'on' : ''}`} onClick=${() => { setPanel(false); setSetupPanel(!setupPanel); }} aria-label="Conditions"
           title="Experimental conditions: solvent, temperature, reaction time. See which steps run, and predict the outcome.">
-          ${setup ? `Conditions · ${setup.name}` : 'Conditions'}</button>
+          ${TB.conditions}${setup && html`<span>${setup.name}</span>`}</button>
         <${NetworkPicker} workspace=${workspace} network=${network} />
-        ${howToHidden && html`<button class="btn small ghost" title="Show 'How it works'" aria-label="How it works"
+        ${howToHidden && html`<button class="gt-btn" title="Show 'How it works'" aria-label="How it works"
           onClick=${() => { prefs.set('hideHowTo', false); set({ howToHidden: false }); }}>?</button>`}
-        ${nSelected > 0 && html`<button class="btn small ghost danger-text" onClick=${deleteSelection}
-          title="Delete the selected structures and edges (Delete key)">Delete ${nSelected}</button>`}
+        ${nSelected > 0 && html`<button class="gt-btn danger-text" onClick=${deleteSelection} aria-label=${`Delete ${nSelected}`}
+          title="Delete the selected structures and edges (Delete key)">${TB.del}<span>${nSelected}</span></button>`}
       </div>
       ${!empty && setup && html`<div class="legend" title=${`Under ${setup.name}: barrier ΔE‡ (kcal/mol) and half-life; (gas) = no barrier in this solvent yet`}>
         <span><i class="lg done"></i>runs in ${setup.time_s >= 86400 ? `${+(setup.time_s / 86400).toFixed(1)} d` : setup.time_s >= 3600 ? `${+(setup.time_s / 3600).toFixed(1)} h` : `${Math.round(setup.time_s / 60)} min`}</span>
@@ -1073,12 +1130,9 @@ export function Graph() {
         <span><i class="lg idle"></i>too slow / not computed</span>
       </div>`}
       ${!empty && !setup && html`<div class="legend" title="Edge colours. Labels are the lowest barrier ΔE‡ in kcal/mol, IRC-verified; when both directions are known, each direction is its own arrow with its own barrier. No TS: searched, but no transition state joins the two ends (click it for the path's highest point). Dotted: no single step joins the two, only a route through intermediates (its highest step).">
+        <span class="lg-scale"><i class="lg-band low"></i><i class="lg-band mid"></i><i class="lg-band high"></i>${'barrier <10 · 10–20 · >20'}</span>
         <span><i class="lg idle"></i>not computed</span>
-        <span><i class="lg running"></i>running</span>
-        <span><i class="lg done"></i>barrier, kcal/mol</span>
-        <span><i class="lg nots"></i>no TS found</span>
-        <span><i class="lg route"></i>multi-step route</span>
-        <span><i class="lg failed"></i>failed</span>
+        <span><i class="lg route"></i>route</span>
       </div>`}
       ${setupPanel && html`<${SetupPanel} onClose=${() => setSetupPanel(false)} />`}
       ${panel && html`<${ViewPanel} view=${view} setView=${setView} collapsed=${collapsed} setCollapsed=${setCollapsed}

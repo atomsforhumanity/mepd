@@ -7,9 +7,13 @@ let go, in Langevin dynamics on GFN2-xTB at a moderate temperature. Here one
 structure gets `n_collisions` such pulls, each from its own start, on pairs
 picked the way the Reactor picks them (atoms of two molecules; or of one
 molecule at least `min_hops` bonds apart -- a ring closing, an H moving
-across). The pull supplies the energy a reaction needs where it is needed,
-so a unimolecular decomposition happens without heating the whole molecule
-to thousands of K (the piston nanoreactor rarely makes those: Chang, Meisner,
+across). Between two molecules the whole molecules are pushed together
+instead, from a random orientation of the partner: the capped force along the
+line between the two atoms, spread over each molecule by mass. Which atoms
+meet, and what forms, is up to the orientation and the dynamics, a concerted
+cycloaddition included. The pull supplies the energy a reaction needs where
+it is needed, so a unimolecular decomposition happens without heating the
+whole molecule to thousands of K (the piston nanoreactor rarely makes those: Chang, Meisner,
 Xu, Martinez, J. Phys. Chem. A 127, 9580 (2023)).
 
 After the pull and a free run, the structure is quenched; if its bond graph
@@ -85,40 +89,6 @@ def collision_moves(symbols, xyz_A, min_hops: int = 2) -> list[tuple[int, int, O
     return out
 
 
-_VALENCE = {"C": 4, "N": 3, "O": 2, "S": 2, "P": 3, "B": 3, "Si": 4}
-
-
-def cycloaddition_moves(symbols, xyz_A) -> list:
-    """Two pulls at once between two molecules, [4+2] style: the ends of a
-    conjugated diene (three bonds apart through unsaturated atoms) of one onto
-    the two atoms of a pi bond of the other (a Diels-Alder or hetero-Diels-
-    Alder). One pull alone makes a single bond that falls back; a concerted
-    cycloaddition needs both. Returns (i, j, None, (k, l)): pull i-j and k-l."""
-    from mepd.discovery.free_energy import molecules
-
-    xyz_A = np.asarray(xyz_A)
-    bonds = _bonds(symbols, xyz_A)
-    nb = {a: set() for a in range(len(symbols))}
-    for a, b in bonds:
-        nb[a].add(b)
-        nb[b].add(a)
-    unsat = {a for a in nb if symbols[a] in _VALENCE and len(nb[a]) < _VALENCE[symbols[a]]}
-    sub = frozenset((a, b) for a, b in bonds if a in unsat and b in unsat)
-    hops = _hops(len(symbols), sub)
-    mols = molecules(symbols, xyz_A, scale=1.3)
-    out = []
-    for A in mols:
-        for B in mols:
-            if A is B:
-                continue
-            dienes = [(a, b) for a in A for b in A if a < b and a in unsat and b in unsat and hops[a, b] == 3]
-            enes = [(a, b) for a in B for b in B if a < b and ((a, b) in sub or (b, a) in sub)]
-            for d1, d2 in dienes:
-                for e1, e2 in enes:
-                    out += [(d1, e1, None, (d2, e2)), (d1, e2, None, (d2, e1))]
-    return out
-
-
 def _tiers(symbols, xyz_A, moves) -> list[list]:
     """Moves in the order Collide tries them: (1) two heavy atoms of two
     molecules -- the Reactor's own choice when there are several molecules
@@ -133,18 +103,14 @@ def _tiers(symbols, xyz_A, moves) -> list[list]:
         for a in group:
             mol[a] = k
     heavy = lambda a: symbols[a] != "H"
-    tiers = [[], [], [], [], []]
-    for m in moves:
-        i, j, push = m[:3]
-        if len(m) > 3 and m[3] is not None:
-            tiers[0].append(m)        # cycloadditions first: twice, each from its own random orientation
-        elif push is not None:
-            tiers[4].append(m)
+    tiers = [[], [], [], []]
+    for i, j, push in moves:
+        if push is not None:
+            tiers[3].append((i, j, push))
         elif heavy(i) and heavy(j):
-            tiers[1 if mol[i] != mol[j] else 2].append(m)
+            tiers[0 if mol[i] != mol[j] else 1].append((i, j, push))
         else:
-            tiers[3].append(m)
-    tiers[0] = tiers[0] * 2
+            tiers[2].append((i, j, push))
     return tiers
 
 
@@ -173,19 +139,22 @@ def _turn_partner(symbols, xyz_A, atom, rng) -> np.ndarray:
     return xyz
 
 
-def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None,
-             pull2=None):
-    """One collision: pull `pair` (and `pull2`) together, and drag the bond
-    `push` apart until it lets go; between two molecules, from a random
-    orientation of the partner. The quenched end geometry (Angstrom), or the
-    error if the dynamics failed."""
+def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None):
+    """One collision: pull `pair` together, and drag the bond `push` apart
+    until it lets go; between two molecules, push the whole molecules together
+    along the pair's direction, from a random orientation of the partner. The quenched end geometry (Angstrom),
+    or the error if the dynamics failed."""
     from mepd.discovery.free_energy import molecules
     from mepd.discovery.langevin import MAX_PULL, LangevinMD, pull_pairs
+    from mepd.discovery.nanoreactor import _masses
 
-    pulls = [tuple(pair)] + ([tuple(pull2)] if pull2 is not None else [])
+    pulls = [tuple(pair)]
     mols = molecules(symbols, np.asarray(xyz_A), scale=1.3)
-    if next(m for m in mols if pair[0] in m) is not next(m for m in mols if pair[1] in m):
+    A, B = (next(m for m in mols if a in m) for a in pair)
+    if A is not B:
         xyz_A = _turn_partner(symbols, xyz_A, pair[1], np.random.default_rng(seed + 7919))
+        pulls = [(*pair, A, B)]
+    masses = _masses(symbols)
     pos = np.asarray(xyz_A, dtype=float) / BOHR
     pos = pos - pos.mean(axis=0)
     k = float(k_kcal) / KCAL * BOHR * BOHR
@@ -199,7 +168,7 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
     def bias(x):
         if not pulling[0]:
             return np.zeros_like(x)
-        g = pull_pairs(x, pulls, k)
+        g = pull_pairs(x, pulls, k, masses)
         if push is not None:
             a, b = push
             d = x[a] - x[b]
@@ -236,13 +205,13 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
     symbols = [str(s) for s in structure.symbols]
     xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
     start = _bonds(symbols, xyz)
-    moves = collision_moves(symbols, xyz, min_hops) + cycloaddition_moves(symbols, xyz)
+    moves = collision_moves(symbols, xyz, min_hops)
     if not moves:
         print("collide: no pair to pull (one or two atoms).", flush=True)
         return []
     rng = np.random.default_rng(seed)
-    # one move from each kind in turn (cycloadditions, between molecules, within one, with an H, pull and
-    # push), each kind in random order: a capped n_collisions samples every kind, not just the first
+    # one move from each kind in turn (between molecules, within one, with an H, pull and push), each kind
+    # in random order: a capped n_collisions samples every kind, not just the first
     tiers = [[t[i] for i in rng.permutation(len(t))] for t in _tiers(symbols, xyz, moves)]
     order = [t[r] for r in range(max(map(len, tiers))) for t in tiers if r < len(t)]
     # 0 (default): every move once, at most AUTO_MAX (small molecules: all of them, a fraction of a second each)
@@ -250,7 +219,7 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
     jobs = [(order[m % len(order)], int(seed) + m) for m in range(max(n, 1))]
     width = max(1, int(parallel) or available_cpus())
     args = [(symbols, xyz, int(structure.charge), int(structure.multiplicity), (mv[0], mv[1]), float(temperature),
-             float(pull_fs), float(relax_fs), float(k), s, mv[2], mv[3] if len(mv) > 3 else None) for mv, s in jobs]
+             float(pull_fs), float(relax_fs), float(k), s, mv[2]) for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
     from mepd.discovery.nanoreactor_generator import stereo_key
 
@@ -299,7 +268,7 @@ def _run_in_processes(args: list, width: int) -> list:
 
     def run(idx):
         payload = [[a[0], np.asarray(a[1]).tolist(), *a[2:4], list(a[4]), *a[5:10],
-                    list(a[10]) if a[10] is not None else None, list(a[11]) if a[11] is not None else None]
+                    list(a[10]) if a[10] is not None else None]
                    for a in (args[i] for i in idx)]
         r = subprocess.run([sys.executable, "-c", "from mepd.discovery.collide_generator import _worker; _worker()"],
                            input=json.dumps(payload), capture_output=True, text=True,
@@ -326,8 +295,7 @@ def _worker() -> None:
     jobs = json.loads(sys.stdin.read())
     ends = []
     for j in jobs:
-        sym, xyz, q, m, pair, T, pf, rf, k, seed, push, pull2 = j
-        e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None,
-                     tuple(pull2) if pull2 else None)
+        sym, xyz, q, m, pair, T, pf, rf, k, seed, push = j
+        e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None)
         ends.append(e if e is None or isinstance(e, str) else np.asarray(e).tolist())
     print(json.dumps(ends))

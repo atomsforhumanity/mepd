@@ -12,5 +12,7 @@ change** at the bottom of the page.
 
 - [Orbitals](orbitals): the whole system's HOMO and LUMO, and each
   molecule's own orbitals and how they overlap (fragment orbitals).
+- [Network expansion](network-expansion): growing a reaction network in four
+  stages -- grow, connect, steer, run -- and what each choice does.
 - [Transition-state conformers](ts-conformers): sampling a TS's other
   arrangements around its reacting core, held fixed, and TS-optimizing each.

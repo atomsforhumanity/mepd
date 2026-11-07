@@ -550,6 +550,30 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                      or (j["summary"].get("barrier_kcal") is not None and "ts_energy_hartree" not in j["summary"])
                      # ...or from before the reverse barrier was kept (Explore labels both directions)
                      or (j["summary"].get("barrier_kcal") is not None and "reverse_barrier_kcal" not in j["summary"]))]
+        # Expansion steps adopted before their TS's energy was kept on the edge (kinetics left
+        # them out as "TS energy not known"): adopt the finished run's steps again.
+        try:
+            for jid in {o.get("job") for e in manager.ws.snapshot()["edges"].values()
+                        if (o := e.get("origin") or {}).get("has_ts") and o.get("ts_energy_hartree") is None
+                        and o.get("barrier_kcal") is not None}:
+                job = manager.jobs.get(jid)
+                if not job or job["op"] != "graph-enumeration" or job["status"] in ("running", "queued"):
+                    continue
+                changed = backfill_expansion_ts(manager, job)
+                changed |= manager._adopt_seed_energy(job)
+                if changed:
+                    manager.bus.publish("workspace", manager.ws.snapshot())
+            for job in [j for j in manager.jobs.values() if j["op"] == "graph-enumeration"
+                        and j["status"] not in ("running", "queued")]:
+                changed = False if job.get("seed_adopted") else manager._adopt_seed_energy(job)
+                # Steps adopted before each was checked against its IRC (one that ran elsewhere
+                # counted, with a TS far below both species): checked once, the edges set again.
+                if not job.get("steps_checked"):
+                    changed |= manager.recheck_expansion_steps(job)
+                if changed:
+                    manager.bus.publish("workspace", manager.ws.snapshot())
+        except Exception:
+            logging.getLogger(__name__).exception("could not give expansion steps their TS energies")
         # Edges added from a result's entry before their TS's energy was kept.
         no_ts = [(eid, o) for eid, e in manager.ws.snapshot()["edges"].items()
                  if (o := e.get("origin") or {}).get("barrier_kcal") is not None and not o.get("qmmm_ts")
@@ -570,7 +594,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                         e_ts = None
                     with manager.ws._lock:
                         e = manager.ws._data["edges"].get(eid)
-                        if e is not None:
+                        # Never a known energy overwritten by "not found" (e.g. set from the run's step events).
+                        if e is not None and (e_ts is not None or "ts_energy_hartree" not in (e.get("origin") or {})):
                             e.setdefault("origin", {})["ts_energy_hartree"] = e_ts
                             manager.ws._save()
             asyncio.get_running_loop().create_task(redo())
@@ -2641,8 +2666,10 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def sandbox_command(sid: str, body: dict):
         """pull {atom, target [x,y,z] A, k kcal/mol/A^2} | release {atom} | release_all |
         radius {value A} | temperature {value K} | pause {value} |
-        piston {value: on/off, period_ps, compress (narrow/wide), duty (wide share of a cycle)}."""
-        if body.get("op") not in ("pull", "release", "release_all", "radius", "temperature", "pause", "piston"):
+        piston {value: on/off, period_ps, compress (narrow/wide), duty (wide share of a cycle)} |
+        collide (the network generator's push: two molecules together as wholes) | auto_collide {value}."""
+        if body.get("op") not in ("pull", "release", "release_all", "radius", "temperature", "pause", "piston",
+                                  "collide", "auto_collide"):
             raise WorkspaceError(f"unknown command {body.get('op')!r}")
         try:
             _sandbox(sid).command(body)
@@ -2821,6 +2848,116 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         await sessions.open(Path(body.path))
         return sessions.listing()
 
+    # ----------------------------------------------------------- examples
+    # Finished studies shipped with mepd (web/showcase): Home's Examples door.
+    # Opening one copies it into a new session of your own.
+    @app.get("/api/jobs/{jid}/species-graph/{sid}")
+    def species_graph(jid: str, sid: str):
+        """A network expansion's species drawn from its geometry (no SMILES fits it)."""
+        from mepd.web import live_network
+
+        if not sid.isdigit() or jid not in J().jobs:
+            raise HTTPException(404, "no such species")
+        svg = live_network.species_graph_svg(J().job_dir(jid), sid)
+        if svg is None:
+            raise HTTPException(404, "cannot draw it")
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=3600"})
+
+    @app.get("/api/jobs/{jid}/reactor-product/{run}/{event}")
+    def reactor_product(jid: str, run: str, event: int):
+        """A reactor event's product, drawn from the MD frame it formed in."""
+        from mepd.web import live_network
+
+        if jid not in J().jobs:
+            raise HTTPException(404, "no such calculation")
+        svg = live_network.reactor_product_svg(J().job_dir(jid), run, event)
+        if svg is None:
+            raise HTTPException(404, "cannot draw it")
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/api/edges/{eid}/step-path")
+    def edge_step_path(eid: str, start: Optional[str] = None):
+        """The path of the very step an expansion put on this edge (its own IRC, not the
+        run's lowest path), from `start` (a node id; default the edge's source) to the
+        other end, with energies measured from that node's energy: the TS's height is the
+        barrier kinetics uses (electronic)."""
+        from mepd.web import step_check
+
+        snap = W().snapshot()
+        edge = snap["edges"].get(eid)
+        if edge is None:
+            raise HTTPException(404, "no such edge")
+        o = edge.get("origin") or {}
+        job = J().jobs.get(o.get("job") or "")
+        if job is None or not o.get("label"):
+            raise HTTPException(404, "this edge has no step of its own")
+        if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
+            raise HTTPException(404, "No TS was found for this step: its barrier is the highest point of a path "
+                                     "between the two (an upper bound), so there is no path through a TS to play.")
+        got = step_check.path_frames(job, o["label"])
+        if got is None:
+            raise HTTPException(404, "Its IRC is not written yet.")
+        frames, energies = got
+        st = snap["structures"]
+        a, b = edge["source"], edge["target"]
+        v = step_check.check(job, o["label"], st.get(a, {}).get("smiles"), st.get(b, {}).get("smiles"))
+        if v is not None and v["reversed"]:            # the IRC runs target -> source
+            frames, energies = frames[::-1], energies[::-1]
+        if start == b:
+            frames, energies = frames[::-1], energies[::-1]
+            a, b = b, a
+        ref = st.get(a, {}).get("energy")
+        kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in energies]
+        ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
+        return {"label": o["label"], "job": job["id"], "start": a, "end": b, "checked": v is not None,
+                "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
+                "reference": "the start's node energy (its lowest structure found), electronic"}
+
+    @app.get("/api/jobs/{jid}/network-timeline")
+    def network_timeline(jid: str):
+        """A network expansion as the live network view plays it (mepd/web/live_network.py)."""
+        from mepd.web import live_network
+
+        job = J().get(jid)
+        if job is None:
+            raise HTTPException(404, "no such calculation")
+        return live_network.from_job(J().job_dir(jid), running=job.get("status") in ("running", "queued"),
+                                     t0=job.get("started"))
+
+    @app.get("/api/examples/{slug}/timeline")
+    def example_timeline(slug: str):
+        from mepd.web import live_network
+
+        tl = live_network.example_timeline(slug)
+        if tl is None:
+            raise HTTPException(404, f"no live network example {slug!r}")
+        return tl
+
+    @app.get("/api/examples")
+    def list_examples():
+        from mepd.web import showcase_tool
+
+        return showcase_tool.listing()
+
+    @app.post("/api/examples/{slug}/open")
+    async def open_example(slug: str, request: Request):
+        from mepd.web import showcase_tool
+
+        if slug not in {x["slug"] for x in showcase_tool.listing() if x["kind"] == "workspace"}:
+            raise HTTPException(404, f"no example {slug!r}")
+        visitor = visitor_of(request)
+        if demo is not None:
+            vdir = sessions.visitor_session_path(visitor, "main").parent
+            have = [d for d in vdir.glob("*") if (d / "workspace.json").exists()] if vdir.exists() else []
+            if len(have) >= demo.max_sessions:
+                raise WorkspaceError(f"the demo allows {demo.max_sessions} sessions per visitor; delete one first")
+            dest = showcase_tool.free_name(vdir, slug)
+        else:
+            dest = showcase_tool.free_name(sessions.default_root(), slug)
+        await asyncio.to_thread(showcase_tool.unpack, slug, dest)
+        await sessions.open(dest, visitor=visitor)
+        return sessions.listing(visitor)
+
     # ----------------------------------------------------------- static
     @app.get("/")
     def index():
@@ -2925,28 +3062,44 @@ def adopt_complexes(ws: Workspace, job: dict) -> list[str]:
 
 
 def adopt_expansion_steps(manager: JobManager, job: dict) -> bool:
-    """A finished expansion's verified steps (summary.json) onto its graph
-    edges -- the same as the live events do while it runs; this covers runs
-    without a live view and steps whose events were missed."""
-    try:
-        summary = json.loads((Path(job["output_dir"]) / "summary.json").read_text())
-    except Exception:
+    """A finished expansion's steps (summary.json, and the live events a stopped
+    run's summary leaves out) onto its graph edges: each checked against its IRC,
+    each pair's edge set to its lowest checked step (JobManager.recheck_expansion_steps);
+    and the run's optimized seed onto the seed's node."""
+    if not (Path(job.get("output_dir") or "") / "summary.json").exists():
         return False
-    nodes = dict(job.get("live_nodes") or {})
-    known = manager.ws.snapshot()["structures"]
-    # Each pair's lowest step, with its final barriers (they may differ from
-    # the live ones: species energies can drop later in a run).
-    best: dict[frozenset, dict] = {}
-    for st in summary.get("steps") or []:
-        key = frozenset((st["a"], st["b"]))
-        if key not in best or (st.get("ts_energy") is not None and best[key].get("ts_energy") is not None
-                               and st["ts_energy"] < best[key]["ts_energy"]):
-            best[key] = st   # the lower TS: the lower barrier both ways
+    changed = manager._adopt_seed_energy(job)
+    changed |= manager.recheck_expansion_steps(job)
+    manager._queue_member_energies(job, force=True)   # its mixtures' molecules, for the workspace's kinetics
+    return changed
+
+
+def backfill_expansion_ts(manager: JobManager, job: dict) -> bool:
+    """Edges adopted from an expansion's live step events before the TS's energy
+    was kept: the energy of the step event they name (live/events.jsonl). A
+    stopped run's summary lists only part of its steps, so this covers the rest."""
+    fp = manager.job_dir(job["id"]) / "live" / "events.jsonl"
+    if not fp.exists():
+        return False
+    ts = {}
+    for line in fp.read_text().splitlines():
+        if '"step"' not in line[:30]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "step" and ev.get("label") and ev.get("ts_energy") is not None:
+            ts[ev["label"]] = ev["ts_energy"]
     changed = False
-    for st in best.values():
-        ev = {"event": "step", "a": st["a"], "b": st["b"], "label": st.get("label"),
-              "barrier_kcal": st.get("barrier_kcal"), "warning": st.get("warning")}
-        changed |= manager._adopt_step(job, ev, nodes, known, final=True)
+    with manager.ws._lock:
+        for e in manager.ws._data["edges"].values():
+            o = e.get("origin") or {}
+            if o.get("job") == job["id"] and o.get("ts_energy_hartree") is None and o.get("label") in ts:
+                o["ts_energy_hartree"] = ts[o["label"]]
+                changed = True
+        if changed:
+            manager.ws._save()
     return changed
 
 

@@ -3,7 +3,7 @@
 // Everything deeper (barriers, networks) opens from what happens there.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, openTab, prefs, set, state, update, useStore } from '../store.js';
+import { openJob, openTab, prefs, select, set, state, update, useStore } from '../store.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
@@ -108,7 +108,7 @@ function startPreset(p) {
 // Done first, then what is new, then what comes next, then the unknown.
 const ORDER = { done: 0, open: 1, all: 1, locked: 2, far: 3 };
 
-function QuestMap() {
+export function QuestMap() {
   const map = useMap();
   const near = (q) => q.after.some((a) => map.done.has(a));
   // "Show everything": every tool unlocked and usable, none marked new.
@@ -214,45 +214,96 @@ export function WelcomeView() {
     const out = await attempt(() => api.post('/api/design/new', { scratch: true }));
     if (out) openTab('design');
   };
-  return html`<div class="welcome">
+  const ex = useExamples();
+  return html`<div class="welcome home">
     <header class="welcome-hero">
       <div class="welcome-brand">
         <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="16" cy="16" r="3.2" fill="currentColor"/></svg>
         <h1>mepd</h1>
       </div>
       <p class="welcome-tag">Compute how molecules react.</p>
-      <p class="welcome-sub">Try it here in a few minutes, one step at a time.</p>
     </header>
-    <ol class="welcome-scales">
-      <${Scale} n=${1} icon="molecule" name="Molecule" what="Build one and find its stable shapes." on=${!tour.molecule} done=${tour.molecule}>
-        <div class="welcome-preview"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${phone ? 130 : 150} /></div>
-        <div class="chips">
-          ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
-          <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
-        </div>
-      <//>
-      <${Scale} n=${2} icon="reaction" name="Reaction" what="Find what it turns into, and the energy each step takes." on=${tour.molecule && !tour.reaction} done=${tour.reaction}>
-        <${ProfilePic} />
-        <button class="btn primary" disabled=${busy} onClick=${start}>${busy ? 'Starting…' : `Put ${p.name.toLowerCase()} in the reactor`}</button>
-        <span class="small muted">${tour.reaction ? (map.done.has('barrier') ? 'Again, or with another molecule.' : 'Next: find its barrier') : `${p.n} ${p.name.toLowerCase()} + ${p.water} water at ${TEMPERATURE} K: watch bonds break and form.`}</span>
-      <//>
-      <${Scale} n=${3} icon="network" name="Network" what="Connect the steps to see what a mixture becomes." on=${tour.reaction} later=${!tour.reaction}>
-        <${NetworkPic} />
-        ${map.tab('graph')
-          ? html`<button class="btn" onClick=${() => openTab('graph')}>Open Explore</button>`
-          : html`<span class="small muted">Opens with your first reaction.</span>`}
-      <//>
-    </ol>
-    <div class="welcome-main">
-      <p class="small muted welcome-more">
-        ${lastRun && html`<a href="#" onClick=${(e) => { e.preventDefault(); openJob(lastRun.id, 'story'); }}>Your last reactor run</a>${' · '}`}
-        <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>Open a SMILES or .xyz</a>
-      </p>
+    <section class="door door-learn" aria-label="Learn">
+      <h4 class="door-label">${DOOR_ICON.learn}Learn<span class="door-sub">step by step</span></h4>
+      <ol class="welcome-scales">
+        <${Scale} n=${1} icon="molecule" name="Molecule" what="Pick one, or build your own." on=${!tour.molecule} done=${tour.molecule}>
+          <div class="welcome-preview"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${phone ? 130 : 150} /></div>
+          <div class="chips">
+            ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
+            <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
+          </div>
+        <//>
+        <${Scale} n=${2} icon="reaction" name="Reaction" what="Heat it and watch bonds break and form." on=${tour.molecule && !tour.reaction} done=${tour.reaction}>
+          <${ProfilePic} />
+          <button class="btn primary" disabled=${busy} onClick=${start}>${busy ? 'Starting…' : `Put ${p.name.toLowerCase()} in the reactor`}</button>
+          <span class="small muted">${tour.reaction ? (map.done.has('barrier') ? 'Again, or with another molecule.' : 'Next: find its barrier') : `${p.n} ${p.name.toLowerCase()} + ${p.water} water · ${TEMPERATURE} K`}</span>
+        <//>
+        <${Scale} n=${3} icon="network" name="Network" what="What a mixture becomes." on=${tour.reaction} later=${!tour.reaction}>
+          <${NetworkPic} />
+          ${tour.reaction || map.all
+            ? html`<button class="btn" onClick=${() => openTab('graph')}>Open Explore</button>`
+            : html`<span class="small muted">After your first reaction.</span>`}
+        <//>
+      </ol>
+      ${lastRun && html`<p class="small welcome-more"><a href="#" onClick=${(e) => { e.preventDefault(); openJob(lastRun.id, 'story'); }}>Your last reactor run ›</a></p>`}
       ${(map.done.has('reactor') || map.all) && html`<${QuestMap} />`}
-      <p class="small welcome-all">${map.all
-        ? html`Showing everything. <a href="#" onClick=${(e) => { e.preventDefault(); setEverything(false); }}>Show only what I've found</a>`
-        : html`<a href="#" title="Every tab and tool at once" onClick=${(e) => { e.preventDefault(); setEverything(true); }}>I know mepd: show everything</a>`}</p>
-    </div>
-    <aside class="welcome-side"><${Recent} /></aside>
+    </section>
+    <aside class="door door-start" aria-label="Start working">
+      <h4 class="door-label">${DOOR_ICON.start}Start working</h4>
+      <${StartBox} />
+      <${Recent} />
+      <label class="door-switch" title="Every tool now, without the step-by-step unlocking">
+        <input type="checkbox" class="switch" checked=${map.all} onChange=${(e) => setEverything(e.target.checked)} />
+        <span>All tools</span>
+      </label>
+    </aside>
+    ${ex.length > 0 && html`<section class="door door-examples" aria-label="Examples">
+      <h4 class="door-label">${DOOR_ICON.examples}Examples<span class="door-sub">real results, open now</span></h4>
+      <ul class="example-cards">${ex.map((x) => html`<li><button class="example-card" onClick=${() => openExample(x)} title=${x.blurb || ''}>
+        <b>${x.title}</b><span class="small muted">${x.tag}</span></button></li>`)}</ul>
+    </section>`}
   </div>`;
+}
+
+const DOOR_ICON = {
+  learn: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="18" r="2.5"/><circle cx="12" cy="11" r="2.5"/><circle cx="19" cy="5" r="2.5"/><path d="M7 16l3-3M14 9l3-2"/></svg>`,
+  start: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>`,
+  examples: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1"/></svg>`,
+};
+
+// "Start working": anything mepd can read, straight into Explore.
+function StartBox() {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const go = async (e) => {
+    e?.preventDefault();
+    if (!text.trim()) return;
+    setBusy(true);
+    const added = await attempt(() => api.post('/api/structures', { text, optimize: prefs.get('optimizeOnAdd', true) }),
+      (a) => `Added ${a.length} structure${a.length === 1 ? '' : 's'}`);
+    setBusy(false);
+    if (!added) return;
+    setText('');
+    select({ structures: [...new Set(added.map((a) => a.id))] });
+    openTab('graph');
+  };
+  return html`<form class="start-box" onSubmit=${go}>
+    <label class="small muted" for="start-text">SMILES, name or reaction (A>>B)</label>
+    <div class="start-row">
+      <input id="start-text" class="mono" placeholder="[Cl-].CBr>>ClC.[Br-]" value=${text} onInput=${(e) => setText(e.target.value)} />
+      <button class="btn primary" type="submit" disabled=${busy || !text.trim()}>${busy ? '…' : 'Open'}</button>
+    </div>
+    <span class="small muted">or <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>draw it</a> · drop .xyz files on Explore</span>
+  </form>`;
+}
+
+// Examples: finished studies that open as your own copy (mepd/web/examples).
+function useExamples() {
+  const [list, setList] = useState([]);
+  useEffect(() => { api.get('/api/examples').then((r) => setList(r || [])).catch(() => setList([])); }, []);
+  return list;
+}
+function openExample(x) {
+  if (x.kind === 'replay') { set({ view: { tab: 'network', jobId: null, example: x.slug } }); return null; }
+  return attempt(() => api.post(`/api/examples/${encodeURIComponent(x.slug)}/open`), `Opened “${x.title}” as your own copy`);
 }

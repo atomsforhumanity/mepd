@@ -58,8 +58,8 @@ def test_web_offers_it_only_for_qmmm_and_builds_real_flags():
     from mepd.web.operations import ExpandParams, OPERATIONS, _cli_options
 
     op = OPERATIONS["graph-enumeration"]
-    meth = [m for m in op.describe()["methods"] if m["fixed"].get("generator") == "nanoreactor"]
-    assert meth and meth[0]["qmmm_only"]
+    card = op.describe()["schema"]["properties"]["generator"]["cards"]["nanoreactor"]
+    assert card["qmmm_only"]          # the form shows it only for a QM/MM system
     p = ExpandParams(generator="nanoreactor", reactor_temperature=3200, reactor_time_ps=5)
 
     class Ctx:   # just enough of a JobContext for the argv

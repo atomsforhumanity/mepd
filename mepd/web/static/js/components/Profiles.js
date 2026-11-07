@@ -7,6 +7,7 @@ import { Why } from './Why.js';
 import { LevelBar } from './Library.js';
 
 export function ProfilesView() {
+  const theme = useStore((st) => st.theme || 'auto');
   const everything = useStore((s) => s.everything);
   const profiles = useStore((s) => s.profiles);
   const summaries = useStore((s) => s.pathSummaries);
@@ -80,11 +81,15 @@ export function ProfilesView() {
   return html`
     <div class="profiles-view">
       <div class="view-head">
-        <h2>Settings</h2>
-        <label class="check small everything-switch" title="Every tab and tool at once">
-          <input type="checkbox" class="switch" checked=${everything} onChange=${(e) => setEverything(e.target.checked)} /> Show everything</label>
+        <div class="prefs-row">
+          <label class="check small everything-switch" title="Every tool at once, without the step-by-step unlocking">
+            <input type="checkbox" class="switch" checked=${everything} onChange=${(e) => setEverything(e.target.checked)} /> All tools</label>
+          <span class="small muted">Theme</span>
+          <div class="segmented">${[['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([k, l]) => html`<button class=${theme === k ? 'on' : ''}
+            onClick=${() => { prefs.set('theme', k); set({ theme: k }); }}>${l}</button>`)}</div>
+        </div>
         <div class="settings-level"><${LevelBar} always /></div>
-        <p class="small muted" title="Each profile is a RunInputs TOML, the file mepd … --inputs takes. A calculation copies its profile, so editing one later never changes past results.">A profile is how calculations are run: method, path search and thresholds. Editing one never changes past results.</p>
+        <p class="small muted" title="Each profile is a RunInputs TOML, the file mepd … --inputs takes. A calculation copies its profile, so editing one later never changes past results.">Profiles: how calculations run. Editing one never changes past results.</p>
       </div>
       <div class="profiles-body">
         <ul class="profile-list">

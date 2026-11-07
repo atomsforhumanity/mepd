@@ -137,17 +137,103 @@ export function defaultsFor(schema) {
   return out;
 }
 
-// Mirrors operations.requirement_met: "other" or "other=a|b".
+// Mirrors operations.requirement_met: "other" or "other=a|b" (a card's `needs` may join several with ";").
 function requirementMet(values, requires) {
   if (!requires) return true;
-  const [name, allowed] = requires.split('=');
-  return allowed === undefined ? !!values[name] : allowed.split('|').includes(String(values[name]));
+  return requires.split(';').every((one) => {
+    const [name, allowed] = one.split('=');
+    return allowed === undefined ? !!values[name] : allowed.split('|').includes(String(values[name]));
+  });
 }
 
-export function ParamForm({ schema, values, onChange, op = '' }) {
+// What each stage of a staged operation decides (network expansion).
+const STAGE_TEXT = {
+  Grow: 'how new species are proposed',
+  Connect: 'how each proposed reaction gets its transition state',
+  Steer: 'which species grow next',
+  Run: 'how the work is scheduled and when it stops',
+};
+
+// A card shows its blurb's first sentence; the whole is its tooltip.
+const firstSentence = (t) => (t || '').split(/(?<=\.)\s/)[0];
+
+// A choice shown as cards: one per value, greyed out (with why) when another stage rules it out.
+function Cards({ name, prop, value, values, onChange, context, op }) {
+  const cards = Object.entries(prop.cards).filter(([, c]) => !c.qmmm_only || context?.qmmm);
+  return html`<div class="stage-cards" role="radiogroup" aria-label=${prop.title || name}>
+    ${cards.map(([v, c]) => {
+      const blocked = c.unavailable || (!requirementMet(values, c.needs) ? c.needs_text || `needs ${c.needs}` : '');
+      return html`<button type="button" role="radio" aria-checked=${value === v} disabled=${!!blocked}
+          class=${`stage-card ${value === v ? 'on' : ''} ${blocked ? 'blocked' : ''}`}
+          title=${blocked ? `Not with the other choices: ${blocked}` : c.blurb} onClick=${() => onChange(v)}>
+        <b>${c.title}</b><span>${firstSentence(c.blurb)}</span>${blocked && html`<i>${blocked}</i>`}
+      </button>`;
+    })}
+  </div>`;
+}
+
+// Choices ruled out by a change elsewhere move to the first card still allowed; the form says so.
+function settleCards(schema, values, context) {
+  let out = values;
+  const notes = [];
+  for (let pass = 0; pass < 3; pass += 1) {
+    let moved = false;
+    for (const [k, p] of Object.entries(schema.properties)) {
+      if (!p.cards || !requirementMet(out, p.requires)) continue;
+      const ok = (v) => { const c = p.cards[v]; return c && !c.unavailable && (!c.qmmm_only || context?.qmmm) && requirementMet(out, c.needs); };
+      if (ok(out[k])) continue;
+      const next = Object.keys(p.cards).find(ok);
+      if (next && next !== out[k]) {
+        notes.push({ stage: p.stage, text: `${p.title}: ${p.cards[next].title} (${p.cards[out[k]]?.title || out[k]} ${p.cards[out[k]]?.needs_text || 'is ruled out'})` });
+        out = { ...out, [k]: next };
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return { values: out, notes };
+}
+
+function StagedForm({ schema, values, onChange, op, context }) {
+  const [notes, setNotes] = useState([]);
+  const all = Object.entries(schema.properties).filter(([, p]) => p.group !== 'Hidden' && p.stage);
+  const stages = [...new Set(all.map(([, p]) => p.stage))];
+  const change = (k) => (v) => {
+    const { values: next, notes: n } = settleCards(schema, { ...values, [k]: v }, context);
+    setNotes(n);
+    onChange(next);
+  };
+  return html`<div class="param-form staged">
+    ${stages.map((st, i) => {
+      const fields = all.filter(([, p]) => p.stage === st && requirementMet(values, p.requires));
+      const choice = fields.find(([, p]) => p.cards);
+      const rest = fields.filter(([, p]) => !p.cards);
+      const basic = rest.filter(([, p]) => !p.advanced), more = rest.filter(([, p]) => p.advanced);
+      const changedMore = more.filter(([k, p]) => values[k] !== (p.default ?? null)).length;
+      return html`<section class="stage">
+        <header><span class="stage-n">${i + 1}</span><b>${st}</b><span class="muted small">${STAGE_TEXT[st] || ''}</span>
+          ${op === 'graph-enumeration' && html`<a class="stage-help small" href=${`/manual/network-expansion#${st.toLowerCase()}`} target="_blank" rel="noopener" title="What each choice does">?</a>`}</header>
+        ${choice && html`<${Cards} name=${choice[0]} prop=${choice[1]} value=${values[choice[0]]} values=${values}
+          onChange=${change(choice[0])} context=${context} op=${op} />`}
+        ${notes.filter((n) => n.stage === st).map((n) => html`<p class="stage-note small">↻ ${n.text}</p>`)}
+        ${basic.length > 0 && html`<div class="stage-fields">${basic.map(([k, p]) => html`<${Field} key=${k} op=${op} name=${k} prop=${p} value=${values[k]} onChange=${change(k)} />`)}</div>`}
+        ${more.length > 0 && html`<details class="advanced"><summary>More${changedMore ? html` <span class="badge">${changedMore} changed</span>` : ''}</summary>
+          ${more.map(([k, p]) => html`<${Field} key=${k} op=${op} name=${k} prop=${p} value=${values[k]} onChange=${change(k)} />`)}</details>`}
+      </section>`;
+    })}
+    <button type="button" class="btn-link small" onClick=${() => { setNotes([]); onChange(defaultsFor(schema)); }}>Reset all to defaults</button>
+  </div>`;
+}
+
+export function isStaged(schema) {
+  return Object.values(schema?.properties || {}).some((p) => p.stage);
+}
+
+export function ParamForm({ schema, values, onChange, op = '', context = null }) {
   if (!schema?.properties || !Object.keys(schema.properties).length) {
     return html`<p class="muted small">No parameters.</p>`;
   }
+  if (isStaged(schema)) return html`<${StagedForm} schema=${schema} values=${values} onChange=${onChange} op=${op} context=${context} />`;
   // group "Hidden": set by the page itself (e.g. Sandbox › Stop & analyze), never a form field.
   const entries = Object.entries(schema.properties).filter(([, p]) => p.group !== 'Hidden' && requirementMet(values, p.requires));
   const basic = entries.filter(([, p]) => !p.advanced);

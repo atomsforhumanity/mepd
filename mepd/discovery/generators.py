@@ -45,6 +45,10 @@ class Generator:
     options: dict = field(default_factory=dict)   # generator-specific options and their defaults
     kind: str = "bonds"        # "bonds": (broken, formed) proposals; "structures": product geometries
     programs: tuple = ()       # executables that must be on PATH
+    # Batched structures generators: `propose_batch(structure, *, max_products, options, state)` ->
+    # (this batch's new products, state, done), so an async explorer takes each batch's products as it
+    # ends (None: one call proposes everything)
+    propose_batch: Optional[Callable] = None
 
     def available(self) -> bool:
         return (not self.package or importlib.util.find_spec(self.package) is not None) \
@@ -101,6 +105,15 @@ def _reactor(structure, *, max_products, options):
     return reactor_products(structure, max_products=max_products, **options)
 
 
+def _reactor_batch(structure, *, max_products, options, state=None):
+    from mepd.discovery.reactor_generator import OPTIONS, reactor_batch
+
+    unknown = set(options) - set(OPTIONS)
+    if unknown:
+        raise ValueError(f"reactor options are {', '.join(sorted(OPTIONS))} (got {', '.join(sorted(unknown))}).")
+    return reactor_batch(structure, state, max_products=max_products, **options)
+
+
 def _collide(structure, *, max_products, options):
     from mepd.discovery.collide_generator import OPTIONS, collide_products
 
@@ -129,22 +142,24 @@ GENERATORS: dict[str, Generator] = {
                      "160, 114110 (2024), doi:10.1063/5.0197592"]}}),
     "collide": Generator(
         "collide", "Collisions (the Reactor's Collide)",
-        "Langevin MD on GFN2-xTB at a moderate temperature in which two atoms are pulled together for a moment, "
-        "then let go -- the interactive Reactor's Collide, run unattended over many pairs. Finds unimolecular "
-        "decompositions and rearrangements the piston nanoreactor rarely makes.",
+        "Langevin MD on GFN2-xTB at a moderate temperature in which two atoms of a molecule, or two whole "
+        "molecules, are pulled together for a moment, then let go -- the interactive Reactor's Collide, run "
+        "unattended over many pairs. Finds unimolecular decompositions and rearrangements the piston nanoreactor "
+        "rarely makes, and bimolecular reactions (cycloadditions included) without templates.",
         _collide, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
         options=dict(__import__("mepd.discovery.collide_generator", fromlist=["OPTIONS"]).OPTIONS),
         references={"collide": {
-            "method": "steered Langevin MD (a capped harmonic pull between two atoms, then a free run and a quench) "
-                      "on GFN2-xTB (tblite)",
+            "method": "steered Langevin MD (a capped harmonic pull between two atoms, or between two whole molecules, "
+                      "then a free run and a quench) on GFN2-xTB (tblite)",
             "cite": ["C. Bannwarth, S. Ehlert, S. Grimme, J. Chem. Theory Comput. 15, 1652-1671 (2019), "
                      "doi:10.1021/acs.jctc.8b01176"]}}),
     "reactor": Generator(
         "reactor", "The Reactor, unattended (piston and random collisions)",
         "The interactive Reactor with the piston on and Collide repeating: Langevin MD on GFN2-xTB in a wall that "
-        "periodically squeezes the structure, while two atoms picked at random are pulled together for a moment "
-        "every so often. Nothing chooses the chemistry; the kinetics sort out what matters.",
+        "periodically squeezes the structure, while two molecules (or two atoms of one) picked at random are pulled "
+        "together for a moment every so often. Nothing chooses the chemistry; the kinetics sort out what matters.",
         _reactor, kind="structures", package="tblite", install="pip install tblite (part of mepd's dependencies)",
+        propose_batch=_reactor_batch,
         options={k: v for k, v in __import__("mepd.discovery.reactor_generator", fromlist=["OPTIONS"]).OPTIONS.items()
                  if k not in ("workdir", "cutoff_kcal")},   # set by the explorer
         references={"reactor": {

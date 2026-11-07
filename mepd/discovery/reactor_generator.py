@@ -3,9 +3,11 @@
 What a person does in the Reactor (mepd.web.sandbox) with the piston on and
 "keep colliding" ticked: Langevin dynamics on GFN2-xTB (tblite) inside the
 nanoreactor's soft wall, which the piston swings between a wide and a
-squeezed radius, while Collide every so often pulls two atoms chosen at
-random toward their moving midpoint for a moment and lets go. Nothing picks
-the chemistry: the piston and the random pulls supply the energy, and the
+squeezed radius, while Collide every so often pushes two molecules chosen at
+random together for a moment (whole: a capped force along the line between a
+random heavy atom of each, spread over each molecule by mass), or pulls two
+atoms of one molecule together, and lets go.
+Nothing picks the chemistry: the piston and the random pulls supply the energy, and the
 kinetics decide afterwards which of the reactions matter.
 
 The trajectory is read like the nanoreactor's (its bond hysteresis, minimum
@@ -41,13 +43,16 @@ OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
 
 
-def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[int, int]]:
-    """The Reactor's Collide pick (Sandbox.js collisionPair), with `rng`: two
-    heavy atoms of two different molecules, any two with no species preferred
-    (neither pick avoids pairing two waters any more); or, 30% of the time and always with one
-    molecule, two atoms of one molecule at least `intra_hops` bonds apart.
-    Unlike the Reactor's (3 bonds, a heavy atom first, heavy pairs preferred),
-    any such pair, two hydrogens too: a person drags whatever looks promising, an unattended run must not
+def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
+    """The Reactor's Collide pick (mepd/web/sandbox.py runs this one too), with `rng`: two
+    heavy atoms of two different molecules, any two with no species preferred,
+    with the two molecules' atoms, (i, j, A, B): the whole molecules are pushed
+    together along i-j (langevin.pull_pairs); or, 30% of the time and always
+    with one molecule, two atoms of one molecule at least `intra_hops` bonds
+    apart (pulled themselves: a lone molecule has no partner, and without these
+    pulls formic acid made nothing in 240 ps at 2200 K). Unlike the Reactor's
+    (3 bonds, a heavy atom first, heavy pairs preferred), any such pair, two
+    hydrogens too: a person drags whatever looks promising, an unattended run must not
     leave out the four-centre eliminations and H2 losses of a small molecule
     (formic acid: the Reactor's rule leaves one pair, an H shift)."""
     from mepd.discovery.collide_generator import _bonds, _hops
@@ -70,7 +75,7 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple[i
     a = pick(mols)
     b = pick([m for m in mols if m is not a])
     hv = lambda m: [i for i in m if heavy(i)] or m
-    return int(pick(hv(a))), int(pick(hv(b)))
+    return int(pick(hv(a))), int(pick(hv(b))), tuple(a), tuple(b)
 
 
 def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, compress, period_ps, duty, pull_fs,
@@ -79,6 +84,7 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     a new <workdir>/run_kk laid out like a nanoreactor job (md/segment_kkk.xyz every LIVE_FRAMES frames,
     md/schedule.json, live_events.json): the web UI's Reactor view shows it live."""
     from mepd.discovery.langevin import LangevinMD, pull_pairs
+    from mepd.discovery.nanoreactor import _masses
     from mepd.discovery.nanoreactor import auto_radius
     from mepd.web.sandbox import piston_radius
 
@@ -89,9 +95,9 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     piston = {"period_ps": float(period_ps), "compress": float(compress), "duty": float(duty), "t0": 0.0} \
         if float(compress) < 1 else None
     k_au = float(k) / KCAL * BOHR * BOHR
-    pair = [None]
+    pair, masses = [None], _masses(symbols)
     md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature, wall=wide, seed=seed,
-                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au))
+                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
     rng = md.rng
     md.start()
     frames, t_fs = [md.pos * BOHR], 0.0
@@ -229,31 +235,20 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     `cutoff_kcal` (the explorer's access cutoff left above `structure`), a
     product more than that above `structure` (quenched, GFN2-xTB) is still
     proposed but doesn't count toward convergence: no step to it can be
-    within the cutoff, as a barrier is at least the reaction energy."""
-    symbols = [str(s) for s in structure.symbols]
-    xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    within the cutoff, as a barrier is at least the reaction energy.
+    (All batches, then the products pooled: `reactor_batch` hands each batch's
+    over as it ends.)"""
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
-    options = dict(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
-                   period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
-                   k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""))
+    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir)
     runs, errors = [], []
     for batch in range(max(1, int(max_batches))):
-        jobs = [(symbols, xyz.tolist(), int(structure.charge), int(structure.multiplicity), int(max_products),
-                 {**options, "seed": int(seed) + batch * n + s}) for s in range(n)]
-        done = _run_in_processes(jobs, min(width, n))
-        errors += [r for r in done if isinstance(r, str)]
-        runs += [r for r in done if isinstance(r, dict)]
-        first = Counter(k for r in runs for k, from_seed, de in r["keys"]
-                        if from_seed and (cutoff_kcal is None or de is None or de <= float(cutoff_kcal)))
-        events = sum(first.values())
-        f1 = sum(c == 1 for c in first.values()) / events if events else 1.0
-        below = "" if cutoff_kcal is None else f"; counted: products at most {float(cutoff_kcal):.0f} kcal/mol up"
-        print(f"reactor: batch {batch + 1}: {len(first)} distinct products in {events} events from the seed's state "
-              f"({len({k for r in runs for k, *_ in r['keys']})} states in all{below}); {f1:.0%} of them gave a product "
-              f"seen once (converged at {unseen:.0%}).", flush=True)
-        # Good-Turing's estimate resolves 1/events: below 1/unseen events, none seen once proves nothing
-        if f1 <= float(unseen) and events * float(unseen) >= 1:
+        got, bad = _run_batch(structure, batch, n, width, max_products, seed, options)
+        runs += got
+        errors += bad
+        first = _first(runs, cutoff_kcal)
+        converged = _report_batch(batch, first, {k for r in runs for k, *_ in r["keys"]}, cutoff_kcal, unseen)
+        if converged:
             break
     # the products the seed reached most often first (fewest steps, most often), then the earliest
     count = Counter(k for r in runs for k, *_ in r["keys"])
@@ -265,12 +260,92 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         seen.add(key)
         if len(out) < int(max_products):
             out.append(structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR}))
-    print(f"reactor: {len(out)} distinct product(s) from {len(runs)} trajectories of {time_ps:g} ps at "
-          f"{temperature:g} K ({sum(r['events'] for r in runs)} events, "
-          f"{sum(r['torn'] for r in runs)} states with a loose atom skipped).", flush=True)
+    _report_end(len(out), len(runs), sum(r["events"] for r in runs), sum(r["torn"] for r in runs), time_ps,
+                temperature, errors)
+    return out
+
+
+def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int = 20, temperature: float = 2200.0,
+                  time_ps: float = 5.0, compress: float = 0.7, period_ps: float = 1.0, duty: float = 0.75,
+                  pull_fs: float = 300.0, gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2,
+                  n_seeds: int = 0, seed: int = 0, unseen: float = 0.05, max_batches: int = 4, parallel: int = 0,
+                  workdir: str = "", cutoff_kcal: Optional[float] = None) -> tuple:
+    """The next batch of `reactor_products` for a caller that takes each batch's products the moment it
+    ends (the explorer's async queue: they are optimized and connected while the next batch runs).
+    `state` is what the previous batches left (None: the first); returns (this batch's products not
+    proposed before -- the seed's most frequent first, by the counts so far --, the new state, done).
+    The batches, their seeds, the convergence rule and the cap of `max_products` in all are
+    reactor_products'; only the pooled ordering across batches is not (each batch's products go out
+    as it ends, so a later batch's more frequent product can't come before an earlier one's)."""
+    st = dict(state or {"batch": 0, "first": {}, "count": {}, "states": [], "proposed": [], "runs": 0,
+                        "events": 0, "torn": 0, "errors": []})
+    width = max(1, int(parallel) or available_cpus())
+    n = max(1, int(n_seeds) or width)
+    options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir)
+    batch = int(st["batch"])
+    runs, errors = _run_batch(structure, batch, n, width, max_products, seed, options)
+    first = Counter(st["first"]) + _first(runs, cutoff_kcal)
+    count = Counter(st["count"]) + Counter(k for r in runs for k, *_ in r["keys"])
+    states = set(st["states"]) | {k for r in runs for k, *_ in r["keys"]}
+    converged = _report_batch(batch, first, states, cutoff_kcal, unseen)
+    done = converged or batch + 1 >= max(1, int(max_batches))
+    proposed = list(st["proposed"])
+    taken = set(proposed)
+    pooled = sorted((-first[k], -count[k], f, s, k, x) for s, r in enumerate(runs) for f, k, x in r["states"])
+    out = []
+    for *_, key, x in pooled:
+        if key in taken or len(proposed) >= int(max_products):
+            continue
+        taken.add(key)
+        proposed.append(key)
+        out.append(structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR}))
+    st.update(batch=batch + 1, first=dict(first), count=dict(count), states=sorted(states), proposed=proposed,
+              runs=st["runs"] + len(runs), events=st["events"] + sum(r["events"] for r in runs),
+              torn=st["torn"] + sum(r["torn"] for r in runs), errors=list(st["errors"]) + errors)
+    if done:
+        _report_end(len(proposed), st["runs"], st["events"], st["torn"], time_ps, temperature, st["errors"])
+    return out, st, done
+
+
+def _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir) -> dict:
+    return dict(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
+                period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
+                k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""))
+
+
+def _run_batch(structure, batch: int, n: int, width: int, max_products, seed, options) -> tuple:
+    """Batch `batch`'s `n` trajectories (seeds seed + batch*n + s): (runs, errors)."""
+    symbols = [str(s) for s in structure.symbols]
+    xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    jobs = [(symbols, xyz.tolist(), int(structure.charge), int(structure.multiplicity), int(max_products),
+             {**options, "seed": int(seed) + batch * n + s}) for s in range(n)]
+    done = _run_in_processes(jobs, min(width, n))
+    return [r for r in done if isinstance(r, dict)], [r for r in done if isinstance(r, str)]
+
+
+def _first(runs, cutoff_kcal) -> Counter:
+    """The products of the seed's own reactions (within the cutoff), counted."""
+    return Counter(k for r in runs for k, from_seed, de in r["keys"]
+                   if from_seed and (cutoff_kcal is None or de is None or de <= float(cutoff_kcal)))
+
+
+def _report_batch(batch: int, first: Counter, states: set, cutoff_kcal, unseen) -> bool:
+    """Print the batch's line; whether the seed's reactions have converged."""
+    events = sum(first.values())
+    f1 = sum(c == 1 for c in first.values()) / events if events else 1.0
+    below = "" if cutoff_kcal is None else f"; counted: products at most {float(cutoff_kcal):.0f} kcal/mol up"
+    print(f"reactor: batch {batch + 1}: {len(first)} distinct products in {events} events from the seed's state "
+          f"({len(states)} states in all{below}); {f1:.0%} of them gave a product "
+          f"seen once (converged at {unseen:.0%}).", flush=True)
+    # Good-Turing's estimate resolves 1/events: below 1/unseen events, none seen once proves nothing
+    return f1 <= float(unseen) and events * float(unseen) >= 1
+
+
+def _report_end(n_out, n_runs, events, torn, time_ps, temperature, errors) -> None:
+    print(f"reactor: {n_out} distinct product(s) from {n_runs} trajectories of {time_ps:g} ps at "
+          f"{temperature:g} K ({events} events, {torn} states with a loose atom skipped).", flush=True)
     if errors:
         print(f"reactor: {len(errors)} trajectory(ies) failed, the first: {errors[0]}", flush=True)
-    return out
 
 
 def _run_in_processes(jobs: list, width: int) -> list:

@@ -6,6 +6,7 @@
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
 import { depictUrl } from '../util.js';
+import { state, update } from '../store.js';
 
 // Older runs named an external generator's products "external-<k>" where a
 // SMILES belongs: there is nothing to draw by that name.
@@ -151,6 +152,14 @@ export function NetworkLive({ job, reactions }) {
     setPinned(id);
   };
   const unpin = () => { run.current += 1; setPinned(null); setCurrent(null); setFlying(null); };
+  // Opened from the live network on one simulation: play that one, in view.
+  const focus = state.networkFocus?.jobId === job.id ? state.networkFocus.stream : null;
+  useEffect(() => {
+    if (!focus || !byId[focus]) return;
+    update((s) => { s.networkFocus = null; });
+    pin(focus);
+    setTimeout(() => stageRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 80);
+  }, [focus, !!byId[focus]]);
   const skip = () => { run.current += 1; setPlayed(new Set(ordered.map((r) => r.id))); setCurrent(null); setFlying(null); };
 
   const onStage = current ? byId[current.id] : null;

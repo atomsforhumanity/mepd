@@ -97,14 +97,34 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
     n = len(symbols)
     state = {"radius": float(radius_A), "r_now": float(radius_A), "piston": None, "pulls": {}, "paused": False}
 
+    # Collide is the unbiased network generator's own move (reactor_generator.
+    # collision_pair + langevin.pull_pairs), timed in simulated fs like it:
+    # two molecules picked at random are pushed together as wholes (a capped
+    # force along one atom of each, spread over each molecule by mass), or two
+    # atoms of one molecule pulled toward their midpoint. `auto` repeats it
+    # (exponential gaps), as the generator does.
+    from mepd.discovery.langevin import pull_pairs
+    from mepd.discovery.reactor_generator import OPTIONS as GEN, collision_pair
+
+    collide_k = float(GEN["k"]) / KCAL * BOHR * BOHR
+    col = {"pair": None, "until": 0.0, "auto": False, "next": 0.0}
+    masses = [None]
+
     def drags(x):
         g = np.zeros_like(x)
         for atom, (target, k) in state["pulls"].items():
             g[atom] += capped(k * (x[atom] - target))
+        if col["pair"] is not None:
+            g += pull_pairs(x, [col["pair"]], collide_k, masses[0])
         return g
 
     md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
                     temperature=temperature, wall=float(radius_A), bias=drags)
+    masses[0] = md.masses
+
+    def start_collision(t_now):
+        col["pair"] = collision_pair(symbols, md.pos * BOHR, md.rng, int(GEN["intra_hops"]))
+        col["until"] = t_now + float(GEN["pull_fs"])
 
     def send(kind, **payload):
         try:
@@ -141,6 +161,13 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 state["pulls"].pop(int(cmd["atom"]), None)
             elif op == "release_all":
                 state["pulls"].clear()
+                col["pair"], col["auto"] = None, False
+            elif op == "collide":
+                if col["pair"] is None:
+                    start_collision(t_fs)
+            elif op == "auto_collide":
+                col["auto"] = bool(cmd.get("value", True))
+                col["next"] = t_fs
             elif op == "radius":
                 state["radius"] = float(min(max(cmd["value"], 3.0), 60.0))
             elif op == "temperature":
@@ -152,6 +179,13 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 state["piston"] = piston_settings(cmd, was)
                 if state["piston"]:   # a new cycle starts now, wide; a change of settings keeps its phase
                     state["piston"]["t0"] = was["t0"] if was else t_fs
+        if col["pair"] is not None and t_fs >= col["until"]:
+            col["pair"] = None
+            col["next"] = t_fs + float(md.rng.exponential(GEN["gap_fs"]))
+        elif col["auto"] and col["pair"] is None and t_fs >= col["next"] and not state["paused"]:
+            start_collision(t_fs)
+            if col["pair"] is None:
+                col["auto"] = False      # nothing to push: one atom alone
         state["r_now"] = md.wall = piston_radius(t_fs, state["radius"], state["piston"])
         pos = md.pos
         if state["paused"]:
@@ -161,7 +195,7 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 send("frame", pos=np.round(pos * BOHR, 3).tolist(), t_fs=t_fs, radius=state["radius"],
                      wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
                      T=md.T, e_rel=(md.energy - e0) * KCAL, paused=True, rate=0.0,
-                     pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
+                     pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()}, collide=_col_view(col))
             continue
         try:
             if not md.step():           # an SCF that failed: stepped back, cooled down; go on
@@ -186,7 +220,19 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                  wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]),
                  T=md.T, T_inst=round(2 * ekin / (3 * n * 3.166811563e-6), 0),
                  e_rel=round((md.energy - e0) * KCAL, 1), paused=False, rate=round(t_fs / max(now - started, 1e-6), 1),
-                 pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()})
+                 pulls={a: (t * BOHR).tolist() for a, (t, _) in state["pulls"].items()}, collide=_col_view(col))
+
+
+def _col_view(col: dict) -> Optional[dict]:
+    """What the page draws of a collision: the two atoms setting its direction
+    and, between molecules, the two molecules being pushed."""
+    p = col.get("pair")
+    if p is None:
+        return {"auto": col.get("auto", False)} if col.get("auto") else None
+    out = {"i": int(p[0]), "j": int(p[1]), "auto": col.get("auto", False)}
+    if len(p) == 4:
+        out["a"], out["b"] = [int(x) for x in p[2]], [int(x) for x in p[3]]
+    return out
 
 
 class Sandbox:

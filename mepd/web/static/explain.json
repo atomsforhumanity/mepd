@@ -1780,19 +1780,19 @@
  },
  "op.graph-enumeration": {
   "title": "Reaction network expansion",
-  "does": "Proposes products of the selected species, optimizes them at the profile's level, and adds the new species and proposed reactions to Explore. With more rounds, the network grows from the species that the kinetics (or an energy window) say matter.",
+  "does": "Grows a reaction network from the selected species in four stages you choose: how new species are proposed (Grow), how each proposed reaction gets its transition state (Connect), which species grow next (Steer), and how the work is scheduled and stopped (Run).",
   "how": [
    "The seed is minimized first (and Hessian-checked), so every energy is relative to a minimum at this level.",
-   "The product generator proposes products in the seed's atom order. Bond rules: up to n breaks and m formations. Alternatives: CREST msreact or nanoreactor MD.",
+   "Grow: the product generator proposes products in the seed's atom order. Bond enumeration: up to n breaks and m formations. Or CREST msreact, collision MD, Reactor MD (its products join after every batch), or the nanoreactor (QM/MM).",
    "For bond rules, each product's 3D guess is a restrained relaxation of the seed geometry onto the new bonds (embed_product, mepd's own heuristic).",
    "Each guess is optimized with the engine. Species identity is connectivity + stereo; the lowest conformer is kept. New species can be Hessian-validated.",
-   "steer=flux: each reaction gets a recursive path search (MSMEP), TS opt and IRC. Eyring first-order microkinetics from the seed then picks which species to expand next."
+   "Connect + Steer: 'Material flow, within reach' grows every species some route reaches under a barrier cutoff, each reaction connected Fast (a TS from an interpolation's peak, a path search where that fails) or by a full path search; 'Where material flows' runs microkinetics on verified TSs; 'Energy window' needs no TSs."
   ],
-  "default": "Bond rules, 1 round, 2 breaks / 2 forms, 50 proposals per species, 60 kcal/mol window, no path search.",
+  "default": "Bond enumeration (2 breaks / 2 forms, 50 proposals per species), Fast connection with channel sampling, 'Material flow, within reach' steering (298.15 K, 1 h), the live queue.",
   "swap": [
    {
     "option": "CREST msreact",
-    "where": "Method switch: CREST msreact (needs crest + xtb)"
+    "where": "Grow stage: the CREST msreact card (needs crest + xtb)"
    },
    {
     "option": "Your own generator (autodE, Chemoton...)",
@@ -1815,21 +1815,24 @@
    "mepd/discovery/kinetics.py"
   ],
   "cli": "mepd discovery expand seed.xyz -i level.toml --rounds 1 --n-break 2 --n-form 2 --max-products 50",
-  "refs": "Reaction network expansion"
+  "refs": "Reaction network expansion",
+  "manual": "network-expansion"
  },
  "param.graph-enumeration.generator": {
-  "title": "Product generator",
+  "title": "Grow by",
   "does": "Chooses what proposes the products. Everything after that (optimization, identity, edges, path searches) is the same for every generator.",
   "how": [
    "Bond rules (mepd): every combination of ≤ n breaks and ≤ m formations between atoms within 'Form bonds within' (4 Å). Products must pass coordination limits and have an RDKit DetermineBondOrders (xyz2mol) Lewis structure. Fewest changes first; at most 500,000 combinations.",
    "CREST msreact: `crest --msreact -T 1 -msnbonds n` (plus -msnoiso / -msiso by mode). Biased GFN2-xTB optimizations; products are ranked lowest GFN2 energy first.",
+   "Collision MD: Langevin MD on GFN2-xTB that pulls two atoms (or two molecules) together for a moment, over many pairs.",
+   "Reactor MD: Langevin MD in a periodically squeezing wall with random collisions, in batches until few events give new products; in the live queue each batch's products join the network at once.",
    "Nanoreactor (QM/MM systems only): hot piston MD of the QM region. Its state after each event is a product."
   ],
   "default": "Bond rules: built in, deterministic, nothing to install.",
   "swap": [
    {
     "option": "CREST msreact",
-    "where": "Method switch on the Network card"
+    "where": "Grow stage on the network expansion card"
    },
    {
     "option": "Any Python callable",
@@ -1850,18 +1853,19 @@
    "mepd/discovery/nanoreactor_generator.py"
   ],
   "cli": "mepd discovery expand seed.xyz --generator crest-msreact --generator-option mode=all",
-  "refs": "Reaction network expansion"
+  "refs": "Reaction network expansion",
+  "manual": "network-expansion"
  },
  "param.graph-enumeration.steer": {
-  "title": "Grow the network by",
+  "title": "Grow where",
   "does": "Decides which new species get expanded in the next round.",
   "how": [
-   "window: every new species within 'Expand species within' (kcal/mol) of the seed.",
-   "flux: each new reaction gets a recursive path search (MSMEP), TS optimization and IRC. Then k = (kBT/h)·exp(-ΔE‡/RT) both ways from one TS energy, so detailed balance holds; this is integrated from pure seed over the simulated time.",
+   "access ('Material flow, within reach'): the live microkinetics from the seed decide what grows -- a species once its peak concentration or the flux into it reaches the threshold -- and only if some route from the seed reaches it with every barrier under the cutoff (the barrier that reacts within the cutoff time at the cutoff temperature, plus a 10 kcal/mol margin).",
+   "flux ('Material flow, no cutoff'): rounds only; each new reaction gets a recursive path search (MSMEP), TS optimization and IRC. Then k = (kBT/h)·exp(-ΔE‡/RT) both ways from one TS energy, so detailed balance holds; this is integrated from pure seed over the simulated time.",
    "A species is expanded once the material that flowed into it reaches the threshold (Bensberg–Reiher concentration flux). Growth stops when nothing new does.",
-   "auto: flux when rounds > 1, else window."
+   "window ('Energy window'): every new species within 'Expand species within' (kcal/mol) of the seed; no TSs needed."
   ],
-  "default": "auto (so window for 1 round). Flux defaults: 298.15 K, 3600 s, threshold 0.01.",
+  "default": "Material flow, within reach: flux threshold 0.01 at 298.15 K over 3600 s; the cutoff from the same conditions unless set (about 33 kcal/mol).",
   "caveats": [
    "Flux runs a TS search for every proposed reaction each round, which makes it far slower than window."
   ],
@@ -1871,23 +1875,8 @@
    "mepd/discovery/kinetics.py"
   ],
   "cli": "mepd discovery expand seed.xyz --steer flux --temperature 298.15 --time 3600 --flux-threshold 0.01",
-  "refs": "Reaction network expansion"
- },
- "param.graph-enumeration.connect": {
-  "title": "Connect by path search",
-  "does": "Runs a recursive path search for each proposed reaction that reached a new species. Edges then carry real paths, not just proposals.",
-  "how": [
-   "Runs mepd's recursive MSMEP over the species pairs, as in `mepd network-splits` (cli_common._run_msmep_pairs), capped at 'Max path searches'. It builds network.json from the resulting trees."
-  ],
-  "default": "Off: proposals come back fast. Run 'Find TS' on the ones you care about.",
-  "caveats": [
-   "With steer=flux the path searches run anyway (each round); this switch is then implied."
-  ],
-  "code": [
-   "mepd/discovery/cli_expand.py:expand",
-   "mepd/cli_common.py:_run_msmep_pairs"
-  ],
-  "cli": "mepd discovery expand seed.xyz --connect --max-pairs 50"
+  "refs": "Reaction network expansion",
+  "manual": "network-expansion"
  },
  "op.retrosynthesis": {
   "title": "Retrosynthesis",
@@ -3870,7 +3859,7 @@
    },
    {
     "option": "Your own QM/MM system (PDB/prmtop, TeraChem input)",
-    "where": "the add box's 'QM/MM system…' (Playground layout › Add), then select it"
+    "where": "the structure list's + Add › 'QM/MM system…', then select it"
    }
   ],
   "caveats": [
@@ -4028,5 +4017,36 @@
   ],
   "refs": "Bond orbitals",
   "manual": "orbitals#reading-them-for-design"
+ },
+ "param.graph-enumeration.connect_strategy": {
+  "title": "Connect by",
+  "does": "How each proposed reaction gets its transition state, so its barrier can steer the growth.",
+  "how": [
+   "Fast ('Material flow, within reach' only): one shared job queue; a TS optimization from the peak of a geodesic interpolation per reaction, and where that fails a path search whose pieces are queued as it splits. IRCs only for the steps the kinetics need.",
+   "Path search: a recursive path search (MSMEP), TS optimization and IRC for every proposed reaction.",
+   "No TSs ('Energy window' only): proposals come back as species and proposed reactions; run 'Find TS' on the ones you care about."
+  ],
+  "default": "Fast, with channel sampling (conformers and atom mappings) on the steps the kinetics need.",
+  "code": [
+   "mepd/discovery/cli_expand.py:expand",
+   "mepd/discovery/horizontal.py"
+  ],
+  "cli": "mepd discovery expand seed.xyz --steer access --connect-mode fast --refine channels",
+  "manual": "network-expansion"
+ },
+ "param.graph-enumeration.schedule": {
+  "title": "Schedule",
+  "does": "How the work is ordered.",
+  "how": [
+   "Live queue: no rounds. A species grows the moment the live kinetics reach it; every proposal batch, TS, IRC, channel search and steering single point runs as soon as it is asked for. Needs 'Material flow, within reach' and 'Fast'.",
+   "Rounds: propose for the species the last round reached, connect, check, sample, repeat."
+  ],
+  "default": "Live queue, until its kinetics ask for nothing more (or the time budget, or Stop & analyze).",
+  "code": [
+   "mepd/discovery/network_expansion.py:expand_network",
+   "mepd/discovery/horizontal.py"
+  ],
+  "cli": "mepd discovery expand seed.xyz --steer access --schedule async --time-budget 3600",
+  "manual": "network-expansion"
  }
 }

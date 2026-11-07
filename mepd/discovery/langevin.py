@@ -23,14 +23,30 @@ def capped(f: np.ndarray) -> np.ndarray:
     return f * (MAX_PULL / norm) if norm > MAX_PULL else f
 
 
-def pull_pairs(x: np.ndarray, pairs, k: float) -> np.ndarray:
+def pull_pairs(x: np.ndarray, pairs, k: float, masses=None) -> np.ndarray:
     """The gradient of pulling each pair's two atoms toward their moving
-    midpoint with a spring `k` (Eh/bohr^2), the force capped."""
+    midpoint with a spring `k` (Eh/bohr^2), the force capped (MAX_PULL). A
+    pair (i, j, A, B) of atoms of two molecules pushes the whole molecules
+    together instead: that force, along the line between i and j, on each
+    molecule (atom lists A and B), spread over its atoms by mass (`masses`),
+    so nothing is dragged out of either. i and j only set the direction:
+    which atoms meet is up to the molecules' orientation and the dynamics.
+    While i and j are further apart than 2 MAX_PULL / k (1.9 A at
+    k = 100 kcal/mol/A^2) the force is the cap, whatever `k`."""
     g = np.zeros_like(x)
-    for i, j in pairs:
+    for i, j, *mols in pairs:
         mid = 0.5 * (x[i] + x[j])
-        for a in (i, j):
-            g[a] += capped(k * (x[a] - mid))
+        if not mols:
+            for a in (i, j):
+                g[a] += capped(k * (x[a] - mid))
+            continue
+        if masses is None:
+            raise ValueError("pull_pairs: a pair of molecules (i, j, A, B) needs the atoms' masses")
+        f = capped(k * (x[i] - mid))
+        for atoms, sign in zip(mols, (1.0, -1.0)):
+            atoms = list(atoms)
+            w = np.asarray(masses, dtype=float)[atoms]
+            g[atoms] += sign * f * (w / w.sum())[:, None]
     return g
 
 
@@ -86,7 +102,9 @@ class LangevinMD:
 
     def step(self) -> bool:
         """One step; False if it failed (an SCF): the step is taken back and the
-        velocities halved. Raises after more than 20 failures in a row."""
+        velocities halved. Raises after more than 20 failures in a row. The
+        bias is added outside the retry: a pull that raises is no SCF failure,
+        and raises at once."""
         m = self.masses[:, None]
         c1 = math.exp(-self.friction * self.dt)
         c2 = np.sqrt((1 - c1 * c1) * KB * self.T / self.masses)[:, None]
@@ -96,8 +114,7 @@ class LangevinMD:
             self.pos = self.pos + 0.5 * self.dt * self.vel
             self.vel = c1 * self.vel + c2 * self.rng.normal(size=self.vel.shape)
             self.pos = self.pos + 0.5 * self.dt * self.vel
-            self.energy, self.grad = self.forces(self.pos)
-            self.vel -= 0.5 * self.dt * ACC * self.grad / m
+            energy, grad = self.forces(self.pos, biased=False)
             if not np.all(np.isfinite(self.pos)):
                 raise FloatingPointError("non-finite positions")
         except Exception:
@@ -108,6 +125,9 @@ class LangevinMD:
             if self.failures > 20:
                 raise
             return False
+        self.energy = energy
+        self.grad = grad + self.bias(self.pos) if self.bias is not None else grad
+        self.vel -= 0.5 * self.dt * ACC * self.grad / m
         self.failures = 0
         return True
 

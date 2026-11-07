@@ -10,6 +10,121 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web: the Landscape follows Kinetics.** It used to draw the last Kinetics run and stay there: a mixture or temperature changed in the Kinetics form without Run, or a network growing (steps found, moved to their real pair, checked), left it showing an older answer with no sign. Now both views share one run, and the Landscape runs the kinetics again by itself when Kinetics' current settings or the network differ from what it drew (at most every 10 s while a run grows the network), the old diagram greyed meanwhile; its footer names the starting mixture.
+
+- **A running expansion's step whose IRC joins other species goes to them.** The explorer reports a step under the pair it searched before its IRC is checked; when the IRC's ends (read by molecular graph) are other species, the step leaves that pair's edge, saying where its IRC runs, and joins the edge of the two species it does connect (barriers from its TS's energy) once the run has both. Before, it stayed on the searched edge as unverified: the Wittig run's "ylide + acetone -> phosphine oxide + isobutylene" carried the oxaphosphetane's ring-opening TS (1.1 kcal/mol), the reaction page played that, and kinetics including unverified barriers used it.
+
+- **Explorer (async): a generator's proposal job reserves no more workers than it runs.** With `n_seeds` set, the reactor runs that many trajectories at a time, but its job held `parallel` (= `--workers`) slots: 4 MD runs with 10 workers showed 10/10 busy and kept the other 6 from anything else.
+
+### Changed
+
+- **Kinetics from an expansion's own start just works.** A network expansion queues one minimization job (per charge and spin) for the molecules of its mixtures that have no energy at its level -- its start's too, e.g. acetone and an ylide it was run on together -- as they appear: kinetics counts a reaction from its molecules apart, and the run optimizes each mixture whole. The Kinetics page now says first when the starting mixture is not in the model and why (no energy yet: **Compute them**), and when steps of a running expansion are left out until their IRC check (**Include them now**).
+- **Web: the network expansion's steering cards say what they do.** "Material flow, within reach" (the default: the live kinetics' flux threshold, and only species some route reaches under the barrier cutoff), "Material flow, no cutoff" (the older rounds-only mode, a full path search per reaction) and "Energy window"; the manual and "?" entries say the same.
+
+- **Web: network expansion in four stages, each chosen on its own.** The card's fixed presets (Bond rules, CREST msreact, "Reactor, live", Nanoreactor) are gone: **Grow** (bond enumeration, CREST msreact, collision MD, Reactor MD, the nanoreactor on QM/MM), **Connect** (Fast, path search, no TSs, plus channel sampling), **Steer** (within reach, where material flows, energy window) and **Run** (live queue or rounds) are chosen as cards, with the combinations the explorer cannot run greyed out with the reason; a stage moves to the nearest allowed choice when another rules it out, and says so. The grower is always named on the command line (the CLI's 'auto' picked an MD generator under access steering, so "Bond rules" with access steering ran collisions). A manual page (/manual/network-expansion) and the "?" entries explain each choice.
+- **Explorer (async): the reactor's products join the network after every MD batch.** Each batch's products are minimized and their pairs queued for TS searches at once, while the species' next batch runs; batches, seeds and the convergence rule are unchanged (`reactor_generator.reactor_batch`, a generator's optional `propose_batch`). Before, nothing grew until all of a species' batches had converged. A species interrupted mid-batches restarts its batches on resume.
+
+- **Web: a reaction page goes back where it was opened from.** Its breadcrumb names that page (Landscape, Kinetics, Reactions, a live network, Explore) and returns there, as does Esc (now at once: the page's own selection no longer takes a first press); the page's address keeps it (`?from=`), so reload and Back do too. Back on the Landscape, the route opened last is marked.
+
+- **Network expansions: only steps whose IRC joins their two species count; the reaction page plays the step you opened; species no Lewis structure fits are drawn.**
+  - A running expansion reports each TS under the pair it searched, before its IRC is checked; the check then moves it to the species its IRC really joins, or drops it (e.g. a search that slid into acetaldehyde's methyl rotation, a "TS" ~100 kcal/mol below the species it was reported between: the negative barriers). The web took those reports as they came. Now a live step is unverified (kinetics leaves it out by default) until its IRC's ends read as its two species (by molecular graph, `mepd/web/step_check.py`); the finished or stopped run's summary settles every edge: its real steps on their real pairs, and an edge that held a dropped or moved step back to proposed, saying why. Workspaces from before are set right when opened.
+  - Each species' final, lowest structure from the run becomes a conformer of its node (the barrier floor), so no TS sits below the species it starts from.
+  - A path's highest point (no TS found) reads as an upper bound on the reaction page.
+  - The reaction page plays the very step on that edge (its own IRC, `GET /api/edges/<id>/step-path`, energies from its start's node), not the run's lowest path. Opened from the Landscape, it reads the route's direction and shows the kinetics' barrier beside the path's.
+  - The live network shows a finished run's real steps only, and species no Lewis structure fits (ylides, hypervalent atoms: the reactor's "unusual bonding") drawn from their geometry with their formula (`mepd/web/depict_graph.py`). While the reactor's MD runs, "Reactor found so far" draws its products from the frames they formed in.
+
+- **Network expansions count in kinetics.** After an expansion (finished, or stopped with Stop & analyze), Kinetics said no reaction had a barrier.
+  - An expansion's steps now keep their TS's own energy on their edges (kinetics measures every barrier from it), from the live step events and from the finished summary. Workspaces from before get it back when opened: from the summary, and for the steps a stopped run's summary leaves out, from the run's step events.
+  - The expansion's own optimized seed gives the seed's node its energy at the run's level (one more conformer). A seed that came in without one (a reactor's molecule, a drawing) dropped out of kinetics, and with it everything it starts.
+  - Reactions to separated molecules (an expansion optimizes each product mixture as a whole) need each molecule's energy: Kinetics now names the molecules missing one and offers **Compute them** (one minimization per charge and multiplicity, seconds with g-xTB), then **Run kinetics again**.
+  - A startup backfill no longer overwrites a known TS energy with "not found".
+
+- **Web: the live network's steps say what they are, and its key reads in words.**
+  - Steps end at the cards with an arrow the way material flows. The routes that carry material are drawn strong, with their barrier on them ("‡ 28.6"); steps that carry next to nothing fade back. In runs that did not record flows, the likely routes are marked instead: from the start to each species holding material, the path whose highest barrier is lowest.
+  - Hovering a step shows it in words: from → to, the barrier and the barrier back, ΔG, the share of what leaves its start that goes that way, the energy level and the IRC check.
+  - The key sits under the graph, each entry with a drawn sample, and lists only what the frame shows. Dashed lines and cards (g-xTB energy, DFT check to come) appear only in runs that have DFT energies.
+  - From the live network, a simulation opens on itself in the calculation's Live tab (played and scrolled into view). The Live tab's kinetics table shows perceived SMILES for species the explorer left without one.
+
+- **Web: a network expansion lands on its live network, which grows while it runs.**
+  - Opening a network expansion (from Calculations, or right after Run) shows the live network, not the calculation page. Species appear as the explorer finds them, from the first one, before any kinetics.
+  - Works with the explorer as it is on this branch: its kinetics refreshes are recorded with the job's clock, steps come from `live/events.jsonl`, and SMILES the explorer leaves empty (radicals) are perceived from each species' xyz (cached in `live/perceived_smiles.json`).
+  - The side panel says what the explorer is doing now (busy workers, what each runs, work done) and has the ways in for a closer look: Reactor MD, Path searches, Results, Log, and the latest simulations as reactant → product, each opening its live view. The calculation page links back ("‹ The live network").
+  - Runs without DFT steering are no longer greyed as "steering pending". Small networks stay together (capped spring length).
+
+- **Web: the live network draws species as their structures, and works for any run.**
+  - Each species is its 2D structure on a card whose area grows with the material it held (46–112 px). Hover a card for a large view with its name, energy and peak. Labels sit above the cards.
+  - The side panel is "What forms" for every run: the main products as structures, named where they have an everyday name ("water + CO"), with their shares and how much of the start is left. A benchmark's measured selectivity shows only underneath, as validation.
+  - A benchmark's named product (e.g. endo, both mirror twins) is one card. Species the explorer could not identify show only once they hold material.
+  - Runs recorded before per-step flux (`step_list`) replay too: species from the kinetics snapshots, steps from `events.jsonl` (one per pair, its lowest barrier), edges without flux.
+  - Three more examples from different chemistry: formic acid, acetic acid and methyl formate breaking down (1500 K explorer runs).
+
+- **Web: the live network.** An explorer run (`mepd discovery expand`) watched as it grows, corrects itself and moves material: "Watch the network ›" on its calculation page, or the new example "Cp + methyl acrylate: watch the network grow" on Home.
+  - One layout for the whole run, so species appear in place, newcomers ringed.
+  - Node area grows with the material a species held. The starting mixture is a fixed mark, and a benchmark's products are named (endo, exo).
+  - Open steps are coloured by the barrier the way material flows, as wide as their net flux, with dots flowing along them. Closed and replaced steps stay as faint dashes, and corrections flash on what they moved.
+  - A selectivity gauge with the experimental range (benchmarks), counts, and a feed of corrections. A replay slider covers the whole run.
+  - Frames whose energies wait for their DFT single points are greyed and tagged "steering pending". The end state is the last steered frame.
+  - Running jobs record each kinetics refresh as a frame (`live/network_frames.jsonl`, plus `live/selectivity_frames.jsonl`). Endpoints: `GET /api/jobs/<id>/network-timeline` and `GET /api/examples/<slug>/timeline`. Replays pack with `python -m mepd.web.live_network` (`mepd/web/live_network.py`).
+
+- **Web: the Reactor's Collide is the unbiased network generator's move.**
+  - Between molecules, it pushes the two whole molecules into each other, where it used to drag one atom of each to their midpoint. The push is a capped force along one atom of each, spread over each molecule by mass (`langevin.pull_pairs` with `(i, j, A, B)`). With one molecule, or 30 % of the time, two of its atoms are pulled together.
+  - The pick is `reactor_generator.collision_pair` itself, run inside the reactor process and timed in simulated fs (300 fs pushes). "keep colliding" repeats it on the generator's own schedule (gaps of ~200 fs).
+  - The page shows the two molecules being pushed (blue and orange) and the line the push acts along.
+  - New reactor commands `collide` and `auto_collide`. The browser-side picker is gone.
+
+- **Web: theme switch.** Settings has Auto, Light and Dark, next to "All tools".
+
+- **Web: a calculation reads as one sentence.** Each tool's card opens on what it will do, on what, and at which level: "Transition state from chloride + CBr to bromide + chloromethane at gxtb". It also shows how long it usually takes here (the median of earlier runs). Every setting stays one click away under Settings, which marks how many differ from the defaults.
+
+- **Web: Explore › Landscape, the routes that matter as one energy diagram.**
+  - Built from the last kinetics run: the starting mixture is a bar, and every step that carries material (at least 1 % of the busiest) is a hump over its TS to the next mixture.
+  - Line width shows how much went that way, colour the barrier band, and each product carries its final share. Energies are relative to the start, at the basis the kinetics used.
+  - Click a route to open its reaction.
+  - The SN2 example now ships with its molecules optimized, so kinetics runs on it.
+
+- **Web: Design's Move tool.**
+  - Drag an atom to place it by hand: in the screen plane, or toward and away from you with Alt-drag. Nothing else moves or relaxes, so a TS guess or a contact stays as drawn.
+  - New design edit `move` (`mepd/web/design.py`).
+
+- **Web: the inspector has three tabs: Tools · Results · Method.**
+  - **Tools:** what you can run on the selection.
+  - **Results:** what is known (the detail, the 3D view, its calculations).
+  - **Method:** how the selection's numbers were computed: level of theory, profile, wall time, what the calculation does and its pipeline, the settings that differ from the defaults (all of them on demand), caveats, and the command that reproduces it, with links to the calculation, its files, the manual and what to cite.
+  - The chosen tab stays as the selection changes.
+
+- **Web: reaction pages and the reaction player.**
+  - Double-click a reaction (in Explore or the list), or use "Open: play its path", for its own page at `#/reaction/<edge>`.
+  - The page shows the forward and reverse barriers and plays the path: 3D, energy profile and the bonds that form (blue) and break (orange), with their live lengths, all on one scrubber.
+  - Space plays and the arrow keys step; there are Start / TS / End jumps.
+
+- **Web: Explore shows what matters.**
+  - Edges are coloured by barrier on one scale: under 10 kcal/mol teal, 10–20 amber, above 20 red and thinner.
+  - After a kinetics run, a node's area grows with the material that passes through it and an edge's width with its net extent, both capped.
+  - Reactions and Kinetics are now the canvas's view tabs, so the Analyze page lost its own switch.
+
+- **Web: Home has three doors.**
+  - **Learn:** the step-by-step path, as before.
+  - **Start working:** type a SMILES, a name or a reaction and land in Explore; recent sessions; an "All tools" switch.
+  - **Examples:** finished studies that open as your own copy. The first is the SN2 study.
+  - Examples ship in `mepd/web/showcase/` and are packed with `python -m mepd.web.showcase_tool pack`; `GET /api/examples`, `POST /api/examples/<slug>/open`.
+- **Web: lighter Explore.**
+  - Structures show one status mark (● checked minimum, ◌ not optimized, ‡ TS, ✕ failed), with the words in the tooltip.
+  - The graph toolbar is icons.
+  - The legend has three entries.
+  - With nothing selected, the right panel shows the workspace's counts and its fastest step.
+
+- **Web: the Workbench shell.** One screen instead of seven top tabs.
+  - **Layout:** a thin top bar (mepd → Home, the workspace, Learn, Settings); the structure list and inspector only on the workspace pages (Explore, Reactions, Kinetics, Calculations); a Calculations bar along the bottom (what is running, the level of theory, units).
+  - **Drawers:** Settings (profiles, level of theory) and Learn (manual, references, your tools) open over the canvas, so the page underneath stays.
+  - **Modes:** Design and the reactor get a mode bar with one way out (Done / Exit).
+  - **Addresses:** every page has one (`#/explore`, `#/calc/<id>/live`, `#/design?d=settings`, …), so it can be linked, bookmarked and reloaded. Back and forward work as before.
+  - **Esc:** goes up one level: the selection, then a drawer, then the page.
+  - **Quests:** they still unlock tools, but no longer lock whole pages or bounce to the first screen.
+  - **Removed:** the Playground layout and its font, because the Workbench replaces both layouts.
+  - Design tokens (spacing, type, motion, chart colours) start in `static/shell.css`.
+
 ### Added
 
 - **qcopt, AFH's optimizer, for g-xTB minimizations, TS searches and IRCs** (`GXTBCalculator(minimizer="qcopt",
@@ -46,6 +161,26 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
     for itself on the 200 minimizations), or from g-xTB's with `hessian_every`; TS searches and IRCs start from
     g-xTB's Hessian.
   - Needs Python 3.11 or later, like the current qc* packages; the `gxtb` and `ase` extras install it there.
+
+- **Explorer, async: the rotamers of every TS the kinetics use.** Once a step's TS has its IRC (open within the
+  cutoff, touching a populated species), its rotatable bonds outside the reacting core (the bonds its IRC ends
+  don't share) are turned -- 180 degrees, or 120 and 240 when both atoms are saturated; each bond alone and each
+  pair together -- and each guess is a TS search of the queue (`rotamer` jobs, rank 1, in its forked workers).
+  A rotamer TS that keeps the core's distances (0.3 A, as `mepd conformers --ts`) is one more TS of the step,
+  IRC-checked like any; it gets no rotamers of its own, and a failed IRC drops it without a path search.
+  `mepd.discovery.network_expansion.ts_rotamer_guesses`.
+  - Why: an adduct's single TS is the conformer its proposal happened to be in. In the F0007 baseline (Cp +
+    methyl acrylate, 10 runs) the endo step went through endo s-trans (1.5 kcal/mol over endo s-cis) and the exo
+    step through the ester-E conformer (7 kcal/mol over exo s-cis): +5.5 kcal/mol on endo:exo. Turning those
+    two TSs' acrylate and ester bonds (6 TS searches, ~3 s each with axtb) gives endo s-cis, exo s-cis and exo
+    s-trans, the four conformers of the tracing ceiling; conformer-pair channel sampling of the same steps
+    gave endo s-cis once in 16 pairs.
+
+- **Explorer, async: a species first found as an IRC's end is connected from the species the search was asked
+  from.** When a fast TS (or a conformer pair's) of pair (i, j) has an IRC ending in a species no proposal made,
+  within the cutoff, the pair (i, that species) joins the queue like a proposal's. In the develop baseline 11 of
+  the 16 channels found but not connected (F0007 6, isoprene_ma 2, cb_diester 2, cp_mbl 1) were such species:
+  adducts that entered only as the end of a TS between two other species, 48-81 kcal/mol up.
 
 - **g-xTB from axtb, in process** (`[gxtb_engine_kwds] backend = "axtb"`, with `axtb_conventions = "gxtb"` to
   reproduce the g-xTB 2.0.1 program). axtb (atomsforhumanity/axtb) is AFH's Rust reimplementation of g-xTB 2.0.1:
@@ -140,8 +275,9 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   most `unseen` (5%) of its events gave a product seen only once (Good-Turing), at most `max_batches` (4).
 - **Explorer: the `reactor` generator, the interactive Reactor unattended** (`mepd/discovery/reactor_generator.py`).
   Langevin MD on GFN2-xTB in the nanoreactor's wall with the piston swinging it (the Reactor's cycle), while
-  Collide pulls two atoms picked at random toward their moving midpoint every so often (200 fs apart on
-  average, 300 fs each). Nothing chooses the chemistry; events are read with the nanoreactor's detection,
+  Collide every so often (200 fs apart on average, 300 fs each) pushes two molecules picked at random
+  together, or pulls two atoms of one molecule toward their moving midpoint (whole molecules: see Changed).
+  Nothing chooses the chemistry; events are read with the nanoreactor's detection,
   and the structure after each is a proposal. Within one molecule any pair two or more bonds apart may be
   pulled, H-H included (the Reactor's own rule left formic acid one pair, an H shift). `--generator reactor`;
   formic acid at 1500 K: CO + H2O and CO2 + H2 from 16 trajectories of 5 ps in ~10 s.
@@ -504,6 +640,41 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   2026-11-05). Any two molecules are now equally likely. Generator trajectories of seeds with several molecules
   change, since one random draw fewer is used per pick.
 
+- **Collide and the reactor push whole molecules into each other; the [4+2] double pulls are gone.** Between two
+  molecules a pull no longer drags one atom of A onto one atom of B: the capped force along the line between two
+  atoms, one of each (collide: every such pair, H included; the reactor: a random heavy atom of each), acts on each
+  whole molecule, spread over its atoms by mass (`langevin.pull_pairs` with `(i, j, A, B)`). The two atoms only set
+  the direction: until they are within 2 x cap / `k` (1.9 A at the default `k`) the force is the cap (95 kcal/mol/A),
+  a constant push, and which atoms meet is up to the orientation and the dynamics. Within one molecule the atom pull
+  stays (formic acid without pulls: no reaction in 48 trajectories of 5 ps at 2200 K).
+  `collide_generator.cycloaddition_moves`, a reaction-class template, is removed. `LangevinMD.step` adds the bias
+  outside its SCF retry, so a pull that raises is not retried as an SCF failure (a test checks that pushes between
+  molecules lose no step of a reactor trajectory). Measured with 300 fs pulls unless said; cyclopentadiene + methyl
+  acrylate (F0007), GFN2-xTB:
+  - one collision at 1000 K: endo and exo adducts each in 3% of collisions (8% and 6% with 600 fs pulls). Pushing
+    the two centres of mass together instead sends every encounter at the acrylate's ester: endo 8, exo 1 in 288
+    collisions, the hetero-Diels-Alder on C=O in a quarter.
+  - collide generator (96 collisions, 1000 K): both adducts proposed in 4 of 10 runs (9 of 10 with `pull_fs=600`).
+  - reactor (5 ps trajectories): the Diels-Alder adduct is now the seed's most frequent first reaction; endo in 21%
+    and exo in 6% of trajectories at 1000 K, 14% and 3% at 1500 K, 13% and 0% at 2200 K (before: 2 adducts in 72
+    trajectories of 10 ps at 1200-2200 K, both exo).
+  - Formic acid: pulls within one molecule are unchanged, but once a molecule has come apart (a reaction's products,
+    or a hot H briefly beyond bonding distance) its pieces are pushed together as wholes too, so a monomer's
+    trajectory matches the old one only until then (seed 7 at 2200 K: up to 0.62 ps). Monomer, CO + H2O: in 24% of
+    trajectories at 2200 K (before 19%), 3% at 1500 K (before 9%; most of it came from pulling the H2 of CO2 + H2
+    back onto CO2). (HCOOH)4 at 2200 K: 3.1 events per 5 ps instead of 4.6; CO + H2O proposed from 16 trajectories in
+    84% of resamplings (before 100%), from 32 in 98%; the seed's reactions now nearly converge (10% seen once, before
+    ~30%). Cost per trajectory unchanged.
+- **Explorer, async: the queue refines the steps the flux runs through first.** Channel sampling of a step and
+  the TS searches of its conformer pairs wait in order of the height above the seed of the step's lowest TS so
+  far -- with none yet (its single TS failed or belongs to another step), of the higher of its two species, which
+  no TS between them can lie below -- asked each time the queue orders its jobs
+  (`HorizontalConnector.submit/add_channel(..., priority=)`, a number or a function); proposals of species after
+  the seed wait behind them (rank 3, with path-search pieces). In the F0007 baseline the seed's 35-42 channel jobs were queued with its proposals, before any of
+  their TSs existed, and ran in species order: the endo and exo ones waited 4-12 minutes; and in 9 of 10 runs
+  the reactor for the most populated product then took all 32 workers for the budget's last 6-13 minutes,
+  while the TS searches of 213-396 conformer pairs never ran.
+
 - **Reactor generator: products the access cutoff can't reach don't hold up its convergence.** With `--steer access`,
   the explorer passes the reactor what is left of the access cutoff above the species it expands; a product whose
   quenched GFN2-xTB energy is further above that species (a step to it can't be lower than its reaction energy) is
@@ -799,6 +970,15 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   `.files` instead of `.input_file` and `.geometry_file`, so `OrcaEngine` failed with an `AttributeError`. It now
   writes every file the codec returns, and still reads the old attributes on older qccodec (`tests/test_orca_engine.py`
   passes on both).
+
+- **`mepd optimize` on a single atom** (an ion such as Cl⁻, Br⁻, H⁻) failed with an AssertionError in the optimizer, which left halide ions without energies and kept them out of kinetics. An atom now gets one single point and counts as a minimum by definition (no Hessian).
+
+- **Explorer, async: a run stopped by `max_species` ends with what it has**, as one out of time does: no IRC checks or
+  whole channel searches after its queue (unbudgeted), and no steering single point queued into the closed queue
+  (`AttributeError: 'NoneType' object has no attribute 'submit'`). F0007 with a version of this branch that
+  channel-sampled every IRC-end pair reached 200 species at 1459 s of 1800, then ran channel searches for 40 minutes
+  and failed without a summary.
+
 - **Kinetics crashed on networks slower than their time span** ("Values in `t_eval` are not within `t_span`",
   `mepd.discovery.kinetics.simulate` and `mepd.conditions.simulate_first_order`). With only slow steps, as just
   after an explorer's first TS, the time samples ran from `time_s` to `time_s`, and `geomspace` could put one a

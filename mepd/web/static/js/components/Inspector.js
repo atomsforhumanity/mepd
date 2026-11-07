@@ -1,11 +1,12 @@
 // Right panel: what is selected, what we know about it, what can be run on it.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, openJob, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { clearSelection, openJob, openReaction, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { complexesGoingWith, complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
 import { ActionPanel } from './Actions.js';
+import { MethodPane, methodJobFor } from './Method.js';
 import { QuestIcon } from '../icons.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
@@ -400,18 +401,59 @@ function InspectorProducts({ sids }) {
   return html`<${ProductPicker} reactants=${reactants} onReactants=${setReactants} />`;
 }
 
+// On Explore, a selected reaction opens on its own page (its path as a movie).
+function openBtn(eid) {
+  if (state.view.tab === 'reaction') return null;
+  return html`<button class="bulb open-rxn" onClick=${() => openReaction(eid)}>
+    <span class="bulb-mark" aria-hidden="true">▶</span><b>Open: play its path</b></button>`;
+}
+
+// The empty inspector: big counts, the lowest verified barrier as the thing
+// to look at next, and how to start when there is nothing yet.
+function WorkspaceSummary({ workspace }) {
+  const jobs = useStore((s) => s.jobs);
+  const ss = Object.values(workspace.structures || {}).filter((r) => isSpecies(r));
+  const es = Object.values(workspace.edges || {}).filter((e) => workspace.structures?.[e.source] && workspace.structures?.[e.target]);
+  let best = null;
+  for (const e of es) {
+    const st = edgeStatus(e, jobs);
+    if (st.barrier != null && st.barrier >= 0 && (!best || st.barrier < best.v)) best = { e, v: st.barrier };
+  }
+  const name = (id) => workspace.structures?.[id]?.name || id;
+  const hide = () => { prefs.set('hideHowTo', true); set({ howToHidden: true }); };
+  return html`<aside class="inspector empty ws-summary">
+    <div class="pane-head"><span class="section-title">Workspace</span>
+      <button class="btn-icon" title="Hide this panel (bring it back with ? on the graph)" aria-label="Hide" onClick=${hide}>✕</button></div>
+    <div class="inspector-scroll">
+      <div class="big-counts">
+        <span><b>${ss.length}</b>molecules</span>
+        <span><b>${es.length}</b>reactions</span>
+        <span><b>${Object.keys(jobs).length}</b>calculations</span>
+      </div>
+      ${best ? html`<button class="bulb" onClick=${() => openReaction(best.e.id)} title=${`${name(best.e.source)} → ${name(best.e.target)}`}>
+          <span class="bulb-mark" aria-hidden="true">◆</span><b>Watch the fastest step</b><span class="bulb-num">${fmtKcal(best.v)}</span></button>`
+        : !ss.length ? html`<button class="bulb" onClick=${() => set({ view: { tab: 'welcome', jobId: null } })}>
+          <span class="bulb-mark" aria-hidden="true">◆</span><b>Add a molecule</b></button>` : null}
+      <p class="small muted ws-tip">Click anything to see what you can do with it. Shift-click for several.</p>
+    </div>
+  </aside>`;
+}
+
 export function Inspector() {
   const phone = usePhone();
   const map = useMap();
   // On phones the sheet opens on what you came for -- the calculations -- with
   // the viewer/properties one tap away; desktop shows both stacked.
-  const [pane, setPane] = useState('run');
+  // Tools (what you can do), Results (what is known), Method (how it was computed):
+  // the choice stays as the selection changes. A reaction opens on its results.
+  const itab = useStore((s) => s.inspectorTab || 'tools');
+  const setItab = (t) => { prefs.set('inspectorTab', t); set({ inspectorTab: t }); };
   const sel = useStore((s) => s.selection);
   // Phones show this panel as a bottom sheet; tapping its header folds it
   // down to a bar (to look at the graph) and back up. Re-opens on every new
   // selection.
   const [collapsed, setCollapsed] = useState(false);
-  useEffect(() => { setCollapsed(false); setPane('run'); }, [sel]);
+  useEffect(() => { setCollapsed(false); }, [sel]);
   const structures = useStore((s) => s.workspace.structures);
   const edges = useStore((s) => s.workspace.edges);
   const workspace = useStore((s) => s.workspace);
@@ -419,28 +461,8 @@ export function Inspector() {
 
   let head, body = null, moreCalcs = false, extras = [], tail = null, links = [];   // links: above both phone panes
   if (!nS && !nE) {
-    // Reactions with a barrier in the graph: explain what is drawn, not how to start.
-    const network = Object.values(workspace.reactions || {}).some((r) => r.edge && workspace.edges[r.edge]);
-    return html`<aside class="inspector empty">
-      <div class="pane-head"><h2>${network ? 'Explore' : 'How it works'}</h2>
-        <button class="btn-icon" title="Hide this panel (bring it back with ? on the graph)" aria-label="Hide"
-          onClick=${() => { prefs.set('hideHowTo', true); set({ howToHidden: true }); }}>✕</button></div>
-      <div class="empty-hint">
-        ${network ? html`<ul class="graph-key">
-          <li><svg viewBox="0 0 64 24" aria-hidden="true"><line x1="4" y1="12" x2="56" y2="12" class="gk-arrow" /><path d="M54,7 L62,12 L54,17 z" class="gk-head" /><text x="30" y="9" text-anchor="middle">5.7</text></svg>
-            <span>A reaction and its barrier, kcal/mol</span></li>
-          <li><svg viewBox="0 0 64 24" aria-hidden="true"><circle cx="32" cy="12" r="9" class="gk-cx" /><text x="32" y="16" text-anchor="middle" class="gk-cxn">2</text></svg>
-            <span>Molecules together</span></li>
-          <li><svg viewBox="0 0 64 24" aria-hidden="true"><rect x="20" y="3" width="24" height="18" rx="3" class="gk-node" /><circle cx="48" cy="18" r="5" class="gk-tap" /></svg>
-            <span>Click anything: what you can do with it</span></li>
-        </ul>` : html`<ol class="steps">
-          <li><b>Add molecules</b><span>On the left, or <a href="#" onClick=${(e) => { e.preventDefault(); set({ view: { tab: 'welcome', jobId: null } }); }}>get started</a> with one.</span></li>
-          <li><b>Select</b><span>One molecule to explore around it; two, or an arrow, to connect them.</span></li>
-          <li><b>Run a calculation</b><span>What you can do with your selection appears here.</span></li>
-        </ol>`}
-        <p class="small muted">Shift-click to select several.</p>
-      </div>
-    </aside>`;
+    // Nothing selected: the workspace at a glance, and one thing worth doing next.
+    return html`<${WorkspaceSummary} workspace=${workspace} />`;
   }
   if (nS === 1 && !nE && isComplex(structures[sel.structures[0]])) {
     head = 'Complex';
@@ -458,12 +480,12 @@ export function Inspector() {
     head = 'Reaction';
     const r = reactionOfEdge(workspace, sel.edges[0]);
     extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
-    body = html`<${ReactionCard} key=${r.id} r=${r} compact />
+    body = html`${openBtn(sel.edges[0])}<${ReactionCard} key=${r.id} r=${r} compact />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
     head = 'Edge';
-    body = html`<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
+    body = html`${openBtn(sel.edges[0])}<${EdgeDetail} edge=${edges[sel.edges[0]]} />`;
     extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
   } else if (nS && nE) {
     head = 'Mixed selection';
@@ -506,17 +528,19 @@ export function Inspector() {
         <h2>${head}${collapsed ? html` <span class="small muted">· tap to show options</span>` : ''}</h2>
         <button class="btn-icon" title="Clear selection (Esc)" onClick=${(e) => { e.stopPropagation(); clearSelection(); }}>✕</button>
       </div>
-      ${phone && html`<div class="segmented wide sheet-tabs">
-        <button class=${pane === 'run' ? 'on' : ''} onClick=${() => setPane('run')}>Calculations</button>
-        <button class=${pane === 'details' ? 'on' : ''} onClick=${() => setPane('details')}>Details</button>
-      </div>`}
+      <div class="insp-top">${body}</div>
+      <nav class="insp-tabs" role="tablist">
+        ${[['tools', 'Tools'], ['results', 'Results'], ['method', 'Method']].map(([k, l]) => html`<button role="tab" aria-selected=${itab === k}
+          class=${itab === k ? 'on' : ''} onClick=${() => setItab(k)}>${l}</button>`)}
+      </nav>
       <div class="inspector-scroll">
-        <${NavLinks} links=${links} />
-        ${(!phone || pane === 'details') && body}
-        ${(!phone || pane === 'run') && (moreCalcs
-          ? html`<details class="more-calcs"><summary>More calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
-          : html`<${ActionPanel} sel=${sel} extras=${extras} />`)}
-        ${(!phone || pane === 'details') && tail}
+        ${itab === 'tools' && html`<${NavLinks} links=${links} />
+          ${moreCalcs
+            ? html`<details class="more-calcs" open><summary>Calculations on this reaction's molecules</summary><${ActionPanel} sel=${sel} extras=${extras} /></details>`
+            : html`<${ActionPanel} sel=${sel} extras=${extras} />`}`}
+        ${itab === 'results' && (tail || html`<p class="small muted">No calculations on this selection yet.</p>`)}
+        ${itab === 'method' && html`<${MethodPane} jobId=${methodJobFor(sel, workspace, state.jobs)}
+          rec=${nS === 1 && !nE ? structures[sel.structures[0]] : null} />`}
       </div>
     </aside>`;
 }

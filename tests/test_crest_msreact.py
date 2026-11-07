@@ -32,21 +32,23 @@ def test_msreact_fragments_keep_the_atoms_in_order(tmp_path):
     assert all(list(p.symbols) == list(seed.symbols) and p.charge == 0 for p in products)
 
 
-def test_the_network_card_offers_five_methods_and_msreact_builds_its_command():
+def test_the_network_card_is_one_expansion_in_stages_and_msreact_builds_its_command():
     methods = [(op, m) for op in OPERATIONS.values() if (op.family or {}).get("key") == "network" for m in op.methods]
     ordered = sorted(methods, key=lambda x: x[1]["rank"])
     labels = [m["label"] for _, m in ordered if not m.get("group") and not m.get("qmmm_only")]
-    assert labels == ["Nanoreactor", "Bond rules", "CREST msreact", "Hessian sampling", "Reactor, live",
-                      "Basin hopping"]
-    # On a QM/MM system the nanoreactor is a generator of the expansion (its own operation needs molecules).
-    assert [m["label"] for _, m in ordered if m.get("qmmm_only")] == ["Nanoreactor"]
+    # One network expansion (its stages chosen in its form), beside the other ways to explore.
+    assert labels == ["Network expansion", "Nanoreactor", "Hessian sampling", "Basin hopping"]
+    op = OPERATIONS["graph-enumeration"]
+    props = op.describe()["schema"]["properties"]
+    assert {k: v["stage"] for k, v in props.items() if v.get("cards")} == {
+        "generator": "Grow", "connect_strategy": "Connect", "steer": "Steer", "schedule": "Run"}
+    assert set(props["generator"]["cards"]) == {"bond-rules", "crest-msreact", "collide", "reactor", "nanoreactor"}
     # Retrosynthesis has its own card, with its methods.
     assert not [op for op, _ in ordered if op.key == "retrosynthesis"]
     retro = OPERATIONS["retrosynthesis"]
     assert retro.family["key"] == "retrosynthesis"
     assert [m["label"] for m in retro.methods] == ["Templates", "ReactionT5", "Local LLM", "AiZynthFinder"]
     assert (OPERATIONS["nanoreactor"].family or {}).get("key") == "network"   # its own operation, on the same card
-    op = OPERATIONS["graph-enumeration"]
     p = op.parse_params({"generator": "crest-msreact", "msreact_mode": "isomers", "msreact_nshifts": 2})
 
     class Ctx:
@@ -64,7 +66,43 @@ def test_the_network_card_offers_five_methods_and_msreact_builds_its_command():
     i = argv.index("--generator")
     assert argv[i + 1] == "crest-msreact" and "mode=isomers" in argv and "nshifts=2" in argv
     assert "--n-break" not in argv and argv[-2:] == ["--output", "/out"]
-    assert "--generator" not in op.build(Ctx(), op.parse_params({}))   # bond rules: the CLI default
+    # Bond enumeration is named too: the CLI's 'auto' would pick an MD generator under access steering.
+    argv = op.build(Ctx(), op.parse_params({}))
+    assert argv[argv.index("--generator") + 1] == "bond-rules"
+
+
+def test_every_stage_combination_builds_real_flags_and_impossible_ones_settle():
+    from mepd.web.operations import _cli_options
+
+    op = OPERATIONS["graph-enumeration"]
+
+    class Ctx:
+        output_dir = "/out"
+        structures = ["s_1"]
+
+        def snapshot_structure(self, sid, name):
+            return f"/in/{name}.xyz"
+
+        def common_flags(self):
+            return []
+
+    known = _cli_options(("discovery", "expand"))
+    for gen in ("bond-rules", "crest-msreact", "collide", "reactor"):
+        for steer in ("access", "flux", "window"):
+            for conn in ("fast", "path", "none"):
+                for sched in ("async", "rounds"):
+                    p = op.parse_params({"generator": gen, "steer": steer, "connect_strategy": conn, "schedule": sched})
+                    # what can't run together has moved to what can
+                    assert p.connect_strategy != "fast" or p.steer == "access"
+                    assert p.connect_strategy != "none" or p.steer == "window"
+                    assert p.schedule != "async" or (p.steer == "access" and p.connect_strategy == "fast")
+                    argv = op.build(Ctx(), p)
+                    assert not [w for w in argv if w.startswith("--") and w not in known], argv
+                    assert argv[argv.index("--generator") + 1] == gen
+                    if p.steer == "access":
+                        assert argv[argv.index("--connect-mode") + 1] == ("fast" if p.connect_strategy == "fast" else "full")
+                        assert argv[argv.index("--schedule") + 1] == p.schedule
+                    assert ("--connect" in argv) == (p.steer == "window" and p.connect_strategy == "path")
 
 
 def test_ts_and_channels_are_one_card():

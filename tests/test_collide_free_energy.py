@@ -20,6 +20,46 @@ def test_moves_pull_pairs_two_or_more_bonds_apart_and_push_a_bond_next_to_them()
     assert (4, 0, (1, 0)) in moves
 
 
+
+def test_a_collision_of_two_molecules_moves_them_whole_and_no_move_is_a_template(monkeypatch):
+    import mepd.discovery.collide_generator as cg
+    import mepd.discovery.langevin as lg
+
+    xyz = np.vstack([XYZ, XYZ + [6.0, 0.0, 0.0]])
+    # one move per atom pair (H included, within a molecule two or more bonds apart), each a single pull and
+    # at most one bond pushed apart: no move of two pulls at once (the [4+2] template is gone)
+    assert all(len(m) == 3 for m in cg.collision_moves(SYM * 2, xyz))
+    pulled, real = [], lg.pull_pairs
+    monkeypatch.setattr(lg, "pull_pairs",
+                        lambda x, pairs, k, masses=None: pulled.append(pairs) or real(x, pairs, k, masses))
+
+    class MD:                       # the dynamics left out: only what is pulled matters here
+        dt = 0.5
+
+        def __init__(self, symbols, pos, *args, bias=None, **kwargs):
+            self.pos, self.bias = np.asarray(pos), bias
+
+        def start(self):
+            pass
+
+        def step(self):
+            self.bias(self.pos)
+            return True
+
+        def relax(self, n):
+            pass
+
+    monkeypatch.setattr(lg, "LangevinMD", MD)
+    end = cg._collide(SYM * 2, xyz, 0, 1, (1, 6), 1000.0, 1.0, 0.0, 100.0, 0)
+    assert not isinstance(end, str), end          # _collide returns an error as text
+    (i, j, A, B), = pulled[0]
+    assert (i, j) == (1, 6) and sorted(A) == list(range(5)) and sorted(B) == list(range(5, 10))
+    pulled.clear()
+    end = cg._collide(SYM * 2, xyz, 0, 1, (4, 0), 1000.0, 1.0, 0.0, 100.0, 0)    # within one molecule: the atoms
+    assert not isinstance(end, str), end
+    assert pulled[0] == [(4, 0)]
+
+
 def test_collisions_find_both_formic_acid_channels():
     pytest.importorskip("tblite")
     from types import SimpleNamespace

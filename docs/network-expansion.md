@@ -181,8 +181,13 @@ a bond in the MM region or stretched a QM/MM cut bond (both are counted and
 reported). It costs one QM/MM gradient per MD step (about 0.07-0.1 s for a
 small QM region in a GFN-FF water shell: tens of minutes per 10 ps).
 
-In the web UI, Bond rules, CREST msreact, Hessian sampling and basin hopping
-are the methods of one "Reaction network expansion" card.
+In the web UI the expansion is one form in four stages, each chosen on its
+own: **Grow** (bond enumeration, CREST msreact, collision MD, Reactor MD, or the
+nanoreactor on a QM/MM system), **Connect** (Fast, path search, or no TSs),
+**Steer** (within reach, where material flows, or an energy window) and **Run**
+(the live queue or rounds). Choices that cannot run together are greyed out with
+the reason, and a stage moves to the nearest allowed choice when another rules
+it out. Hessian sampling and basin hopping are other methods of the same card.
 
 ## Other generators
 

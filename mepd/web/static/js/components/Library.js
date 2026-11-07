@@ -2,7 +2,7 @@
 // browse the library. Library entries and graph nodes are the same thing.
 import { html, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { isNew, markAllSeen, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { isNew, markAllSeen, openReaction, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { cls, depictUrl, edgeStatus, fmtKcal, isComplex, isSpecies, levelStatus } from '../util.js';
 import { QmmmAdd } from './QMMM.js';
 import { markQuest, useMap } from '../quests.js';
@@ -95,6 +95,15 @@ export function LevelChip({ rec }) {
   return html`<span class=${`level-chip level-${st.kind}`} title=${st.title}>${st.text}</span>`;
 }
 
+// The same status as one mark (the words are its tooltip): ● a checked minimum
+// at the workspace level, ◌ not optimized, ◐ another level, ‡ a TS, ✕ failed.
+const GLYPH = { ok: '●', none: '◌', other: '◐', ts: '‡', busy: '◔', failed: '✕', changed: '!' };
+export function StatusGlyph({ rec }) {
+  useStore((s) => [s.levelProfile, s.levels]);
+  const st = levelStatus(rec);
+  return html`<span class=${`status-glyph glyph-${st.kind}`} title=${`${st.text}: ${st.title}`} aria-label=${st.text}>${GLYPH[st.kind] || '·'}</span>`;
+}
+
 // `status`: only the line saying what is not at the level yet (the sidebar's);
 // the choice itself lives in Settings.
 export function LevelBar({ status = false, always = false }) {
@@ -155,13 +164,12 @@ function Card({ rec, selected, order, fresh }) {
         ${order > 0 && html`<span class="order-badge" title="Selection order (1 = start)">${order}</span>`}
       </div>
       <div class="card-body">
-        <div class="card-name">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}${rec.name}</div>
+        <div class="card-name">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}<span class="card-name-text">${rec.name}</span><${StatusGlyph} rec=${rec} /></div>
         <div class="card-meta">
           <span>${rec.formula}</span>
           ${(rec.conformers || []).length > 1 && html`<span class="badge" title="Conformers of this molecule; the lowest-energy one represents it">${rec.conformers.length} conformers</span>`}
           ${rec.charge !== 0 && html`<span class="badge" title=${`Charge ${rec.charge > 0 ? '+' : ''}${rec.charge}`}>${rec.charge > 0 ? '+' : '−'}${Math.abs(rec.charge) > 1 ? Math.abs(rec.charge) : ''}</span>`}
           ${rec.multiplicity !== 1 && html`<span class="badge" title=${`Spin multiplicity ${rec.multiplicity}: ${rec.multiplicity - 1} unpaired electron${rec.multiplicity > 2 ? 's' : ''}`}>${rec.multiplicity === 2 ? 'radical' : rec.multiplicity === 3 ? 'triplet' : `mult. ${rec.multiplicity}`}</span>`}
-          ${levelStatus(rec).kind !== 'ok' && html`<${LevelChip} rec=${rec} />`}
         </div>
       </div>
     </li>`;
@@ -181,7 +189,8 @@ function ReactionRow({ e, selected, fresh }) {
     : html`<span class="muted">no barrier yet</span>`;
   const pic = (r) => { const u = depictUrl(r.smiles, 150, 90); return u ? html`<img src=${u} alt="" loading="lazy" />` : html`<span class="small muted">${r.formula}</span>`; };
   return html`<li class=${cls('card rxn-row', selected && 'selected')} title=${`${a.name} → ${b.name}`}
-    onClick=${() => { select({ edges: [e.id] }); findInGraph(e.id, true); }}>
+    onClick=${() => { select({ edges: [e.id] }); findInGraph(e.id, true); }}
+    onDblClick=${() => openReaction(e.id)}>
     <div class="rxn-pics">${pic(a)}<span class="rxn-arrow">→</span>${pic(b)}</div>
     <div class="rxn-meta small">${fresh && html`<span class="new-dot" title="New: a calculation added it since you last looked"></span>`}
       <span class="rxn-names">${a.name} → ${b.name}</span><span class="rxn-tag">${tag}</span></div>
@@ -216,6 +225,7 @@ export function Library() {
   const selEdges = useStore((s) => s.selection.edges);
   useStore((s) => s.seenTick);
   const [what, setWhat] = useState('structures');   // or 'reactions'
+  const [adding, setAdding] = useState(false);       // the SMILES / xyz / QM/MM add box, opened by "+ Add"
   const [onlyNew, setOnlyNew] = useState(false);
   const [drag, setDrag] = useState(false);
   // A reaction's hidden subsystem ends (role "complex") are not library entries.
@@ -269,6 +279,11 @@ export function Library() {
           <button class="btn-link small" onClick=${() => { markAllSeen(); setOnlyNew(false); }} title="Clear the new marks">Mark seen</button>
         </div>`}
       </div>
+      <div class="lib-add-row">
+        <button class=${cls('btn small', adding && 'on')} onClick=${() => setAdding(!adding)} title="Add molecules: SMILES, names, reactions, xyz, or a QM/MM system">+ Add</button>
+        <button class="btn small ghost" onClick=${() => openTab('design')} title="Draw a molecule in Design">Draw</button>
+      </div>
+      ${adding && html`<${AddBox} onDone=${() => setAdding(false)} />`}
       <${LevelBar} status />
       ${dupes > 0 && html`<p class="level-note small">${dupes} structure${dupes > 1 ? 's are' : ' is'} the same molecule as another node.
         <button class="btn-link small" onClick=${() => attempt(() => api.post('/api/structures/merge-duplicates'), 'Merged into one node per molecule')}>Merge into conformers</button></p>`}

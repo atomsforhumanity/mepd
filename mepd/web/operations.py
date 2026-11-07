@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mepd.atom_mapping_metrics import HELP as _MAPPING_HELP, LABELS as _MAPPING_LABELS, OFFERED as _OFFERED_METRICS
 from mepd.web.workspace import Workspace, WorkspaceError, is_ts
@@ -56,6 +56,12 @@ def P(default, title: str, help: str = "", *, cli: Optional[str] = None, kind: s
         extra["labels"] = kw.pop("labels")
     if "choices_from" in kw:   # "profiles": the form offers the workspace's saved profiles
         extra["choices_from"] = kw.pop("choices_from")
+    if "stage" in kw:   # the form groups an operation's fields by the stage of the job they set (network expansion)
+        extra["stage"] = kw.pop("stage")
+    if "cards" in kw:
+        # {value: {title, blurb, needs: "field=a|b;other=c" (else greyed out, with `needs_text`),
+        # qmmm_only, programs}}: the form shows the choice as cards, one per value
+        extra["cards"] = kw.pop("cards")
     return Field(default, title=title, description=help, json_schema_extra=extra, **kw)
 
 
@@ -405,104 +411,193 @@ def _build_conformers(ctx: JobContext, p: ConformersParams) -> list[str]:
             "--output", str(ctx.output_dir)]
 
 
+GROW, CONNECT, STEER, RUN = "Grow", "Connect", "Steer", "Run"
+
+
 class ExpandParams(Params):
-    # Chosen by the method switch (Bond rules / CREST msreact), not in the form.
-    generator: Literal["bond-rules", "crest-msreact", "nanoreactor", "reactor"] = P(
-        "bond-rules", "Product generator", kind="custom", group="Hidden")
-    rounds: int = P(1, "Rounds", "Round 2 proposes products of round 1's new species, and so on.", cli="--rounds", ge=1,
-                    requires="schedule=rounds")
-    steer: Literal["auto", "flux", "access", "window"] = P(
-        "auto", "Grow the network by", "flux: find a verified TS for every reaction, simulate the kinetics from "
-        "the seed, and expand only species that enough material flows into (the network stops growing on its "
-        "own). access: the same, with a barrier cutoff from the cutoff temperature and time; only species some "
-        "route reaches within it are expanded. window: expand every new species within the energy window. "
-        "auto: flux when rounds > 1.", cli="--steer")
-    schedule: Literal["rounds", "async"] = P(
-        "rounds", "Schedule", "async: one queue of jobs, no rounds -- a species is expanded the moment the live "
-        "kinetics populate it, and IRC checks, channel sampling and steering single points run as soon as they "
-        "are asked for; watch it grow in the live view. rounds: expand, connect, check, sample, repeat.",
-        cli="--schedule", requires="steer=access", group="Kinetics")
-    time_budget_h: Optional[float] = P(
-        None, "Time budget (h)", "The async network grows until its kinetics ask for nothing more; this stops it "
-        "earlier: no new job starts, the running ones are cancelled, and the network so far is kept. Empty: no limit "
-        "(Stop & analyze ends it too).", kind="custom", gt=0, requires="schedule=async", group="Kinetics")
-    cutoff_temperature: Optional[float] = P(
-        None, "Cutoff temperature (K)", "The barrier cutoff is the barrier that reacts within the cutoff time at "
-        "this temperature (plus a 10 kcal/mol margin). Empty: the kinetics' temperature.", kind="custom",
-        gt=0, requires="steer=access", group="Kinetics")
-    cutoff_time: Optional[float] = P(None, "Cutoff time (s)", "Empty: the kinetics' simulated time.", kind="custom",
-                                     gt=0, requires="steer=access", group="Kinetics")
-    standard_state: Literal["1M", "1atm"] = P("1M", "Standard state", "1M for solution, 1atm for the gas phase.",
-                                              cli="--standard-state", requires="steer=access", group="Kinetics")
-    steer_profile: str = P(
-        "", "Steer with the profile", "A saved profile of a higher level (e.g. DFT) whose single points on the "
-        "explorer's geometries steer the kinetics that decide what is expanded and sampled. Empty: the run's "
-        "own level.", kind="custom", requires="steer=access", group="Kinetics", choices_from="profiles")
-    temperature: float = P(298.15, "Temperature (K)", cli="--temperature", gt=0, requires="steer=auto|flux|access",
-                           group="Kinetics")
-    time_s: float = P(3600.0, "Simulated time (s)", cli="--time", gt=0, requires="steer=auto|flux|access",
-                      group="Kinetics")
-    flux_threshold: float = P(0.01, "Flux threshold", "Expand a species once the material that flowed into it "
-                              "(as a fraction of the seed) reaches this.", cli="--flux-threshold", gt=0,
-                              requires="steer=auto|flux|access", group="Kinetics")
-    n_break: int = P(2, "Bonds broken (max)", cli="--n-break", ge=0, requires="generator=bond-rules")
-    n_form: int = P(2, "Bonds formed (max)", cli="--n-form", ge=0, requires="generator=bond-rules")
+    """A network expansion in four stages, each chosen on its own: how new species are
+    proposed (Grow), how each proposed reaction gets its TS (Connect), which species
+    grow next (Steer), and how the work is scheduled and stopped (Run)."""
+    # ------------------------------------------------------------------ Grow
+    generator: Literal["bond-rules", "crest-msreact", "collide", "reactor", "nanoreactor"] = P(
+        "bond-rules", "Grow by", "How each species' possible products are proposed.", kind="custom", stage=GROW,
+        cards={
+            "bond-rules": {"title": "Bond enumeration",
+                           "blurb": "Break and form up to n bonds on the molecular graph; keep products with a valid "
+                                    "Lewis structure. Fast, systematic, blind to energy."},
+            "crest-msreact": {"title": "CREST msreact",
+                              "blurb": "Biased GFN2-xTB optimizations find the fragments and isomers a molecule can "
+                                       "reach. One molecule at a time.",
+                              "programs": ["crest", "xtb"], "install": "conda install -c conda-forge crest xtb"},
+            "collide": {"title": "Collision MD",
+                        "blurb": "Langevin MD that pulls two atoms (or two molecules) together for a moment, over many "
+                                 "pairs: decompositions, rearrangements, additions."},
+            "reactor": {"title": "Reactor MD",
+                        "blurb": "Langevin MD in a squeezing wall with random collisions; nothing picks the "
+                                 "chemistry. Each batch's products join the network at once (live queue), while "
+                                 "batches go on until few new products appear."},
+            "nanoreactor": {"title": "Nanoreactor (QM/MM)", "qmmm_only": True,
+                            "blurb": "Hot MD of the QM region in a periodically squeezing wall, each product put back "
+                                     "into its environment."},
+        })
+    n_break: int = P(2, "Bonds broken (max)", cli="--n-break", ge=0, requires="generator=bond-rules", stage=GROW)
+    n_form: int = P(2, "Bonds formed (max)", cli="--n-form", ge=0, requires="generator=bond-rules", stage=GROW)
     msreact_mode: Literal["all", "fragments", "isomers"] = P(
         "all", "Products", "fragments: dissociated products only (e.g. to read as precursors, backwards); "
-        "isomers: non-dissociated only; all: both.", kind="custom", requires="generator=crest-msreact")
+        "isomers: non-dissociated only; all: both.", kind="custom", requires="generator=crest-msreact", stage=GROW)
     msreact_nbonds: int = P(3, "Bias bonds up to (bonds apart)", "msreact's repulsive potential acts on atom pairs "
                             "up to this many bonds apart (CREST default 3).", kind="custom", ge=1,
-                            requires="generator=crest-msreact", advanced=True, group="CREST msreact")
+                            requires="generator=crest-msreact", advanced=True, group="CREST msreact", stage=GROW)
     msreact_nshifts: int = P(0, "Random-shift optimizations", "Extra optimizations from randomly shifted atoms, for "
                              "more products (slower).", kind="custom", ge=0, requires="generator=crest-msreact",
-                             advanced=True, group="CREST msreact")
+                             advanced=True, group="CREST msreact", stage=GROW)
+    collide_temperature: float = P(1000.0, "MD temperature (K)", "The pull supplies the energy; the bath is moderate.",
+                                   kind="custom", gt=0, requires="generator=collide", stage=GROW)
+    collide_n: int = P(0, "Collisions", "Atom or molecule pairs pulled together. 0: one per pair the method picks.",
+                       kind="custom", ge=0, requires="generator=collide", advanced=True, group="Collision MD",
+                       stage=GROW)
+    rx_temperature: float = P(2200.0, "MD temperature (K)", "The Reactor's Langevin MD: the piston and random "
+                              "collisions supply the energy, so it runs far cooler than the nanoreactor.",
+                              kind="custom", gt=0, requires="generator=reactor", stage=GROW)
+    rx_seeds: int = P(0, "Trajectories per batch", "Independent 5 ps trajectories. 0: one per worker.",
+                      kind="custom", ge=0, requires="generator=reactor", stage=GROW)
+    rx_max_batches: int = P(4, "Batches at most", "Batches run until few events give a product seen only "
+                            "once (5%), or this many ran.", kind="custom", ge=1, requires="generator=reactor",
+                            advanced=True, group="Reactor MD", stage=GROW)
     reactor_temperature: float = P(3000.0, "MD temperature (K)", "Hot enough for bonds to break within "
                                    "picoseconds (2500-3500 K). Much hotter and molecules fall apart into atoms, "
                                    "which give no products.", kind="custom", gt=0,
-                                   requires="generator=nanoreactor")
-    reactor_time_ps: float = P(20.0, "MD time (ps)", kind="custom", gt=0, requires="generator=nanoreactor")
+                                   requires="generator=nanoreactor", stage=GROW)
+    reactor_time_ps: float = P(20.0, "MD time (ps)", kind="custom", gt=0, requires="generator=nanoreactor",
+                               stage=GROW)
     reactor_embedded: bool = P(False, "MD with QM/MM forces", "Run the hot MD with the environment present "
                                "(QM/MM forces every step; the solvent is held near room temperature). Off: the QM "
                                "region alone in vacuum, its products embedded afterwards (much faster). On is about "
                                "30-60 min per 10 ps for a small QM region.", kind="custom",
-                               requires="generator=nanoreactor")
+                               requires="generator=nanoreactor", stage=GROW)
     reactor_compress: float = P(0.5, "Squeeze to (of the wall radius)", "The piston closes the wall to this "
                                 "fraction of its radius once per picosecond.", kind="custom", gt=0, le=1,
-                                requires="generator=nanoreactor", advanced=True, group="Nanoreactor")
-    rx_temperature: float = P(2200.0, "MD temperature (K)", "The Reactor's Langevin MD: the piston and random "
-                              "Collide pulls supply the energy, so it runs far cooler than the nanoreactor.",
-                              kind="custom", gt=0, requires="generator=reactor")
-    rx_seeds: int = P(0, "Trajectories per batch", "Independent 5 ps trajectories. 0: one per worker.",
-                      kind="custom", ge=0, requires="generator=reactor")
-    rx_max_batches: int = P(4, "Batches at most", "Batches run until few events give a product seen only "
-                            "once (5%), or this many ran.", kind="custom", ge=1, requires="generator=reactor",
-                            advanced=True, group="Reactor")
-    max_products: int = P(50, "Proposals per species", "Bond rules: fewest bond changes first. CREST msreact: "
-                          "lowest GFN2-xTB energy first.", cli="--max-products", ge=1)
-    energy_window: float = P(60.0, "Expand species within (kcal/mol)", "Only species this close to the seed "
-                             "are expanded in the next round.", cli="--energy-window", requires="steer=auto|window")
-    explore_within: Optional[float] = P(
-        None, "Add to Explore within (kcal/mol)", "Only species at most this far above the seed become nodes in "
-        "Explore; the rest stay in the result, to add by hand. Empty: the 'Expand species within' window (every "
-        "species when growing by flux).", ge=0, group="Explore")
-    form_distance: float = P(4.0, "Form bonds within (Å)", "Raise it to also close rings between atoms that "
-                             "start far apart.", cli="--form-distance", gt=0, advanced=True, group="Rules",
-                             requires="generator=bond-rules")
-    allow_radicals: bool = P(False, "Allow radicals and carbenes", cli="--allow-radicals", kind="toggle",
-                             advanced=True, group="Rules", requires="generator=bond-rules")
-    allow_zwitterions: bool = P(False, "Allow charge-separated products", "Needed for e.g. isocyanides and CO.",
-                                cli="--allow-zwitterions", kind="switch", advanced=True, group="Rules",
-                                requires="generator=bond-rules")
+                                requires="generator=nanoreactor", advanced=True, group="Nanoreactor", stage=GROW)
+    max_products: int = P(50, "Proposals per species", "Bond enumeration: fewest bond changes first. CREST msreact: "
+                          "lowest GFN2-xTB energy first. MD: most often seen first.", cli="--max-products", ge=1,
+                          stage=GROW)
     validate_minima_with_hessian: bool = P(
-        True, "Validate species with Hessian", "Every new species must have no imaginary frequency beyond the cutoff; one that "
-        "stopped on a saddle point is pushed along its unstable mode and re-optimized, and dropped if that fails.",
-        cli="--validate-minima-with-hessian", kind="toggle")
-    connect: bool = P(False, "Connect by path search", "Run a recursive path search for every proposed reaction "
-                      "that reached a new species, and build the network from the paths.", cli="--connect", kind="toggle")
-    max_pairs: int = P(50, "Max path searches", cli="--max-pairs", ge=1, requires="connect")
-    maxiter: int = P(500, "Max optimizer iterations", cli="--maxiter", advanced=True, group="Advanced")
-    workers: int = P(4, "Parallel workers", "Processes building product guesses and their animations.",
-                     cli="--workers", ge=1, advanced=True, group="Advanced")
+        True, "Validate species with Hessian", "Every new species must have no imaginary frequency beyond the cutoff; "
+        "one that stopped on a saddle point is pushed along its unstable mode and re-optimized, and dropped if that "
+        "fails.", cli="--validate-minima-with-hessian", kind="toggle", advanced=True, group="Species", stage=GROW)
+    form_distance: float = P(4.0, "Form bonds within (Å)", "Raise it to also close rings between atoms that "
+                             "start far apart.", cli="--form-distance", gt=0, advanced=True, group="Bond enumeration",
+                             requires="generator=bond-rules", stage=GROW)
+    allow_radicals: bool = P(False, "Allow radicals and carbenes", cli="--allow-radicals", kind="toggle",
+                             advanced=True, group="Bond enumeration", requires="generator=bond-rules", stage=GROW)
+    allow_zwitterions: bool = P(False, "Allow charge-separated products", "Needed for e.g. isocyanides and CO.",
+                                cli="--allow-zwitterions", kind="switch", advanced=True, group="Bond enumeration",
+                                requires="generator=bond-rules", stage=GROW)
+    # --------------------------------------------------------------- Connect
+    connect_strategy: Literal["fast", "path", "none"] = P(
+        "fast", "Connect by", "How each proposed reaction gets its transition state.", kind="custom", stage=CONNECT,
+        cards={
+            "fast": {"title": "Fast",
+                     "blurb": "A TS optimized from the peak of an interpolation; a path search only where that "
+                              "fails. IRCs for the steps the kinetics need.",
+                     "needs": "steer=access", "needs_text": "needs 'Material flow, within reach' steering"},
+            "path": {"title": "Path search",
+                     "blurb": "A recursive path search, TS and IRC for every proposed reaction. Thorough, slow."},
+            "none": {"title": "No TSs",
+                     "blurb": "Products only: species and proposed reactions, to connect later by hand.",
+                     "needs": "steer=window", "needs_text": "needs 'Energy window' steering (the others need TSs)"},
+        })
+    refine: bool = P(True, "Sample mechanism channels", "On every step the kinetics need: conformers of both ends "
+                     "and several atom mappings (mepd channels); their lowest channels replace the single TS, and "
+                     "their off-target exits join the network.", kind="custom", requires="steer=access",
+                     stage=CONNECT)
+    max_pairs: int = P(50, "Path searches at most", cli="--max-pairs", ge=1, requires="steer=window", stage=CONNECT)
+    connect: bool = P(False, "Connect by path search (old form)", kind="custom", group="Hidden")
+    maxiter: int = P(500, "Max optimizer iterations", cli="--maxiter", advanced=True, group="Optimizer", stage=CONNECT)
+    # ----------------------------------------------------------------- Steer
+    steer: Literal["access", "flux", "window", "auto"] = P(
+        "access", "Grow where", "Which species have their products proposed next.", cli="--steer", stage=STEER,
+        cards={
+            "access": {"title": "Material flow, within reach",
+                       "blurb": "Live microkinetics from the start: a species grows once enough material reaches it "
+                                "(the flux threshold), and only if some route gets there under a barrier cutoff (from "
+                                "the cutoff temperature and time, plus 10 kcal/mol)."},
+            "flux": {"title": "Material flow, no cutoff",
+                     "blurb": "The same flux rule with no barrier cutoff, in rounds, with a full path search for "
+                              "every reaction: the older, slower mode."},
+            "window": {"title": "Energy window",
+                       "blurb": "Every new species within an energy window of the start. No kinetics, no TSs "
+                                "needed."},
+        })
+    cutoff_temperature: Optional[float] = P(
+        None, "Cutoff temperature (K)", "The barrier cutoff is the barrier that reacts within the cutoff time at "
+        "this temperature (plus a 10 kcal/mol margin). Empty: the kinetics' temperature.", kind="custom",
+        gt=0, requires="steer=access", stage=STEER)
+    cutoff_time: Optional[float] = P(None, "Cutoff time (s)", "Empty: the kinetics' simulated time.", kind="custom",
+                                     gt=0, requires="steer=access", stage=STEER)
+    flux_threshold: float = P(0.01, "Flux threshold", "Expand a species once the material that flowed into it "
+                              "(as a fraction of the start) reaches this.", cli="--flux-threshold", gt=0,
+                              requires="steer=flux|access", stage=STEER)
+    energy_window: float = P(60.0, "Expand species within (kcal/mol)", "Only species this close to the start "
+                             "are expanded in the next round.", cli="--energy-window", requires="steer=window|auto",
+                             stage=STEER)
+    temperature: float = P(298.15, "Temperature (K)", cli="--temperature", gt=0, requires="steer=flux|access",
+                           stage=STEER)
+    time_s: float = P(3600.0, "Simulated time (s)", cli="--time", gt=0, requires="steer=flux|access", stage=STEER)
+    kinetics_energy: Literal["free", "electronic"] = P(
+        "free", "Rates from", "free: quasi-RRHO free energies from the engine's own Hessians (a species of several "
+        "molecules counted as those molecules apart). electronic: electronic energies.", cli="--kinetics-energy",
+        requires="steer=flux|access", advanced=True, group="Kinetics", stage=STEER,
+        labels={"free": "Free energies", "electronic": "Electronic energies"})
+    standard_state: Literal["1M", "1atm"] = P("1M", "Standard state", "1M for solution, 1atm for the gas phase.",
+                                              cli="--standard-state", requires="steer=flux|access", advanced=True,
+                                              group="Kinetics", stage=STEER)
+    steer_profile: str = P(
+        "", "Steer with the profile", "A saved profile of a higher level (e.g. DFT) whose single points on the "
+        "explorer's geometries steer the kinetics that decide what is expanded and sampled. Empty: the run's "
+        "own level.", kind="custom", requires="steer=access", advanced=True, group="Kinetics",
+        choices_from="profiles", stage=STEER)
+    # ------------------------------------------------------------------- Run
+    schedule: Literal["async", "rounds"] = P(
+        "async", "Schedule", "How the work is ordered.", cli="--schedule", requires="steer=access", stage=RUN,
+        cards={
+            "async": {"title": "Live queue",
+                      "blurb": "No rounds: a species grows the moment the live kinetics reach it, and every TS, IRC "
+                               "and channel search runs as soon as it is asked for. Watch it grow.",
+                      "needs": "steer=access;connect_strategy=fast",
+                      "needs_text": "needs 'Material flow, within reach' steering and 'Fast' connection"},
+            "rounds": {"title": "Rounds",
+                       "blurb": "Propose, connect, check, repeat: each round expands the species the last one "
+                                "reached."},
+        })
+    time_budget_h: Optional[float] = P(
+        None, "Time budget (h)", "The live queue grows until its kinetics ask for nothing more; this stops it "
+        "earlier: no new job starts, the running ones are cancelled, and the network so far is kept. Empty: no limit "
+        "(Stop & analyze ends it too).", kind="custom", gt=0, requires="schedule=async", stage=RUN)
+    rounds: int = P(1, "Rounds", "Round 2 proposes products of round 1's new species, and so on.", cli="--rounds", ge=1,
+                    requires="schedule=rounds", stage=RUN)
+    workers: int = P(4, "Parallel workers", "Processes at once: MD trajectories, optimizations, TS searches.",
+                     cli="--workers", ge=1, stage=RUN)
+    explore_within: Optional[float] = P(
+        None, "Add to Explore within (kcal/mol)", "Only species at most this far above the start become nodes in "
+        "Explore; the rest stay in the result, to add by hand. Empty: every species.", ge=0, advanced=True,
+        group="Explore", stage=RUN)
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        """Choices that cannot run together are moved to the nearest that can (the form does the same,
+        visibly): an older form's `connect`, a steering that has no fast connection or live queue."""
+        if self.steer == "auto":
+            object.__setattr__(self, "steer", "window" if self.rounds == 1 else "flux")
+        if self.connect and self.steer == "window" and self.connect_strategy == "fast":
+            object.__setattr__(self, "connect_strategy", "path")
+        if self.connect_strategy == "fast" and self.steer != "access":
+            object.__setattr__(self, "connect_strategy", "path" if self.steer == "flux" else "none")
+        if self.connect_strategy == "none" and self.steer != "window":
+            object.__setattr__(self, "connect_strategy", "path")
+        if self.schedule == "async" and not (self.steer == "access" and self.connect_strategy == "fast"):
+            object.__setattr__(self, "schedule", "rounds")
+        return self
 
 
 # --------------------------------------------------------------- context
@@ -694,7 +789,7 @@ class Operation:
             "structure_role": self.structure_role,
             "source_ops": list(self.source_ops),
             "needs_route_ts": self.needs_route_ts,
-            "schema": self.params_model.model_json_schema() if self.params_model else None,
+            "schema": _with_card_availability(self.params_model.model_json_schema()) if self.params_model else None,
             "family": self.family,
             "methods": [_method_view(m) for m in self.methods],
             "same_atoms": self.same_atoms,
@@ -708,6 +803,18 @@ class Operation:
         if self.params_model is None:
             return Params()
         return self.params_model.model_validate(raw or {})
+
+
+def _with_card_availability(schema: dict) -> dict:
+    """A card that needs programs missing on this server is shown greyed out, saying how to install them."""
+    import shutil
+
+    for prop in (schema.get("properties") or {}).values():
+        for card in (prop.get("cards") or {}).values():
+            missing = [x for x in card.get("programs") or () if shutil.which(x) is None]
+            if missing:
+                card["unavailable"] = f"needs {' and '.join(missing)} on the server's PATH ({card.get('install', '')})"
+    return schema
 
 
 def _method_view(m: dict) -> dict:
@@ -955,36 +1062,46 @@ def _build_tsopt(ctx: JobContext, p: TsOptParams) -> list[str]:
 
 def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
     argv = _build_discovery("expand")(ctx, p)
+    out = argv.index("--output")
+    add = []
+    # Grow: always named (the CLI's 'auto' would pick an MD generator under access steering).
+    add += ["--generator", p.generator]
     if p.generator == "crest-msreact":
-        out = argv.index("--output")
-        argv[out:out] = ["--generator", "crest-msreact", "--generator-option", f"mode={p.msreact_mode}",
-                         "--generator-option", f"nbonds={p.msreact_nbonds}",
-                         "--generator-option", f"nshifts={p.msreact_nshifts}"]
+        add += ["--generator-option", f"mode={p.msreact_mode}", "--generator-option", f"nbonds={p.msreact_nbonds}",
+                "--generator-option", f"nshifts={p.msreact_nshifts}"]
+    elif p.generator == "collide":
+        add += ["--generator-option", f"temperature={p.collide_temperature:g}"]
+        if p.collide_n:
+            add += ["--generator-option", f"n_collisions={p.collide_n}"]
     elif p.generator == "nanoreactor":
-        out = argv.index("--output")
-        argv[out:out] = ["--generator", "nanoreactor", "--generator-option", f"temperature={p.reactor_temperature:g}",
-                         "--generator-option", f"time_ps={p.reactor_time_ps:g}",
-                         "--generator-option", f"compress={p.reactor_compress:g}"]
+        add += ["--generator-option", f"temperature={p.reactor_temperature:g}",
+                "--generator-option", f"time_ps={p.reactor_time_ps:g}",
+                "--generator-option", f"compress={p.reactor_compress:g}"]
         if p.reactor_embedded:
-            argv[out:out] = ["--generator-option", "embedded=true"]
+            add += ["--generator-option", "embedded=true"]
     elif p.generator == "reactor":
-        out = argv.index("--output")
-        argv[out:out] = ["--generator", "reactor", "--generator-option", f"temperature={p.rx_temperature:g}",
-                         "--generator-option", f"n_seeds={p.rx_seeds}",
-                         "--generator-option", f"max_batches={p.rx_max_batches}"]
-    if p.schedule == "async" and p.time_budget_h:
-        out = argv.index("--output")
-        argv[out:out] = ["--time-budget", f"{3600.0 * p.time_budget_h:g}"]
-    if p.steer == "access":   # the cutoff: the kinetics' conditions unless given
-        out = argv.index("--output")
-        argv[out:out] = ["--cutoff-temperature", f"{p.cutoff_temperature or p.temperature:g}",
-                         "--cutoff-time", f"{p.cutoff_time or p.time_s:g}"]
-    if p.steer == "access" and p.steer_profile.strip():
-        steer = ctx.job_dir / "inputs" / "steer.toml"
-        steer.parent.mkdir(parents=True, exist_ok=True)
-        steer.write_text(ctx.ws.read_profile(p.steer_profile.strip()))
-        out = argv.index("--output")
-        argv[out:out] = ["--steer-energies", str(steer)]
+        add += ["--generator-option", f"temperature={p.rx_temperature:g}",
+                "--generator-option", f"n_seeds={p.rx_seeds}",
+                "--generator-option", f"max_batches={p.rx_max_batches}"]
+    # Connect
+    if p.steer == "access":
+        add += ["--connect-mode", "fast" if p.connect_strategy == "fast" else "full",
+                "--refine", "channels" if p.refine else "none"]
+    elif p.steer == "window" and p.connect_strategy == "path":
+        add += ["--connect"]
+    # Steer: the cutoff is the kinetics' conditions unless given
+    if p.steer == "access":
+        add += ["--cutoff-temperature", f"{p.cutoff_temperature or p.temperature:g}",
+                "--cutoff-time", f"{p.cutoff_time or p.time_s:g}"]
+        if p.steer_profile.strip():
+            steer = ctx.job_dir / "inputs" / "steer.toml"
+            steer.parent.mkdir(parents=True, exist_ok=True)
+            steer.write_text(ctx.ws.read_profile(p.steer_profile.strip()))
+            add += ["--steer-energies", str(steer)]
+    # Run
+    if p.schedule == "async" and p.steer == "access" and p.time_budget_h:
+        add += ["--time-budget", f"{3600.0 * p.time_budget_h:g}"]
+    argv[out:out] = add
     return argv
 
 
@@ -1874,35 +1991,19 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         produces=["conformers of the node"], cli_path=("conformers",),
         cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output")),
     Operation(
-        "graph-enumeration", "Reaction network expansion", "Propose products by breaking and forming up to two "
-        "bonds on the molecular graph, keep those with a valid Lewis structure, optimize them, and grow the network "
-        "from the species the kinetics reach. (`mepd discovery expand`)",
+        "graph-enumeration", "Reaction network expansion", "Grow a reaction network from this species in four "
+        "stages you choose: propose new species (bond enumeration, CREST msreact, collision or reactor MD), connect "
+        "each proposed reaction with a TS, steer growth to the species the kinetics reach, and run it as a live "
+        "queue or in rounds. (`mepd discovery expand`)",
         "structure", EXPLORE, ExpandParams, _build_expand, stoppable=True,
         produces=["product species", "proposed reactions", "network edges (with path search)"],
         cli_path=("discovery", "expand"),
         cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--generator", "--generator-option",
                          "--steer-energies"),
         family=NETWORK, methods=(
-            {"label": "Bond rules", "rank": 0, "fixed": {"generator": "bond-rules"},
-             "summary": "Break and form up to n bonds on the molecular graph, keep products with a valid Lewis "
-                        "structure, optimize them, and grow from the species the kinetics reach."},
-            {"label": "CREST msreact", "rank": 1, "fixed": {"generator": "crest-msreact"}, "programs": ("crest", "xtb"),
-             "install": "conda install -c conda-forge crest xtb",
-             "summary": "CREST's fragment generator (msreact): biased GFN2-xTB optimizations find the fragments and "
-                        "isomers the molecule can reach, e.g. likely precursors (read backwards) or nearby products. "
-                        "They are re-optimized at your level of theory and grown like any other species. One molecule at a "
-                        "time: a cluster of several gets no products."},
-            {"label": "Reactor, live", "rank": 2,
-             "fixed": {"generator": "reactor", "steer": "access", "schedule": "async"},
-             "summary": "The interactive Reactor, unattended: Langevin MD with the piston and random Collide pulls "
-                        "proposes products, and one queue of jobs grows the network with no rounds -- each "
-                        "species is expanded the moment the live kinetics (steered by a higher level's single "
-                        "points, if you pick a profile) populate it; its TSs, IRC checks and channel sampling "
-                        "run as soon as they are asked for. Watch the queue and the populations live."},
-            {"label": "Nanoreactor", "rank": -1, "fixed": {"generator": "nanoreactor"}, "qmmm_only": True,
-             "summary": "Hot molecular dynamics of the QM region (capped with its link hydrogens) in a periodically "
-                        "squeezing wall: its state after each reaction event is put back into the environment, "
-                        "optimized embedded and grown like any other species."})),
+            {"label": "Network expansion", "rank": -2,   # first: the Network expansion tile opens on it
+             "summary": "Grow a reaction network from this species, choosing each stage: how new species are "
+                        "proposed, how each reaction gets its TS, which species grow next, and how the work runs."},)),
     Operation(
         "retrosynthesis", "Retrosynthesis", "Routes from purchasable building blocks to this molecule: a "
         "tree search over single steps proposed by the chosen method; each route's steps join Explore as "

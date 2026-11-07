@@ -239,12 +239,6 @@ export function isTs(rec) {
   return rec.role === 'ts' || (rec.role == null && /\[TS\]$/.test(rec.name || ''));
 }
 
-// Playground layout: the part of the canvas the floating controls leave free.
-export function playgroundFitMargins() {
-  const phone = window.matchMedia('(max-width: 720px), (max-height: 520px)').matches;
-  return phone ? { l: 16, t: 140, r: 16, b: 70 } : { l: 40, t: 110, r: 330, b: 36 };
-}
-
 export function levelStatus(rec, levelKey = state.levels[state.levelProfile ?? '']?.key) {
   if (isTs(rec)) {
     const at = rec.level ? ` at ${rec.level.label}` : '';

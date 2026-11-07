@@ -210,3 +210,27 @@ def test_the_budget_cancels_running_jobs(tmp_path):
     hc.stop_when = lambda: time.monotonic() - t0 > 1.0
     hc([], [Node(name="A")], start=lambda: hc.submit("slow", (), heard.append))
     assert time.monotonic() - t0 < 30 and heard == []
+
+
+def test_within_a_rank_the_lower_priority_starts_first(tmp_path):
+    """Waiting jobs of one rank start lowest priority first, then in queue order; a priority may be a function,
+    asked each time the queue orders its jobs (a step's lowest TS so far), and a conformer pair's TS search takes
+    one too."""
+    hc = _connector(tmp_path)
+    hc.workers = 1
+    started, later = [], {"p": 50.0}
+    hc._fast_ts = lambda i, j, a, b, label=None: (started.append(label),
+                                                  (SimpleNamespace(energy=-1.0), label or f"fast_{i}_{j}", None))[1]
+    hc.register("job", lambda k: k, rank=2)
+    nodes = [Node(name=n) for n in "AB"]
+
+    def start():
+        hc.submit("job", ("high",), started.append, priority=30.0)
+        hc.submit("job", ("plain",), started.append)
+        hc.submit("job", ("moves",), started.append, priority=lambda: later["p"])
+        hc.add_channel((0, 1), nodes[0], nodes[1], "ch_low", priority=5.0)
+        hc.submit("job", ("mid",), started.append, priority=20.0)
+        later["p"] = 10.0          # its pair got a lower TS after it was queued
+
+    hc([], nodes, start=start)
+    assert started == ["plain", "ch_low", "moves", "mid", "high"]

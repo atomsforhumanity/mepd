@@ -447,6 +447,65 @@ def _structure_with(structure, coords_angstrom):
     return structure.model_copy(update={"geometry": np.asarray(coords_angstrom) * ANGSTROM_TO_BOHR})
 
 
+# neighbours of an atom with no multiple bond: a bond between two such atoms has three staggered rotamers
+_SATURATED = {"C": 4, "Si": 4, "N": 3, "P": 3, "O": 2, "S": 2}
+
+
+def ts_rotamer_guesses(ts, ends) -> tuple[list, list[Edge]]:
+    """TS guesses for the other rotamers of transition state `ts` (a Structure): the same reacting core, the rest
+    turned about one or two of its rotatable bonds. `ends`: the TS's two IRC ends (Structures in its atom order);
+    the bonds that differ between them are the core, and a bond is rotatable when both ends have it, it is in no
+    ring of the two ends' bonds together (so the core's forming ring stays shut and its distances stay as they
+    are), and the side it turns is not a symmetric top (CH3, CF3, NH2). Each bond turns by 180 degrees (120 and
+    240 when both its atoms are saturated); each pair of bonds by those first turns together.
+    Returns ([(guess Structure, what)], core pairs)."""
+    symbols = [str(s) for s in ts.symbols]
+    xyz = np.asarray(ts.geometry, dtype=float) / ANGSTROM_TO_BOHR
+    e1, e2 = (graph_edges(StructureNode(structure=e)) for e in ends)
+    n = len(symbols)
+    adj = [set() for _ in range(n)]
+    for i, j in e1 | e2:
+        adj[i].add(j)
+        adj[j].add(i)
+
+    def side(u, v) -> set:
+        """The atoms reached from v without crossing the bond u-v."""
+        seen, todo = {v}, [v]
+        while todo:
+            x = todo.pop()
+            for y in adj[x] - seen:
+                if not (x == v and y == u):
+                    seen.add(y)
+                    todo.append(y)
+        return seen
+
+    bonds = []
+    for u, v in sorted(e1 & e2):
+        s = side(u, v)
+        if u in s:
+            continue
+        moving, pivot, anchor = (s, v, u) if len(s) <= n - len(s) else (set(range(n)) - s, u, v)
+        rest = moving - {pivot}
+        if not rest or (len(rest) >= 2 and all(len(adj[a]) == 1 for a in rest) and len({symbols[a] for a in rest}) == 1):
+            continue
+        saturated = all(len(adj[a]) == _SATURATED.get(symbols[a], -1) for a in (u, v))
+        bonds.append((anchor, pivot, sorted(moving), (120.0, 240.0) if saturated else (180.0,)))
+
+    def turn(x, bond, degrees):
+        anchor, pivot, moving, _ = bond
+        axis = (x[pivot] - x[anchor]) / np.linalg.norm(x[pivot] - x[anchor])
+        t, p = np.radians(degrees), x[moving] - x[pivot]
+        out = x.copy()
+        out[moving] = (p * np.cos(t) + np.cross(axis, p) * np.sin(t) + np.outer(p @ axis, axis) * (1.0 - np.cos(t))
+                       + x[pivot])
+        return out
+
+    out = [(turn(xyz, b, d), f"{b[0]}-{b[1]} {d:g}") for b in bonds for d in b[3]]
+    out += [(turn(turn(xyz, b1, b1[3][0]), b2, b2[3][0]), f"{b1[0]}-{b1[1]} {b1[3][0]:g}, {b2[0]}-{b2[1]} {b2[3][0]:g}")
+            for k, b1 in enumerate(bonds) for b2 in bonds[k + 1:]]
+    return [(_structure_with(ts, x), what) for x, what in out], sorted(e1 ^ e2)
+
+
 class _View:
     """What the bond rules see of a structure: the whole molecule, or, for a
     QM/MM system (mepd.qmmm), its QM model -- the QM atoms capped with their
@@ -579,9 +638,10 @@ def _import_generator(path: str) -> Callable:
     return getattr(importlib.import_module(module_name), attr)
 
 
-def external_proposals(structures: Iterable, source_structure, source: int) -> list[Proposal]:
+def external_proposals(structures: Iterable, source_structure, source: int, start: int = 0) -> list[Proposal]:
     """Proposals from product structures made elsewhere; they must list the
-    same elements in the same order as the source."""
+    same elements in the same order as the source. `start`: the number of the
+    first (a batch after others of the same species continues their numbering)."""
     from qcdata import Structure
 
     out = []
@@ -593,7 +653,7 @@ def external_proposals(structures: Iterable, source_structure, source: int) -> l
                              f"({len(s.symbols)} vs {len(source_structure.symbols)} atoms); products must "
                              "be atom-mapped to the reactant.")
         s = s.model_copy(update={"charge": source_structure.charge, "multiplicity": source_structure.multiplicity})
-        out.append(Proposal(source, (), (), f"external-{k}", structure=s))
+        out.append(Proposal(source, (), (), f"external-{start + k}", structure=s))
     return out
 
 
@@ -1821,8 +1881,16 @@ def expand_network(
         if dropped:
             missed = asked
         else:
-            a, _ = _species_for(start)
-            b, _ = _species_for(end)
+            a, new_a = _species_for(start)
+            b, new_b = _species_for(end)
+            # A species no proposal made, found as this IRC's end: a product of the species the search was asked
+            # from, with no route to it but this step (F0007: an adduct as the end of a TS between two other
+            # species, 48-81 kcal/mol up, in 11 of the 16 baseline cases of a channel found but not connected)
+            if asked:
+                for k, new in ((a, new_a), (b, new_b)):
+                    if new and k not in asked and result.species[k].rel_energy_kcal <= (
+                            access_cutoff_kcal if access_cutoff_kcal is not None else float("inf")):
+                        irc_products.append((int(asked[0]), k))
             if a < 0 or b < 0 or a == b:
                 dropped = True
             else:
@@ -2069,6 +2137,7 @@ def expand_network(
     connected: set[tuple[int, int]] = set()
     deferred_iced: list = []                # channel-search pieces no material reached yet (_search_deferred)
     retry: list = []                        # pairs whose single TS turned out to belong elsewhere
+    irc_products: list = []                 # (asked source, species first found as an IRC end): connected (async)
     searched: set[tuple[int, int]] = set()  # pairs that already had their full path search
     expanded: set[int] = set()
     frontier = [0]
@@ -2158,16 +2227,30 @@ def expand_network(
         else:
             width = 4
         width = max(1, min(int(workers), width))
+        if int(job_opts.get("n_seeds") or 0) > 0:
+            # It never runs more processes than trajectories per batch: reserving more workers for it
+            # (`parallel` follows --workers) left the rest idle and counted busy (4 MD runs, 10/10 busy).
+            width = min(width, int(job_opts["n_seeds"]))
         if gen_obj.kind == "structures" and ("parallel" in job_opts or "parallel" in gen_obj.options):
             job_opts["parallel"] = width   # its share of the workers, not all of them
 
-        def _propose_job(src, structure, known_smiles, gen_opts):
+        def _propose_job(src, structure, known_smiles, gen_opts, batch_state=None):
             """In a worker: the generator's proposals for species `src`, minimized (loosely, as in rounds),
             with their Hessian checks when asked for. Proposals of species known when it was queued come
             back unminimized ("known"). `gen_opts`, a structures generator's options for `src`, are made when
-            it is queued: the worker's copy of the network is the one from when its pool was forked."""
+            it is queued: the worker's copy of the network is the one from when its pool was forked.
+            A batched generator (the reactor) runs one batch here, from `batch_state` (what its earlier
+            batches for `src` left); its result then carries {"state", "done"} for the next."""
             node = StructureNode(structure=structure)
-            if gen_obj.kind == "structures":
+            meta = None
+            if gen_obj.kind == "structures" and gen_obj.propose_batch is not None:
+                gen_obj.check()
+                before = len((batch_state or {}).get("proposed") or ())
+                structs, new_state, done = gen_obj.propose_batch(structure, max_products=max_products,
+                                                                 options=gen_opts, state=batch_state)
+                props = external_proposals(structs, structure, src, start=before)
+                meta = {"state": new_state, "done": bool(done)}
+            elif gen_obj.kind == "structures":
                 gen_obj.check()
                 props = external_proposals(gen_obj.propose(structure, max_products=max_products,
                                                            options=gen_opts), structure, src)
@@ -2195,9 +2278,13 @@ def expand_network(
                         rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
                         label=f"proposal {props[k].label}")
                 out[k] = (opt, record)
-            return props, out
+            return (props, out) if meta is None else (props, out, meta)
 
-        connect.register("propose", _propose_job, slots=width)
+        # The seed's proposals are the queue's first job; a later species' wait until the steps found so far have
+        # their IRC checks, rotamers and channel sampling (F0007, 32 workers: the reactor for the most populated
+        # adduct took all 32 workers for the last 6-13 minutes of a 30-minute budget in 9 of 10 runs, while the
+        # TS searches of the endo and exo conformer pairs waited)
+        connect.register("propose", _propose_job, slots=width, rank=3)
 
         class _SpeciesNodes:
             """The species' nodes as the queue indexes them, growing as species are found."""
@@ -2223,17 +2310,20 @@ def expand_network(
                      and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))]
             return sorted(picks, key=lambda k: -load.get(k, 1.0))
 
-        def _proposed(src, out) -> None:
+        def _proposed(src, out, final: bool = True) -> None:
             """A species' proposals are back: species and edges as in a round; pairs to new products join
-            the running queue at once."""
-            expanding.discard(src)
-            expanded.add(src)
+            the running queue at once. `final` False: one batch of a batched generator, more to come (the
+            species stays being expanded)."""
+            if final or out is None:
+                expanding.discard(src)
+                expanded.add(src)
             rec = result.rounds[-1]
             if out is None:     # not counted as expanded: said in the round (the why: the queue's job event)
                 rec.setdefault("proposals_failed", []).append(src)
                 _emit(on_event, "warning", message=f"proposals for species {src} failed")
                 return
-            rec["sources"].append(src)
+            if src not in rec["sources"]:
+                rec["sources"].append(src)
             props, res = out
             rec["proposed"] += len(props)
             known = {sp.smiles: k for k, sp in enumerate(result.species) if sp.smiles}
@@ -2267,15 +2357,32 @@ def expand_network(
             _save()
             _follow_up()
 
+        def _submit_propose(k, gen_opts, batch_state=None) -> None:
+            known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
+            batch = int((batch_state or {}).get("batch") or 0)
+            label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None else "")
+            connect.submit("propose", (k, result.species[k].node.structure, known_smiles, gen_opts, batch_state),
+                           lambda out, k=k: _propose_back(k, out, gen_opts), label=label)
+
+        def _propose_back(k, out, gen_opts) -> None:
+            """A propose job is back. A batched generator's batch: its products join the network at once
+            (minimized, their pairs queued, the live view told) and the species' next batch is queued at
+            once, while those are connected -- until it converged, ran its last batch, or a budget ran out."""
+            if out is None or len(out) == 2:
+                _proposed(k, out)
+                return
+            props, res, meta = out
+            more = not meta["done"] and not _out_of_budget()
+            _proposed(k, (props, res), final=not more)
+            if more:
+                _submit_propose(k, gen_opts, meta["state"])
+
         def _expand_now(final: bool = False) -> bool:
             picks = _expandable(final)
             for k in picks:
                 expanding.add(k)
-                known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
-                connect.submit("propose", (k, result.species[k].node.structure, known_smiles,
-                                           _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
-                                                             result.species[k])),
-                               lambda out, k=k: _proposed(k, out), label=f"species {k}")
+                _submit_propose(k, _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
+                                                     result.species[k]))
             if picks:
                 _emit(on_event, "expanding", round=rnd, species=picks)
             return bool(picks)
@@ -2298,6 +2405,34 @@ def expand_network(
             """In a worker: a step's conformers and atom-mapped conformer pairs (`refine.pairs`)."""
             return refine.pairs((a, b, label))
 
+        def _rotamer_job(guess, fp, core, ends):
+            """In a worker: a TS optimized from one rotamer guess of a step's TS (`ts_rotamer_guesses`), written
+            to `fp` with its parent's IRC ends beside it (`<stem>_ends.xyz`, what tells its spectators); None
+            unless every distance of the reacting `core` stayed within CORE_TOLERANCE_ANG of the guess's (the
+            parent's): it went to another TS. With free energies, also its (cache key, thermal correction), as the
+            queue's own TS jobs compute it."""
+            import mepd
+            from mepd.cli_conformers import CORE_TOLERANCE_ANG
+
+            ts = mepd.find_ts(StructureNode(structure=guess), connect.job_inputs.engine,
+                              maxiter=int(getattr(connect, "fast_ts_steps", 300)), continue_unconverged=0)
+            x0, x1 = (np.asarray(s.geometry, dtype=float) / ANGSTROM_TO_BOHR for s in (guess, ts.structure))
+            if any(abs(np.linalg.norm(x1[i] - x1[j]) - np.linalg.norm(x0[i] - x0[j])) > CORE_TOLERANCE_ANG
+                   for i, j in core):
+                return None
+            fp = Path(fp)
+            mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
+            mepd.write_xyz(fp.with_name(f"{fp.stem}_ends.xyz"), [StructureNode(structure=e) for e in ends])
+            corr = None
+            if free is not None:
+                try:
+                    st = _open_structure(fp).model_copy(update={"charge": guess.charge,
+                                                                "multiplicity": guess.multiplicity})
+                    corr = (free._key(st, True, ends), free._correction(st, True, ends))
+                except Exception:
+                    corr = None    # the kinetics compute it, or keep the electronic energy (said)
+            return ts, str(fp), corr
+
         def _steer_job(item):
             try:
                 return _single_point(item, engine, steer_engine)
@@ -2310,6 +2445,8 @@ def expand_network(
             if not hasattr(refine, "pairs"):
                 raise ValueError("schedule='async' needs a `refine` with `pairs` (its conformer pairs).")
             connect.register("channels", _channels_job, slots=int(getattr(refine, "width", 1)))
+            if verify is not None:
+                connect.register("rotamer", _rotamer_job, rank=1)
         if steer_engine is not None and not getattr(steer_engine, "holds_torch_model", False):
             from mepd.discovery.energy_refine import _single_point
 
@@ -2318,6 +2455,59 @@ def expand_network(
         queued_irc: set = set()       # TS files whose IRC is queued or done
         queued_channels: set = set()  # species pairs whose sampling is queued or done
         queued_steer: set = set()     # steering single points queued
+        queued_rotamers: set = set()  # TS files whose rotamers are queued or done
+
+        lowest_ts: dict = {"steps": -1, "pairs": {}}   # species pair -> its lowest TS energy, at that many steps
+
+        def _height(key) -> float:
+            """kcal/mol above the seed of the lowest TS found between a species pair so far -- or, with none yet
+            (its single TS failed or belongs to another step), of the higher of the two species, which no TS
+            between them can lie below -- as the queue asks it each time it orders its waiting jobs: the channels
+            of the lowest steps are sampled first. F0007's endo and exo steps, the two the selectivity rests on,
+            waited 4-12 minutes behind the conformer pairs of 35-42 steps that carry no flux, all queued with the
+            seed's proposals before any of their TSs was found; an exo adduct whose single TS's IRC went
+            elsewhere waited 12 minutes more when a pair without a TS came last."""
+            if lowest_ts["steps"] != len(result.steps):
+                pairs: dict = {}
+                for st in result.steps:
+                    k = frozenset((st.a, st.b))
+                    pairs[k] = min(pairs.get(k, st.ts_energy), st.ts_energy)
+                lowest_ts.update(steps=len(result.steps), pairs=pairs)
+            e = lowest_ts["pairs"].get(key)
+            if e is None:
+                e = max(float(result.species[k].node.energy) for k in key)
+            return (e - e0) * HARTREE_TO_KCAL_PER_MOL
+
+        def _queue_rotamers(st) -> int:
+            """The rotamers of step `st`'s TS (`ts_rotamer_guesses`, about its rotatable bonds), each a TS search
+            of the queue's. F0007: the single TS of each adduct is the conformer its proposal happened to be in
+            (endo s-trans, exo with the ester E: 1.5 and 7 kcal/mol over the lowest); turning the acrylate and
+            ester bonds of those two TSs gives the endo s-cis, exo s-cis and exo s-trans ones."""
+            ts = _ts_structure(st)
+            if ts is None:
+                return 0
+            ends = _ts_ends(st)
+            guesses, core = ts_rotamer_guesses(ts, ends)
+            stem = Path(st.files["ts"]).stem
+            for k, (guess, what) in enumerate(guesses):
+                connect.submit("rotamer", (guess, str(Path(st.files["ts"]).with_name(f"{stem}_rot{k}.xyz")), core,
+                                           ends),
+                               lambda out, a=st.a, b=st.b: _rotamer_back(a, b, stem, out),
+                               label=f"{st.a}→{st.b} · {stem} turned {what}",
+                               priority=(st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
+            return len(guesses)
+
+        def _rotamer_back(a, b, parent, out) -> None:
+            """A rotamer of TS `parent` is back: one more TS between its ends (unless the same TS is there
+            already), IRC-checked like any; an IRC that fails drops it, and asks for no path search."""
+            if out is not None:
+                ts, fp, corr = out
+                if corr is not None and free is not None:
+                    free._cache[corr[0]] = corr[1]
+                _add_found({"pair": (a, b), "ts": ts, "label": Path(fp).stem,
+                            "files": {"ts": fp, "verified": False, "rotamer_of": parent}})
+            _save()
+            _follow_up()
 
         def _queue_steer(key, item) -> None:
             if key in queued_steer:
@@ -2347,9 +2537,9 @@ def expand_network(
             _save()
             _follow_up()
 
-        def _channels_back(key, a, b, out) -> None:
+        def _channels_back(key, a, b, out, priority=0.0) -> None:
             """A step's conformer pairs are back: the lowest conformer of each end becomes its species'
-            reference if lower, and every pair joins the queue (`ch_<a>_<b>_<k>`)."""
+            reference if lower, and every pair joins the queue (`ch_<a>_<b>_<k>`) at the step's `priority`."""
             refined.add(key)
             rec = result.rounds[-1]
             rec.setdefault("channels_sampled", []).append([a, b])
@@ -2362,7 +2552,7 @@ def expand_network(
                         premin[id(low)] = (low, low)       # minimized by the job
                         _species_for(low)
                 for k, (x, y) in enumerate(out["pairs"]):
-                    connect.add_channel((a, b), x, y, f"ch_{a}_{b}_{k}")
+                    connect.add_channel((a, b), x, y, f"ch_{a}_{b}_{k}", priority=priority)
                 rec["channel_pairs"] = rec.get("channel_pairs", 0) + len(out["pairs"])
             _save()
             _follow_up()
@@ -2384,20 +2574,37 @@ def expand_network(
                         n += 1
             todo = [p for p in dict.fromkeys(retry) if p not in searched]   # pairs an IRC check sent back
             retry.clear()
+            ends = [p for p in dict.fromkeys(irc_products) if p not in connected and p[::-1] not in connected]
+            irc_products.clear()
+            if ends:                                # each new IRC-end species from the species it was asked from
+                connected.update(ends)
+                pending.update(ends)
+                connect.add_pairs(ends)
+                n += len(ends)
             if todo:
                 searched.update(todo)
                 connected.update(todo)
                 pending.update(todo)
                 connect.add_pairs(todo, search=True)
                 n += len(todo)
-            if refine is not None and live_kin.get("k") is not None:       # channel sampling
+            if refine is not None and live_kin.get("k") is not None:       # channel sampling, lowest steps first
                 for key, a, b in _refine_todo(live_kin["k"]):
                     if key not in queued_channels:
                         queued_channels.add(key)
+                        h = lambda key=key: _height(key)
                         connect.submit("channels", (result.species[a].node, result.species[b].node, f"{a}_{b}"),
-                                       lambda out, key=key, a=a, b=b: _channels_back(key, a, b, out),
-                                       label=f"{a}→{b}")
+                                       lambda out, key=key, a=a, b=b, h=h: _channels_back(key, a, b, out, h),
+                                       label=f"{a}→{b}", priority=h)
                         n += 1
+            if refine is not None and verify is not None:   # the rotamers of every IRC-checked TS the kinetics use
+                for st in list(result.steps):
+                    fp = st.files.get("ts")
+                    if (fp and st.files.get("verified") is True and st.files.get("irc") and fp not in queued_rotamers
+                            and "rotamer_of" not in st.files and st.files.get("ts_kind") != "path_peak"
+                            and (st.a in hot or st.b in hot)
+                            and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal):
+                        queued_rotamers.add(fp)
+                        n += _queue_rotamers(st)
             return _expand_now(final) or n > 0
 
         def _found_async(found) -> None:
@@ -2442,6 +2649,7 @@ def expand_network(
         result.rounds[-1]["iced_pieces"] = len(connect.iced)
         # why it ended: "converged" (the kinetics asked for nothing more), or the budget that ran out
         result.rounds[-1]["stopped"] = stopped[0] or "converged"
+        live_steer[0] = None    # the queue is closed: missing steering single points are computed here, not queued
         _emit(on_event, "phase", round=cycle, phase=f"ended: {result.rounds[-1]['stopped']}")
         _kinetics_record([])
         _save(force=True)
@@ -2599,9 +2807,10 @@ def expand_network(
         _save(force=True)
         if checkpoint is not None:
             checkpoint(result)   # a run cut off later keeps the rounds it finished
-    # an async run that ran out of time (or was stopped) ends with what it has: these would run on unbudgeted
+    # an async run that ran out of time, was stopped or reached max_species ends with what it has: these would run
+    # on unbudgeted (F0007, 200 species at 1459 s of 1800: an hour more of whole channel searches)
     out_of_time = schedule == "async" and result.rounds and \
-        result.rounds[-1].get("stopped") in ("time budget", "stop requested")
+        result.rounds[-1].get("stopped") in ("time budget", "stop requested", "max species")
     if steer == "access" and t_idx is not None and connect is not None and result.rounds and not out_of_time:
         # Searches towards the target that the last round's network opened up
         # would have joined the next round's queue: there is none, so run them now.
