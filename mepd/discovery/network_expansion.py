@@ -638,9 +638,10 @@ def _import_generator(path: str) -> Callable:
     return getattr(importlib.import_module(module_name), attr)
 
 
-def external_proposals(structures: Iterable, source_structure, source: int) -> list[Proposal]:
+def external_proposals(structures: Iterable, source_structure, source: int, start: int = 0) -> list[Proposal]:
     """Proposals from product structures made elsewhere; they must list the
-    same elements in the same order as the source."""
+    same elements in the same order as the source. `start`: the number of the
+    first (a batch after others of the same species continues their numbering)."""
     from qcdata import Structure
 
     out = []
@@ -652,7 +653,7 @@ def external_proposals(structures: Iterable, source_structure, source: int) -> l
                              f"({len(s.symbols)} vs {len(source_structure.symbols)} atoms); products must "
                              "be atom-mapped to the reactant.")
         s = s.model_copy(update={"charge": source_structure.charge, "multiplicity": source_structure.multiplicity})
-        out.append(Proposal(source, (), (), f"external-{k}", structure=s))
+        out.append(Proposal(source, (), (), f"external-{start + k}", structure=s))
     return out
 
 
@@ -2233,13 +2234,23 @@ def expand_network(
         if gen_obj.kind == "structures" and ("parallel" in job_opts or "parallel" in gen_obj.options):
             job_opts["parallel"] = width   # its share of the workers, not all of them
 
-        def _propose_job(src, structure, known_smiles, gen_opts):
+        def _propose_job(src, structure, known_smiles, gen_opts, batch_state=None):
             """In a worker: the generator's proposals for species `src`, minimized (loosely, as in rounds),
             with their Hessian checks when asked for. Proposals of species known when it was queued come
             back unminimized ("known"). `gen_opts`, a structures generator's options for `src`, are made when
-            it is queued: the worker's copy of the network is the one from when its pool was forked."""
+            it is queued: the worker's copy of the network is the one from when its pool was forked.
+            A batched generator (the reactor) runs one batch here, from `batch_state` (what its earlier
+            batches for `src` left); its result then carries {"state", "done"} for the next."""
             node = StructureNode(structure=structure)
-            if gen_obj.kind == "structures":
+            meta = None
+            if gen_obj.kind == "structures" and gen_obj.propose_batch is not None:
+                gen_obj.check()
+                before = len((batch_state or {}).get("proposed") or ())
+                structs, new_state, done = gen_obj.propose_batch(structure, max_products=max_products,
+                                                                 options=gen_opts, state=batch_state)
+                props = external_proposals(structs, structure, src, start=before)
+                meta = {"state": new_state, "done": bool(done)}
+            elif gen_obj.kind == "structures":
                 gen_obj.check()
                 props = external_proposals(gen_obj.propose(structure, max_products=max_products,
                                                            options=gen_opts), structure, src)
@@ -2267,7 +2278,7 @@ def expand_network(
                         rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
                         label=f"proposal {props[k].label}")
                 out[k] = (opt, record)
-            return props, out
+            return (props, out) if meta is None else (props, out, meta)
 
         # The seed's proposals are the queue's first job; a later species' wait until the steps found so far have
         # their IRC checks, rotamers and channel sampling (F0007, 32 workers: the reactor for the most populated
@@ -2299,17 +2310,20 @@ def expand_network(
                      and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))]
             return sorted(picks, key=lambda k: -load.get(k, 1.0))
 
-        def _proposed(src, out) -> None:
+        def _proposed(src, out, final: bool = True) -> None:
             """A species' proposals are back: species and edges as in a round; pairs to new products join
-            the running queue at once."""
-            expanding.discard(src)
-            expanded.add(src)
+            the running queue at once. `final` False: one batch of a batched generator, more to come (the
+            species stays being expanded)."""
+            if final or out is None:
+                expanding.discard(src)
+                expanded.add(src)
             rec = result.rounds[-1]
             if out is None:     # not counted as expanded: said in the round (the why: the queue's job event)
                 rec.setdefault("proposals_failed", []).append(src)
                 _emit(on_event, "warning", message=f"proposals for species {src} failed")
                 return
-            rec["sources"].append(src)
+            if src not in rec["sources"]:
+                rec["sources"].append(src)
             props, res = out
             rec["proposed"] += len(props)
             known = {sp.smiles: k for k, sp in enumerate(result.species) if sp.smiles}
@@ -2343,15 +2357,32 @@ def expand_network(
             _save()
             _follow_up()
 
+        def _submit_propose(k, gen_opts, batch_state=None) -> None:
+            known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
+            batch = int((batch_state or {}).get("batch") or 0)
+            label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None else "")
+            connect.submit("propose", (k, result.species[k].node.structure, known_smiles, gen_opts, batch_state),
+                           lambda out, k=k: _propose_back(k, out, gen_opts), label=label)
+
+        def _propose_back(k, out, gen_opts) -> None:
+            """A propose job is back. A batched generator's batch: its products join the network at once
+            (minimized, their pairs queued, the live view told) and the species' next batch is queued at
+            once, while those are connected -- until it converged, ran its last batch, or a budget ran out."""
+            if out is None or len(out) == 2:
+                _proposed(k, out)
+                return
+            props, res, meta = out
+            more = not meta["done"] and not _out_of_budget()
+            _proposed(k, (props, res), final=not more)
+            if more:
+                _submit_propose(k, gen_opts, meta["state"])
+
         def _expand_now(final: bool = False) -> bool:
             picks = _expandable(final)
             for k in picks:
                 expanding.add(k)
-                known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
-                connect.submit("propose", (k, result.species[k].node.structure, known_smiles,
-                                           _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
-                                                             result.species[k])),
-                               lambda out, k=k: _proposed(k, out), label=f"species {k}")
+                _submit_propose(k, _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
+                                                     result.species[k]))
             if picks:
                 _emit(on_event, "expanding", round=rnd, species=picks)
             return bool(picks)
