@@ -54,8 +54,8 @@ def summary(xs: list) -> dict:
     q1, q3 = (np.percentile(fin, 25), np.percentile(fin, 75)) if len(fin) else (None, None)
     return {"n": len(v), "never": int((~np.isfinite(v)).sum()), "median": float(np.median(v)),
             "iqr": None if q1 is None else float(q3 - q1), "min": float(fin.min()) if len(fin) else None,
-            "max": float(fin.max()) if len(fin) else None, "values": sorted(round(float(x)) if np.isfinite(x) else "inf"
-                                                                           for x in v)}
+            "max": float(fin.max()) if len(fin) else None, "values": sorted(round(float(x)) for x in fin)
+            + ["inf"] * int((~np.isfinite(v)).sum())}
 
 
 def main(argv: list) -> int:
