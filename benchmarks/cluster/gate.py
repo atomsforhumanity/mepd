@@ -12,16 +12,18 @@ marked); a system run on one side only fails ("not run"). Per system, all three 
 1. accuracy: median(|worst error|) of the candidate <= the base's + max(0.5 kcal/mol, spread), where
    spread = the larger interquartile range of |worst error| over the two sides' replicates (finite
    values; a replicate with a missing channel counts as +inf in the median);
-2. recall: the fraction of replicates with every channel found and connected does not drop, and no
-   channel's connected fraction drops (strict: 5 replicates resolve 20 % steps, so one replicate less
-   fails the gate; its counts are printed);
+2. recall (coordinator 2026-11-07, two-stage; recall_noise.py: the strict rule failed 85-88 % of gates between
+   arms of the same run code): only the channels systems.yaml marks as required count, and the full-recall
+   count. A drop with a one-sided Fisher exact p < 0.05 (connected counts, base vs candidate) fails; a smaller
+   drop is inconclusive -- the system needs replicates (10 more per arm, seeds 1000 x r for r = 5..14) -- until
+   both sides have >= 15 replicates, when only p < 0.05 fails;
 3. speed: median settle time of the candidate <= the base's + max(20 % of it, 2 x the same-seed rerun spread
    of the settle time (the base's controls, per system; else the largest), 60 s) (coordinator, 2026-11-05;
    a replicate that never settled counts as +inf; both +inf passes, base finite and candidate +inf fails).
 The verdicts follow these rules as the brief states them; a failure that is a single replicate (recall) or
 within the larger interquartile range of the two sides (settle) is marked so, for a human to judge.
 
-Exit 0 when every system passes, 1 otherwise.
+Exit 0 when every system passes, 1 when one fails, 3 when none fails but one is inconclusive.
 """
 from __future__ import annotations
 
@@ -34,6 +36,30 @@ RESULTS = Path("/home/user/astera/data/runs/explorer-team/scoreboard/results")
 FLOOR_KCAL = 0.5
 SETTLE_GROWTH_FRAC = 0.2     # settle may grow by max(20 %, 2 x the same-seed rerun spread, 60 s) (coordinator)
 SETTLE_FLOOR_S = 60.0
+RECALL_P = 0.05              # one-sided Fisher exact test on connected counts
+STAGE2_N = 15                # replicates per side from which a non-significant recall drop passes
+
+
+def _required(system: str) -> list | None:
+    """The system's required channels (systems.yaml, through score.load_systems)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import score
+
+    sd = score.load_systems().get(system) or {}
+    return sd.get("required") or (list(sd["channels"]) if sd.get("channels") else None)
+
+
+def recall_drop(kb: int, nb: int, kc: int, nc: int) -> str | None:
+    """None (no drop), "fail" (one-sided Fisher p < RECALL_P) or "inconclusive" (a smaller drop, before both
+    sides have STAGE2_N replicates; after that a smaller drop is None)."""
+    from scipy.stats import fisher_exact
+
+    if kc * nb >= kb * nc:
+        return None
+    p = fisher_exact([[kb, nb - kb], [kc, nc - kc]], alternative="greater")[1]
+    if p < RECALL_P:
+        return "fail"
+    return None if min(nb, nc) >= STAGE2_N else "inconclusive"
 
 
 def _load(spec: str) -> tuple[dict, dict]:
@@ -75,20 +101,22 @@ def compare(base: dict, cand: dict, rerun_spread: dict | None = None) -> dict:
         checks["accuracy"] = {"pass": ok, "base_median": bm, "cand_median": cm, "tolerance": tol}
         if not ok:
             why.append(f"worst |error| median {_fmt(cm)} > base {_fmt(bm)} + {tol:.2f} kcal/mol")
-        # 2. recall
-        ok_r = c["full_recall_fraction"] >= b["full_recall_fraction"] - 1e-9
-        drops = [ch for ch in b["recall"] if c["recall"].get(ch, {}).get("connected", 0.0)
-                 < b["recall"][ch]["connected"] - 1e-9]
-        checks["recall"] = {"pass": ok_r and not drops, "base_full": b["full_recall_fraction"],
-                            "cand_full": c["full_recall_fraction"], "channels_dropped": drops,
-                            "base": b["recall"], "cand": c["recall"]}
-        if not ok_r:
-            why.append(f"full recall {c['full_recall_fraction']:.0%} of {c['n']} < base {b['full_recall_fraction']:.0%} "
-                       f"of {b['n']}")
-        for ch in drops:
-            why.append(f"{ch} connected in {c['recall'][ch]['connected']:.0%} < base {b['recall'][ch]['connected']:.0%}"
-                       + (" (one replicate)" if b['recall'][ch]['connected'] - c['recall'][ch]['connected']
-                          <= 1.0 / max(1, c['n']) + 1e-9 else ""))
+        # 2. recall: required channels and full recall, two-stage
+        nb, nc = b["n"], c["n"]
+        req = b.get("required") or c.get("required") or _required(system) or list(b["recall"])
+        counts = {"full recall": (round(b["full_recall_fraction"] * nb), round(c["full_recall_fraction"] * nc))}
+        counts.update({ch: (round(b["recall"][ch]["connected"] * nb),
+                            round(c["recall"].get(ch, {}).get("connected", 0.0) * nc)) for ch in req if ch in b["recall"]})
+        outcome = {k: recall_drop(kb, nb, kc, nc) for k, (kb, kc) in counts.items()}
+        failed = [k for k, o in outcome.items() if o == "fail"]
+        unsure = [k for k, o in outcome.items() if o == "inconclusive"]
+        checks["recall"] = {"pass": not failed and not unsure, "status": "fail" if failed else
+                            ("inconclusive" if unsure else "pass"), "required": req, "counts": counts,
+                            "failed": failed, "inconclusive": unsure, "base_full": b["full_recall_fraction"],
+                            "cand_full": c["full_recall_fraction"], "base": b["recall"], "cand": c["recall"]}
+        for k in failed + unsure:
+            kb, kc = counts[k]
+            why.append(f"{k}: {kc}/{nc} < base {kb}/{nb} ({'Fisher p < %.2f' % RECALL_P if k in failed else 'not significant: inconclusive, needs replicates'})")
         # 3. speed
         bs, cs = b["settle_s"]["median"], c["settle_s"]["median"]
         bs = math.inf if bs is None else bs
@@ -100,7 +128,10 @@ def compare(base: dict, cand: dict, rerun_spread: dict | None = None) -> dict:
                             "rerun_spread_s": rs}
         if not ok_s:
             why.append(f"settle median {_fmt(cs, '.0f')} s > base {_fmt(bs, '.0f')} s + {s_tol:.0f} s")
-        out[system] = {"pass": not why, "held_out": bool(b.get("held_out") or c.get("held_out")), "why": why,
+        hard = not checks["accuracy"]["pass"] or not checks["settle"]["pass"] or checks["recall"]["status"] == "fail"
+        status = "fail" if hard else ("inconclusive" if checks["recall"]["status"] == "inconclusive" else "pass")
+        out[system] = {"pass": status == "pass", "status": status,
+                       "held_out": bool(b.get("held_out") or c.get("held_out")), "why": why,
                        "checks": checks, "n": [b["n"], c["n"]]}
     return out
 
@@ -127,7 +158,7 @@ def main(argv: list) -> int:
     print(f"gate: base {bi['run']}:{bi['config']} ({(bi['commit'] or '')[:7]}) vs candidate "
           f"{ci['run']}:{ci['config']} ({(ci['commit'] or '')[:7]})")
     for system, v in verdict.items():
-        mark = "PASS" if v["pass"] else "FAIL"
+        mark = v.get("status", "pass" if v["pass"] else "fail").upper()
         held = " (held out)" if v.get("held_out") else ""
         ch = v.get("checks", {})
         detail = ""
@@ -141,11 +172,17 @@ def main(argv: list) -> int:
         for w in v["why"]:
             print(f"      {w}")
     ok = all(v["pass"] for v in verdict.values())
-    print("overall:", "PASS" if ok else "FAIL")
+    statuses = {v.get("status", "pass" if v["pass"] else "fail") for v in verdict.values()}
+    overall = "fail" if "fail" in statuses else ("inconclusive" if "inconclusive" in statuses else "pass")
+    need = [sy for sy, v in verdict.items() if v.get("status") == "inconclusive"]
+    print("overall:", overall.upper())
+    if need:
+        print("needs replicates (10 more per arm, seeds 5000-14000):", ", ".join(need))
     if "--json" in argv:
         Path(argv[argv.index("--json") + 1]).write_text(json.dumps(
-            {"base": bi, "candidate": ci, "systems": verdict, "pass": ok}, indent=1, default=str))
-    return 0 if ok else 1
+            {"base": bi, "candidate": ci, "systems": verdict, "pass": ok, "overall": overall,
+             "needs_replicates": need}, indent=1, default=str))
+    return {"pass": 0, "fail": 1, "inconclusive": 3}[overall]
 
 
 if __name__ == "__main__":
