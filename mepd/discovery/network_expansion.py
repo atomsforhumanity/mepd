@@ -777,6 +777,7 @@ class Species:
     rel_energy_kcal: float = 0.0
     validation: Optional[dict] = None
     loose: bool = False   # minimized only to the proposals' loose threshold so far
+    known: Optional[str] = None   # the earlier run's folder it was taken from (--known), not found here
 
 
 @dataclass
@@ -798,6 +799,8 @@ class ExpansionResult:
     steps: list = field(default_factory=list)  # flux steering: verified elementary steps (kinetics.Step)
     kinetics: object = None  # flux steering: the latest kinetics.KineticsResult
     channels_log: list = field(default_factory=list)  # each sampled step's TSs before and after channel sampling
+    # earlier runs taken as known (`known`): {"used", "skipped", "reused"}; None without any
+    known: Optional[dict] = None
 
     def connections(self) -> list[tuple[int, int]]:
         """Distinct (source, product) species pairs to connect by path search."""
@@ -1225,11 +1228,12 @@ def _load_state(fp: Optional[Path], fingerprint: dict) -> dict:
     if state.get("version") != _STATE_VERSION:
         raise ValueError(f"{fp} was saved by another version of mepd (state version {state.get('version')}, "
                          f"this one reads {_STATE_VERSION}); it can't be resumed.")
-    differ = [k for k in fingerprint if state["fingerprint"].get(k) != fingerprint[k]]
+    keys = list(fingerprint) + [k for k in ("known",) if k in state["fingerprint"] and k not in fingerprint]
+    differ = [k for k in keys if state["fingerprint"].get(k) != fingerprint.get(k)]
     if differ:
         raise ValueError("The saved exploration was made with other settings; resume it with the ones it was "
                          "saved with. Differs: " + "; ".join(
-                             f"{k}: saved {state['fingerprint'].get(k)!r}, now {fingerprint[k]!r}" for k in differ))
+                             f"{k}: saved {state['fingerprint'].get(k)!r}, now {fingerprint.get(k)!r}" for k in differ))
     return state
 
 
@@ -1246,7 +1250,7 @@ def expand_network(
     verify: Optional[Callable] = None, proposal_fmax: Optional[float] = 0.05,
     steer_engine=None, steer_save_dir: Optional[Path] = None,
     state_file: Optional[Path] = None, resume: bool = False, schedule: str = "rounds",
-    time_budget_s: Optional[float] = None,
+    time_budget_s: Optional[float] = None, known: Optional[dict] = None,
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -1337,7 +1341,18 @@ def expand_network(
     caps the growth (`rounds` is not used): the queue ends when the kinetics
     ask for nothing more ("converged"), or when `time_budget_s`, a stop
     request or `max_species` runs out -- then no new job starts and the
-    running ones are cancelled (one record in `rounds`, its "stopped" saying which)."""
+    running ones are cancelled (one record in `rounds`, its "stopped" saying which).
+
+    `known` ({"runs": [mepd.discovery.known.KnownRun], "skipped": [{"folder", "why"}], "dir": Path}): earlier
+    expansions at this level of theory, taken as they are instead of being computed again. A seed that is one of
+    their species takes its structure and energy (no minimization). Each run's atoms are mapped onto the seed's
+    (known.atom_order: it must have the seed among its species), its species join the network (one that is a
+    species already: its lower conformer is kept), its steps too with their TS and IRC files, written to "dir"
+    in this run's atom order (an unverified one still gets its IRC check), and its pairs count as connected (no
+    new TS or path search), its channel-sampled pairs as sampled and the species its generator ran on, but the
+    seed, as expanded. Its steering single points (when the steering level is this run's) and Hessian
+    corrections (at this run's temperature and standard state) are taken by their cache keys. Its species do
+    not count towards `max_species`. `result.known` records what was used, skipped and why, and how much."""
     if schedule not in ("rounds", "async"):
         raise ValueError(f"schedule must be 'rounds' or 'async', got {schedule!r}.")
     if schedule == "async":
@@ -1388,11 +1403,42 @@ def expand_network(
                                      generator_options, products_file) if state_file is not None else None
     if fingerprint is not None and schedule != "rounds":
         fingerprint["schedule"] = schedule
+    known_runs = list((known or {}).get("runs") or [])
+    if fingerprint is not None and known:   # a resume must be given the same earlier runs, unchanged
+        from mepd.discovery.known import fingerprint as known_fingerprint
+
+        fingerprint["known"] = known_fingerprint([kr.folder for kr in known_runs]
+                                                 + [k["folder"] for k in known.get("skipped") or []])
     if resume:
         saved = _load_state(state_file, fingerprint)
         seed = saved["result"].species[0].node.copy()
         minimize_seed = False
     seed = seed.copy()
+
+    def _known_seed(node):
+        """The seed as a species of a known run, in the seed's atom order with that run's energy; None if it is
+        none of theirs."""
+        from mepd.discovery.known import atom_order, reordered
+
+        for kr in known_runs:
+            for j, s in enumerate(kr.species):
+                other = StructureNode(structure=s.model_copy(update={"charge": node.structure.charge,
+                                                                     "multiplicity": node.structure.multiplicity}))
+                if kr.charge_mult not in (None, (int(node.structure.charge), int(node.structure.multiplicity))) \
+                        or not _connectivity_matches(node, other):
+                    continue
+                order = atom_order(node, other)
+                if order is not None:
+                    out = StructureNode(structure=reordered(other.structure, order))
+                    out._cached_energy = float(kr.summary["species"][j]["energy"])
+                    _emit(on_event, "known", message=f"the seed is species {j} of known run {kr.folder}: its "
+                                                     "structure and energy are taken")
+                    return out
+        return None
+
+    from_known = _known_seed(seed) if known_runs and saved is None else None
+    if from_known is not None:
+        seed, minimize_seed = from_known, False
     if minimize_seed:
         opt = _optimize(engine, [StructureNode(structure=seed.structure)], maxiter, None)[0]
         if isinstance(opt, Exception):
@@ -1405,7 +1451,8 @@ def expand_network(
                 rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)), label="seed")
             if not record["is_minimum"]:
                 raise RuntimeError(f"The seed is not a minimum at this level of theory: {record.get('validation')}")
-        seed = opt
+        seed = _known_seed(opt) if known_runs else None
+        seed = seed if seed is not None else opt
     elif seed._cached_energy is None:
         engine.compute_energies([seed])
     e0 = float(seed.energy)
@@ -1601,7 +1648,8 @@ def expand_network(
                 "event": "step", "a": a, "b": b, "label": found.get("label", ""), "ts_energy": ts_e,
                 "barrier_kcal": [fwd, rev],
                 "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev,
-                                                    result.steps[-1].files.get("verified") is not False)})
+                                                    result.steps[-1].files.get("verified") is not False),
+                **({"known": True} if (found.get("files") or {}).get("known") else {})})
 
     def _same_ts(st, ts_e: float, ts_structure) -> bool:
         """Whether step `st`'s TS is this one (`ts_e`, Hartree; its Structure): the same energy (0.1 kcal/mol)
@@ -1799,13 +1847,24 @@ def expand_network(
 
         return step_ends(st.files or {}, (result.species[st.a].node.structure, result.species[st.b].node.structure))
 
+    def _steer_key(s, is_ts: bool, ends) -> str:
+        """A steering single point's cache key: the geometry (to 1e-4 Bohr), and a TS's spectators apart when the
+        free energies count them so (keys saved before kept theirs)."""
+        import hashlib
+
+        from mepd.discovery.free_energy import FreeEnergies
+
+        # apart on electronic energies too: a subsystem TS was computed without its spectators
+        groups = (free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M")))._groups(s, is_ts, ends)
+        xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
+        return hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
+                                  is_ts) + ((groups,) if groups and len(groups) > 1 else ())).encode()).hexdigest()[:24]
+
     def _steer_shifts(structs: list, queue=None) -> list:
         """E_high - E_low (Hartree) of each (structure, is_ts, a TS's step's ends or None), the molecules of a
         species -- a TS's spectators -- apart when the free energies count them so; None where a single point
         failed. `queue(key, item)`: the missing single points are handed to it (jobs of the async queue) and are
         None until they come back."""
-        import hashlib
-
         from mepd.cli_common import _fork_map
         from mepd.discovery.energy_refine import Item, _fragments, _single_point
         from mepd.discovery.free_energy import FreeEnergies
@@ -1814,13 +1873,8 @@ def expand_network(
         keys = []
         todo: dict = {}
         for s, is_ts, ends in structs:
-            # a TS with spectators apart is another item than the TS whole (keys saved before kept theirs); apart
-            # on electronic energies too: it was computed without them (subsystem)
-            groups = splitter._groups(s, is_ts, ends)
-            xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
-            key = hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
-                                     is_ts) + ((groups,) if groups and len(groups) > 1 else ()))
-                               .encode()).hexdigest()[:24]
+            # a TS with spectators apart is another item than the TS whole
+            key = _steer_key(s, is_ts, ends)
             keys.append(key)
             if key in steer_delta or key in todo:
                 continue
@@ -2380,6 +2434,161 @@ def expand_network(
         pos.update(saved["pos"])
         _emit(on_event, "resumed", round=pos["round"], stage=pos["stage"], species=len(result.species),
               steps=len(result.steps))
+    known_no_rotamers: set = set()   # TS files of known verified steps: their rotamers were the earlier run's to try
+
+    def _import_known() -> None:
+        """The known runs' species, steps, sampled pairs, steering single points and Hessians, in this run's atom
+        order and species indices (see `known` above)."""
+        import json
+        import shutil
+
+        from mepd.discovery.energy_refine import _Saved, _same_level
+        from mepd.discovery.free_energy import step_ends
+        from mepd.discovery.known import atom_order, permuted_xyz, reordered
+
+        H = HARTREE_TO_KCAL_PER_MOL
+        rec = {"used": [], "skipped": list(known.get("skipped") or []),
+               "reused": {"species": 0, "steps": 0, "single_points": 0, "hessians": 0}}
+        result.known = rec
+        out_dir = Path(known["dir"])
+
+        def skip(kr, why):
+            rec["skipped"].append({"folder": str(kr.folder), "why": why})
+            _emit(on_event, "known", message=f"known run {kr.folder} not used: {why}")
+
+        for f, kr in enumerate(known_runs):
+            if view.region is not None:
+                skip(kr, "QM/MM systems are not taken as known yet")
+                continue
+            if kr.charge_mult not in (None, (int(charge), int(mult))):
+                skip(kr, f"another charge and multiplicity {kr.charge_mult}")
+                continue
+            old = [x.model_copy(update={"charge": charge, "multiplicity": mult}) for x in kr.species]
+            seed_node = result.species[0].node
+            hit = None
+            for j, x in enumerate(old):
+                node = StructureNode(structure=x)
+                if _connectivity_matches(seed_node, node) and (order := atom_order(seed_node, node)) is not None:
+                    hit = (j, order)
+                    break
+            if hit is None:
+                skip(kr, "the seed is none of its species, so its atoms can't be mapped onto this run's")
+                continue
+            j0, order = hit
+            n_before, idx = len(result.species), {}
+            used = {"folder": str(kr.folder), "seed_is": j0, "atom_order": "same" if order == sorted(order)
+                    else "mapped", "species": 0, "species_merged": 0, "steps": 0, "single_points": 0,
+                    "hessians": 0}
+            structures = []   # (its structure, ours, is_ts, its TS's ends, our step) for the cache keys
+            for j, (x, sp) in enumerate(zip(old, kr.summary["species"])):
+                node = StructureNode(structure=reordered(x, order))
+                node._cached_energy = float(sp["energy"])
+                loose = bool(sp.get("loosely_minimized"))
+                match = 0 if j == j0 else next((k for k in range(n_before)
+                                                if _connectivity_matches(node, result.species[k].node)), None)
+                structures.append((x, node.structure, False, None, None))
+                if match is not None:
+                    _adopt_if_lower(match, node, loose)
+                    idx[j] = match
+                    used["species_merged"] += 1
+                    continue
+                result.species.append(Species(node, sp.get("smiles") or "", 0, (float(node.energy) - e0) * H,
+                                              sp.get("validation"), loose, known=str(kr.folder)))
+                idx[j] = len(result.species) - 1
+                used["species"] += 1
+                if live.enabled:   # the web adds it to its graph, from the species it was found from
+                    live._progress.append_live_event({
+                        "event": "species", "index": idx[j], "parent": idx.get(kr.parent(j), 0),
+                        "smiles": sp.get("smiles") or "", "energy_hartree": float(node.energy),
+                        "rel_energy_kcal": result.species[-1].rel_energy_kcal, "round": 0,
+                        "validation": sp.get("validation"), "xyz": node.structure.to_xyz(),
+                        "caption": f"from {kr.folder.name}", "known": True})
+            for st in kr.summary.get("steps") or []:
+                files0 = dict(st.get("files") or {})
+                a, b, src = idx.get(st["a"]), idx.get(st["b"]), kr.path(files0.get("ts"))
+                if a is None or b is None or a == b or src is None:
+                    continue
+                label = f"known{f}_{st.get('label') or src.stem}"
+                files = {k: v for k, v in files0.items() if k not in ("ts", "irc", "pair", "rotamer_of")}
+                ts_fp = out_dir / f"{label}.xyz"
+                permuted_xyz(src, ts_fp, order)
+                if src.with_name(f"{src.stem}_ends.xyz").exists():
+                    permuted_xyz(src.with_name(f"{src.stem}_ends.xyz"), ts_fp.with_name(f"{label}_ends.xyz"), order)
+                files["ts"] = str(ts_fp)
+                irc = kr.path(files0.get("irc"))
+                if irc is not None:
+                    permuted_xyz(irc, out_dir / f"{label}_irc.xyz", order)
+                    if irc.with_suffix(".energies").exists():
+                        shutil.copyfile(irc.with_suffix(".energies"), out_dir / f"{label}_irc.energies")
+                    files["irc"] = str(out_dir / f"{label}_irc.xyz")
+                if files0.get("pair") and all(p in idx for p in files0["pair"]):
+                    files["pair"] = [idx[p] for p in files0["pair"]]
+                if files0.get("rotamer_of"):
+                    files["rotamer_of"] = f"known{f}_{files0['rotamer_of']}"
+                files["known"] = str(kr.folder)
+                ts = StructureNode(structure=_open_structure(ts_fp).model_copy(update={"charge": charge,
+                                                                                      "multiplicity": mult}))
+                ts._cached_energy = float(st["ts_energy"])
+                _add_found({"pair": (a, b), "ts": ts, "label": label, "files": files})
+                if not result.steps or result.steps[-1].label != label:
+                    continue    # the same TS as a step it has already
+                used["steps"] += 1
+                connected.add((a, b))
+                if files.get("pair"):
+                    connected.add(tuple(files["pair"]))
+                if files.get("verified") is not False:
+                    known_no_rotamers.add(str(ts_fp))
+                its = _open_structure(src).model_copy(update={"charge": charge, "multiplicity": mult})
+                its_ends = step_ends({"ts": str(src), "irc": str(irc) if irc else None}, (old[st["a"]], old[st["b"]]))
+                structures.append((its, ts.structure, True, its_ends, result.steps[-1]))
+            refined.update(frozenset(idx[k] for k in p) for p in kr.sampled_pairs()
+                           if all(k in idx for k in p) and len({idx[k] for k in p}) == 2)
+            proposed_pairs.update(frozenset(idx[k] for k in p) for p in kr.proposed_pairs()
+                                  if all(k in idx for k in p) and len({idx[k] for k in p}) == 2)
+            expanded.update(idx[k] for k in kr.expanded() if k in idx and idx[k] != 0)   # the seed is ours to expand
+            # the cache keys of its structures, from its own atom order to ours
+            if steer_saved is not None and kr.steer_dir.is_dir():
+                theirs = _Saved(kr.steer_dir, steer_saved.level)
+                sample = next(iter(sorted((kr.steer_dir / "single_points").glob("*.json"))), None)
+                level = json.loads(sample.read_text()).get("level") if sample is not None else None
+                if level is not None and not _same_level(level, steer_saved.level):
+                    used["single_points_skipped"] = "another steering level"
+                else:
+                    for x, y, is_ts, ends, step in structures:
+                        # a TS: with its step's ends (spectators apart) and whole (its bound channel)
+                        for their_ends, our_ends in ([(ends, _ts_ends(step)), (None, None)] if is_ts else [(None, None)]):
+                            r = theirs.get("single_points", _steer_key(x, is_ts, their_ends))
+                            key = _steer_key(y, is_ts, our_ends)
+                            if r is not None and key not in steer_delta:
+                                steer_saved.put("single_points", key, {**r, "known_from": str(kr.folder)})
+                                steer_delta[key] = r["delta_kcal"] / H
+                                used["single_points"] += 1
+            if free is not None and kr.free_cache:
+                steering = kr.summary.get("steering") or {}
+                if (steering.get("kinetics_energy") != "free" or steering.get("temperature_K") != kin["temperature"]
+                        or steering.get("standard_state") != kin.get("standard_state", "1M")):
+                    used["hessians_skipped"] = (f"its free energies are at {steering.get('temperature_K')} K, "
+                                                f"{steering.get('standard_state')} (this run's: {kin['temperature']} K, "
+                                                f"{kin.get('standard_state', '1M')})")
+                else:
+                    for x, y, is_ts, ends, step in structures:
+                        k0, k1 = free._key(x, is_ts, ends), free._key(y, is_ts, _ts_ends(step) if step else None)
+                        if k0 in kr.free_cache and k1 not in free._cache:
+                            free._cache[k1] = kr.free_cache[k0]
+                            used["hessians"] += 1
+            elif free is not None and kr.why_no_hessians:
+                used["hessians_skipped"] = kr.why_no_hessians
+            rec["used"].append(used)
+            for k in ("species", "steps", "single_points", "hessians"):
+                rec["reused"][k] += used[k]
+            _emit(on_event, "known", message=(
+                f"known run {kr.folder}: {used['species']} species ({used['species_merged']} already ours), "
+                f"{used['steps']} steps, {used['single_points']} steering single points, {used['hessians']} "
+                f"Hessians taken; atom order {used['atom_order']}"))
+
+    if known and saved is None:
+        _import_known()
+    max_species += sum(1 for sp in result.species if getattr(sp, "known", None))   # not this run's to count
     if target is not None and saved is None:
         # Round 0: the two-ended search seed -> target; its intermediates and
         # verified steps start the network.
@@ -2681,7 +2890,7 @@ def expand_network(
         queued_irc: set = set()       # TS files whose IRC is queued or done
         queued_channels: set = set()  # species pairs whose sampling is queued or done
         queued_steer: set = set()     # steering single points queued
-        queued_rotamers: set = set()  # TS files whose rotamers are queued or done
+        queued_rotamers: set = set(known_no_rotamers)  # TS files whose rotamers are queued or done
 
         lowest_ts: dict = {"steps": -1, "pairs": {}}   # species pair -> its lowest TS energy, at that many steps
 

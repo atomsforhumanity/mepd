@@ -134,6 +134,17 @@ def _level(engine) -> str:
     return f"{type(engine).__name__}{sorted((k, repr(v)) for k, v in fields.items())}"
 
 
+def _same_level(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two `_level` strings are one level: how many processes or threads an engine ran with is not part
+    of it (a run with other --workers reuses the results)."""
+    import re
+
+    def strip(level):
+        return re.sub(r"\('n_(parallel|threads)', '[^']*'\)(, )?", "", level) if isinstance(level, str) else level
+
+    return strip(a) == strip(b)
+
+
 class _Saved:
     """Results kept as each one finishes (`save_dir`/<stage>/<name>.json,
     geometries included), so a run that stops -- a time limit, a crash -- keeps what
@@ -148,7 +159,7 @@ class _Saved:
         if self.dir is None or not (self.dir / stage / f"{name}.json").exists():
             return None
         rec = json.loads((self.dir / stage / f"{name}.json").read_text())
-        return rec["result"] if rec.get("level") == self.level else None
+        return rec["result"] if _same_level(rec.get("level"), self.level) else None
 
     def put(self, stage: str, name: str, result: dict) -> None:
         import json

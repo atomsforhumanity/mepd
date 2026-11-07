@@ -147,9 +147,9 @@ def test_follow_up_expansions_pass_earlier_runs_as_known_once_the_cli_has_it(tmp
             return {"key": "k1"}
 
     p = op.parse_params({})
-    assert "--known" not in op.build(Ctx(), p)              # today's CLI: no such option
-    real = ops._cli_options
-    monkeypatch.setattr(ops, "_cli_options", lambda path: (real(path) or frozenset()) | {"--known"})
     argv = op.build(Ctx(), p)
     assert [argv[i + 1] for i, w in enumerate(argv) if w == "--known"] == [str(done)]   # same level, finished
     assert "--known" not in op.build(Ctx(), op.parse_params({"reuse_known": False}))
+    real = ops._cli_options
+    monkeypatch.setattr(ops, "_cli_options", lambda path: (real(path) or frozenset()) - {"--known"})
+    assert "--known" not in op.build(Ctx(), p)              # an older CLI: no such option

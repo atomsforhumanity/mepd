@@ -682,6 +682,15 @@ def expand(
     parallel: bool = typer.Option(False, "--parallel", help="--connect: evaluate MSMEP branches in parallel."),
     parallel_workers: Optional[int] = typer.Option(None, "--parallel-workers", help="Workers for --parallel."),
     output: Path = typer.Option(Path("mepd_expand_output"), "--output", "-o", help="Directory to write results into."),
+    known: List[Path] = typer.Option(
+        [], "--known", file_okay=False,
+        help="The output folder of an earlier `mepd discovery expand` at the same level of theory (its "
+        "provenance.json's level_key), repeatable: its species (no re-optimization), steps with their TS and IRC "
+        "(a pair with a step gets no new TS or path search; an unverified one still gets its IRC check), channel "
+        "sampling, steering single points (at the same steering level) and Hessians (same temperature and standard "
+        "state) are taken as known, and the kinetics start from its network. The seed must be one of its species "
+        "(its atoms are mapped onto the seed's); a folder at another level, or one that can't be mapped, is said "
+        "and skipped. Species it took from them don't count towards --max-species."),
     resume: bool = typer.Option(
         False, "--resume",
         help="Carry on an exploration that stopped (a time limit, a crash) from what it saved in --output "
@@ -866,6 +875,8 @@ def expand(
             elif event == "resumed_connect":
                 progress.console.print(f"Resuming the connect call it was cut off in: {payload['pairs']} pair(s) "
                                        f"left, {payload['finished']} finished.", highlight=False)
+            elif event == "known":
+                progress.console.print(f"Known: {payload['message']}", highlight=False)
             elif event == "species_found":
                 progress.console.print(f"[green]✓ species {payload['index']}[/green] {payload['smiles']}  "
                                        f"ΔE={payload['rel_energy_kcal']:+.1f} kcal/mol", highlight=False)
@@ -887,6 +898,14 @@ def expand(
         if getattr(run_inputs.engine, "n_parallel", None) == 0:
             # at most --workers engine processes at once (os.cpu_count() is the node's, not a container's limit)
             run_inputs.engine.n_parallel = max(1, int(workers))
+        known_spec = None
+        if isinstance(known, list) and known:
+            from mepd.discovery.known import read_known
+            from mepd.web.workspace import level_key
+
+            runs, skipped = read_known(known, level_key(Path(inputs).read_text() if inputs else None), output,
+                                       say=lambda m: progress.console.print(f"Known: {m}", highlight=False))
+            known_spec = {"runs": runs, "skipped": skipped, "dir": output / "ts"}
         try:
             result = expand_network(
                 seed, run_inputs.engine, rounds=rounds, energy_window_kcal=energy_window, generator=generator,
@@ -919,7 +938,7 @@ def expand(
                           "mirror_images": mirror_images is not False},
                 steer_engine=steer_engine if steer in ("flux", "access") else None,
                 steer_save_dir=output / "steer_single_points",
-                state_file=output / "expand_state.pkl", resume=resume is True,
+                state_file=output / "expand_state.pkl", resume=resume is True, known=known_spec,
                 validate_minima={"frequency_cutoff": validation["hessian_minimum_frequency_cutoff"],
                                  "rescue_displacement": validation["hessian_minima_rescue_displacement"]}
                 if validation else None,
@@ -960,7 +979,8 @@ def expand(
                      "hessian_validation": bool(validation)},
         "seed_energy": float(result.species[0].node.energy) if result.species[0].node._cached_energy is not None else None,
         "species": [{"index": k, "smiles": s.smiles, "round": s.round, "energy": float(s.node.energy),
-                     "rel_energy_kcal": s.rel_energy_kcal, "loosely_minimized": s.loose, "validation": s.validation, "file": str(species_files[k])}
+                     "rel_energy_kcal": s.rel_energy_kcal, "loosely_minimized": s.loose, "validation": s.validation, "file": str(species_files[k]),
+                     **({"known": s.known} if getattr(s, "known", None) else {})}
                     for k, s in enumerate(result.species)],
         "reactions": [{"source": e.source, "target": e.target, "outcome": e.outcome, "proposed_smiles": e.proposal.smiles,
                        "broken": [list(b) for b in e.proposal.broken], "formed": [list(f) for f in e.proposal.formed],
@@ -996,6 +1016,9 @@ def expand(
         "channels_log": getattr(result, "channels_log", []),
         "output_files": files,
     }
+    if getattr(result, "known", None) is not None:
+        # the earlier runs given as --known: used (and how much was taken from each) or skipped, and why
+        summary["known"] = result.known
     counts = {}
     for e in result.edges:
         counts[e.outcome] = counts.get(e.outcome, 0) + 1
