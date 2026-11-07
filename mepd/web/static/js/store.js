@@ -342,7 +342,7 @@ export function goToPage(from) {
 
 export function openJob(jobId, tab = null) {
   // A network expansion lands on its live network; the calculation's own tabs are a click away.
-  if (!tab && state.jobs[jobId]?.op === 'graph-enumeration') { set({ view: { tab: 'network', jobId } }); return; }
+  if (!tab && ['graph-enumeration', 'network-mixture'].includes(state.jobs[jobId]?.op)) { set({ view: { tab: 'network', jobId } }); return; }
   const page = pageJobId(jobId);
   set({ view: { tab: 'job', jobId: page, run: page !== jobId ? jobId : null, jobTab: tab } });
 }

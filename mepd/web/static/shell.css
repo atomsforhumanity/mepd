@@ -375,3 +375,15 @@
 .ls-route.faint .ls-ts { opacity: .6; }
 .ln-known { font: 700 11px var(--font-ui); fill: var(--accent-strong); text-anchor: middle; }
 .ln-known-k { color: var(--accent-strong); }
+/* Reacting mixture: reactions as dots between molecules */
+.mx-link { stroke-width: 2; opacity: .55; fill: none; }
+.mx-rx.minor .mx-link { opacity: .18; }
+.mx-rx.on .mx-link { opacity: 1; stroke-width: 3; }
+.mx-link.shuttle { stroke-dasharray: 5 4; }
+.mx-dot { stroke: var(--panel); stroke-width: 1.5; }
+.mx-rx.minor .mx-dot { opacity: .4; }
+.lg-dot { fill: var(--chart-4); }
+.ln-exp { padding: 1px 7px; border: 1px solid var(--warn); border-radius: 4px; color: var(--warn); font-size: 11.5px; font-weight: 700; }
+.mx-rx .ln-hit { fill: transparent; stroke: none; }
+.mx-times { font: 700 12px var(--font-ui); fill: var(--heading); text-anchor: middle; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
+.ln-prod-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

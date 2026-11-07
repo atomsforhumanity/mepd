@@ -13,6 +13,7 @@ import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api } from '../api.js';
 import { openJob, set, update, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
+import { MixtureView } from './MixtureNetwork.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_SEED = 88;   // card widths (px); height is 3/4 of it
@@ -104,6 +105,13 @@ function eventText(ev, smiles, names = {}) {
 }
 
 export function LiveNetworkView({ jobId = null, example = null }) {
+  // A reacting mixture's page is a network of molecules (its own view).
+  const op = useStore((s) => (jobId ? s.jobs[jobId]?.op : null));
+  if (op === 'network-mixture') return html`<${MixtureView} jobId=${jobId} />`;
+  return html`<${ExpansionNetwork} jobId=${jobId} example=${example} />`;
+}
+
+function ExpansionNetwork({ jobId = null, example = null }) {
   const [tl, setTl] = useState(null);
   const [error, setError] = useState(null);
   const [i, setI] = useState(null);           // frame shown (null: follow the latest / the final)

@@ -132,6 +132,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Web: Reacting mixture (experimental).** `mepd discovery mixture` from the network card, on several selected molecules: one explorer run per combination of the feed molecules (copies of one included: A + A, so a molecule's reactions with itself are in the model) and, generation by generation, per populated product next to each feed molecule (growth), merged into one network of molecules with mass-action kinetics. Its form has the expansion's stages (grow each seed by collision MD, bond enumeration, Reactor MD or CREST msreact; molecules per seed, generations, threshold, conditions and concentrations; continuous, workers, time per seed). Its page (#/network/<job>) follows mixture.json as seeds merge: molecules as structures sized by their peak amount, reactions as dots joining reactants and products (×2 for a molecule twice, dashed for one on both sides), coloured by barrier and sized by the amount converted, what forms and the seeds' progress. Experimental: the mixture explorer is not yet benchmarked (the explorer team is adding it to their scoreboard). Demo: capped (4 workers, 2 molecules per seed, 2 generations, 15 min per seed).
+
 - **Explorer, async: the rotamers of every TS the kinetics use.** Once a step's TS has its IRC (open within the
   cutoff, touching a populated species), its rotatable bonds outside the reacting core (the bonds its IRC ends
   don't share) are turned -- 180 degrees, or 120 and 240 when both atoms are saturated; each bond alone and each

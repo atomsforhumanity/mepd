@@ -2913,6 +2913,30 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
                 "reference": "the start's node energy (its lowest structure found), electronic"}
 
+    @app.get("/api/jobs/{jid}/mixture")
+    def mixture_network(jid: str):
+        """A reacting mixture as it stands (`discovery mixture` rewrites mixture.json after each merge): its
+        molecules with their concentrations, its reactions with barriers and extents, the seeds' progress,
+        and everyday names where molecules have them."""
+        from mepd.web.live_network import names_of
+
+        job = J().jobs.get(jid)
+        if job is None:
+            raise HTTPException(404, "no such calculation")
+        out = Path(job.get("output_dir") or "")
+        data = None
+        try:
+            data = json.loads((out / "mixture.json").read_text())
+        except (OSError, ValueError):
+            pass
+        seeds = []
+        if data is None and (out / "seeds").is_dir():   # before the first merge: the seeds started so far
+            for d in sorted((out / "seeds").iterdir()):
+                if d.is_dir():
+                    seeds.append({"name": d.name, "status": "done" if (d / "run" / "summary.json").exists() else "running"})
+        smiles = {m["molecule"]: m["molecule"] for m in (data or {}).get("molecules") or []}
+        return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles)}
+
     @app.get("/api/jobs/{jid}/network-timeline")
     def network_timeline(jid: str):
         """A network expansion as the live network view plays it (mepd/web/live_network.py)."""

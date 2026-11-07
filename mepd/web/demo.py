@@ -56,6 +56,7 @@ class DemoPolicy:
         "graph-enumeration": {"rounds": 3, "max_products": 30, "n_break": 2, "n_form": 2, "max_pairs": 10,
                               "workers": 2, "maxiter": 500},
         "nanoreactor": {"time_ps": 10.0, "max_connect": 5, "workers": 2, "instances": 3},
+        "network-mixture": {"workers": 4, "seed_workers": 2, "copies": 2, "generations": 2, "seed_minutes": 15.0},
         "nanoreactor-more": {"more_ps": 10.0},
         # conformers: not capped. A TS's (--ts) is CREST plus one TS optimization per kept
         # conformer, at most max_atoms atoms, so job_timeout_s bounds it.
@@ -96,7 +97,9 @@ class DemoPolicy:
                           "design-optimize", "design-tsopt", "channels-more", "qmmm-protein-sites",
                           "qmmm-protein-build", "variant-fast", "variant-reopt",
                           # a few optimizations of one reaction's ends (its own small subsystem)
-                          "reaction-retry")
+                          "reaction-retry",
+                          # capped below: few workers, small combinations, two generations
+                          "network-mixture")
 
     # Tables of numbers that MEPD_DEMO_<FIELD> may change, as JSON merged into
     # the defaults. (What may run at all -- ops, engines, allowed values,

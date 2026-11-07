@@ -1317,6 +1317,74 @@ def _build_nanoreactor(ctx: JobContext, p: NanoreactorParams) -> list[str]:
             "--output", str(ctx.output_dir)]
 
 
+class MixtureParams(Params):
+    """A reacting mixture (`mepd discovery mixture`): one explorer run per combination of the feed molecules
+    (copies of one included: A + A) and, in later generations, per populated product next to each feed
+    molecule, merged into one network of molecules with mass-action kinetics."""
+    grow_by: Literal["collide", "bond-rules", "reactor", "crest-msreact"] = P(
+        "collide", "Grow each seed by", "How each seed's explorer run proposes products.", kind="custom", stage=GROW,
+        cards={
+            "collide": {"title": "Collision MD", "blurb": "Langevin MD that pulls atoms or molecules together for a "
+                        "moment, over many pairs. The mixture's default."},
+            "bond-rules": {"title": "Bond enumeration", "blurb": "Break and form up to two bonds on the molecular "
+                           "graph. Fast, systematic, blind to energy."},
+            "reactor": {"title": "Reactor MD", "blurb": "MD in a squeezing wall with random collisions, in batches "
+                        "until few new products appear."},
+            "crest-msreact": {"title": "CREST msreact", "blurb": "Biased GFN2-xTB optimizations find fragments and "
+                              "isomers.", "programs": ["crest", "xtb"], "install": "conda install -c conda-forge crest xtb"},
+        })
+    copies: int = P(2, "Molecules per seed", "Generation 0 explores every combination of 1 to this many feed molecules, "
+                    "copies of one molecule included (2: A, B, A+A, A+B, B+B): reactions of a molecule with itself "
+                    "are in the same model as the ones you are after.", kind="custom", ge=1, stage=GROW)
+    generations: int = P(2, "Generations", "Generation g > 0 seeds each product the kinetics populate next to each "
+                         "feed molecule (adduct + feed: growth). 1: the feed's combinations only.", kind="custom", ge=1,
+                         stage=STEER)
+    threshold: float = P(0.01, "Populated at", "A product is seeded next once its peak concentration reaches this "
+                         "fraction of the largest feed concentration.", kind="custom", gt=0, stage=STEER)
+    temperature: float = P(298.15, "Temperature (K)", kind="custom", gt=0, stage=STEER)
+    time_s: float = P(3600.0, "Reaction time (s)", kind="custom", gt=0, stage=STEER)
+    concentrations: str = P("1", "Concentrations", "Of each feed molecule, in selection order (mol/L at 1M; atm at "
+                            "1atm): one number for all, or one each.", kind="custom", stage=STEER)
+    standard_state: Literal["1M", "1atm"] = P("1M", "Standard state", "1M for solution, 1atm for the gas phase.",
+                                              kind="custom", advanced=True, group="Kinetics", stage=STEER)
+    continuous: bool = P(True, "Continuous", "Each finished seed is merged at once and the products it populates "
+                         "are seeded right away (else generation by generation).", kind="custom", stage=RUN)
+    workers: int = P(6, "Workers", "Processes for all seeds together.", kind="custom", ge=1, stage=RUN)
+    seed_workers: int = P(3, "Workers per seed", "Workers / this many seeds run at once.", kind="custom", ge=1,
+                          stage=RUN)
+    seed_minutes: Optional[float] = P(15.0, "Time per seed (min)", "Each seed's explorer run stops after this long "
+                                      "with what it found (its kinetics may ask for more). Empty: no limit.",
+                                      kind="custom", gt=0, stage=RUN)
+
+
+def _build_mixture(ctx: JobContext, p: MixtureParams) -> list[str]:
+    feeds = [str(ctx.snapshot_structure(r, f"feed_{i}")) for i, r in enumerate(ctx.structures)]
+    conc = [c.strip() for c in str(p.concentrations).replace(";", ",").split(",") if c.strip()] or ["1"]
+    if len(conc) == 1:
+        conc = conc * len(feeds)
+    if len(conc) != len(feeds):
+        raise WorkspaceError(f"{len(conc)} concentrations for {len(feeds)} feed molecules: give one, or one each")
+    try:
+        conc = [float(c) for c in conc]
+    except ValueError:
+        raise WorkspaceError("concentrations must be numbers") from None
+    flags = ctx.common_flags()
+    inputs = flags[flags.index("--inputs"):flags.index("--inputs") + 2] if "--inputs" in flags else []
+    argv = ["discovery", "mixture"]
+    for f in feeds:
+        argv += ["--feed", f]
+    for c in conc:
+        argv += ["--concentration", f"{c:g}"]
+    argv += ["--temperature", f"{p.temperature:g}", "--time", f"{p.time_s:g}", "--standard-state", p.standard_state,
+             "--copies", str(p.copies), "--generations", str(p.generations), "--threshold", f"{p.threshold:g}",
+             # one token: the value starts with "--", which a parser could take for an option of its own
+             *inputs, f"--expand-args=--generator {p.grow_by}"
+             + (f" --time-budget {60.0 * p.seed_minutes:g}" if p.seed_minutes else ""), "--workers", str(p.workers),
+             "--seed-workers", str(p.seed_workers), "--continuous" if p.continuous else "--by-generation",
+             "--output", str(ctx.output_dir)]
+    return argv
+
+
 class ComplexParams(Params):
     method: Literal["dock", "nci", "qcg", "packed"] = P(
         "dock", "How", "dock: xtb's aISS docking; nci: a CREST ensemble of arrangements; qcg: a CREST solvation "
@@ -2031,6 +2099,21 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
             {"label": "Network expansion", "rank": -2,   # first: the Network expansion tile opens on it
              "summary": "Grow a reaction network from this species, choosing each stage: how new species are "
                         "proposed, how each reaction gets its TS, which species grow next, and how the work runs."},)),
+    Operation(
+        "network-mixture", "Reacting mixture (experimental)", "Explore what a mixture of molecules does together: one "
+        "explorer run per combination of the feed molecules (A + A included) and, in later generations, per product "
+        "the kinetics populate next to each feed molecule, merged into one network of molecules with mass-action "
+        "kinetics. Experimental: not yet benchmarked. (`mepd discovery mixture`)",
+        "set", EXPLORE, MixtureParams, _build_mixture, min_structures=1, stoppable=True,
+        produces=["molecules and reactions of the mixture", "their kinetics from the feed's concentrations"],
+        cli_path=("discovery", "mixture"),
+        cli_extra_flags=("--feed", "--concentration", "--temperature", "--time", "--standard-state", "--copies",
+                         "--generations", "--threshold", "--inputs", "--expand-args", "--workers", "--seed-workers",
+                         "--continuous", "--by-generation", "--output"),
+        family=NETWORK, methods=({
+            "label": "Reacting mixture", "rank": 2,
+            "summary": "Several molecules together (select them all): self-reactions, growth and cross-reactions in "
+                       "one network of molecules. Experimental: not yet benchmarked."},)),
     Operation(
         "retrosynthesis", "Retrosynthesis", "Routes from purchasable building blocks to this molecule: a "
         "tree search over single steps proposed by the chosen method; each route's steps join Explore as "
