@@ -143,3 +143,84 @@ def test_kinetics_names_the_molecules_whose_missing_energy_keeps_reactions_out(t
                   initial={s0: 1.0}, held=[], temperature=300, time_s=1.0, target=None)
     assert "no energy at this level" in out["error"]
     assert [m["id"] for m in out["missing_energy"]] == [s2]
+
+
+def _irc(path, *frames):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(frames))
+
+
+def test_a_finished_run_puts_each_step_on_the_pair_its_irc_joins(tmp_path):
+    """Live step events come under the pair searched, before the IRC check; the summary has
+    each under its real ends, and none the run dropped. A step on the wrong edge comes off it."""
+    from mepd.web.app import adopt_expansion_steps
+
+    ws, jobs, (s0, s1, s2) = _ws(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    job = {"id": "j", "op": "graph-enumeration", "output_dir": str(out), "live_nodes": {"0": s0, "1": s1, "2": s2},
+           "seed_adopted": True}
+    known = ws.snapshot()["structures"]
+    # Reported live: "moved" between 0 and 1 (really 0-2), "dropped" between 1 and 2 (its IRC ran elsewhere).
+    for label, a, b in (("moved", 0, 1), ("dropped", 1, 2)):
+        jobs._adopt_step(job, {"event": "step", "a": a, "b": b, "label": label, "ts_energy": -76.0,
+                               "barrier_kcal": [-50.0, 3.0]}, job["live_nodes"], known)
+    assert all(e["origin"]["barrier_verified"] is False for e in ws.snapshot()["edges"].values())   # unchecked yet
+    (out / "summary.json").write_text(json.dumps({"species": [], "steps": [
+        {"a": 0, "b": 2, "label": "moved", "ts_energy": -76.0, "barrier_kcal": [12.0, 3.0],
+         "files": {"verified": True, "pair": [0, 1]}}]}))
+    assert adopt_expansion_steps(jobs, job)
+    edges = {frozenset((e["source"], e["target"])): e["origin"] for e in ws.snapshot()["edges"].values()}
+    assert edges[frozenset((s0, s2))]["label"] == "moved" and edges[frozenset((s0, s2))]["barrier_verified"] is True
+    assert edges[frozenset((s0, s1))].get("proposed") and "joins other species" in edges[frozenset((s0, s1))]["headline"]
+    assert edges[frozenset((s1, s2))].get("proposed") and "dropped" in edges[frozenset((s1, s2))]["headline"]
+
+
+def test_a_live_step_whose_irc_reads_as_its_two_species_is_verified(tmp_path):
+    ws, jobs, (s0, s1, _) = _ws(tmp_path)
+    out = tmp_path / "out"
+    job = {"id": "j", "op": "graph-enumeration", "output_dir": str(out), "live_nodes": {"0": s0, "1": s1},
+           "charge": 0, "multiplicity": 1}
+    st = ws.snapshot()["structures"]
+    # water and water pulled apart (OH + H): an IRC from one to the other reads as those two
+    _irc(out / "ts" / "w_irc.xyz", WATER_XYZ.strip() + "\n", WATER_BENT_XYZ.strip() + "\n")
+    jobs._adopt_step(job, {"event": "step", "a": 0, "b": 1, "label": "w", "ts_energy": -76.0, "barrier_kcal": [5.0, 5.0]},
+                     job["live_nodes"], st)
+    (edge,) = ws.snapshot()["edges"].values()
+    assert edge["origin"]["barrier_verified"] is True
+
+
+def test_kinetics_leaves_unchecked_expansion_steps_out(tmp_path):
+    from mepd.web.kinetics import edge_ts
+
+    edge = {"id": "e", "origin": {"job": "j", "barrier_kcal": 5.0, "ts_energy_hartree": -1.0, "barrier_verified": False}}
+    jobs = {"j": {"id": "j", "status": "done", "targets": {"edges": []}, "level": {"key": "k"}}}
+    assert edge_ts(edge, jobs, "k", include_unverified=False)[0] is None
+    assert edge_ts(edge, jobs, "k", include_unverified=True)[0] == -1.0
+
+
+def test_species_no_lewis_structure_fits_are_drawn_from_their_geometry():
+    from mepd.web.depict_graph import depict_xyz_svg, formula
+    from mepd.web.live_network import drawable, names_of
+
+    ylide = """5
+
+P 0.0 0.0 0.0
+C 1.68 0.0 0.0
+C -0.6 1.5 0.0
+C -0.6 -0.75 1.3
+C -0.6 -0.75 -1.3
+"""
+    assert formula(ylide) == "C4P"
+    assert depict_xyz_svg(ylide).lstrip().startswith("<svg")
+    assert not drawable("C7H17OP (unusual bonding #df15)") and not drawable("") and drawable("CC=O")
+    assert names_of({"3": "C7H17OP (unusual bonding #df15)"}) == {"3": "C7H17OP · unusual bonding"}
+
+
+def test_species_identity_is_the_molecular_graph():
+    from mepd.web.step_check import same_species
+
+    assert same_species("[OH].[H]", "[H+].[OH-]")          # one geometry, two Lewis readings
+    assert same_species("C=C.O", "O.C=C")
+    assert not same_species("CC=O", "C=CO")                 # where the H sits makes another species
+    assert not same_species("C=[O+][CH2-]", "C1CO1")

@@ -1007,6 +1007,14 @@ class JobManager:
             changed = True
         job["live_offset"] = done + end
         job["live_nodes"] = nodes
+        if job.get("op") == "graph-enumeration" and time.time() - float(job.get("steps_rechecked_at") or 0) > 30 \
+                and any((e.get("origin") or {}).get("job") == job["id"] and (e.get("origin") or {}).get("barrier_verified") is False
+                        for e in self.ws.snapshot()["edges"].values()):
+            job["steps_rechecked_at"] = time.time()
+            try:
+                changed |= self.recheck_expansion_steps(job)
+            except Exception:
+                log.exception("could not check the steps of %s", job["id"])
         job["live_skipped"] = skipped
         self._write(job)
         if changed:
@@ -1048,25 +1056,42 @@ class JobManager:
             (st,) = chem.structures_from_xyz_text(xyz.read_text(), job.get("charge"), job.get("multiplicity"))
         except Exception:
             return False
-        self.ws.add_structure(st, name=rec.get("name"), energy=float(energy), smiles=rec.get("smiles"),
-                              optimized=True, level=job.get("level"),
-                              origin={"kind": "job", "job": job["id"], "entry": "min_0",
-                                      "label": "Minimum 0 (the seed, optimized)", "frame": 0, "live": True})
+        try:
+            self.ws.add_conformer(sid, st, energy=float(energy), level=job.get("level"), optimized=True,
+                                  origin={"kind": "job", "job": job["id"], "entry": "min_0",
+                                          "label": "Minimum 0 (the seed, optimized)", "frame": 0})
+        except WorkspaceError:
+            return False
         job["seed_adopted"] = True
         self._write(job)
         return True
 
-    def _adopt_step(self, job: dict, ev: dict, nodes: dict, known: dict, final: bool = False) -> bool:
-        """A verified step (TS + IRC between species a and b) of a running
-        expansion: the edge between their nodes stops being "proposed" and
-        carries the barrier (in the edge's direction), and points at the
-        step's TS/IRC in the job's result. The lowest barrier wins when
-        several TSs join the same pair. `final` (the finished run's summary,
-        already reduced to each pair's lowest step) replaces what the live
-        events set, whose barriers may predate a species' final energy."""
+    def _adopt_step(self, job: dict, ev: dict, nodes: dict, known: dict, final: bool = False,
+                    verified: Optional[bool] = None) -> bool:
+        """A step (TS between species a and b) of an expansion onto the edge between
+        their nodes: it stops being "proposed" and carries the barrier (in the edge's
+        direction), the TS's energy, and points at the step's TS/IRC.
+        A running expansion reports a step under the pair it searched, before its IRC
+        is checked; the check may find the TS joins other species (it then moves there)
+        or none (dropped). So a live step is unverified (kinetics leaves it out by
+        default) unless its IRC's ends already read as these two species
+        (mepd.web.step_check); the finished run's summary settles it (`verified`,
+        JobManager.recheck_expansion_steps). A verified step beats an unverified one;
+        among equals the lowest barrier wins. `final` replaces what live events set."""
+        from mepd.web import step_check
+
         a, b = nodes.get(str(ev.get("a"))), nodes.get(str(ev.get("b")))
         if a not in known or b not in known or a == b:
             return False
+        label = ev.get("label") or f"step_{ev.get('a')}_{ev.get('b')}"
+        if verified is None:
+            checks = job.setdefault("irc_checks", {})
+            verdict = checks.get(label)
+            if verdict is None:
+                verdict = step_check.check(job, label, known[a].get("smiles"), known[b].get("smiles"))
+                if verdict is not None:
+                    checks[label] = verdict
+            verified = bool(verdict and verdict["ok"])
         edge = self.ws.find_edge(a, b)
         if edge is None:
             try:
@@ -1076,14 +1101,17 @@ class JobManager:
         fwd, rev = (list(ev.get("barrier_kcal") or []) + [None, None])[:2]
         barrier = fwd if edge["source"] == a else rev
         old = edge.get("origin") or {}
+        old_verified = not old.get("proposed") and old.get("barrier_kcal") is not None and old.get("barrier_verified") is not False
         if final:
             if old.get("job") == job["id"] and old.get("barrier_kcal") == barrier and not old.get("proposed") \
-                    and old.get("label") == ev.get("label") and old.get("ts_energy_hartree") == ev.get("ts_energy"):
+                    and old.get("label") == label and old.get("ts_energy_hartree") == ev.get("ts_energy") \
+                    and (old.get("barrier_verified") is not False) == verified and old.get("ts_kind") == ev.get("ts_kind"):
                 return False   # already exactly this
-        elif not old.get("proposed") and old.get("barrier_kcal") is not None and barrier is not None \
-                and old["barrier_kcal"] <= barrier:
-            return False   # already the lower barrier of this pair
-        label = ev.get("label") or f"step_{ev.get('a')}_{ev.get('b')}"
+        elif not old.get("proposed") and old.get("barrier_kcal") is not None and barrier is not None:
+            if old_verified and not verified:
+                return False   # a checked step stays over an unchecked one
+            if old_verified == verified and old["barrier_kcal"] <= barrier and old.get("label") != label:
+                return False   # already the lower barrier of this pair
         warning = ev.get("warning")
         if barrier is not None and barrier < -0.1:
             from mepd.web.results import negative_barrier_text
@@ -1095,11 +1123,127 @@ class JobManager:
                               "has_ts": True, "barrier_kcal": barrier, "label": label,
                               # The TS's own energy (Hartree): what kinetics measures every barrier with.
                               "ts_energy_hartree": ev.get("ts_energy"),
-                              "headline": "TS + IRC from the flux-steered expansion",
+                              # Its IRC ends are these two species (else unverified, until the run checks it).
+                              "barrier_verified": verified,
+                              # "path_peak": no TS found; the barrier is a path's highest point (an upper bound)
+                              **({"ts_kind": ev["ts_kind"]} if ev.get("ts_kind") else {}),
+                              "headline": ("highest point of a path between these two (no TS found): an upper bound on "
+                                           "the barrier" if ev.get("ts_kind") == "path_peak" else
+                                           "TS + IRC from the flux-steered expansion") if verified
+                              else "TS from the flux-steered expansion, reported under the pair searched; "
+                                   "its IRC has not confirmed these two ends yet",
                               # A negative barrier is shown as it is, with why it is a problem.
                               "barrier_warning": warning}
             self.ws._save()
         return True
+
+    def _adopt_species_floors(self, job: dict, species: list) -> bool:
+        """Each species' final structure (the run may have found a lower one after it
+        first reported it) onto its node as one more conformer, when it is lower than
+        what the node holds at the run's level: every barrier is measured from the
+        lowest structure found (a node left higher puts TSs below it)."""
+        from mepd.web import chem
+
+        out = Path(job.get("output_dir") or "")
+        nodes = dict(job.get("live_nodes") or {})
+        key = (job.get("level") or {}).get("key")
+        changed = False
+        for sp in species:
+            sid = nodes.get(str(sp.get("index")))
+            rec = self.ws.snapshot()["structures"].get(sid) if sid else None
+            e = sp.get("energy")
+            fp = Path(sp.get("file") or out / "species" / f"species_{sp.get('index')}.xyz")
+            if rec is None or e is None or not fp.exists():
+                continue
+            if rec.get("energy") is not None and (rec.get("level") or {}).get("key") == key \
+                    and rec["energy"] <= e + 1.6e-5:       # holds this (0.01 kcal/mol) or lower already
+                continue
+            try:
+                (st,) = chem.structures_from_xyz_text(fp.read_text(), job.get("charge"), job.get("multiplicity"))
+            except Exception:
+                continue
+            try:      # onto this node itself (a complex too: adding it as a structure would make a second one)
+                _, had = self.ws.add_conformer(sid, st, energy=float(e), level=job.get("level"), optimized=True,
+                                               origin={"kind": "job", "job": job["id"], "entry": f"min_{sp.get('index')}",
+                                                       "label": f"Minimum {sp.get('index')} (final)", "frame": 0})
+            except WorkspaceError:
+                continue
+            changed |= not had
+        return changed
+
+    def recheck_expansion_steps(self, job: dict) -> bool:
+        """The edges of an expansion's steps set again. With the run's summary (finished,
+        or stopped): its steps -- each under the species its IRC really joins, verified
+        or not -- each pair's edge gets its lowest (verified first), and an edge holding
+        a step the run dropped or moved to another pair goes back to proposed, saying why.
+        Without one (running): unverified steps whose IRC now reads as their two species
+        become verified."""
+        from mepd.web import step_check
+
+        out = Path(job.get("output_dir") or "")
+        nodes = dict(job.get("live_nodes") or {})
+        known = self.ws.snapshot()["structures"]
+        changed = False
+        try:
+            summary = json.loads((out / "summary.json").read_text())
+            steps = summary.get("steps")
+        except (OSError, ValueError):
+            summary, steps = None, None
+        if summary is not None:
+            changed |= self._adopt_species_floors(job, summary.get("species") or [])
+            known = self.ws.snapshot()["structures"]
+        if steps is None:
+            for e in list(self.ws.snapshot()["edges"].values()):
+                o = e.get("origin") or {}
+                if o.get("job") == job["id"] and o.get("barrier_verified") is False and o.get("label"):
+                    a, b = e["source"], e["target"]
+                    v = step_check.check(job, o["label"], known.get(a, {}).get("smiles"), known.get(b, {}).get("smiles"))
+                    if v and v["ok"]:
+                        with self.ws._lock:
+                            live = self.ws._data["edges"].get(e["id"])
+                            if live is not None and (live.get("origin") or {}).get("label") == o["label"]:
+                                live["origin"] = {**live["origin"], "barrier_verified": True,
+                                                  "headline": "TS + IRC from the flux-steered expansion"}
+                                self.ws._save()
+                                changed = True
+            return changed
+        where: dict = {}       # label -> the pair (node ids) the run has it between
+        best: dict = {}        # pair -> its step
+        for st in steps:
+            a, b = nodes.get(str(st.get("a"))), nodes.get(str(st.get("b")))
+            if a not in known or b not in known or a == b or not st.get("label"):
+                continue
+            key = frozenset((a, b))
+            where[st["label"]] = key
+            ver = (st.get("files") or {}).get("verified") is not False
+            rank = (0 if ver else 1, st.get("ts_energy") if st.get("ts_energy") is not None else float("inf"))
+            if key not in best or rank < best[key][0]:
+                best[key] = (rank, st, ver)
+        for key, (_, st, ver) in best.items():
+            ev = {"event": "step", "a": st["a"], "b": st["b"], "label": st["label"], "ts_energy": st.get("ts_energy"),
+                  "barrier_kcal": st.get("barrier_kcal"), "warning": st.get("warning"),
+                  "ts_kind": (st.get("files") or {}).get("ts_kind")}
+            changed |= self._adopt_step(job, ev, nodes, known, final=True, verified=ver)
+        names = lambda key: " + ".join(known.get(x, {}).get("name", x) for x in key)   # noqa: E731
+        with self.ws._lock:
+            for e in self.ws._data["edges"].values():
+                o = e.get("origin") or {}
+                if o.get("job") != job["id"] or not o.get("has_ts") or not o.get("label"):
+                    continue
+                pair = frozenset((e["source"], e["target"]))
+                if pair in best:
+                    continue                        # set above, from the run's own step for it
+                real = where.get(o["label"])
+                why = (f"its TS ({o['label']}) joins other species: {names(real)}" if real is not None
+                       else f"the run dropped its TS ({o['label']}): its IRC does not join these two")
+                e["origin"] = {"kind": "job", "job": job["id"], "proposed": True, "rejected_step": o["label"],
+                               "headline": why}
+                changed = True
+            if changed:
+                self.ws._save()
+        job["steps_checked"] = True
+        self._write(job)
+        return changed
 
     def progress_snapshot(self, jid: str) -> dict:
         """Current progress state in full, for a client that opens a job's

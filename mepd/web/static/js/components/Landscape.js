@@ -13,6 +13,8 @@ const band = (v) => (v < 10 ? 'var(--chart-3)' : v < 20 ? 'var(--chart-4)' : 'va
 
 // A mixture: species ids (repeats allowed), kept sorted so equal ones match.
 const key = (ids) => [...ids].sort().join('+');
+// A step between several molecules: its barrier is from them apart (the kinetics' reference).
+const st0 = (via) => via.from.length > 1 || via.to.length > 1;
 
 function buildTree(res, ws) {
   const g = Object.fromEntries((res.species || []).map((s) => [s.id, s.g]));
@@ -32,8 +34,10 @@ function buildTree(res, ws) {
     const sd = sides(st);
     if (!sd) return null;
     const fwd = (st.extent || 0) >= 0;
+    // The edge's source is the reaction's (or the edge's) first side: the route enters by it when it runs forward.
+    const e = ws.edges?.[st.edge];
     return { from: fwd ? sd[0] : sd[1], to: fwd ? sd[1] : sd[0], barrier: fwd ? st.barrier_fwd : st.barrier_rev,
-      extent: Math.abs(st.extent || 0), edge: st.edge, label: st.label };
+      extent: Math.abs(st.extent || 0), edge: st.edge, label: st.label, start: e ? (fwd ? e.source : e.target) : null };
   }).filter((s) => s && s.from.every((x) => x in g) && s.to.every((x) => x in g));
   const top = Math.max(0, ...steps.map((s) => s.extent));
   const relevant = steps.filter((s) => top > 0 && s.extent >= 0.01 * top);
@@ -127,7 +131,9 @@ export function LandscapeView() {
         <text x=${PAD.l - 8} y=${Y(t) + 4} class="ls-tick">${t > 0 ? '+' : ''}${t}</text></g>`)}
       <text x="8" y="18" class="ls-axis">${basis}, kcal/mol</text>
       <text x=${W - PAD.r} y=${H - 10} class="ls-axis end">start → over the barrier → product</text>
-      ${paths.map((p) => html`<g class="ls-route" onClick=${() => p.n.via.edge && openReaction(p.n.via.edge)}>
+      ${paths.map((p) => html`<g class="ls-route" onClick=${() => p.n.via.edge && openReaction(p.n.via.edge,
+        { start: p.n.via.start, barrier: p.n.via.barrier, basis: res.energies === 'free' ? 'free energy' : 'electronic energy',
+          separated: st0(p.n.via), T: res.temperature })}>
         <path d=${p.d} class="ls-path" style=${`stroke:${p.color};stroke-width:${p.w}`} />
         <path d=${p.d} class="ls-flow" style=${`stroke:${p.color};stroke-width:${Math.max(2, p.w * 0.7)}`} />
         <text x=${p.mid} y=${p.yT - 8} class="ls-ts" style=${`fill:${p.color}`}>‡ ${p.n.via.barrier.toFixed(1)}</text>

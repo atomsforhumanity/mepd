@@ -559,14 +559,18 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 job = manager.jobs.get(jid)
                 if not job or job["op"] != "graph-enumeration" or job["status"] in ("running", "queued"):
                     continue
-                changed = adopt_expansion_steps(manager, job) if job["status"] == "done" else False
-                changed |= backfill_expansion_ts(manager, job)
+                changed = backfill_expansion_ts(manager, job)
                 changed |= manager._adopt_seed_energy(job)
                 if changed:
                     manager.bus.publish("workspace", manager.ws.snapshot())
             for job in [j for j in manager.jobs.values() if j["op"] == "graph-enumeration"
-                        and j["status"] not in ("running", "queued") and not j.get("seed_adopted")]:
-                if manager._adopt_seed_energy(job):
+                        and j["status"] not in ("running", "queued")]:
+                changed = False if job.get("seed_adopted") else manager._adopt_seed_energy(job)
+                # Steps adopted before each was checked against its IRC (one that ran elsewhere
+                # counted, with a TS far below both species): checked once, the edges set again.
+                if not job.get("steps_checked"):
+                    changed |= manager.recheck_expansion_steps(job)
+                if changed:
                     manager.bus.publish("workspace", manager.ws.snapshot())
         except Exception:
             logging.getLogger(__name__).exception("could not give expansion steps their TS energies")
@@ -2847,6 +2851,68 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     # ----------------------------------------------------------- examples
     # Finished studies shipped with mepd (web/showcase): Home's Examples door.
     # Opening one copies it into a new session of your own.
+    @app.get("/api/jobs/{jid}/species-graph/{sid}")
+    def species_graph(jid: str, sid: str):
+        """A network expansion's species drawn from its geometry (no SMILES fits it)."""
+        from mepd.web import live_network
+
+        if not sid.isdigit() or jid not in J().jobs:
+            raise HTTPException(404, "no such species")
+        svg = live_network.species_graph_svg(J().job_dir(jid), sid)
+        if svg is None:
+            raise HTTPException(404, "cannot draw it")
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=3600"})
+
+    @app.get("/api/jobs/{jid}/reactor-product/{run}/{event}")
+    def reactor_product(jid: str, run: str, event: int):
+        """A reactor event's product, drawn from the MD frame it formed in."""
+        from mepd.web import live_network
+
+        if jid not in J().jobs:
+            raise HTTPException(404, "no such calculation")
+        svg = live_network.reactor_product_svg(J().job_dir(jid), run, event)
+        if svg is None:
+            raise HTTPException(404, "cannot draw it")
+        return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/api/edges/{eid}/step-path")
+    def edge_step_path(eid: str, start: Optional[str] = None):
+        """The path of the very step an expansion put on this edge (its own IRC, not the
+        run's lowest path), from `start` (a node id; default the edge's source) to the
+        other end, with energies measured from that node's energy: the TS's height is the
+        barrier kinetics uses (electronic)."""
+        from mepd.web import step_check
+
+        snap = W().snapshot()
+        edge = snap["edges"].get(eid)
+        if edge is None:
+            raise HTTPException(404, "no such edge")
+        o = edge.get("origin") or {}
+        job = J().jobs.get(o.get("job") or "")
+        if job is None or not o.get("label"):
+            raise HTTPException(404, "this edge has no step of its own")
+        if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
+            raise HTTPException(404, "No TS was found for this step: its barrier is the highest point of a path "
+                                     "between the two (an upper bound), so there is no path through a TS to play.")
+        got = step_check.path_frames(job, o["label"])
+        if got is None:
+            raise HTTPException(404, "Its IRC is not written yet.")
+        frames, energies = got
+        st = snap["structures"]
+        a, b = edge["source"], edge["target"]
+        v = step_check.check(job, o["label"], st.get(a, {}).get("smiles"), st.get(b, {}).get("smiles"))
+        if v is not None and v["reversed"]:            # the IRC runs target -> source
+            frames, energies = frames[::-1], energies[::-1]
+        if start == b:
+            frames, energies = frames[::-1], energies[::-1]
+            a, b = b, a
+        ref = st.get(a, {}).get("energy")
+        kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in energies]
+        ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
+        return {"label": o["label"], "job": job["id"], "start": a, "end": b, "checked": v is not None,
+                "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
+                "reference": "the start's node energy (its lowest structure found), electronic"}
+
     @app.get("/api/jobs/{jid}/network-timeline")
     def network_timeline(jid: str):
         """A network expansion as the live network view plays it (mepd/web/live_network.py)."""
@@ -2996,28 +3062,14 @@ def adopt_complexes(ws: Workspace, job: dict) -> list[str]:
 
 
 def adopt_expansion_steps(manager: JobManager, job: dict) -> bool:
-    """A finished expansion's verified steps (summary.json) onto its graph
-    edges -- the same as the live events do while it runs; this covers runs
-    without a live view and steps whose events were missed."""
-    try:
-        summary = json.loads((Path(job["output_dir"]) / "summary.json").read_text())
-    except Exception:
+    """A finished expansion's steps (summary.json, and the live events a stopped
+    run's summary leaves out) onto its graph edges: each checked against its IRC,
+    each pair's edge set to its lowest checked step (JobManager.recheck_expansion_steps);
+    and the run's optimized seed onto the seed's node."""
+    if not (Path(job.get("output_dir") or "") / "summary.json").exists():
         return False
-    nodes = dict(job.get("live_nodes") or {})
-    known = manager.ws.snapshot()["structures"]
-    # Each pair's lowest step, with its final barriers (they may differ from
-    # the live ones: species energies can drop later in a run).
-    best: dict[frozenset, dict] = {}
-    for st in summary.get("steps") or []:
-        key = frozenset((st["a"], st["b"]))
-        if key not in best or (st.get("ts_energy") is not None and best[key].get("ts_energy") is not None
-                               and st["ts_energy"] < best[key]["ts_energy"]):
-            best[key] = st   # the lower TS: the lower barrier both ways
     changed = manager._adopt_seed_energy(job)
-    for st in best.values():
-        ev = {"event": "step", "a": st["a"], "b": st["b"], "label": st.get("label"),
-              "barrier_kcal": st.get("barrier_kcal"), "ts_energy": st.get("ts_energy"), "warning": st.get("warning")}
-        changed |= manager._adopt_step(job, ev, nodes, known, final=True)
+    changed |= manager.recheck_expansion_steps(job)
     return changed
 
 

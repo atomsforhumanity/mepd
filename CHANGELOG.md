@@ -12,6 +12,13 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Network expansions: only steps whose IRC joins their two species count; the reaction page plays the step you opened; species no Lewis structure fits are drawn.**
+  - A running expansion reports each TS under the pair it searched, before its IRC is checked; the check then moves it to the species its IRC really joins, or drops it (e.g. a search that slid into acetaldehyde's methyl rotation, a "TS" ~100 kcal/mol below the species it was reported between: the negative barriers). The web took those reports as they came. Now a live step is unverified (kinetics leaves it out by default) until its IRC's ends read as its two species (by molecular graph, `mepd/web/step_check.py`); the finished or stopped run's summary settles every edge: its real steps on their real pairs, and an edge that held a dropped or moved step back to proposed, saying why. Workspaces from before are set right when opened.
+  - Each species' final, lowest structure from the run becomes a conformer of its node (the barrier floor), so no TS sits below the species it starts from.
+  - A path's highest point (no TS found) reads as an upper bound on the reaction page.
+  - The reaction page plays the very step on that edge (its own IRC, `GET /api/edges/<id>/step-path`, energies from its start's node), not the run's lowest path. Opened from the Landscape, it reads the route's direction and shows the kinetics' barrier beside the path's.
+  - The live network shows a finished run's real steps only, and species no Lewis structure fits (ylides, hypervalent atoms: the reactor's "unusual bonding") drawn from their geometry with their formula (`mepd/web/depict_graph.py`). While the reactor's MD runs, "Reactor found so far" draws its products from the frames they formed in.
+
 - **Network expansions count in kinetics.** After an expansion (finished, or stopped with Stop & analyze), Kinetics said no reaction had a barrier.
   - An expansion's steps now keep their TS's own energy on their edges (kinetics measures every barrier from it), from the live step events and from the finished summary. Workspaces from before get it back when opened: from the summary, and for the steps a stopped run's summary leaves out, from the run's step events.
   - The expansion's own optimized seed gives the seed's node its energy at the run's level (one more conformer). A seed that came in without one (a reactor's molecule, a drawing) dropped out of kinetics, and with it everything it starts.

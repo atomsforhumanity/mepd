@@ -83,6 +83,8 @@ function layoutOf(tl) {
   return { at: Object.fromEntries(ids.map((id, i) => [id, pos[i]])), seed };
 }
 
+// A SMILES a depiction can be made from (not the reactor's "C7H17OP (unusual bonding #df15)").
+const drawable = (smi) => !!smi && !smi.startsWith('?') && !/unusual bonding/.test(smi);
 const short = (smi) => (smi && smi.length > 22 ? `${smi.slice(0, 20)}…` : smi || '?');
 const fmtMin = (t) => `${(t / 60).toFixed(1)} min`;
 const sign = (x) => (x > 0 ? `+${x.toFixed(1)}` : x.toFixed(1));
@@ -179,7 +181,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
     const w = box(peak, id);
     return { id, G, peak, fin, pop, dft, at: at[id], w, h: w * 0.75, fresh: prev && !prevIds.has(id), dE: reref.get(id) };
   // A species the explorer could not identify shows only once it holds material.
-  }).filter((x) => x.at && (tl.smiles[x.id] || x.id === lay.seed || (x.peak || 0) >= 0.01 * peakMax))
+  }).filter((x) => x.at && (tl.smiles[x.id] || jobId || x.id === lay.seed || (x.peak || 0) >= 0.01 * peakMax))
     // Small cards first, so the ones that matter sit on top; the start last.
     .sort((a, b) => (a.id === lay.seed) - (b.id === lay.seed) || a.w - b.w);
   const shown = new Set(nodes.map((x) => x.id));
@@ -265,6 +267,9 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   const dashed = (src) => anyDft && src === 'g';
   // Labels: a benchmark's products by name (endo, exo), the start, and whatever else holds real material.
   const names = tl.names || {};
+  // Species no SMILES fits are drawn from their geometry (a running job's own); examples have SMILES.
+  const imgOf = (id, w = 160, h = 120) => (drawable(tl.smiles[id]) ? depictUrl(tl.smiles[id], w, h)
+    : jobId ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
   const labelOf = (id) => (id === lay.seed ? names[id] || 'start' : productOf[id] || names[id]);
   // The structure says what it is; a name only where one exists and the species matters.
   const labelled = new Set(nodes.filter((x) => x.id === lay.seed || productOf[x.id] || (names[x.id] && (x.peak || 0) >= 0.05 * peakMax)).map((x) => x.id));
@@ -284,7 +289,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   // Species that read the same (one product's mirror twins, or the benchmark's named product) count as one.
   const groups = new Map();
   for (const x of formed) {
-    const k = productOf[x.id] || tl.smiles[x.id] || x.id;
+    const k = productOf[x.id] || (drawable(tl.smiles[x.id]) ? tl.smiles[x.id] : names[x.id]) || x.id;
     const g = groups.get(k) || { ...x, fin: 0 };
     g.fin += Math.max(0, x.fin || 0);
     groups.set(k, g);
@@ -332,10 +337,10 @@ export function LiveNetworkView({ jobId = null, example = null }) {
               onMouseEnter=${() => setHover(x.id)} onMouseLeave=${() => setHover((h) => (h === x.id ? null : h))}>
             ${x.fresh && html`<rect x=${-x.w / 2 - 6} y=${-x.h / 2 - 6} width=${x.w + 12} height=${x.h + 12} rx="6" class="ln-fresh" />`}
             <rect x=${-x.w / 2} y=${-x.h / 2} width=${x.w} height=${x.h} rx="4" class=${`ln-card ${x.id === lay.seed ? 'seed' : x.pop ? 'pop' : ''} ${anyDft && !x.dft ? 'gxtb' : ''}`} />
-            ${tl.smiles[x.id] ? html`<image href=${depictUrl(tl.smiles[x.id], 160, 120)} x=${-x.w / 2 + 2} y=${-x.h / 2 + 2} width=${x.w - 4} height=${x.h - 4} preserveAspectRatio="xMidYMid meet" />`
+            ${imgOf(x.id) ? html`<image href=${imgOf(x.id)} x=${-x.w / 2 + 2} y=${-x.h / 2 + 2} width=${x.w - 4} height=${x.h - 4} preserveAspectRatio="xMidYMid meet" />`
               : html`<text x="0" y="5" class="ln-unknown">?</text>`}
             ${x.dE != null && Math.abs(x.dE) >= 0.1 && html`<text x=${x.w / 2 + 4} y=${-x.h / 2} class="ln-delta down">${sign(x.dE)}</text>`}
-            <title>${tl.smiles[x.id] || 'structure not perceived'} · ${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''} · peak ${(x.peak ?? 0).toPrecision(2)} · final ${(x.fin ?? 0).toPrecision(2)}${x.dft ? ' · DFT' : ' · g-xTB'}</title>
+            <title>${drawable(tl.smiles[x.id]) ? tl.smiles[x.id] : names[x.id] || 'structure not perceived'} · ${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''} · peak ${(x.peak ?? 0).toPrecision(2)} · final ${(x.fin ?? 0).toPrecision(2)}${x.dft ? ' · DFT' : ' · g-xTB'}</title>
           </g>`)}
           ${(() => {
             const x = hover && nodes.find((y) => y.id === hover);
@@ -345,7 +350,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
             const nm = labelOf(x.id) || (x.id === lay.seed ? 'start' : '');
             return html`<g class="ln-hover" transform=${`translate(${cx},${cy})`} pointer-events="none">
               <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx="4" class="ln-card pop" />
-              ${tl.smiles[x.id] ? html`<image href=${depictUrl(tl.smiles[x.id], 160, 120)} x=${-w / 2 + 4} y=${-h / 2 + 4} width=${w - 8} height=${w * 0.75 - 8} preserveAspectRatio="xMidYMid meet" />` : html`<text x="0" y="0" class="ln-unknown">?</text>`}
+              ${imgOf(x.id) ? html`<image href=${imgOf(x.id)} x=${-w / 2 + 4} y=${-h / 2 + 4} width=${w - 8} height=${w * 0.75 - 8} preserveAspectRatio="xMidYMid meet" />` : html`<text x="0" y="0" class="ln-unknown">?</text>`}
               <text x="0" y=${h / 2 - 12} class="ln-hover-text">${nm ? `${nm} · ` : ''}${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''}${x.id !== lay.seed ? ` · peak ${(x.peak || 0) < 0.005 ? '<1' : Math.round(100 * Math.min(1, x.peak))}%` : ''}</text>
             </g>`;
           })()}
@@ -394,7 +399,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
       <section>
         <span class="section-title">What forms</span>
         ${tops.length ? tops.map((x) => html`<div class="ln-prod" title=${tl.smiles[x.id]}>
-          ${tl.smiles[x.id] ? html`<img class="ln-prod-mol" src=${depictUrl(tl.smiles[x.id], 160, 120)} alt=${tl.smiles[x.id]} />` : html`<span class="ln-prod-mol">?</span>`}
+          ${imgOf(x.id) ? html`<img class="ln-prod-mol" src=${imgOf(x.id)} alt=${tl.smiles[x.id] || names[x.id] || ''} />` : html`<span class="ln-prod-mol">?</span>`}
           <span class="ln-prod-name">${productOf[x.id] || names[x.id] || ''}</span>
           <b>${Math.round(100 * Math.max(0, x.fin) / finTotal)}%</b>
         </div>`) : html`<span class="small muted">Nothing yet</span>`}
@@ -447,6 +452,13 @@ function Closer({ jobId, job, activity, running }) {
       </div>
       ${(q.running || []).slice(0, 4).map((r) => html`<div class="small ln-now">${WORK[r.kind] || r.kind} · <span class="mono">${r.what}</span></div>`)}`}
     ${done.length > 0 && html`<span class="section-title">${running ? 'Done so far' : 'Work done'}</span><div class="ln-done small muted">${done.map(([k, v]) => html`<span title=${v.failed ? `${v.failed} failed` : ''}><b>${v.done}</b> ${WORK[k] || k}</span>`)}</div>`}
+    ${activity?.reactor?.distinct > 0 && html`<span class="section-title">Reactor found so far</span>
+      <span class="small muted">${activity.reactor.distinct} kind${activity.reactor.distinct === 1 ? '' : 's'} of product in ${activity.reactor.events} reaction events
+        (${activity.reactor.runs} MD runs); the run optimizes and connects them next</span>
+      <div class="ln-reactor">${activity.reactor.products.slice(0, 6).map((p) => html`<div class="ln-rp" title=${`${p.products} · seen ${p.count}×`}>
+        <img src=${`/api/jobs/${jobId}/reactor-product/${encodeURIComponent(p.run)}/${p.event}`} alt=${p.products} loading="lazy" />
+        <span>${p.products.replace(/ \(unusual bonding #\w+\)/g, '')}${p.unusual ? html` <i title="No Lewis structure fits it (hypervalent atom, ylide, metal, odd radical): drawn from its geometry">unusual bonding</i>` : ''}</span>
+        <b>${p.count}×</b></div>`)}</div>`}
     <span class="section-title">Look closer</span>
     <div class="ln-doors">
       ${reactor && html`<button class="btn small" onClick=${() => openJob(jobId, 'reactor')} title="The molecular dynamics that proposes the reactions">Reactor MD</button>`}
@@ -455,9 +467,9 @@ function Closer({ jobId, job, activity, running }) {
       <button class="btn small" onClick=${() => openJob(jobId, 'log')}>Log</button>
     </div>
     ${sims.length > 0 && html`<div class="ln-sims">${sims.slice(0, 5).map((m) => html`<button class="ln-sim" onClick=${() => openSim(m.stream)} title=${`${m.label}${m.caption ? ` · ${m.caption}` : ''}: open it`}>
-      ${m.from ? html`<img src=${depictUrl(m.from, 120, 90)} alt=${m.from} />` : html`<span>?</span>`}
+      ${drawable(m.from) ? html`<img src=${depictUrl(m.from, 120, 90)} alt=${m.from} />` : html`<span class="ln-sim-txt">${(m.from || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
       <span class="ln-sim-arrow">→</span>
-      ${m.to ? html`<img src=${depictUrl(m.to, 120, 90)} alt=${m.to} />` : html`<span>?</span>`}
+      ${drawable(m.to) ? html`<img src=${depictUrl(m.to, 120, 90)} alt=${m.to} />` : html`<span class="ln-sim-txt">${(m.to || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
       <span class="small muted">${(m.label || '').replace(/ from species.*/, '')}</span>
     </button>`)}</div>`}
   </section>`;

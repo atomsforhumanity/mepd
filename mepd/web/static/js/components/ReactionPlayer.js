@@ -44,7 +44,9 @@ function bestEntry(result) {
   return [...all].sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1]; })[0] || null;
 }
 
-export function ReactionPlayer({ jobId, compact = false }) {
+// `stepEdge`: play the very step a network expansion put on that edge (its own
+// IRC, from `start`, energies from that node's energy), not the run's lowest path.
+export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start = null }) {
   const job = useStore((s) => s.jobs[jobId]);
   // The orbitals of each frame, from this calculation's own run (Viewer3D's Orbitals bar).
   const chem = job ? { charge: job.charge, multiplicity: job.multiplicity, job: job.id } : null;
@@ -55,10 +57,13 @@ export function ReactionPlayer({ jobId, compact = false }) {
   useEffect(() => {
     let alive = true;
     setResult(null); setError(null);
-    api.get(`/api/jobs/${jobId}/result`).then((r) => { if (alive) setResult(r); }).catch((e) => alive && setError(e.message));
+    const url = stepEdge ? `/api/edges/${encodeURIComponent(stepEdge)}/step-path${start ? `?start=${encodeURIComponent(start)}` : ''}`
+      : `/api/jobs/${jobId}/result`;
+    api.get(url).then((r) => { if (alive) setResult(r); }).catch((e) => alive && setError(e.message));
     return () => { alive = false; };
-  }, [jobId]);
-  const entry = useMemo(() => bestEntry(result), [result]);
+  }, [jobId, stepEdge, start]);
+  const entry = useMemo(() => (stepEdge ? (result?.frames?.length > 1 ? { frames: result.frames.map((f, k) => ({ ...f, path_length: k })), ts_index: result.ts_index } : null)
+    : bestEntry(result)), [result, stepEdge]);
   const frames = useMemo(() => entry?.frames.map((f) => f.xyz), [entry]);
   const xs = useMemo(() => entry?.frames.map((f) => f.path_length), [entry]);
   const ys = useMemo(() => entry?.frames.map((f) => f.energy_kcal) ?? [], [entry]);
@@ -87,7 +92,7 @@ export function ReactionPlayer({ jobId, compact = false }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [entry, frame]);
 
-  if (error) return html`<p class="error-box">${error}</p>`;
+  if (error) return stepEdge ? html`<p class="muted">${error}</p>` : html`<p class="error-box">${error}</p>`;
   if (!result) return html`<p class="muted small player-loading">Loading the path…</p>`;
   if (!entry) return html`<p class="muted">This calculation kept no path to play.</p>`;
   const n = entry.frames.length;
@@ -127,23 +132,38 @@ export function ReactionPlayer({ jobId, compact = false }) {
 export function ReactionFocus({ edgeId }) {
   const ws = useStore((s) => s.workspace);
   const jobs = useStore((s) => s.jobs);
+  const ctx = useStore((s) => (s.reactionContext?.edgeId === edgeId ? s.reactionContext : null));
   const edge = ws.edges?.[edgeId];
   useEffect(() => { if (edge && !state.selection.edges.includes(edgeId)) select({ structures: [], edges: [edgeId] }); }, [edgeId, !!edge]);
   if (!edge) return html`<div class="focus-missing"><p>This reaction is not in this workspace.</p>
     <button class="btn" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>Back to Explore</button></div>`;
   const name = (id) => ws.structures?.[id]?.name || id;
   const st = edgeStatus(edge, jobs);
-  const fwd = st.barrierFwd ?? st.barrier, rev = st.barrierRev;
+  // Read the way it was opened from (the Landscape's route), else source -> target.
+  const flip = ctx?.start && ctx.start === edge.target;
+  const [from, to] = flip ? [edge.target, edge.source] : [edge.source, edge.target];
+  const b1 = st.barrierFwd ?? st.barrier, b2 = st.barrierRev;
+  const fwd = flip ? b2 : b1, rev = flip ? b1 : b2;
+  // An expansion's step: play that very step (its own IRC), not its run's lowest path.
+  const o = edge.origin || {};
+  const ownStep = o.label && !o.proposed && jobs[o.job]?.op === 'graph-enumeration';
+  const band = (v) => `band-${v < 10 ? 'low' : v < 20 ? 'mid' : 'high'}`;
   return html`<div class="focus reaction-focus">
     <nav class="crumbs"><a href="#/explore" onClick=${(ev) => { ev.preventDefault(); set({ view: { tab: 'graph', jobId: null } }); }}>Explore</a>
-      <span>›</span><b>${name(edge.source)} → ${name(edge.target)}</b></nav>
+      <span>›</span><b>${name(from)} → ${name(to)}</b></nav>
     <div class="focus-chips">
-      ${fwd != null && html`<span class="chip-k" title="Forward barrier, from the lowest start found"><b class=${`band-${fwd < 10 ? 'low' : fwd < 20 ? 'mid' : 'high'}`}>ΔE‡ ${fmtKcal(fwd)}</b> →</span>`}
-      ${rev != null && html`<span class="chip-k" title="Reverse barrier: the same TS from the other side"><b class=${`band-${rev < 10 ? 'low' : rev < 20 ? 'mid' : 'high'}`}>${fmtKcal(rev)}</b> ←</span>`}
+      ${ctx?.barrier != null && html`<span class="chip-k" title=${`What the Landscape drew: the kinetics' barrier (${ctx.basis}${ctx.T ? `, ${ctx.T} K` : ''}), ${ctx.separated ? 'from the molecules apart' : 'from the lowest structure found'}`}>
+        <b class=${band(ctx.barrier)}>‡ ${fmtKcal(ctx.barrier)}</b> in the kinetics</span>`}
+      ${fwd != null && html`<span class="chip-k" title="This step's barrier on its path (electronic), from the lowest start found"><b class=${band(fwd)}>ΔE‡ ${fmtKcal(fwd)}</b> →</span>`}
+      ${rev != null && html`<span class="chip-k" title="Reverse barrier: the same TS from the other side"><b class=${band(rev)}>${fmtKcal(rev)}</b> ←</span>`}
+      ${o.barrier_verified === false && html`<span class="chip-k muted" title=${o.headline || ''}>IRC not checked yet</span>`}
+      ${o.ts_kind === 'path_peak' && html`<span class="chip-k muted" title=${o.headline || ''}>upper bound: no TS found</span>`}
       ${st.barrier == null && st.barrierUnverified != null && html`<span class="chip-k muted">no TS</span>`}
       ${st.barrierJob && html`<a class="chip-k link" href=${`#/calc/${st.barrierJob}`} onClick=${(ev) => { ev.preventDefault(); openJob(st.barrierJob); }}>Calculation ›</a>`}
     </div>
-    ${st.barrierJob
+    ${o.rejected_step ? html`<p class="small muted">${o.headline}</p>` : ''}
+    ${ownStep ? html`<${ReactionPlayer} jobId=${o.job} stepEdge=${edgeId} start=${from} key=${`${edgeId}:${from}`} />`
+      : st.barrierJob
       ? html`<${ReactionPlayer} jobId=${st.barrierJob} />`
       : html`<div class="focus-empty"><p>No path computed for this reaction yet.</p><p class="small muted">Pick Transition state in the panel on the right.</p></div>`}
   </div>`;

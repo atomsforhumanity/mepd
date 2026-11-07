@@ -336,3 +336,12 @@
 /* Kinetics: reactions left out for want of molecule energies */
 .kn-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft); }
 .kn-missing p { margin: 0; flex: 1 1 320px; font-size: var(--fs-sm); }
+
+/* Species no Lewis structure fits, and what the reactor has made so far */
+.ln-sim-txt { width: 56px; font: 10px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ln-reactor { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
+.ln-rp { display: grid; gap: 2px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-size: 11px; color: var(--text); }
+.ln-rp img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: var(--node-bg); border-radius: 3px; }
+.ln-rp span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ln-rp i { font-style: normal; color: var(--warn); }
+.ln-rp b { color: var(--muted); font-weight: 600; }

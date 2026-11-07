@@ -192,12 +192,24 @@ def timeline(frames: list, events: list, selectivity: Optional[dict], *, source:
             "selectivity": selectivity, "final": final}
 
 
-def names_of(smiles: dict) -> dict:
-    """Everyday names where every molecule of a mixture has one ("water + CO")."""
+def drawable(smiles: Optional[str]) -> bool:
+    """A SMILES a depiction can be made from: not empty, not the reactor's
+    placeholder for a species no Lewis structure fits ("C7H17OP (unusual bonding #df15)")."""
+    return bool(smiles) and not str(smiles).startswith("?") and "unusual bonding" not in str(smiles)
+
+
+def names_of(smiles: dict, formulas: Optional[dict] = None) -> dict:
+    """Everyday names where every molecule of a mixture has one ("water + CO");
+    for a species no Lewis structure fits, its formula ("C7H17OP · unusual bonding")."""
     from mepd.web.chem import common_name
 
     out = {}
     for sid, smi in smiles.items():
+        if not drawable(smi):
+            f = (formulas or {}).get(sid) or (str(smi).split(" (unusual")[0] if smi else "")
+            if f:
+                out[sid] = f"{f} · unusual bonding"
+            continue
         parts = [common_name(x) for x in (smi or "").split(".")] if smi else []
         if parts and all(parts):
             out[sid] = " + ".join(parts)
@@ -331,7 +343,22 @@ def record(job_dir: Path, kin: dict, t0: Optional[float] = None) -> bool:
     return True
 
 
-def _growing(job_dir: Path, lines: list, t0: Optional[float]) -> Optional[dict]:
+def _summary_steps(job_dir: Path) -> Optional[list]:
+    """A finished (or stopped) run's own steps, each under the species its IRC really
+    joins: what its live step events (reported under the pair searched, before the
+    IRC check) turned out to be. None while it runs."""
+    try:
+        out = Path(json.loads((Path(job_dir) / "job.json").read_text()).get("output_dir") or "")
+        steps = json.loads((out / "summary.json").read_text()).get("steps")
+    except (OSError, ValueError):
+        return None
+    if steps is None:
+        return None
+    return [{"label": st["label"], "a": st["a"], "b": st["b"],
+             "dG": (list(st.get("barrier_kcal") or []) + [None, None])[:2]} for st in steps if st.get("label")]
+
+
+def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[list] = None) -> Optional[dict]:
     """The network as events.jsonl has it now, on top of the last kinetics
     refresh: species and steps found since then show at once (no amounts yet)."""
     import time
@@ -362,7 +389,7 @@ def _growing(job_dir: Path, lines: list, t0: Optional[float]) -> Optional[dict]:
             species.append({"index": ev.get("index"), "smiles": ev.get("smiles") or "", "rel_kcal": ev.get("rel_energy_kcal"),
                             "max_concentration": 0.0, "final": 0.0, "populated": False})
     kin["species"] = species
-    f = compact_legacy(kin, _legacy_steps(lines))
+    f = compact_legacy(kin, steps if steps is not None else _legacy_steps(lines))
     if f is None:
         return None
     f["growing"] = True
@@ -379,6 +406,134 @@ def record_selectivity(job_dir: Path, data: dict) -> None:
     head = {k: v for k, v in data.items() if k != "entries"}
     with open(Path(job_dir) / "live" / SELECTIVITY_FRAMES, "a") as fh:
         fh.write(json.dumps({**head, "entry": entries[-1]}, separators=(",", ":")) + "\n")
+
+
+def species_xyz(job_dir: Path, sid: str) -> Optional[str]:
+    """A species' geometry: its final one (output/species), else as the run first
+    reported it (live/events.jsonl), the seed's from the job's input."""
+    job_dir = Path(job_dir)
+    try:
+        out = Path(json.loads((job_dir / "job.json").read_text()).get("output_dir") or job_dir / "output")
+    except (OSError, ValueError):
+        out = job_dir / "output"
+    fp = out / "species" / f"species_{sid}.xyz"
+    if fp.exists():
+        return fp.read_text()
+    if str(sid) == "0" and (job_dir / "inputs" / "seed.xyz").exists():
+        return (job_dir / "inputs" / "seed.xyz").read_text()
+    for line in _events(job_dir):
+        if '"species"' in line[:40] and f'"index": {sid},' in line:
+            try:
+                return json.loads(line).get("xyz")
+            except ValueError:
+                return None
+    return None
+
+
+def species_formula(job_dir: Path, sid: str) -> Optional[str]:
+    from mepd.web.depict_graph import formula
+
+    xyz = species_xyz(job_dir, sid)
+    return formula(xyz) if xyz else None
+
+
+def species_graph_svg(job_dir: Path, sid: str) -> Optional[str]:
+    """A species drawn from its geometry (mepd.web.depict_graph), cached in live/graphs/."""
+    from mepd.web.depict_graph import depict_xyz_svg
+
+    cache = Path(job_dir) / "live" / "graphs" / f"{sid}.svg"
+    if cache.exists():
+        return cache.read_text()
+    xyz = species_xyz(job_dir, sid)
+    svg = depict_xyz_svg(xyz) if xyz else None
+    if svg:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(svg)
+    return svg
+
+
+def _md_frame(run_dir: Path, index: int) -> Optional[str]:
+    """Frame `index` of a reactor run's MD (md/segment_*.xyz in order)."""
+    k = 0
+    for fp in sorted((run_dir / "md").glob("segment_*.xyz")):
+        lines = fp.read_text().splitlines()
+        i = 0
+        while i < len(lines):
+            head = lines[i].strip()
+            if not head.isdigit():
+                i += 1
+                continue
+            n = int(head)
+            if k == index:
+                return "\n".join(lines[i:i + n + 2])
+            k += 1
+            i += n + 2
+    return None
+
+
+def reactor_products(job_dir: Path, limit: int = 12) -> Optional[dict]:
+    """What the reactor's MD has made so far, before the run optimizes any of it:
+    each distinct product side of its events, how often, and where to draw it."""
+    try:
+        out = Path(json.loads((Path(job_dir) / "job.json").read_text()).get("output_dir") or "")
+    except (OSError, ValueError):
+        return None
+    runs = sorted((out / "reactor").glob("run_*/live_events.json"))
+    if not runs:
+        return None
+    seen: dict = {}
+    n_events = 0
+    loaded = []
+    for fp in runs:
+        try:
+            loaded.append((fp, json.loads(fp.read_text()).get("events") or []))
+        except (OSError, ValueError):
+            continue
+    # The start itself (what the runs' first events begin from) is no product.
+    starts = {(ev.get("label") or "").split(" -> ", 1)[0] for _, evs in loaded for ev in evs[:1]}
+    for fp, evs in loaded:
+        for ev in evs:
+            label = ev.get("label") or ""
+            if " -> " not in label or ev.get("direction") == "backward":
+                continue
+            prod = label.split(" -> ", 1)[1]
+            if prod in starts:
+                continue
+            n_events += 1
+            if prod not in seen:
+                seen[prod] = {"products": prod, "count": 0, "run": fp.parent.name, "event": ev.get("event"),
+                              "unusual": "unusual bonding" in prod}
+            seen[prod]["count"] += 1
+    items = sorted(seen.values(), key=lambda x: -x["count"])
+    return {"runs": len(runs), "events": n_events, "distinct": len(items), "products": items[:limit]}
+
+
+def reactor_product_svg(job_dir: Path, run: str, event: int) -> Optional[str]:
+    """One reactor event's atoms at its product frame, drawn from the geometry; cached."""
+    from mepd.web.depict_graph import depict_xyz_svg
+
+    if "/" in run or run.startswith("."):
+        return None
+    cache = Path(job_dir) / "live" / "graphs" / f"reactor_{run}_{int(event)}.svg"
+    if cache.exists():
+        return cache.read_text()
+    try:
+        out = Path(json.loads((Path(job_dir) / "job.json").read_text()).get("output_dir") or "")
+        run_dir = out / "reactor" / run
+        ev = next(e for e in json.loads((run_dir / "live_events.json").read_text()).get("events") or []
+                  if e.get("event") == int(event))
+    except (OSError, ValueError, StopIteration):
+        return None
+    frame = _md_frame(run_dir, int(ev.get("product_frame") or 0))
+    if frame is None:
+        return None
+    lines = frame.splitlines()
+    atoms = [lines[2 + a] for a in ev.get("atoms") or range(len(lines) - 2) if 2 + a < len(lines)]
+    svg = depict_xyz_svg(f"{len(atoms)}\n\n" + "\n".join(atoms), charge=int(ev.get("charge") or 0))
+    if svg:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(svg)
+    return svg
 
 
 def activity(job_dir: Path) -> dict:
@@ -402,6 +557,7 @@ def activity(job_dir: Path) -> dict:
                      "from": plot.get("reactant_smiles"), "to": plot.get("product_smiles"), "source": plot.get("source"),
                      "kind": d.get("kind")})
     out["sims"] = sims
+    out["reactor"] = reactor_products(job_dir)
     return out
 
 
@@ -420,7 +576,21 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
         f.pop("t_start", None)
         frames.append(f)
     lines = _events(job_dir)
-    if running or not frames:
+    final_steps = None if running else _summary_steps(job_dir)
+    if final_steps is not None:
+        # The run's live events reported steps under the pair searched; its summary has each under
+        # the species its IRC joins, and none it dropped: no frame shows a step that was never real.
+        real = {st["label"]: {str(st["a"]), str(st["b"])} for st in final_steps}
+        for f in frames:
+            f["steps"] = [x for x in f["steps"] if real.get(x[0]) == {x[1], x[2]}]
+            f["gone"] = [x for x in f.get("gone") or [] if real.get(x[0]) == {x[1], x[2]}]
+        g = _growing(job_dir, lines, t0, steps=final_steps) if lines else None
+        if g is not None:
+            g.pop("growing", None)
+            g["t"] = max(g["t"], frames[-1]["t"] if frames else 0.0)
+            g["steered"] = frames[-1]["steered"] if frames else g["steered"]
+            frames.append(g)
+    elif running or not frames:
         g = _growing(job_dir, lines, t0) if lines else None
         if g is not None and (not frames or g["counts"]["species"] > frames[-1]["counts"]["species"]
                               or g["counts"]["steps"] > frames[-1]["counts"]["steps"]):
@@ -433,6 +603,10 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
         if rows:
             sel = _selectivity(rows[-1], t_start or 0.0, entries=[r["entry"] for r in rows])
     tl = timeline(frames, events, sel, source={"kind": "job"})
+    # Species drawn from their geometry (no SMILES fits them): their formulas name them.
+    formulas = {sid: species_formula(job_dir, sid) for sid, smi in tl["smiles"].items() if not drawable(smi)}
+    tl["names"] = {**names_of(tl["smiles"], formulas), **{k: v for k, v in tl["names"].items() if v}}
+    tl["graph_ids"] = sorted(k for k, v in tl["smiles"].items() if not drawable(v))
     tl["activity"] = activity(job_dir)
     return tl
 

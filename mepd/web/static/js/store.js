@@ -312,8 +312,11 @@ if (typeof window !== 'undefined' && window.history) {
 }
 
 // A reaction's own page: its barriers and its path as a movie (ReactionPlayer.js).
-export function openReaction(edgeId) {
-  set({ view: { tab: 'reaction', jobId: null, edgeId } });
+// `context`: where it was opened from, e.g. the Landscape's route through it
+// ({ start: node id the route enters by, barrier, basis }): the page then reads
+// the reaction that way and shows that number beside its path.
+export function openReaction(edgeId, context = null) {
+  set({ view: { tab: 'reaction', jobId: null, edgeId }, reactionContext: context ? { edgeId, ...context } : null });
 }
 
 export function openJob(jobId, tab = null) {

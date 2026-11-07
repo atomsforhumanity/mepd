@@ -53,7 +53,9 @@ def edge_ts(edge: dict, jobs: dict, level_key: Optional[str],
         if t:
             consider(t.get("energy"), t.get("level"), True, t.get("job"))
         else:
-            consider(o.get("ts_energy_hartree"), _level(jobs.get(o.get("job"))), True, o.get("job"))
+            # (an expansion's step whose IRC is not checked yet is unverified)
+            consider(o.get("ts_energy_hartree"), _level(jobs.get(o.get("job"))), o.get("barrier_verified") is not False,
+                     o.get("job"))
     for pool, verified in ((ver, True), (unver, False)):
         if pool and (verified or include_unverified):
             e, jid = min(pool, key=lambda x: x[0])
