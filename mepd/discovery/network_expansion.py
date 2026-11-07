@@ -2226,6 +2226,10 @@ def expand_network(
         else:
             width = 4
         width = max(1, min(int(workers), width))
+        if int(job_opts.get("n_seeds") or 0) > 0:
+            # It never runs more processes than trajectories per batch: reserving more workers for it
+            # (`parallel` follows --workers) left the rest idle and counted busy (4 MD runs, 10/10 busy).
+            width = min(width, int(job_opts["n_seeds"]))
         if gen_obj.kind == "structures" and ("parallel" in job_opts or "parallel" in gen_obj.options):
             job_opts["parallel"] = width   # its share of the workers, not all of them
 

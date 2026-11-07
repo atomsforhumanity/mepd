@@ -10,6 +10,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Explorer (async): a generator's proposal job reserves no more workers than it runs.** With `n_seeds` set, the reactor runs that many trajectories at a time, but its job held `parallel` (= `--workers`) slots: 4 MD runs with 10 workers showed 10/10 busy and kept the other 6 from anything else.
+
 ### Changed
 
 - **Web: a reaction page goes back where it was opened from.** Its breadcrumb names that page (Landscape, Kinetics, Reactions, a live network, Explore) and returns there, as does Esc (now at once: the page's own selection no longer takes a first press); the page's address keeps it (`?from=`), so reload and Back do too. Back on the Landscape, the route opened last is marked.
