@@ -550,6 +550,26 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                      or (j["summary"].get("barrier_kcal") is not None and "ts_energy_hartree" not in j["summary"])
                      # ...or from before the reverse barrier was kept (Explore labels both directions)
                      or (j["summary"].get("barrier_kcal") is not None and "reverse_barrier_kcal" not in j["summary"]))]
+        # Expansion steps adopted before their TS's energy was kept on the edge (kinetics left
+        # them out as "TS energy not known"): adopt the finished run's steps again.
+        try:
+            for jid in {o.get("job") for e in manager.ws.snapshot()["edges"].values()
+                        if (o := e.get("origin") or {}).get("has_ts") and o.get("ts_energy_hartree") is None
+                        and o.get("barrier_kcal") is not None}:
+                job = manager.jobs.get(jid)
+                if not job or job["op"] != "graph-enumeration" or job["status"] in ("running", "queued"):
+                    continue
+                changed = adopt_expansion_steps(manager, job) if job["status"] == "done" else False
+                changed |= backfill_expansion_ts(manager, job)
+                changed |= manager._adopt_seed_energy(job)
+                if changed:
+                    manager.bus.publish("workspace", manager.ws.snapshot())
+            for job in [j for j in manager.jobs.values() if j["op"] == "graph-enumeration"
+                        and j["status"] not in ("running", "queued") and not j.get("seed_adopted")]:
+                if manager._adopt_seed_energy(job):
+                    manager.bus.publish("workspace", manager.ws.snapshot())
+        except Exception:
+            logging.getLogger(__name__).exception("could not give expansion steps their TS energies")
         # Edges added from a result's entry before their TS's energy was kept.
         no_ts = [(eid, o) for eid, e in manager.ws.snapshot()["edges"].items()
                  if (o := e.get("origin") or {}).get("barrier_kcal") is not None and not o.get("qmmm_ts")
@@ -570,7 +590,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                         e_ts = None
                     with manager.ws._lock:
                         e = manager.ws._data["edges"].get(eid)
-                        if e is not None:
+                        # Never a known energy overwritten by "not found" (e.g. set from the run's step events).
+                        if e is not None and (e_ts is not None or "ts_energy_hartree" not in (e.get("origin") or {})):
                             e.setdefault("origin", {})["ts_energy_hartree"] = e_ts
                             manager.ws._save()
             asyncio.get_running_loop().create_task(redo())
@@ -2992,11 +3013,40 @@ def adopt_expansion_steps(manager: JobManager, job: dict) -> bool:
         if key not in best or (st.get("ts_energy") is not None and best[key].get("ts_energy") is not None
                                and st["ts_energy"] < best[key]["ts_energy"]):
             best[key] = st   # the lower TS: the lower barrier both ways
-    changed = False
+    changed = manager._adopt_seed_energy(job)
     for st in best.values():
         ev = {"event": "step", "a": st["a"], "b": st["b"], "label": st.get("label"),
-              "barrier_kcal": st.get("barrier_kcal"), "warning": st.get("warning")}
+              "barrier_kcal": st.get("barrier_kcal"), "ts_energy": st.get("ts_energy"), "warning": st.get("warning")}
         changed |= manager._adopt_step(job, ev, nodes, known, final=True)
+    return changed
+
+
+def backfill_expansion_ts(manager: JobManager, job: dict) -> bool:
+    """Edges adopted from an expansion's live step events before the TS's energy
+    was kept: the energy of the step event they name (live/events.jsonl). A
+    stopped run's summary lists only part of its steps, so this covers the rest."""
+    fp = manager.job_dir(job["id"]) / "live" / "events.jsonl"
+    if not fp.exists():
+        return False
+    ts = {}
+    for line in fp.read_text().splitlines():
+        if '"step"' not in line[:30]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "step" and ev.get("label") and ev.get("ts_energy") is not None:
+            ts[ev["label"]] = ev["ts_energy"]
+    changed = False
+    with manager.ws._lock:
+        for e in manager.ws._data["edges"].values():
+            o = e.get("origin") or {}
+            if o.get("job") == job["id"] and o.get("ts_energy_hartree") is None and o.get("label") in ts:
+                o["ts_energy_hartree"] = ts[o["label"]]
+                changed = True
+        if changed:
+            manager.ws._save()
     return changed
 
 

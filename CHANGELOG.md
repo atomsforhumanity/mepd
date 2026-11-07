@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Network expansions count in kinetics.** After an expansion (finished, or stopped with Stop & analyze), Kinetics said no reaction had a barrier.
+  - An expansion's steps now keep their TS's own energy on their edges (kinetics measures every barrier from it), from the live step events and from the finished summary. Workspaces from before get it back when opened: from the summary, and for the steps a stopped run's summary leaves out, from the run's step events.
+  - The expansion's own optimized seed gives the seed's node its energy at the run's level (one more conformer). A seed that came in without one (a reactor's molecule, a drawing) dropped out of kinetics, and with it everything it starts.
+  - Reactions to separated molecules (an expansion optimizes each product mixture as a whole) need each molecule's energy: Kinetics now names the molecules missing one and offers **Compute them** (one minimization per charge and multiplicity, seconds with g-xTB), then **Run kinetics again**.
+  - A startup backfill no longer overwrites a known TS energy with "not found".
+
 - **Web: the live network's steps say what they are, and its key reads in words.**
   - Steps end at the cards with an arrow the way material flows. The routes that carry material are drawn strong, with their barrier on them ("‡ 28.6"); steps that carry next to nothing fade back. In runs that did not record flows, the likely routes are marked instead: from the start to each species holding material, the path whose highest barrier is lowest.
   - Hovering a step shows it in words: from → to, the barrier and the barrier back, ΔG, the share of what leaves its start that goes that way, the energy level and the IRC check.

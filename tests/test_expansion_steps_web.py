@@ -74,3 +74,72 @@ def test_the_finished_summary_replaces_live_barriers(tmp_path):
     assert adopt_expansion_steps(jobs, {**job, "output_dir": str(out)})
     (edge,) = ws.snapshot()["edges"].values()
     assert edge["origin"]["barrier_kcal"] == 8.0 and edge["origin"]["label"] == "early"
+
+
+def test_steps_keep_their_ts_energy_for_kinetics(tmp_path):
+    """Kinetics measures every barrier from the TS's own energy: a step's edge carries it,
+    from the live event as from the finished summary (it used to keep only the barrier)."""
+    from mepd.web.app import adopt_expansion_steps
+
+    ws, jobs, (s0, s1, _) = _ws(tmp_path)
+    job = {"id": "j", "live_nodes": {"0": s0, "1": s1}}
+    jobs._adopt_step(job, {"event": "step", "a": 0, "b": 1, "label": "s", "ts_energy": -76.3, "barrier_kcal": [9.0, 4.0]},
+                     job["live_nodes"], ws.snapshot()["structures"])
+    (edge,) = ws.snapshot()["edges"].values()
+    assert edge["origin"]["ts_energy_hartree"] == -76.3
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({"steps": [{"a": 0, "b": 1, "label": "s", "ts_energy": -76.31,
+                                                             "barrier_kcal": [8.0, 4.0]}]}))
+    assert adopt_expansion_steps(jobs, {**job, "output_dir": str(out)})
+    assert ws.snapshot()["edges"][edge["id"]]["origin"]["ts_energy_hartree"] == -76.31
+
+
+def test_old_edges_get_their_ts_energy_from_the_runs_step_events(tmp_path):
+    """Edges adopted before the energy was kept, from steps a stopped run's summary leaves out."""
+    from mepd.web.app import backfill_expansion_ts
+
+    ws, jobs, (s0, s1, _) = _ws(tmp_path)
+    ws.add_edge(s0, s1, origin={"kind": "job", "job": "j", "has_ts": True, "label": "ch_0_1_3", "barrier_kcal": 9.0,
+                                "ts_energy_hartree": None})
+    live = jobs.job_dir("j") / "live"
+    live.mkdir(parents=True)
+    (live / "events.jsonl").write_text(json.dumps({"event": "step", "a": 0, "b": 1, "label": "ch_0_1_3",
+                                                   "ts_energy": -76.2, "barrier_kcal": [9.0, 3.0]}) + "\n")
+    assert backfill_expansion_ts(jobs, {"id": "j"})
+    (edge,) = ws.snapshot()["edges"].values()
+    assert edge["origin"]["ts_energy_hartree"] == -76.2
+    assert not backfill_expansion_ts(jobs, {"id": "j"})
+
+
+def test_the_expansions_optimized_seed_gives_the_seed_node_its_energy(tmp_path):
+    """A seed without an energy at the run's level (a reactor molecule, a drawing) would drop
+    out of kinetics with everything it starts: the run's own optimized seed (species 0) fills it in."""
+    ws, jobs, (s0, s1, _) = _ws(tmp_path)
+    out = tmp_path / "out"
+    (out / "species").mkdir(parents=True)
+    (out / "species" / "species_0.xyz").write_text(WATER_XYZ)
+    (out / "summary_partial.json").write_text(json.dumps({"seed_energy": -76.4}))
+    level = {"profile": "default", "key": "k1", "label": "gxtb"}
+    job = {"id": "j", "op": "graph-enumeration", "output_dir": str(out), "live_nodes": {"0": s0}, "level": level,
+           "charge": 0, "multiplicity": 1, "targets": {"structures": [s0], "edges": []}}
+    assert ws.snapshot()["structures"][s0]["energy"] is None
+    assert jobs._adopt_seed_energy(job)
+    rec = ws.snapshot()["structures"][s0]
+    assert rec["energy"] == -76.4 and rec["level"]["key"] == "k1"
+    assert not jobs._adopt_seed_energy(job)           # once
+
+
+def test_kinetics_names_the_molecules_whose_missing_energy_keeps_reactions_out(tmp_path):
+    from mepd.web.kinetics import analyze
+
+    ws, jobs, (s0, s1, s2) = _ws(tmp_path)
+    snap = ws.snapshot()
+    st = snap["structures"]
+    st[s0]["energy"], st[s0]["level"] = -76.4, {"key": "k1"}
+    snap["edges"] = {"e1": {"id": "e1", "source": s0, "target": s2,
+                            "origin": {"kind": "job", "job": "j", "has_ts": True, "barrier_kcal": 9.0, "ts_energy_hartree": -76.3}}}
+    out = analyze(snap, {"j": {"id": "j", "status": "done", "targets": {"edges": []}, "level": {"key": "k1"}}}, "k1",
+                  initial={s0: 1.0}, held=[], temperature=300, time_s=1.0, target=None)
+    assert "no energy at this level" in out["error"]
+    assert [m["id"] for m in out["missing_energy"]] == [s2]

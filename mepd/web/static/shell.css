@@ -333,3 +333,6 @@
 .ln-sim:hover { border-color: var(--accent); }
 .ln-sim img, .ln-sim > span:first-child { width: 56px; height: 42px; object-fit: contain; background: var(--node-bg); border-radius: 3px; }
 .ln-sim-arrow { color: var(--muted); text-align: center; }
+/* Kinetics: reactions left out for want of molecule energies */
+.kn-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft); }
+.kn-missing p { margin: 0; flex: 1 1 320px; font-size: var(--fs-sm); }

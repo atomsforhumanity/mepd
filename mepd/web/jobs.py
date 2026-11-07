@@ -934,6 +934,12 @@ class JobManager:
         from mepd.web import chem
 
         seeds = job.get("targets", {}).get("structures") or []
+        if job.get("op") == "graph-enumeration":
+            try:
+                if self._adopt_seed_energy(job):
+                    self.bus.publish("workspace", self.ws.snapshot())
+            except Exception:
+                log.exception("could not give the seed of %s its energy", job["id"])
         nodes = dict(job.get("live_nodes") or {})
         # Species left out of Explore (above the job's threshold): index ->
         # parent index, so their descendants can still be placed.
@@ -1006,6 +1012,50 @@ class JobManager:
         if changed:
             self.bus.publish("workspace", self.ws.snapshot())
 
+    def _adopt_seed_energy(self, job: dict) -> bool:
+        """An expansion's own optimized seed (its species 0) onto the seed's node, as one
+        more conformer at the run's level. The run emits no species event for it, and
+        without it a seed that came in without an energy at this level (a molecule from a
+        reactor run, a drawing) drops out of kinetics, and with it everything it starts."""
+        if job.get("seed_adopted"):
+            return False
+        out = Path(job.get("output_dir") or "")
+        xyz = out / "species" / "species_0.xyz"
+        seeds = (job.get("targets") or {}).get("structures") or []
+        sid = (job.get("live_nodes") or {}).get("0") or (seeds[0] if seeds else None)
+        if not sid or not xyz.exists():
+            return False
+        energy = None
+        for name in ("summary.json", "summary_partial.json"):
+            try:
+                energy = json.loads((out / name).read_text()).get("seed_energy")
+            except (OSError, ValueError):
+                continue
+            if energy is not None:
+                break
+        if energy is None:
+            return False
+        rec = self.ws.snapshot()["structures"].get(sid)
+        key = (job.get("level") or {}).get("key")
+        if rec is None or (rec.get("energy") is not None and (rec.get("level") or {}).get("key") == key
+                           and rec["energy"] <= energy + 1e-6):
+            job["seed_adopted"] = True     # gone, or it already holds this energy (or a lower one) at this level
+            self._write(job)
+            return False
+        from mepd.web import chem
+
+        try:
+            (st,) = chem.structures_from_xyz_text(xyz.read_text(), job.get("charge"), job.get("multiplicity"))
+        except Exception:
+            return False
+        self.ws.add_structure(st, name=rec.get("name"), energy=float(energy), smiles=rec.get("smiles"),
+                              optimized=True, level=job.get("level"),
+                              origin={"kind": "job", "job": job["id"], "entry": "min_0",
+                                      "label": "Minimum 0 (the seed, optimized)", "frame": 0, "live": True})
+        job["seed_adopted"] = True
+        self._write(job)
+        return True
+
     def _adopt_step(self, job: dict, ev: dict, nodes: dict, known: dict, final: bool = False) -> bool:
         """A verified step (TS + IRC between species a and b) of a running
         expansion: the edge between their nodes stops being "proposed" and
@@ -1028,7 +1078,7 @@ class JobManager:
         old = edge.get("origin") or {}
         if final:
             if old.get("job") == job["id"] and old.get("barrier_kcal") == barrier and not old.get("proposed") \
-                    and old.get("label") == ev.get("label"):
+                    and old.get("label") == ev.get("label") and old.get("ts_energy_hartree") == ev.get("ts_energy"):
                 return False   # already exactly this
         elif not old.get("proposed") and old.get("barrier_kcal") is not None and barrier is not None \
                 and old["barrier_kcal"] <= barrier:
@@ -1043,6 +1093,8 @@ class JobManager:
         with self.ws._lock:
             edge["origin"] = {"kind": "job", "job": job["id"], "entry": f"{label}_irc", "group": "irc",
                               "has_ts": True, "barrier_kcal": barrier, "label": label,
+                              # The TS's own energy (Hartree): what kinetics measures every barrier with.
+                              "ts_energy_hartree": ev.get("ts_energy"),
                               "headline": "TS + IRC from the flux-steered expansion",
                               # A negative barrier is shown as it is, with why it is a problem.
                               "barrier_warning": warning}

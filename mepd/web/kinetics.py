@@ -112,10 +112,12 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
                                  and why == "no barrier yet" else why, "reaction": r["id"]})
                 continue
             e_ts, verified, jid = est, False, None
-        missing = [st.get(s, {}).get("name", s) for s in r["reactants"] + r["products"] if s not in index]
+        missing = [s for s in dict.fromkeys(r["reactants"] + r["products"]) if s not in index]
         if missing:
             excluded.append({"label": label, "reaction": r["id"],
-                             "reason": "energies missing at this level: " + ", ".join(missing)})
+                             "reason": "energies missing at this level: " + ", ".join(st.get(s, {}).get("name", s) for s in missing),
+                             # molecules a minimization would give an energy (Kinetics offers to compute them)
+                             "missing": [s for s in missing if is_species(st.get(s))]})
             continue
         steps.append(mk.Step([index[s] for s in r["reactants"]], [index[s] for s in r["products"]],
                              e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts) if jid else None}))
@@ -135,7 +137,8 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
         a, c = e["source"], e["target"]
         label = f"{st.get(a, {}).get('name', '?')} -> {st.get(c, {}).get('name', '?')}"
         if a not in index or c not in index:
-            excluded.append({"label": label, "reason": "an end has no energy at this level", "edge": e["id"]})
+            excluded.append({"label": label, "reason": "an end has no energy at this level", "edge": e["id"],
+                             "missing": [s for s in (a, c) if s not in index and is_species(st.get(s))]})
             continue
         steps.append(mk.Step([index[a]], [index[c]], e_ts * HARTREE_KCAL, label, info={"ts": (jid, e_ts)}))
         info.append({"kind": "edge", "edge": e["id"], "label": label, "verified": verified, "job": jid,
@@ -291,10 +294,16 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
     if n_est:
         warnings.append(f"{n_est} step{'s' if n_est != 1 else ''} use{'' if n_est != 1 else 's'} a fast estimate "
                         "(est.): the parent's barrier shifted by the edit, until the re-optimized TS is in.")
+    # Molecules whose missing energy keeps reactions out (one minimization each brings them in).
+    need = list(dict.fromkeys(s for x in excluded for s in x.get("missing") or []))
+    missing_energy = [{"id": s, "name": full["structures"].get(s, {}).get("name", s) if full else s,
+                       "reactions": sum(1 for x in excluded if s in (x.get("missing") or []))} for s in need]
     if not net.steps:
-        return {"error": "No reaction in this workspace has a barrier yet: run TS searches first"
-                + (" (or include unverified barriers)" if not include_unverified else "") + ".",
-                "excluded": excluded}
+        return {"error": ("No reaction in this workspace has a barrier yet: run TS searches first"
+                          + (" (or include unverified barriers)" if not include_unverified else "") + "."
+                          if not missing_energy else
+                          "No reaction can enter the model yet: the molecules below have no energy at this level."),
+                "excluded": excluded, "missing_energy": missing_energy}
     # Only species a step touches, or the user put in.
     used = sorted({i for s in net.steps for i in s.reactants + s.products}
                   | {ids.index(s) for s in initial if s in ids})
@@ -349,6 +358,7 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         "steps": [{**i, "barrier_fwd": bf, "barrier_rev": br, "net_rate": float(nr), "extent": float(ex)}
                   for i, (bf, br), nr, ex in zip(info, net.barriers(), res.net_rate, res.extent)],
         "steady": res.steady, "temperature": temperature, "time_s": time_s, "excluded": excluded,
+        "missing_energy": missing_energy,
         "warnings": warnings, "mode": "constant feed" if held_idx else "batch",
         "energies": "free" if fe_report else "electronic", "free_energy": fe_report,
     }

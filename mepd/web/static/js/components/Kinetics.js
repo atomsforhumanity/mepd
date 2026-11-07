@@ -202,16 +202,16 @@ export function KineticsView() {
       <button class="btn primary" disabled=${busy || !mix.length} onClick=${run}>${busy ? 'Running…' : 'Run kinetics'}</button>
     </div>
     <div class="kn-results">${res?.compare ? html`<${Compare} res=${res} T=${T} onReaction=${openReaction} />`
-      : res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} />`
+      : res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} onRerun=${run} />`
       : html`<div class="empty-hint"><p>Pick a starting mixture and (optionally) a target species, then run. The model uses every
           reaction with a barrier: the lower its TS, the faster it goes, forward and back.</p></div>`}</div>
   </div>`;
 }
 
-function Results({ res, T, onReaction }) {
+function Results({ res, T, onReaction, onRerun }) {
   const [showAll, setShowAll] = useState(false);
   const [logTime, setLogTime] = useState(false);
-  if (res.error) return html`<p class="warn-box">${res.error}</p>${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}`;
+  if (res.error) return html`<p class="warn-box">${res.error}</p><${MissingEnergy} res=${res} onRerun=${onRerun} />${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}`;
   const byId = Object.fromEntries(res.species.map((s) => [s.id, s]));
   // Series: the species that ever reach a visible amount, largest first; fixed colour by that order.
   const ranked = [...res.species].sort((a, b) => b.max - a.max);
@@ -290,8 +290,46 @@ function Results({ res, T, onReaction }) {
             : !st.verified ? html` <span class="small muted" title="path maximum, not TS/IRC-verified">≈</span>` : ''}</td>
           <td class="mono">${st.barrier_fwd.toFixed(1)}</td><td class="mono">${fmtC(st.extent)}</td></tr>`)}</tbody></table>
     </section>
+    <${MissingEnergy} res=${res} onRerun=${onRerun} />
     ${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}
     ${res.warnings.map((w) => html`<p class="small muted">⚠ ${w}</p>`)}
+  </div>`;
+}
+
+// Reactions left out only because some of their molecules have no energy at
+// this level (e.g. the separate molecules of a network expansion's products,
+// which it optimized together): one minimization each brings them in.
+function MissingEnergy({ res, onRerun }) {
+  const list = res.missing_energy || [];
+  const [jobIds, setJobIds] = useState(null);
+  const jobs = useStore((s) => (jobIds ? jobIds.map((id) => s.jobs[id]).filter(Boolean) : []));
+  if (!list.length) return null;
+  const n = new Set((res.excluded || []).filter((x) => x.missing?.length).map((x) => x.reaction || x.edge)).size;
+  const running = jobs.filter((j) => ['queued', 'running'].includes(j.status)).length;
+  const failed = jobs.filter((j) => j.status === 'failed').length;
+  const compute = async () => {
+    // One job per charge and multiplicity (an optimize job shares them).
+    const st = state.workspace?.structures || {};
+    const groups = {};
+    for (const m of list) {
+      const r = st[m.id] || {};
+      (groups[`${r.charge ?? 0}/${r.multiplicity ?? 1}`] ||= []).push(m.id);
+    }
+    const ids = [];
+    for (const g of Object.values(groups)) {
+      const out = await attempt(() => api.post('/api/jobs', { op: 'optimize', structures: g, params: {} }));
+      if (out) ids.push(...out.map((j) => j.id));
+    }
+    if (ids.length) setJobIds(ids);
+  };
+  const names = list.slice(0, 6).map((m) => m.name).join(', ') + (list.length > 6 ? `, +${list.length - 6}` : '');
+  return html`<div class="kn-missing">
+    <p><b>${n} reaction${n === 1 ? '' : 's'} left out</b> because ${list.length} molecule${list.length === 1 ? ' has' : 's have'} no energy
+      at this level: <span class="muted">${names}</span>.</p>
+    ${!jobIds ? html`<button class="btn small primary" onClick=${compute} title="One minimization per molecule, at the workspace's level (seconds each with g-xTB)">Compute ${list.length === 1 ? 'it' : 'them'}</button>`
+      : running ? html`<span class="small muted">Computing… ${jobs.length - running} of ${jobs.length} done</span>`
+      : html`<span class="small">${failed ? `${failed} failed (see Calculations). ` : 'Done. '}</span>
+          <button class="btn small primary" onClick=${() => { setJobIds(null); onRerun?.(); }}>Run kinetics again</button>`}
   </div>`;
 }
 
