@@ -3070,6 +3070,7 @@ def adopt_expansion_steps(manager: JobManager, job: dict) -> bool:
         return False
     changed = manager._adopt_seed_energy(job)
     changed |= manager.recheck_expansion_steps(job)
+    manager._queue_member_energies(job, force=True)   # its mixtures' molecules, for the workspace's kinetics
     return changed
 
 

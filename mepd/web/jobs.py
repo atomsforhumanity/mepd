@@ -940,6 +940,10 @@ class JobManager:
                     self.bus.publish("workspace", self.ws.snapshot())
             except Exception:
                 log.exception("could not give the seed of %s its energy", job["id"])
+            try:
+                self._queue_member_energies(job)
+            except Exception:
+                log.exception("could not queue the molecule energies of %s", job["id"])
         nodes = dict(job.get("live_nodes") or {})
         # Species left out of Explore (above the job's threshold): index ->
         # parent index, so their descendants can still be placed.
@@ -1019,6 +1023,48 @@ class JobManager:
         self._write(job)
         if changed:
             self.bus.publish("workspace", self.ws.snapshot())
+
+    def _queue_member_energies(self, job: dict, force: bool = False) -> bool:
+        """The molecules of an expansion's mixtures (its start and products: acetone + an ylide,
+        ketene + H2) need their own energies at the run's level for the workspace's kinetics,
+        which counts a reaction from its molecules apart; the run optimizes each mixture as a
+        whole. One minimization job per charge and spin for those missing, as they appear
+        (at most every 20 s), each molecule asked for once."""
+        if not force and time.time() - float(job.get("members_queued_at") or 0) < 20:
+            return False
+        job["members_queued_at"] = time.time()
+        key = (job.get("level") or {}).get("key")
+        st = self.ws.snapshot()["structures"]
+        nodes = set((job.get("live_nodes") or {}).values()) | set((job.get("targets") or {}).get("structures") or [])
+        asked = set(job.get("members_queued") or [])
+        busy = {sid for j in self.jobs.values() if j.get("op") == "optimize" and j.get("status") in ("queued", "running")
+                for sid in (j.get("targets") or {}).get("structures") or []}
+        need: list = []
+        for sid in nodes:
+            rec = st.get(sid)
+            if not rec or rec.get("role") != "complex":
+                continue
+            for m in rec.get("members") or []:
+                mr = st.get(m)
+                if mr is None or m in asked or m in busy or m in need:
+                    continue
+                if mr.get("energy") is not None and (mr.get("level") or {}).get("key") == key:
+                    continue
+                need.append(m)
+        if not need:
+            return False
+        groups: dict = {}
+        for m in need:
+            groups.setdefault((st[m].get("charge", 0), st[m].get("multiplicity", 1)), []).append(m)
+        for ids in groups.values():
+            try:
+                self.submit("optimize", structure_ids=ids, edge_ids=[], params={}, profile=job.get("profile"),
+                            label="Energies of the separate molecules (for kinetics)")
+            except Exception:
+                log.exception("could not queue energies for %s", ids)
+        job["members_queued"] = sorted(asked | set(need))
+        self._write(job)
+        return True
 
     def _adopt_seed_energy(self, job: dict) -> bool:
         """An expansion's own optimized seed (its species 0) onto the seed's node, as one

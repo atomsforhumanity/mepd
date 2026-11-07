@@ -224,3 +224,24 @@ def test_species_identity_is_the_molecular_graph():
     assert same_species("C=C.O", "O.C=C")
     assert not same_species("CC=O", "C=CO")                 # where the H sits makes another species
     assert not same_species("C=[O+][CH2-]", "C1CO1")
+
+
+def test_an_expansions_mixtures_get_their_molecules_energies_queued_once(tmp_path):
+    """Kinetics counts a reaction from its molecules apart; the run optimizes each mixture whole.
+    The molecules missing an energy at the run's level get one minimization job per charge and spin."""
+    ws, jobs, (s0, s1, s2) = _ws(tmp_path)
+    from tests.test_web import HCN_XYZ, WATER_XYZ
+
+    (both,) = chem.structures_from_xyz_text(
+        "6\n\n" + "\n".join(WATER_XYZ.strip().splitlines()[2:]) + "\n"
+        + "\n".join(f"{a} {float(x) + 6:.3f} {y} {z}" for a, x, y, z in (ln.split() for ln in HCN_XYZ.strip().splitlines()[2:])) + "\n",
+        0, 1)
+    cx = ws.add_structure(both, origin={"kind": "xyz"}, energy=-170.0, level={"key": "k1"})
+    assert cx["role"] == "complex"
+    submitted = []
+    jobs.submit = lambda op, **kw: submitted.append((op, sorted(kw["structure_ids"]))) or [{"id": "j_opt"}]
+    job = {"id": "j", "op": "graph-enumeration", "level": {"key": "k1"}, "profile": None,
+           "live_nodes": {"0": cx["id"]}, "targets": {"structures": [cx["id"]], "edges": []}}
+    assert jobs._queue_member_energies(job, force=True)
+    assert submitted == [("optimize", sorted(cx["members"]))]
+    assert not jobs._queue_member_energies(job, force=True)       # asked once

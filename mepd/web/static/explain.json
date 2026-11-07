@@ -1786,9 +1786,9 @@
    "Grow: the product generator proposes products in the seed's atom order. Bond enumeration: up to n breaks and m formations. Or CREST msreact, collision MD, Reactor MD (its products join after every batch), or the nanoreactor (QM/MM).",
    "For bond rules, each product's 3D guess is a restrained relaxation of the seed geometry onto the new bonds (embed_product, mepd's own heuristic).",
    "Each guess is optimized with the engine. Species identity is connectivity + stereo; the lowest conformer is kept. New species can be Hessian-validated.",
-   "Connect + Steer: 'Within reach' grows every species some route reaches under a barrier cutoff, each reaction connected Fast (a TS from an interpolation's peak, a path search where that fails) or by a full path search; 'Where material flows' runs microkinetics on verified TSs; 'Energy window' needs no TSs."
+   "Connect + Steer: 'Material flow, within reach' grows every species some route reaches under a barrier cutoff, each reaction connected Fast (a TS from an interpolation's peak, a path search where that fails) or by a full path search; 'Where material flows' runs microkinetics on verified TSs; 'Energy window' needs no TSs."
   ],
-  "default": "Bond enumeration (2 breaks / 2 forms, 50 proposals per species), Fast connection with channel sampling, 'Within reach' steering (298.15 K, 1 h), the live queue.",
+  "default": "Bond enumeration (2 breaks / 2 forms, 50 proposals per species), Fast connection with channel sampling, 'Material flow, within reach' steering (298.15 K, 1 h), the live queue.",
   "swap": [
    {
     "option": "CREST msreact",
@@ -1860,12 +1860,12 @@
   "title": "Grow where",
   "does": "Decides which new species get expanded in the next round.",
   "how": [
-   "access ('Within reach'): every species some route from the seed reaches within the barrier cutoff (the barrier that reacts within the cutoff time at the cutoff temperature, plus a 10 kcal/mol margin).",
-   "flux ('Where material flows'): each new reaction gets a recursive path search (MSMEP), TS optimization and IRC. Then k = (kBT/h)·exp(-ΔE‡/RT) both ways from one TS energy, so detailed balance holds; this is integrated from pure seed over the simulated time.",
+   "access ('Material flow, within reach'): the live microkinetics from the seed decide what grows -- a species once its peak concentration or the flux into it reaches the threshold -- and only if some route from the seed reaches it with every barrier under the cutoff (the barrier that reacts within the cutoff time at the cutoff temperature, plus a 10 kcal/mol margin).",
+   "flux ('Material flow, no cutoff'): rounds only; each new reaction gets a recursive path search (MSMEP), TS optimization and IRC. Then k = (kBT/h)·exp(-ΔE‡/RT) both ways from one TS energy, so detailed balance holds; this is integrated from pure seed over the simulated time.",
    "A species is expanded once the material that flowed into it reaches the threshold (Bensberg–Reiher concentration flux). Growth stops when nothing new does.",
    "window ('Energy window'): every new species within 'Expand species within' (kcal/mol) of the seed; no TSs needed."
   ],
-  "default": "Within reach, at 298.15 K over 3600 s (the cutoff uses the same unless set). Flux threshold 0.01.",
+  "default": "Material flow, within reach: flux threshold 0.01 at 298.15 K over 3600 s; the cutoff from the same conditions unless set (about 33 kcal/mol).",
   "caveats": [
    "Flux runs a TS search for every proposed reaction each round, which makes it far slower than window."
   ],
@@ -4022,7 +4022,7 @@
   "title": "Connect by",
   "does": "How each proposed reaction gets its transition state, so its barrier can steer the growth.",
   "how": [
-   "Fast ('Within reach' only): one shared job queue; a TS optimization from the peak of a geodesic interpolation per reaction, and where that fails a path search whose pieces are queued as it splits. IRCs only for the steps the kinetics need.",
+   "Fast ('Material flow, within reach' only): one shared job queue; a TS optimization from the peak of a geodesic interpolation per reaction, and where that fails a path search whose pieces are queued as it splits. IRCs only for the steps the kinetics need.",
    "Path search: a recursive path search (MSMEP), TS optimization and IRC for every proposed reaction.",
    "No TSs ('Energy window' only): proposals come back as species and proposed reactions; run 'Find TS' on the ones you care about."
   ],
@@ -4038,7 +4038,7 @@
   "title": "Schedule",
   "does": "How the work is ordered.",
   "how": [
-   "Live queue: no rounds. A species grows the moment the live kinetics reach it; every proposal batch, TS, IRC, channel search and steering single point runs as soon as it is asked for. Needs 'Within reach' and 'Fast'.",
+   "Live queue: no rounds. A species grows the moment the live kinetics reach it; every proposal batch, TS, IRC, channel search and steering single point runs as soon as it is asked for. Needs 'Material flow, within reach' and 'Fast'.",
    "Rounds: propose for the species the last round reached, connect, check, sample, repeat."
   ],
   "default": "Live queue, until its kinetics ask for nothing more (or the time budget, or Stop & analyze).",

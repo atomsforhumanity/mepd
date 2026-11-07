@@ -278,6 +278,18 @@ def free_energies(ws, jobs: dict, net: mk.Network, *, workers: int = 2) -> tuple
     return energies_at, report
 
 
+def unchecked_running(snap: dict, jobs: dict, excluded: list) -> int:
+    """Steps left out as unverified that belong to a running expansion: their IRC check is still to come."""
+    n = 0
+    for x in excluded:
+        if x.get("reason") != "only unverified barriers":
+            continue
+        o = ((snap["edges"].get(x.get("edge") or "") or {}).get("origin")) or {}
+        if (jobs.get(o.get("job") or "") or {}).get("status") in ("running", "queued"):
+            n += 1
+    return n
+
+
 def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, held: list, temperature: float,
             time_s: float, target: Optional[str], include_unverified: bool = False, control: bool = True,
             sweep: Optional[list] = None, control_what: str = "amount", free_energy: bool = False,
@@ -305,7 +317,9 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
                           + (" (or include unverified barriers)" if not include_unverified else "") + "."
                           if not missing_energy else
                           "No reaction can enter the model yet: the molecules below have no energy at this level."),
-                "excluded": excluded, "missing_energy": missing_energy}
+                "excluded": excluded, "missing_energy": missing_energy,
+                "start_missing": [s for s in initial if s not in ids],
+                "unchecked_running": unchecked_running(snap, jobs, excluded)}
     # Only species a step touches, or the user put in.
     used = sorted({i for s in net.steps for i in s.reactants + s.products}
                   | {ids.index(s) for s in initial if s in ids})
@@ -343,6 +357,7 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         if sid in pos:
             c0[pos[sid]] = float(conc)
     unknown = [snap["structures"].get(s, {}).get("name", s) for s in initial if s not in pos]
+    start_missing = [s for s in initial if s not in pos]   # (the page says it at the top: it is what was asked)
     if unknown:
         warnings.append("Not in the model (no energy at this level, or no step with a barrier): "
                         + ", ".join(unknown))
@@ -360,7 +375,9 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         "steps": [{**i, "barrier_fwd": bf, "barrier_rev": br, "net_rate": float(nr), "extent": float(ex)}
                   for i, (bf, br), nr, ex in zip(info, net.barriers(), res.net_rate, res.extent)],
         "steady": res.steady, "temperature": temperature, "time_s": time_s, "excluded": excluded,
-        "missing_energy": missing_energy,
+        "missing_energy": missing_energy, "start_missing": start_missing,
+        # steps of a running expansion whose IRC check is still to come (left out unless asked for)
+        "unchecked_running": unchecked_running(snap, jobs, excluded),
         "warnings": warnings, "mode": "constant feed" if held_idx else "batch",
         "energies": "free" if fe_report else "electronic", "free_energy": fe_report,
     }

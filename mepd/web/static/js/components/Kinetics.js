@@ -156,18 +156,19 @@ export function KineticsView() {
   const [tHi, setTHi] = useState(saved.tHi ?? 650);
   const [res, setRes] = useState(saved.res || null);
   const [busy, setBusy] = useState(false);
-  const run = async () => {
+  const run = async (over = {}) => {
+    const unv = over.unverified ?? unverified;
     setBusy(true);
     const sweep = sweepOn ? Array.from({ length: 9 }, (_, k) => tLo + ((tHi - tLo) * k) / 8) : [];
     const out = await attempt(() => api.post('/api/kinetics', {
       initial: Object.fromEntries(mix.map((m) => [m.id, m.c])), held: mix.filter((m) => m.held).map((m) => m.id),
-      temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unverified,
+      temperature: T, time_s: tVal * UNITS[tUnit], target: target || null, include_unverified: unv,
       control: !!target, control_what: what, sweep, free_energy: free,
       network: net && !cmp ? net : null, compare: net && cmp ? net : null, compare_parent: cmp === 'parent' }));
     setBusy(false);
     const shown = out ? { ...out, tUnit } : res;
     setRes(shown);
-    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified, free, sweepOn, tLo, tHi, res: shown, net, cmp } });
+    set({ kinetics: { mix, T, tVal, tUnit, target, what, unverified: unv, free, sweepOn, tLo, tHi, res: shown, net, cmp } });
   };
   const openReaction = (rid) => set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: rid } });
 
@@ -202,16 +203,23 @@ export function KineticsView() {
       <button class="btn primary" disabled=${busy || !mix.length} onClick=${run}>${busy ? 'Running…' : 'Run kinetics'}</button>
     </div>
     <div class="kn-results">${res?.compare ? html`<${Compare} res=${res} T=${T} onReaction=${openReaction} />`
-      : res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} onRerun=${run} />`
+      : res ? html`<${Results} res=${res} T=${T} onReaction=${openReaction} onRerun=${() => run()}
+          onIncludeUnchecked=${() => { setUnverified(true); run({ unverified: true }); }} />`
       : html`<div class="empty-hint"><p>Pick a starting mixture and (optionally) a target species, then run. The model uses every
           reaction with a barrier: the lower its TS, the faster it goes, forward and back.</p></div>`}</div>
   </div>`;
 }
 
-function Results({ res, T, onReaction, onRerun }) {
+function Results({ res, T, onReaction, onRerun, onIncludeUnchecked }) {
   const [showAll, setShowAll] = useState(false);
   const [logTime, setLogTime] = useState(false);
-  if (res.error) return html`<p class="warn-box">${res.error}</p><${MissingEnergy} res=${res} onRerun=${onRerun} />${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}`;
+  // What keeps the asked-for reactions out comes first: missing energies, steps still being checked.
+  const before = html`<${MissingEnergy} res=${res} onRerun=${onRerun} />
+    ${res.unchecked_running > 0 && html`<div class="kn-missing"><p><b>${res.unchecked_running} step${res.unchecked_running === 1 ? '' : 's'} of a running
+      expansion wait${res.unchecked_running === 1 ? 's' : ''} for ${res.unchecked_running === 1 ? 'its' : 'their'} IRC check</b>, so ${res.unchecked_running === 1 ? 'it is' : 'they are'} left out for now
+      (a step counts once its IRC joins its two species).</p>
+      <button class="btn small" onClick=${onIncludeUnchecked} title="Use their barriers already; the check may still move or drop them">Include them now</button></div>`}`;
+  if (res.error) return html`<p class="warn-box">${res.error}</p>${before}${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}`;
   const byId = Object.fromEntries(res.species.map((s) => [s.id, s]));
   // Series: the species that ever reach a visible amount, largest first; fixed colour by that order.
   const ranked = [...res.species].sort((a, b) => b.max - a.max);
@@ -240,6 +248,7 @@ function Results({ res, T, onReaction, onRerun }) {
   const unit = res.tUnit || 's';   // the unit the run was set up in
   const timeLabel = `${+(res.time_s / UNITS[unit]).toPrecision(3)} ${unit}`;
   return html`<div class="kn-out">
+    ${before}
     <p class="small kn-summary">${tgt && html`<b>${tgt.name}</b>: ${fmtC(tgt.final)} M after ${timeLabel} at ${Math.round(res.temperature)} K${
       total ? ` (${fmtC((100 * tgt.final) / total)}% of the start)` : ''}${res.mode === 'constant feed' && res.steady ? `, forming at ${fmtC(tgt.rate)} M/s` : ''} · `}<span class="muted">${
       res.mode === 'batch' ? (res.steady ? 'finished: nothing changes any more' : 'still changing at the end')
@@ -290,7 +299,6 @@ function Results({ res, T, onReaction, onRerun }) {
             : !st.verified ? html` <span class="small muted" title="path maximum, not TS/IRC-verified">≈</span>` : ''}</td>
           <td class="mono">${st.barrier_fwd.toFixed(1)}</td><td class="mono">${fmtC(st.extent)}</td></tr>`)}</tbody></table>
     </section>
-    <${MissingEnergy} res=${res} onRerun=${onRerun} />
     ${res.excluded?.length > 0 && html`<${Excluded} list=${res.excluded} />`}
     ${res.warnings.map((w) => html`<p class="small muted">⚠ ${w}</p>`)}
   </div>`;
@@ -300,7 +308,13 @@ function Results({ res, T, onReaction, onRerun }) {
 // this level (e.g. the separate molecules of a network expansion's products,
 // which it optimized together): one minimization each brings them in.
 function MissingEnergy({ res, onRerun }) {
-  const list = res.missing_energy || [];
+  const ws = useStore((s) => s.workspace);
+  // The starting mixture's own molecules first (always, even when no reaction names them).
+  const key = state.levels?.[state.levelProfile ?? '']?.key;
+  const noEnergy = (r) => r && (r.energy == null || (key && r.level?.key && r.level.key !== key));
+  const start = (res.start_missing || []).filter((id) => noEnergy(ws?.structures?.[id]));
+  const list = [...start.map((id) => ({ id, name: ws.structures[id].name, start: true })),
+    ...(res.missing_energy || []).filter((m) => !start.includes(m.id))];
   const [jobIds, setJobIds] = useState(null);
   const jobs = useStore((s) => (jobIds ? jobIds.map((id) => s.jobs[id]).filter(Boolean) : []));
   if (!list.length) return null;
@@ -323,9 +337,13 @@ function MissingEnergy({ res, onRerun }) {
     if (ids.length) setJobIds(ids);
   };
   const names = list.slice(0, 6).map((m) => m.name).join(', ') + (list.length > 6 ? `, +${list.length - 6}` : '');
+  const startNames = list.filter((m) => m.start).map((m) => m.name);
   return html`<div class="kn-missing">
-    <p><b>${n} reaction${n === 1 ? '' : 's'} left out</b> because ${list.length} molecule${list.length === 1 ? ' has' : 's have'} no energy
-      at this level: <span class="muted">${names}</span>.</p>
+    ${startNames.length > 0 ? html`<p><b>Your starting mixture is not in the model yet:</b> ${startNames.join(' and ')}
+      ${startNames.length === 1 ? 'has' : 'have'} no energy at this level${n ? html`, and ${n} reaction${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''} for ${list.length - startNames.length} more molecule${list.length - startNames.length === 1 ? '' : 's'}` : ''}.
+      <span class="muted">${names}</span></p>`
+    : html`<p><b>${n} reaction${n === 1 ? '' : 's'} left out</b> because ${list.length} molecule${list.length === 1 ? ' has' : 's have'} no energy
+      at this level: <span class="muted">${names}</span>.</p>`}
     ${!jobIds ? html`<button class="btn small primary" onClick=${compute} title="One minimization per molecule, at the workspace's level (seconds each with g-xTB)">Compute ${list.length === 1 ? 'it' : 'them'}</button>`
       : running ? html`<span class="small muted">Computing… ${jobs.length - running} of ${jobs.length} done</span>`
       : html`<span class="small">${failed ? `${failed} failed (see Calculations). ` : 'Done. '}</span>

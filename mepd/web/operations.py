@@ -500,7 +500,7 @@ class ExpandParams(Params):
             "fast": {"title": "Fast",
                      "blurb": "A TS optimized from the peak of an interpolation; a path search only where that "
                               "fails. IRCs for the steps the kinetics need.",
-                     "needs": "steer=access", "needs_text": "needs 'Within reach' steering"},
+                     "needs": "steer=access", "needs_text": "needs 'Material flow, within reach' steering"},
             "path": {"title": "Path search",
                      "blurb": "A recursive path search, TS and IRC for every proposed reaction. Thorough, slow."},
             "none": {"title": "No TSs",
@@ -518,14 +518,16 @@ class ExpandParams(Params):
     steer: Literal["access", "flux", "window", "auto"] = P(
         "access", "Grow where", "Which species have their products proposed next.", cli="--steer", stage=STEER,
         cards={
-            "access": {"title": "Within reach",
-                       "blurb": "Every species some route from the start reaches within a barrier cutoff (from the "
-                                "cutoff temperature and time)."},
-            "flux": {"title": "Where material flows",
-                     "blurb": "The species enough material flows into, by microkinetics from the start. Stops on "
-                              "its own."},
+            "access": {"title": "Material flow, within reach",
+                       "blurb": "Live microkinetics from the start: a species grows once enough material reaches it "
+                                "(the flux threshold), and only if some route gets there under a barrier cutoff (from "
+                                "the cutoff temperature and time, plus 10 kcal/mol)."},
+            "flux": {"title": "Material flow, no cutoff",
+                     "blurb": "The same flux rule with no barrier cutoff, in rounds, with a full path search for "
+                              "every reaction: the older, slower mode."},
             "window": {"title": "Energy window",
-                       "blurb": "Every new species within an energy window of the start; no kinetics."},
+                       "blurb": "Every new species within an energy window of the start. No kinetics, no TSs "
+                                "needed."},
         })
     cutoff_temperature: Optional[float] = P(
         None, "Cutoff temperature (K)", "The barrier cutoff is the barrier that reacts within the cutoff time at "
@@ -563,7 +565,7 @@ class ExpandParams(Params):
                       "blurb": "No rounds: a species grows the moment the live kinetics reach it, and every TS, IRC "
                                "and channel search runs as soon as it is asked for. Watch it grow.",
                       "needs": "steer=access;connect_strategy=fast",
-                      "needs_text": "needs 'Within reach' steering and 'Fast' connection"},
+                      "needs_text": "needs 'Material flow, within reach' steering and 'Fast' connection"},
             "rounds": {"title": "Rounds",
                        "blurb": "Propose, connect, check, repeat: each round expands the species the last one "
                                 "reached."},
@@ -1062,7 +1064,7 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
     argv = _build_discovery("expand")(ctx, p)
     out = argv.index("--output")
     add = []
-    # Grow: always named (the CLI's 'auto' would pick an MD generator under 'Within reach' steering).
+    # Grow: always named (the CLI's 'auto' would pick an MD generator under access steering).
     add += ["--generator", p.generator]
     if p.generator == "crest-msreact":
         add += ["--generator-option", f"mode={p.msreact_mode}", "--generator-option", f"nbonds={p.msreact_nbonds}",

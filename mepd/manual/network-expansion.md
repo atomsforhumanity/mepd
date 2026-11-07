@@ -35,7 +35,7 @@ bonding") is kept and drawn from its geometry.
 
 How each proposed reaction gets its transition state.
 
-- **Fast** (with *Within reach*). One shared job queue: a TS optimized from the
+- **Fast** (with *Material flow, within reach*). One shared job queue: a TS optimized from the
   peak of a geodesic interpolation, and where that fails a path search whose
   pieces are queued as it splits. IRCs run for the steps the kinetics need; a
   step counts only once its IRC ends are its two species.
@@ -51,12 +51,17 @@ replace the single TS.
 
 Which species have their products proposed next.
 
-- **Within reach.** Every species some route from the start reaches within a
-  barrier cutoff: the barrier that reacts within the cutoff time at the cutoff
-  temperature, plus a 10 kcal/mol margin for the method's error.
-- **Where material flows.** Microkinetics from the start on the verified TSs;
-  a species grows once the material that flowed into it reaches the threshold.
-  The network stops growing on its own.
+- **Material flow, within reach** (the default). Microkinetics from the start,
+  refreshed as the network grows, decide what grows: a species once its peak
+  concentration or the flux into it reaches the threshold. It must also be
+  reachable: some route from the start gets there with every barrier under a
+  cutoff, the barrier that reacts within the cutoff time at the cutoff
+  temperature, plus 10 kcal/mol for the method's error (about 33 kcal/mol at
+  298 K over an hour). The cutoff keeps the run from growing behind barriers
+  nothing could cross in that time.
+- **Material flow, no cutoff.** The same flux rule without the cutoff, in
+  rounds, with a full path search for every reaction: the older, slower mode,
+  without the live queue or channel sampling.
 - **Energy window.** Every new species within a window of the start's energy;
   no kinetics, no TSs needed.
 
@@ -65,7 +70,7 @@ the fact.
 
 ## Run
 
-- **Live queue** (with *Within reach* and *Fast*). No rounds: a species grows
+- **Live queue** (with *Material flow, within reach* and *Fast*). No rounds: a species grows
   the moment the live kinetics reach it, and every proposal batch, TS, IRC and
   channel search runs as soon as it is asked for. It ends when the kinetics ask
   for nothing more, the time budget runs out, or you press Stop & analyze. Its
