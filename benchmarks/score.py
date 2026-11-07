@@ -299,9 +299,9 @@ HARTREE_KCAL = 627.509474
 def _kinetics_network(summary: dict):
     """(energies, step TS energies, open step indices, how) of the run's final kinetics, Hartree, before the
     mirror images: the summary's `access` record when it has one (team4x 3a047da on: the energies the cutoff
-    and the kinetics used), else rebuilt from the open steps' kinetics barriers (kinetics_barrier_kcal, which
-    the kinetics computed on the energies with the mirror images' corrections -- those corrections are taken
-    back out so Mirrors.extend applies them once): species energies along the open steps from the seed (the
+    and the kinetics used), else rebuilt from the open steps' kinetics barriers (kinetics_barrier_kcal, on the
+    energies before Mirrors.extend's corrections: a chiral conformer's -RT ln 2 is not in them, checked on
+    cb_diester, whose seed is one): species energies along the open steps from the seed (the
     clamp TS >= both ends keeps forward - reverse = E_b - E_a), a species no open step reaches from an
     assigned one by its mirror image. Returns None when neither is possible."""
     sp, steps = summary.get("species") or [], summary.get("steps") or []
@@ -332,10 +332,6 @@ def _kinetics_network(summary: dict):
                 g[k], changed = g[j], True
     if any(g[steps[m]["a"]] is None or g[steps[m]["b"]] is None for m in opened):
         return None
-    rt = 1.987204259e-3 * float((summary.get("steering") or {}).get("temperature_K") or 298.15) / HARTREE_KCAL
-    for k, c in (rec.get("chiral_conformers") or {}).items():
-        if g[int(k)] is not None:
-            g[int(k)] += float(c) * rt * math.log(2.0)
     top = max(x for x in g if x is not None)
     g = [top if x is None else x for x in g]   # nothing reaches them: any energy
     ts = [g[st["a"]] + kbs[m][0] / HARTREE_KCAL if m in opened else max(g[st["a"]], g[st["b"]]) + 1.0
