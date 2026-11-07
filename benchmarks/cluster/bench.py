@@ -241,7 +241,8 @@ def afh(*args, check=True):
     return subprocess.run(["afh", *args], check=check)
 
 
-def score_run(runs, rescore: bool = False, name: str | None = None, reselect: bool = False) -> dict:
+def score_run(runs, rescore: bool = False, name: str | None = None, reselect: bool = False,
+              resettle: bool = False) -> dict:
     """Unpack and score every finished task of the run(s); aggregate per (system, configuration) into
     results/<name> (default: the run's own name). Several runs = one result set; a later run's task replaces an
     earlier one's of the same id, and `commits_by_system` says which commit each system's runs used."""
@@ -253,7 +254,7 @@ def score_run(runs, rescore: bool = False, name: str | None = None, reselect: bo
     manifests, scores = [], []
     by_id: dict = {}
     for run in runs:     # a later run's task replaces an earlier run's task of the same id (a rerun at a fix)
-        for o in _score_tasks(run, suite, rescore, manifests, reselect):
+        for o in _score_tasks(run, suite, rescore, manifests, reselect or resettle, resettle):
             by_id[o["id"]] = o
     scores = list(by_id.values())
     commits = sorted({c for m in manifests for c in (m["commit"] if isinstance(m["commit"], list) else [m["commit"]])})
@@ -279,22 +280,25 @@ SELECTIVITY_KEYS = ("targets", "worst_error_kcal", "worst_abs_error_kcal", "with
 
 def _reselect(args):
     """The selectivity part of one scored task again (score.py's current measure), the rest of its score.json kept:
-    settle and audit don't depend on it."""
-    sysdef, dst = args
+    the audit doesn't depend on it. With `resettle`, the settle time too (it follows the scored selectivity)."""
+    sysdef, dst, resettle = args
     o = json.loads((dst / "score.json").read_text())
     if not o.get("ok"):
         return o
     result = json.loads((dst / "result.json").read_text()) if (dst / "result.json").is_file() else {}
-    new = score.score_run(sysdef, dst / "run", result, None, do_audit=False)
+    snaps = dst / "snapshots" if resettle and result.get("start") and (dst / "snapshots").is_dir() else None
+    new = score.score_run(sysdef, dst / "run", result, snaps, do_audit=False)
     before = {"selectivity": [t.get("selectivity") for t in o.get("targets") or []],
-              "worst_error_kcal": o.get("worst_error_kcal")}
-    o.update({k: new.get(k) for k in SELECTIVITY_KEYS})
+              "worst_error_kcal": o.get("worst_error_kcal"),
+              **({"settle_s": (o.get("settle") or {}).get("settle_s")} if snaps else {})}
+    o.update({k: new.get(k) for k in SELECTIVITY_KEYS + (("settle",) if snaps else ())})
     o["reselected"] = {"instrument": score.instrument(), "before": before}
     (dst / "score.json").write_text(json.dumps(o, indent=1, default=str))
     return o
 
 
-def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list, reselect: bool = False) -> list:
+def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list, reselect: bool = False,
+                 resettle: bool = False) -> list:
     import tarfile
 
     d, res = AFH_DIR / run, RESULTS / run
@@ -304,7 +308,7 @@ def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list, reselect
     if reselect and not rescore:   # 4 processes (local <= 4 cores), one thread each
         from concurrent.futures import ProcessPoolExecutor
 
-        todo = [(suite[t["system"]], res / t["id"]) for t in tasks if (res / t["id"] / "score.json").is_file()]
+        todo = [(suite[t["system"]], res / t["id"], resettle) for t in tasks if (res / t["id"] / "score.json").is_file()]
         with ProcessPoolExecutor(4) as ex:
             done = {str(o["id"]): o for o in ex.map(_reselect, todo)}
     for t in tasks:
@@ -461,6 +465,7 @@ def main(argv: list) -> int:
     s.add_argument("--rescore", action="store_true")
     s.add_argument("--reselect", action="store_true",
                    help="recompute only the selectivity part of scored tasks (score.py's current measure)")
+    s.add_argument("--resettle", action="store_true", help="--reselect and the settle time")
     s.add_argument("--as", dest="name", default=None, help="results name for several runs (default: the first)")
     g = sub.add_parser("gate")
     g.add_argument("base")
@@ -491,7 +496,7 @@ def main(argv: list) -> int:
     elif a.cmd == "status":
         afh("status", a.run, check=False)
     elif a.cmd == "score":
-        score_run(a.run, a.rescore, a.name, a.reselect)
+        score_run(a.run, a.rescore, a.name, a.reselect, a.resettle)
     elif a.cmd == "local":
         local(a.run, a.threads)
     elif a.cmd == "report":

@@ -28,9 +28,12 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
 - settle time: the earliest time (s after expand started) from which, to the end of the run, every
   channel is found and connected and every target's selectivity is within 0.5 kcal/mol (RT ln) of the
   run's final one. Read from the live kinetics the run wrote (MEPD_DRIVE_CHAIN_DIR/kinetics.json, every
-  version kept by the task wrapper) and its partial summaries (summary_partial.json): at a snapshot,
-  amounts = the live kinetics' `final` per species (a chiral species whose mirror image is not yet a
-  species counts twice: its virtual twin carries as much); a channel is connected when the latest partial
+  version kept by the task wrapper) and its partial summaries (summary_partial.json): at a snapshot, the
+  selectivity is the scored quantity, first passage (below): on the network the live kinetics were solved
+  on when the snapshot carries it (live-network emitters, team5x 53bbabb on: step_list, species and
+  mirror_species G), else on the latest partial summary's network (its steps open at the end, by label)
+  with the final energies (settle["basis"] counts which; settle_s_partial_basis: the partial basis for
+  every snapshot, to compare a run without the live network); a channel is connected when the latest partial
   summary's steps reach it through steps within the access cutoff (energy_refine.kinetic_reach, as the
   kinetics close steps) or when the live kinetics give it a population > 1e-30 (no closed step carries
   that much). No snapshot after the last change: the end of the run. Recall incomplete at the end: None.
@@ -50,8 +53,8 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
   CH2O + H2 + CO, methyl formate's R5 product set). The network: the summary's `access` record, else rebuilt
   from the open steps' kinetics_barrier_kcal (first_passage_from). rebuild_check_kcal: the rebuilt kinetics,
   not absorbing, against the recorded final amounts' ratio. The final amounts' ratio is kept as
-  ratio_final_amounts / error_final_amounts_kcal (worst_error_final_amounts_kcal). Settle time and swings are
-  on the live kinetics' amounts, so they compare with the final amounts' ratio.
+  ratio_final_amounts / error_final_amounts_kcal (worst_error_final_amounts_kcal). Settle time and swings
+  follow first passage too (see settle time).
 - wall, CPU (user+sys of the expand process tree), stop reason: the task wrapper's result.json.
 
 The invariant audit (flags, never fixes): duplicate species, duplicate TS steps, mirror-image TS pairs
@@ -339,13 +342,14 @@ def _kinetics_network(summary: dict):
     return g, ts, opened, "barriers"
 
 
-def first_passage_amounts(summary: dict, channel_set: set):
+def first_passage_amounts(summary: dict, channel_set: set, only_steps: set | None = None, as_run: bool = True):
     """{species: amount} of the run's final kinetics re-run with every channel product absorbing (first passage:
     the channel species 1 Hartree deeper, so nothing climbs out, and steps between two of them closed; closed
     steps TS + 1 Hartree as the explorer closes them), the same network, energies, mirror images, temperature
     and time otherwise (benchmarks: cutoff/diag/sel_primary.py "absorbing"); virtual mirror images folded into
     the species they mirror. Also the same kinetics without absorbing (`as_run`), to check the rebuild against
-    the amounts the run recorded. None when the network can't be rebuilt."""
+    the amounts the run recorded. None when the network can't be rebuilt. `only_steps`: keep only these of the
+    open steps (a partial network, settle())."""
     from mepd.discovery.kinetics import Step, simulate
     from mepd.discovery.mirror import Mirrors
 
@@ -353,6 +357,8 @@ def first_passage_amounts(summary: dict, channel_set: set):
     if net is None:
         return None
     g0, ts0, opened, how = net
+    if only_steps is not None:
+        opened = set(opened) & set(only_steps)
     steps = summary.get("steps") or []
     st_ = summary.get("steering") or {}
     T, t_end = float(st_["temperature_K"]), float(st_["time_s"])
@@ -377,7 +383,38 @@ def first_passage_amounts(summary: dict, channel_set: set):
             out[v["mirror_of"]] = out.get(v["mirror_of"], 0.0) + fin[v["index"]]
         return out
 
-    return {"how": how, "absorbing": run(set(channel_set)), "as_run": run(set())}
+    return {"how": how, "absorbing": run(set(channel_set)), "as_run": run(set()) if as_run else None}
+
+
+def live_first_passage(data: dict, channel_set: set, temperature: float, time_s: float) -> dict | None:
+    """{species index: first-passage amount} on the network a live kinetics snapshot was solved on (live-network
+    emitters, team5x 53bbabb on: `step_list` with dG_fwd per open step, species and mirror_species with G, kcal/mol
+    to 0.1): the same kinetics with every channel species (and the mirror images of one) absorbing, as
+    first_passage_amounts does for the final kinetics; mirror images folded. None without a step_list."""
+    from mepd.discovery.kinetics import Step, simulate
+
+    if not data.get("step_list"):
+        return None
+    sp = list(data.get("species") or []) + list(data.get("mirror_species") or [])
+    idx = {str(x["id"]): i for i, x in enumerate(sp)}
+    real = {i: int(x["index"]) for i, x in enumerate(sp) if "index" in x}
+    mirror_of = {i: int(x["mirror_of"]) for i, x in enumerate(sp) if x.get("mirror_of") is not None}
+    absorbing = {i for i, k in real.items() if k in channel_set} | {i for i, k in mirror_of.items() if k in channel_set}
+    g = [(float(x["G"]) if x.get("G") is not None else 0.0) / HARTREE_KCAL - (1.0 if i in absorbing else 0.0)
+         for i, x in enumerate(sp)]
+    ks = []
+    for L in data["step_list"]:
+        a, b = idx.get(str(L["from"])), idx.get(str(L["to"]))
+        if L.get("state") != "open" or a is None or b is None or {a, b} <= absorbing or L.get("dG_fwd") is None:
+            continue
+        ks.append(Step(a, b, g[a] + (1.0 if a in absorbing else 0.0) + float(L["dG_fwd"]) / HARTREE_KCAL, str(L["id"])))
+    k = simulate(len(sp), ks, g, temperature=temperature, time_s=time_s)
+    out: dict = {}
+    for i, c in enumerate(k.final_concentration):
+        j = real.get(i, mirror_of.get(i))
+        if j is not None:
+            out[j] = out.get(j, 0.0) + float(c)
+    return out
 
 
 def reachable(n: int, steps: list, use=lambda st: True) -> set:
@@ -470,10 +507,26 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
 
     temp = float(sysdef["conditions"]["temperature_K"])
     cutoff = (summary.get("steering") or {}).get("cutoff_kcal")
-    n_final = len(summary.get("species") or [])
-    mir = (summary.get("mirror_images") or {}).get("species_mirror") or list(range(n_final))
-    # the live kinetics hold amounts, not first passages: their course is compared with the run's final amounts
-    final_sel = [x.get("ratio_final_amounts", x["selectivity"]) for x in final["targets"]]
+    # the scored quantity: first passage, compared with the run's final (scored) selectivity
+    final_sel = [x["selectivity"] for x in final["targets"]]
+    T_k, time_k = float(summary["steering"]["temperature_K"]), float(summary["steering"]["time_s"])
+    part_fp: dict = {}
+
+    def partial_fp(t, chan_set):
+        """First passage on the latest partial summary's network (its steps that are open at the end, by label),
+        on the final energies: for snapshots without the live network."""
+        i = int(np.searchsorted(part_t, t, side="right")) - 1
+        if i < 0:
+            return None
+        if i not in part_fp:
+            try:
+                labels = {x.get("label") for x in json.loads(parts[i].read_text()).get("steps") or []}
+                keep = {m for m, x in enumerate(summary.get("steps") or []) if x.get("label") in labels}
+                r = first_passage_amounts(summary, chan_set, only_steps=keep, as_run=False)
+                part_fp[i] = r["absorbing"] if r else None
+            except (ValueError, KeyError, IndexError, OSError):
+                part_fp[i] = None
+        return part_fp[i]
     req = sysdef.get("required") or list(sysdef["channels"])
     complete = all(final["recall"]["found"][c] and final["recall"]["connected"][c] for c in req)
     kin = sorted(snap_dir.glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
@@ -521,7 +574,7 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
                 reach_cache[i] = set()
         return reach_cache[i]
 
-    series = []
+    series, basis = [], {"live": 0, "partial": 0}
     for fp in kin:
         t = int(fp.stem.split("_")[-1]) / 1e9
         try:
@@ -529,23 +582,23 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         except (ValueError, KeyError, OSError):
             continue
         sp = data.get("species") or []
-        n_t = len(sp)
-        pop = {s["index"]: float(s.get("final", 0.0)) for s in sp}
         live = {s["index"] for s in sp if max(float(s.get("max_concentration", 0.0)), float(s.get("flux", 0.0))) > 1e-30}
 
-        def amount(k):
-            j = mir[k] if k < len(mir) else k
-            twin_virtual = j != k and not (0 <= j < min(n_t, n_final))
-            return pop.get(k, 0.0) * (2.0 if twin_virtual else 1.0)
-
         chans = channel_species(sysdef, [s.get("smiles") or "" for s in sp], species_file)
+        chan_set = {k for ks in chans.values() for k in ks}
         reach = reach_at(t)
         found = {c: bool(ks) for c, ks in chans.items()}
         conn = {c: any(k in reach or k in live for k in ks) for c, ks in chans.items()}
-        sels = [v[0] for v in target_values(sysdef, chans, amount)]
-        ok = all(found[c] and conn[c] for c in req) and all(
-            _within(s, f, temp) for s, f in zip(sels, final_sel))
-        series.append((t - t0, sels, found, conn, ok))
+        rec_ok = all(found[c] and conn[c] for c in req)
+        fp_live = live_first_passage(data, chan_set, T_k, time_k)
+        fp_part = partial_fp(t, chan_set)
+        sel_of = lambda fp: [v[0] for v in target_values(sysdef, chans, lambda k: fp.get(k, 0.0))] if fp is not None \
+            else [None] * len(final_sel)
+        sels, sels_p = (sel_of(fp_live) if fp_live is not None else sel_of(fp_part)), sel_of(fp_part)
+        basis[("live" if fp_live is not None else "partial")] += 1
+        ok = rec_ok and all(_within(x, f, temp) for x, f in zip(sels, final_sel))
+        ok_p = rec_ok and all(_within(x, f, temp) for x, f in zip(sels_p, final_sel))
+        series.append((t - t0, sels, found, conn, ok, ok_p))
     swing = []
     t_stop = t_end - t0
     for j, f in enumerate(final_sel):
@@ -562,17 +615,20 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
             off += dt if dev > SETTLE_KCAL else 0.0
         swing.append({"mean_kcal": num / den if den > 0 else None, "max_kcal": mx if den > 0 else None,
                       "time_off_s": round(off, 1), "span_s": round(t_stop - series[0][0], 1) if series else None})
-    if not complete:
-        t_settle = None
-    else:
-        t_settle = t_end - t0
-        for t, *_, ok in reversed(series):
-            if not ok:
+    def settle_time(col):
+        if not complete:
+            return None
+        ts = t_end - t0
+        for row in reversed(series):
+            if not row[col]:
                 break
-            t_settle = t
+            ts = row[0]
+        return ts
+
+    t_settle, t_settle_p = settle_time(4), settle_time(5)
     # the course, compactly: only snapshots where something changed
     course, last = [], None
-    for t, sels, found, conn, ok in series:
+    for t, sels, found, conn, ok, _p in series:
         key = (tuple(None if s is None else round(s, 4) for s in sels), tuple(found.values()), tuple(conn.values()), ok)
         if key != last:
             course.append({"t": round(t, 1), "sel": sels, "found": found, "connected": conn, "ok": ok})
@@ -580,6 +636,9 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
     return {"settle_s": t_settle, "quick": t_settle is not None and t_settle <= QUICK_S,
             "n_kinetics_snapshots": len(series), "n_partial_snapshots": len(parts), "swing": swing,
             "reach_energies": "access record" if acc else "electronic", "partials_with_record": n_part_record[0],
+            # first passage per snapshot: on the live network the snapshot was solved on (live), else on the latest
+            # partial network with the final energies (partial); settle_s_partial_basis: the partial basis throughout
+            "basis": basis, "settle_s_partial_basis": t_settle_p,
             "course": course}
 
 
@@ -1097,6 +1156,11 @@ def aggregate(scores: list, suite: dict) -> dict:
             "full_recall_fraction": sum(bool(o.get("full_recall")) for o in runs) / len(runs),
             "recall": rec, "targets": targets, "worst_abs_error_kcal": _stats(worst),
             "settle_s": _stats(settles),
+            "settle_s_partial_basis": _stats([o["settle"]["settle_s_partial_basis"]
+                                              if o.get("settle", {}).get("settle_s_partial_basis") is not None
+                                              else math.inf for o in runs]),
+            "settle_basis": {k: sum((o.get("settle") or {}).get("basis", {}).get(k, 0) for o in runs)
+                             for k in ("live", "partial")},
             "unattributable_kcal": suite[system].get("unattributable_kcal"),
             "within_unattributable_fraction": (sum(bool(o.get("within_unattributable")) for o in runs) / len(runs)
                                                if suite[system].get("unattributable_kcal") is not None else None),

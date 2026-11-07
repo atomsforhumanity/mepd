@@ -2,6 +2,8 @@
 
     P=/home/user/astera/mepd/.venv/bin/python
     $P benchmarks/cluster/gate.py BASE_RUN:CONFIG CAND_RUN:CONFIG [--only sys1,sys2] [--spread-from RESULT] [--json OUT]
+        [--settle-basis partial]   (settle on the partial basis for both sides: a run without the live network
+                                    against one with it; score.py settle)
 
 Each side is a scored cluster run (`bench.py score RUN` wrote results/RUN/aggregate.json) and one of
 its configurations. Systems in both are compared; held-out systems count like the others (they are
@@ -117,6 +119,10 @@ def main(argv: list) -> int:
     if "--spread-from" in argv:     # the same-seed rerun spreads of another result set (one with controls)
         spread = json.loads((RESULTS / argv[argv.index("--spread-from") + 1] / "aggregate.json").read_text()
                             ).get("control_settle_spread_s") or {}
+    if "--settle-basis" in argv and argv[argv.index("--settle-basis") + 1] == "partial":
+        for side in (base, cand):
+            for g in side.values():
+                g["settle_s"] = g["settle_s_partial_basis"]
     verdict = compare(base, cand, spread)
     print(f"gate: base {bi['run']}:{bi['config']} ({(bi['commit'] or '')[:7]}) vs candidate "
           f"{ci['run']}:{ci['config']} ({(ci['commit'] or '')[:7]})")
