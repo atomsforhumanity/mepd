@@ -175,7 +175,9 @@ def _facts(out: Path) -> dict:
     queue = next((e for e in ev if e.get("event") == "horizontal_connect"), {})
     out_rec = {
         "task": out.name, "queue_start_s": None if t0 is None else round(t0 - res["start"], 1), "jobs": jobs,
-        "queue": {k: queue.get(k) for k in ("fast_ok", "fast_failed", "pieces", "searched", "dropped", "cancelled")},
+        "queue": {k: queue.get(k) for k in ("main_s", "fast_ok", "fast_failed", "pieces", "searched", "dropped",
+                                            "cancelled")},
+        "main_busy_s": round(sum(float(e.get("s") or 0.0) for e in ev if e.get("event") == "main_busy"), 1),
  "wall_s": res.get("wall_s"), "cpu_h": (res.get("cpu_s") or 0) / 3600, "stopped": res.get("stopped"),
         "code_commit": res.get("code_commit"), "mepd_file": res.get("mepd_file"), "host": res.get("host"),
         "species": len(sp), "steps": len(s["steps"]),
@@ -204,7 +206,8 @@ def analyze(d: Path, dst: Path) -> None:
         print(json.dumps({k: r[k] for k in ("task", "wall_s", "stopped", "species", "steps", "ts_searches_run",
                                             "ts_taken_known", "irc_run", "single_points_run", "single_points_reused",
                                             "hessians_run", "hessians_reused", "species_reused", "steps_reused")}))
-        print("  queue starts at", r["queue_start_s"], "s; jobs:", r["jobs"], r["queue"])
+        print("  queue starts at", r["queue_start_s"], "s; main process busy", r["main_busy_s"], "s; jobs:", r["jobs"],
+              r["queue"])
         print("  back to Cp + MA:", r["back_to_cp_ma"])
         print("  populated:", r["populated"])
 
