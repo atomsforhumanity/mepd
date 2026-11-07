@@ -1,5 +1,6 @@
 """The async explorer takes a batched generator's (the reactor's) products after every batch: they are
-minimized and connected while the species' next batch runs, until the batches converge or run out."""
+minimized and connected while the species' next batch runs, until the batches converge or run out. The seed's
+batches are one job, their products pooled (the generator's one-call form)."""
 import numpy as np
 import pytest
 
@@ -7,6 +8,13 @@ from mepd.discovery.network_expansion import expand_network
 from tests.test_network_expansion import _AsyncConnector, _ForkedAsyncConnector, _GraphEngine, _hcn_reactor, _node
 
 XYZ = np.array([[0.0, 0.0, 0.0], [1.15, 0.0, 0.0], [2.2, 0.0, 0.0]])
+
+
+def _h_on(structure):
+    """The heavy atom the H sits on: "C" (HCN) or "N" (HNC)."""
+    sy, xyz = list(structure.symbols), np.asarray(structure.geometry, dtype=float)
+    h = sy.index("H")
+    return min(("C", "N"), key=lambda e: np.linalg.norm(xyz[h] - xyz[sy.index(e)]))
 
 
 def _batched(log, connector, converge_after=3):
@@ -17,17 +25,16 @@ def _batched(log, connector, converge_after=3):
     def batch(structure, *, max_products, options, state=None):
         st = dict(state or {"batch": 0, "proposed": [], "seen": 0})
         b = st["batch"]
-        sy, xyz = list(structure.symbols), np.asarray(structure.geometry, dtype=float)
-        h = sy.index("H")
-        on = min(("C", "N"), key=lambda e: np.linalg.norm(xyz[h] - xyz[sy.index(e)]))   # HCN or HNC
+        on = _h_on(structure)
         log.append({"species": "HCN" if on == "C" else "HNC", "batch": b, "seen": st["seen"],
                     "pairs_so_far": list(connector.pairs) if connector is not None else None})
         products = hcn(structure, max_products=max_products, options=options) if b == 0 else []
         st.update(batch=b + 1, seen=st["seen"] + 1, proposed=st["proposed"] + ["x"] * len(products))
         return products, st, st["seen"] >= converge_after or st["batch"] >= int(options.get("max_batches", 10))
 
-    def whole(structure, *, max_products, options):   # the generator's one-call form (rounds), never used here
-        raise AssertionError("the async explorer must take a batched generator batch by batch")
+    def whole(structure, *, max_products, options):   # the one-call form: rounds, and the async seed
+        log.append({"species": "HCN" if _h_on(structure) == "C" else "HNC", "whole": True})
+        return hcn(structure, max_products=max_products, options=options)
 
     return whole, batch
 
@@ -51,17 +58,40 @@ def test_each_batch_is_connected_before_the_next_runs_and_batches_run_until_conv
                         generators.Generator("reactor", "Reactor", "test", whole, kind="structures",
                                              propose_batch=batch))
     res = expand_network(_node("C#N"), _GraphEngine(), connect=connect, **_kw())
-    seed = [e for e in log if e["species"] == _node_species()]
-    # (2) the seed got batches until its carried count converged: 1, 2, 3 -- and (3) the count carried over
-    assert [e["batch"] for e in seed] == [0, 1, 2] and [e["seen"] for e in seed] == [0, 1, 2]
-    # (1) its first batch's product (HNC) was connected before its second batch ran
-    assert seed[0]["pairs_so_far"] == [] and (0, 1) in seed[1]["pairs_so_far"]
+    later = [e for e in log if e["species"] != _node_species() and "batch" in e]
+    # (2) a later species (HNC, the seed's product) got batches until its carried count converged: 1, 2, 3 --
+    # and (3) the count carried over
+    assert [e["batch"] for e in later] == [0, 1, 2] and [e["seen"] for e in later] == [0, 1, 2]
+    # (1) its first batch's product (HCN, the seed) was connected before its second batch ran
+    assert (0, 1) in later[1]["pairs_so_far"] or (1, 0) in later[1]["pairs_so_far"]
     assert res.species[1].smiles and len(res.species) == 2
-    # counted expanded once, after its last batch; HNC, reached meanwhile, was expanded batch by batch too
-    assert res.rounds[0]["sources"].count(0) == 1 and 1 in res.rounds[0]["sources"]
+    # counted expanded once, after its last batch
+    assert res.rounds[0]["sources"].count(1) == 1 and 0 in res.rounds[0]["sources"]
     assert "proposals_failed" not in res.rounds[0]
     labels = [lbl for kind, lbl, _ in connect.at_submit if kind == "propose"]
-    assert "species 0 · batch 1" in labels and "species 0 · batch 3" in labels
+    assert "species 1 · batch 1" in labels and "species 1 · batch 3" in labels
+
+
+def test_the_seed_s_reactor_batches_are_one_job_their_products_pooled(monkeypatch):
+    """Isoprene + methyl acrylate (scoreboard sb-iso vs sb-dev6): streamed, the seed's first batch alone filled the
+    product cap with 12-18 of the seed's own products (all four batches found 42-57) and its next batch waited
+    behind the TS searches, so the Diels-Alder adducts were proposed in 3 of 10 runs instead of 9. The seed's
+    proposals are one job again: the generator's one-call form (its batches pooled), no batch label; later
+    species still go batch by batch."""
+    from mepd.discovery import generators
+
+    log, connect = [], _AsyncConnector()
+    whole, batch = _batched(log, connect)
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", whole, kind="structures",
+                                             propose_batch=batch))
+    res = expand_network(_node("C#N"), _GraphEngine(), connect=connect, **_kw())
+    seed = [e for e in log if e["species"] == _node_species()]
+    assert seed == [{"species": "HCN", "whole": True}]                 # one call, the one-call form
+    labels = [lbl for kind, lbl, _ in connect.at_submit if kind == "propose"]
+    assert labels.count("species 0") == 1 and not any(lbl.startswith("species 0 ·") for lbl in labels)
+    assert any(lbl.startswith("species 1 · batch") for lbl in labels)
+    assert res.rounds[0]["sources"].count(0) == 1
 
 
 def test_a_batch_runs_in_a_forked_worker_and_its_state_comes_back(monkeypatch):

@@ -2240,10 +2240,13 @@ def expand_network(
             back unminimized ("known"). `gen_opts`, a structures generator's options for `src`, are made when
             it is queued: the worker's copy of the network is the one from when its pool was forked.
             A batched generator (the reactor) runs one batch here, from `batch_state` (what its earlier
-            batches for `src` left); its result then carries {"state", "done"} for the next."""
+            batches for `src` left); its result then carries {"state", "done"} for the next. The seed's are one
+            job, all its batches pooled (isoprene + methyl acrylate: its first batch alone filled the product cap
+            with 12-18 of the seed's own products, where all four found 42-57, and its next batch then waited
+            behind the TS searches; the Diels-Alder adducts were proposed in 3 of 10 instead of 9 of 10)."""
             node = StructureNode(structure=structure)
             meta = None
-            if gen_obj.kind == "structures" and gen_obj.propose_batch is not None:
+            if gen_obj.kind == "structures" and gen_obj.propose_batch is not None and src != 0:
                 gen_obj.check()
                 before = len((batch_state or {}).get("proposed") or ())
                 structs, new_state, done = gen_obj.propose_batch(structure, max_products=max_products,
@@ -2360,7 +2363,7 @@ def expand_network(
         def _submit_propose(k, gen_opts, batch_state=None) -> None:
             known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
             batch = int((batch_state or {}).get("batch") or 0)
-            label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None else "")
+            label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None and k != 0 else "")
             connect.submit("propose", (k, result.species[k].node.structure, known_smiles, gen_opts, batch_state),
                            lambda out, k=k: _propose_back(k, out, gen_opts), label=label)
 
