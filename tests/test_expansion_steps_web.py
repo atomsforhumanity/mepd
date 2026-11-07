@@ -245,3 +245,25 @@ def test_an_expansions_mixtures_get_their_molecules_energies_queued_once(tmp_pat
     assert jobs._queue_member_energies(job, force=True)
     assert submitted == [("optimize", sorted(cx["members"]))]
     assert not jobs._queue_member_energies(job, force=True)       # asked once
+
+
+def test_a_live_step_whose_irc_joins_other_species_moves_there(tmp_path):
+    """The TS search for one pair found another step's TS (the Wittig: searched ylide + acetone -> products,
+    its IRC runs products -> oxaphosphetane): it leaves the searched edge and joins the pair its IRC joins."""
+    ws, jobs, (s0, s1, s2) = _ws(tmp_path)
+    out = tmp_path / "out"
+    st = ws.snapshot()["structures"]
+    for sid, e in ((s0, -76.40), (s1, -76.35), (s2, -93.0)):
+        ws._data["structures"][sid]["energy"] = e
+    job = {"id": "j", "op": "graph-enumeration", "output_dir": str(out), "live_nodes": {"0": s0, "1": s1, "2": s2},
+           "charge": 0, "multiplicity": 1}
+    # reported between 0 and 2; its IRC runs water (0) -> water pulled apart (1)
+    _irc(out / "ts" / "x_irc.xyz", WATER_XYZ.strip() + "\n", WATER_BENT_XYZ.strip() + "\n")
+    known = ws.snapshot()["structures"]
+    assert jobs._adopt_step(job, {"event": "step", "a": 0, "b": 2, "label": "x", "ts_energy": -76.30,
+                                  "barrier_kcal": [1.0, 2.0]}, job["live_nodes"], known)
+    edges = {frozenset((e["source"], e["target"])): e["origin"] for e in ws.snapshot()["edges"].values()}
+    assert frozenset((s0, s2)) not in edges or edges[frozenset((s0, s2))].get("proposed")
+    moved = edges[frozenset((s0, s1))]
+    assert moved["label"] == "x" and moved["barrier_verified"] is True
+    assert abs(moved["barrier_kcal"] - (0.10 * 627.5094740631 if moved.get("barrier_from", s0) == s0 else 0.05 * 627.5094740631)) < 0.1

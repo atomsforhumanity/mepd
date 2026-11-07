@@ -1137,6 +1137,10 @@ class JobManager:
                 verdict = step_check.check(job, label, known[a].get("smiles"), known[b].get("smiles"))
                 if verdict is not None:
                     checks[label] = verdict
+            if verdict is not None and not verdict["ok"]:
+                # Its IRC joins other species (the TS search for this pair found another step's TS):
+                # never on this pair; on the pair its IRC joins when the run has both.
+                return self._move_step(job, ev, nodes, known, verdict, a, b, label)
             verified = bool(verdict and verdict["ok"])
         edge = self.ws.find_edge(a, b)
         if edge is None:
@@ -1217,6 +1221,40 @@ class JobManager:
             changed |= not had
         return changed
 
+    def _move_step(self, job: dict, ev: dict, nodes: dict, known: dict, verdict: dict, a: str, b: str,
+                   label: str) -> bool:
+        """A step whose IRC's ends are not the pair it was reported under: off that pair's edge (saying where
+        its IRC runs), and onto the edge of the two species its IRC does join, when the run has both (its
+        barriers from its TS's energy and theirs)."""
+        from mepd.web import step_check
+
+        changed = False
+        ends = " -> ".join(x or "?" for x in verdict["ends"])
+        old = self.ws.find_edge(a, b)
+        o = (old or {}).get("origin") or {}
+        if old is not None and o.get("job") == job["id"] and o.get("label") == label:
+            with self.ws._lock:
+                old["origin"] = {"kind": "job", "job": job["id"], "proposed": True, "rejected_step": label,
+                                 "headline": f"its TS search found another step's TS ({label}): its IRC runs {ends}"}
+                self.ws._save()
+            changed = True
+        inv = {v: k for k, v in nodes.items()}
+        keys = {sid: step_check._graph_key(known.get(sid, {}).get("smiles")) for sid in set(nodes.values())}
+        real = []
+        for end in verdict["ends"]:
+            k = step_check._graph_key(end)
+            hit = [sid for sid, key in keys.items() if k is not None and key == k]
+            real.append(hit[0] if len(hit) == 1 else None)
+        ra, rb = real
+        if ra is None or rb is None or ra == rb or {ra, rb} == {a, b}:
+            return changed
+        ts = ev.get("ts_energy")
+        ea, eb = known[ra].get("energy"), known[rb].get("energy")
+        fwd = None if ts is None or ea is None else (ts - ea) * 627.5094740631
+        rev = None if ts is None or eb is None else (ts - eb) * 627.5094740631
+        moved = {**ev, "a": inv[ra], "b": inv[rb], "barrier_kcal": [fwd, rev], "warning": None}
+        return self._adopt_step(job, moved, nodes, known, verified=True) or changed
+
     def recheck_expansion_steps(self, job: dict) -> bool:
         """The edges of an expansion's steps set again. With the run's summary (finished,
         or stopped): its steps -- each under the species its IRC really joins, verified
@@ -1239,19 +1277,14 @@ class JobManager:
             changed |= self._adopt_species_floors(job, summary.get("species") or [])
             known = self.ws.snapshot()["structures"]
         if steps is None:
+            # Running: each unverified edge's step again from its event, now that its IRC may be written
+            # (verified when its ends are its two species; moved or taken off when they are others).
+            evs = {ev.get("label"): ev for ev in step_check.step_events(self.job_dir(job["id"])) if ev.get("label")}
             for e in list(self.ws.snapshot()["edges"].values()):
                 o = e.get("origin") or {}
-                if o.get("job") == job["id"] and o.get("barrier_verified") is False and o.get("label"):
-                    a, b = e["source"], e["target"]
-                    v = step_check.check(job, o["label"], known.get(a, {}).get("smiles"), known.get(b, {}).get("smiles"))
-                    if v and v["ok"]:
-                        with self.ws._lock:
-                            live = self.ws._data["edges"].get(e["id"])
-                            if live is not None and (live.get("origin") or {}).get("label") == o["label"]:
-                                live["origin"] = {**live["origin"], "barrier_verified": True,
-                                                  "headline": "TS + IRC from the flux-steered expansion"}
-                                self.ws._save()
-                                changed = True
+                ev = evs.get(o.get("label"))
+                if o.get("job") == job["id"] and o.get("barrier_verified") is False and ev is not None:
+                    changed |= self._adopt_step(job, ev, nodes, self.ws.snapshot()["structures"], final=True)
             return changed
         where: dict = {}       # label -> the pair (node ids) the run has it between
         best: dict = {}        # pair -> its step
