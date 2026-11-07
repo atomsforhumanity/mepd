@@ -23,7 +23,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SCOREBOARD = Path("/home/user/astera/data/worktrees/team-scoreboard")
-SCOREBOARD_COMMIT = "4b257f5"
+SCOREBOARD_COMMIT = "4b257f5"   # its pod wrapper and inputs, as stage 1 ran them
+SCORE_COMMIT = "104c1e6"        # its score.py (channel matching), exported from git, not the live worktree
 BIN = Path("/home/user/astera/data/runs/explorer-team/bin")
 IMAGE = "192.168.8.6:5000/mepd-orca-uma-axtb:2026-11-05"
 BUDGET = 1800.0
@@ -86,8 +87,14 @@ def stage1(d: Path) -> None:
 
 
 def _score():
-    sys.path.insert(0, str(SCOREBOARD / "benchmarks"))
-    import score   # noqa: E402  (the scoreboard's matching of channels to species; worktree at SCOREBOARD_COMMIT)
+    """The scoreboard's score.py (channel matching to species) at SCORE_COMMIT."""
+    if "score" not in sys.modules:
+        d = Path(tempfile.mkdtemp())
+        archive = subprocess.run(["git", "archive", SCORE_COMMIT, "benchmarks"], cwd=SCOREBOARD, capture_output=True,
+                                 check=True).stdout
+        subprocess.run(["tar", "x", "-C", str(d)], input=archive, check=True)
+        sys.path.insert(0, str(d / "benchmarks"))
+    import score   # noqa: E402
 
     return score
 
@@ -104,7 +111,6 @@ def _endo(run: Path) -> int:
 
 
 def stage2(d: Path, stage1_output: Path) -> None:
-    assert _git("rev-parse", "HEAD", cwd=SCOREBOARD).startswith(SCOREBOARD_COMMIT)
     tmp = Path(tempfile.mkdtemp())
     with tarfile.open(stage1_output / "run.tgz") as tf:
         tf.extractall(tmp)
