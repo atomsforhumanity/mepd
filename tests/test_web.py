@@ -1354,7 +1354,9 @@ def test_every_web_operation_emits_only_real_cli_flags(client, tmp_path):
                 known = _cli_options(job["argv"])
                 # A choice's value can look like a flag (--crest-method --gfn2).
                 choices = {str(c) for v in props.values() for c in v.get("enum", [])}
-                unknown = [w for w in job["argv"] if w.startswith("--") and w not in known and w not in choices]
+                # (an option given as one token, --flag=value: its flag is what counts)
+                unknown = [w for w in job["argv"] if w.startswith("--") and w.split("=")[0] not in known
+                           and w not in choices]
                 assert not unknown, f"{op['key']}: mepd {' '.join(job['argv'][:2])} has no {unknown}"
                 checked += 1
     assert checked >= 10

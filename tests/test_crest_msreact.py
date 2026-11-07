@@ -37,7 +37,7 @@ def test_the_network_card_is_one_expansion_in_stages_and_msreact_builds_its_comm
     ordered = sorted(methods, key=lambda x: x[1]["rank"])
     labels = [m["label"] for _, m in ordered if not m.get("group") and not m.get("qmmm_only")]
     # One network expansion (its stages chosen in its form), beside the other ways to explore.
-    assert labels == ["Network expansion", "Nanoreactor", "Hessian sampling", "Basin hopping"]
+    assert labels == ["Network expansion", "Nanoreactor", "Hessian sampling", "Reacting mixture", "Basin hopping"]
     op = OPERATIONS["graph-enumeration"]
     props = op.describe()["schema"]["properties"]
     assert {k: v["stage"] for k, v in props.items() if v.get("cards")} == {
