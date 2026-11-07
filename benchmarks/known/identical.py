@@ -23,11 +23,14 @@ def code(commit: str, dst: Path) -> Path:
     return d
 
 
-def strip(x):
+def strip(x, out=""):
+    """The summary without what names its own run (its folder, paths, wall-clock times)."""
     if isinstance(x, dict):
-        return {k: strip(v) for k, v in x.items() if k not in ("file", "output_files", "inputs", "t_wall")}
+        return {k: strip(v, out) for k, v in x.items() if k not in ("file", "output_files", "inputs", "t_wall")}
     if isinstance(x, list):
-        return [strip(v) for v in x]
+        return [strip(v, out) for v in x]
+    if isinstance(x, str) and out:
+        return x.replace(out, "<run>")
     return x
 
 
@@ -48,7 +51,7 @@ def main(argv):
         with open(out / f"run-{commit}.log", "w") as log:
             rc = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, cwd=out).returncode
         assert rc == 0, f"{commit}: exit {rc}"
-        got[commit] = strip(json.loads((o / "summary.json").read_text()))
+        got[commit] = strip(json.loads((o / "summary.json").read_text()), str(o))
     a, b = got[base], got[new]
     differ = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
     rec = {"base": base, "new": new, "smiles": smiles, "extra": extra, "identical": not differ, "differ": differ,
