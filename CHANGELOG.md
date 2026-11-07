@@ -24,6 +24,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **axtb is a dependency of the `gxtb` and `discovery` extras** (axtb 0.1.0, on PyPI as a wheel for Linux x86_64,
+  Python 3.10+). `backend = "axtb"` and the proposal MD (reactor, collide) used it but nothing installed it.
 - **`mepd discovery expand --max-species` defaults to 400 (was 200).** On the scoreboard (8 systems x 5 replicates, runs sb-mc5 and sb-cap400) 11 of 40 runs at 200 stopped early at the cap and none at 400; recall was equal or better (cp_mbl full recall 4/5 -> 5/5). The cost: methyl formate's median settle time rose from 593 s to 1206 s (15 replicates each, sb-mf15; Mann-Whitney p = 0.051), within 30 min in all 15 runs. The web's expansions take the CLI's default.
 - **Web: follow-up network expansions hand earlier runs to the explorer as known (`--known`).** An expansion passes the output folders of the workspace's finished or stopped expansions at the same level of theory, so the explorer can take their species, verified steps, steering single points and Hessians as known instead of redoing them ("Reuse earlier expansions", on by default under Run). Only once the installed `mepd discovery expand` has `--known` (the explorer team's change, in progress); until then nothing changes. The live network marks species reused from an earlier run (↺).
 
