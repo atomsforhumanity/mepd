@@ -5,15 +5,17 @@ engine here: each step is one `engine.compute_gradients` call on a one-node list
 exact Hessians come from `engine.compute_hessian`, so the energies are exactly the
 engine's (its backend, SCF retries and settings included).
 
-On 100 Reaction-QM reactions at g-xTB 2.0.1 (axtb; qcopt's benchmarks, findings artifact
-https://claude.ai/artifact/QZwzfWYDatwNXmXp3onsjp):
+On 100 Reaction-QM reactions at g-xTB 2.0.1 (axtb at SCF accuracy 0.01; qcopt 0.2.0's
+benchmarks, Sella 2.6.0):
 
 - TS searches from the dataset's guesses: 100/100 first-order saddles, median 12
-  gradients, against Sella's 16 (and 28.4 vs. 15.9 on average), the same saddle in 96.
-- Minimizations of the 200 reactants and products: 196 true minima, median 33
-  gradients, against Sella's 143 with its default (no exact Hessian), 5x less wall time.
-- IRCs: the same minima as Sella's IRC in 100/100, with 375 gradients including both
-  end minimizations against Sella's 2,407.
+  gradients against Sella's 16.5 (15.9 vs. 28.5 on average), the same saddle in 97.
+- Minimizations of the 200 reactants and products: 197 true minima, median 33.5
+  gradients, against Sella's 191 and 143.5 with its default (no exact Hessian), about
+  5x less wall time.
+- IRCs, ends minimized: the same minima as Sella's IRC in 94/100 (4 more are
+  neighboring minima of the same species), with a median of 349.5 gradients including
+  both end minimizations against Sella's 848.
 
 Keywords use mepd's conventions (`fmax` in eV/Angstrom, `maxiter`); any other keyword
 is qcopt's own (`qcopt.OptimizationKeywords`, `qcopt.IRCKeywords`), and an unknown one
