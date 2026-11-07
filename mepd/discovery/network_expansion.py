@@ -657,6 +657,11 @@ def external_proposals(structures: Iterable, source_structure, source: int, star
     return out
 
 
+# an async run that stopped for one of these ends with what it has (no end-of-run IRC checks or channel sampling)
+OUT_OF_TIME = ("time budget", "stop requested", "max species")
+UNVERIFIED_LEFT_OUT = "no IRC check: the run ended before it (its TS may join other species, or none)"
+
+
 @dataclass
 class Species:
     node: StructureNode
@@ -1594,11 +1599,52 @@ def expand_network(
                 return True
         return None
 
-    def _kinetics_record(pairs: list):
+    def _left_out_unverified(k_steps) -> tuple:
+        """The kinetics' steps (`k_steps`, result.steps' order) with every step no IRC checked closed (TS + 1 Hartree,
+        as steps out of reach are) and marked so in its files ("left_out_of_final_kinetics"), and the steps only those
+        reached from the seed (directly or through a mirror image) closed too: (steps, indices of the latter)."""
+        from mepd.discovery.kinetics import Step
+
+        def close(k):
+            return Step(k.a, k.b, k.ts_energy + 1.0, k.label, {**k.files, "closed": True})
+
+        k_steps = list(k_steps)    # (the views may hand back result.steps itself)
+        for m, st in enumerate(result.steps):
+            if st.files.get("verified") is False:
+                st.files["left_out_of_final_kinetics"] = UNVERIFIED_LEFT_OUT
+                if not k_steps[m].files.get("closed"):
+                    k_steps[m] = close(k_steps[m])
+        mirror, adj = _mirror_of(), {}
+        for k in k_steps:
+            if not k.files.get("closed"):
+                adj.setdefault(k.a, set()).add(k.b)
+                adj.setdefault(k.b, set()).add(k.a)
+        reach, todo = {0}, [0]
+        while todo:
+            u = todo.pop()
+            for v in adj.get(u, set()) | ({mirror[u]} if mirror is not None and u < len(mirror) and mirror[u] >= 0
+                                         else set()):
+                if v not in reach:
+                    reach.add(v)
+                    todo.append(v)
+        beyond = [m for m, k in enumerate(k_steps) if not k.files.get("closed") and k.a not in reach]
+        for m in beyond:
+            k_steps[m] = close(k_steps[m])
+        return k_steps, beyond
+
+    def _kinetics_record(pairs: list, verified_only: bool = False):
+        """The recorded kinetics. `verified_only`: the steps no IRC checked are left out (_left_out_unverified); they
+        stay in the network."""
         from mepd.discovery.kinetics import negative_barrier_warnings
 
         energies = [float(s.node.energy) for s in result.species]
         k_energies, k_steps, basis = _free_energy_view(energies)
+        if verified_only:
+            k_steps, beyond = _left_out_unverified(k_steps)
+            left = [m for m, st in enumerate(result.steps) if "left_out_of_final_kinetics" in st.files]
+            if left:
+                basis += f"; {len(left)} step(s) no IRC checked left out" + (
+                    f", {len(beyond)} only they reached closed" if beyond else "")
         energies = [float(s.node.energy) for s in result.species]   # tightened species
         kinetic = _simulate(k_steps, k_energies, basis.startswith("free"))
         # a step closed out of reach has no barrier of its own (its TS + 1 Hartree only stops its rate)
@@ -2654,7 +2700,10 @@ def expand_network(
         result.rounds[-1]["stopped"] = stopped[0] or "converged"
         live_steer[0] = None    # the queue is closed: missing steering single points are computed here, not queued
         _emit(on_event, "phase", round=cycle, phase=f"ended: {result.rounds[-1]['stopped']}")
-        _kinetics_record([])
+        # out of time, the end-of-run IRC checks below are skipped: the final kinetics rest on IRC-checked steps only
+        # (F0007 smoke run: all the product went through one unchecked step, a conformer change's saddle 4.4 kcal/mol
+        # below the seed)
+        _kinetics_record([], verified_only=verify is not None and result.rounds[-1]["stopped"] in OUT_OF_TIME)
         _save(force=True)
         if checkpoint is not None:
             checkpoint(result)
@@ -2812,8 +2861,7 @@ def expand_network(
             checkpoint(result)   # a run cut off later keeps the rounds it finished
     # an async run that ran out of time, was stopped or reached max_species ends with what it has: these would run
     # on unbudgeted (F0007, 200 species at 1459 s of 1800: an hour more of whole channel searches)
-    out_of_time = schedule == "async" and result.rounds and \
-        result.rounds[-1].get("stopped") in ("time budget", "stop requested", "max species")
+    out_of_time = schedule == "async" and result.rounds and result.rounds[-1].get("stopped") in OUT_OF_TIME
     if steer == "access" and t_idx is not None and connect is not None and result.rounds and not out_of_time:
         # Searches towards the target that the last round's network opened up
         # would have joined the next round's queue: there is none, so run them now.

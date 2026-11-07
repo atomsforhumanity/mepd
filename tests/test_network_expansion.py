@@ -1550,3 +1550,86 @@ def test_the_cli_caps_an_expansion_at_400_species_by_default():
     from mepd.discovery.cli_expand import expand
 
     assert inspect.signature(expand).parameters["max_species"].default.default == 400
+
+
+
+class _UnverifiedAsyncConnector(_AsyncConnector):
+    """As _AsyncConnector, with TS files: the seed's TSs come back IRC-checked, except that the one asked for its
+    second product joins its first and second products instead, unchecked (as the real queue's single TSs are),
+    and the one asked for its third joins its second and third, checked (reached only through the unchecked one)."""
+
+    def __init__(self, tmp_path):
+        super().__init__()
+        self.tmp_path = tmp_path
+
+    def _found(self, i, j, nodes):
+        out = super()._found(i, j, nodes)
+        a, b, checked = {(0, 2): (1, 2, False), (0, 3): (2, 3, True)}.get((i, j), (i, j, True))
+        fp = self.tmp_path / f"ts_{a}_{b}.xyz"
+        out["ts"]._cached_energy = max(nodes[a].energy, nodes[b].energy) + 5.0 / 627.509
+        out["ts"].structure.save(fp)
+        return {**out, "pair": (a, b), "label": f"{a}-{b}", "files": {"ts": str(fp), "verified": checked,
+                                                                     "pair": [i, j]}}
+
+
+def _no_irc(items):
+    raise AssertionError("no IRC check expected: the unchecked step touches no populated species")
+
+
+def _run_unchecked(tmp_path, **kw):
+    return expand_network(_node("CCO"), _GraphEngine(), steer="access", connect=_UnverifiedAsyncConnector(tmp_path),
+                          verify=_no_irc, access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 2.0},
+                          schedule="async", **kw)
+
+
+def test_out_of_time_the_final_kinetics_leave_out_the_steps_no_irc_checked(monkeypatch, tmp_path):
+    """An async run that ran out of time skips the end-of-run IRC checks: its final kinetics rest on IRC-checked steps
+    only (the F0007 smoke run put all its product through one unchecked step, a conformer change's saddle 4.4 kcal/mol
+    below the seed). The unchecked step stays in the network, marked as left out of the final kinetics, and why."""
+    from mepd import search_control
+    from mepd.discovery.network_expansion import UNVERIFIED_LEFT_OUT
+
+    calls = []
+    monkeypatch.setattr(search_control, "stop_requested", lambda: calls.append(1) or len(calls) > 2)
+    res = _run_unchecked(tmp_path)
+    assert res.rounds[0]["stopped"] == "stop requested"
+    m = next(m for m, st in enumerate(res.steps) if st.files.get("pair") == [0, 2])   # the step stays
+    assert res.steps[m].files["verified"] is False
+    assert res.steps[m].files["left_out_of_final_kinetics"] == UNVERIFIED_LEFT_OUT
+    assert res.kinetics.barriers_kcal[m] is None                                        # no rate through it
+    beyond = next(n for n, st in enumerate(res.steps) if st.files.get("pair") == [0, 3])   # 2 -> 3, checked
+    assert res.kinetics.barriers_kcal[beyond] is None                  # only the unchecked step reached it: closed
+    assert "left_out_of_final_kinetics" not in res.steps[beyond].files
+    checked = [n for n, st in enumerate(res.steps) if st.files.get("verified") is True and n != beyond]
+    assert checked and all(res.kinetics.barriers_kcal[n] is not None for n in checked)
+    assert not any("left_out_of_final_kinetics" in res.steps[n].files for n in checked)
+    assert "1 step(s) no IRC checked left out, 1 only they reached closed" in res.rounds[0]["kinetics"]["energies"]
+    # every step the final kinetics keep open is reached from the seed through open steps (what a rebuild of the
+    # kinetics from the summary's barriers needs, benchmarks/score.py)
+    opened = [st for st, b in zip(res.steps, res.kinetics.barriers_kcal) if b is not None]
+    reach = {0}
+    for _ in opened:
+        reach |= {x for st in opened if {st.a, st.b} & reach for x in (st.a, st.b)}
+    assert all(st.a in reach and st.b in reach for st in opened)
+
+
+def test_in_budget_the_final_kinetics_are_as_before(monkeypatch, tmp_path):
+    """A run that ends within its budget (its end-of-run IRC checks run) is unchanged: the same network and final
+    kinetics as with the out-of-time rule switched off, and no step marked left out."""
+    from mepd.discovery import network_expansion as ne
+
+    def run(sub):
+        res = _run_unchecked(tmp_path / sub)
+        return res, ([(s.smiles, s.node.energy) for s in res.species],
+                     [(st.a, st.b, st.ts_energy, st.label, sorted(st.files.items())) for st in res.steps],
+                     res.kinetics.barriers_kcal, res.kinetics.final_concentration, res.rounds[0]["kinetics"]["energies"])
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    res, with_rule = run("a")
+    monkeypatch.setattr(ne, "OUT_OF_TIME", ())
+    _, without = run("b")
+    assert res.rounds[0]["stopped"] == "converged" and res.steps
+    assert not any("left_out_of_final_kinetics" in st.files for st in res.steps)
+    assert [x[:4] for x in with_rule[1]] == [x[:4] for x in without[1]] and with_rule[0] == without[0]
+    assert with_rule[2:] == without[2:]
