@@ -331,7 +331,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
                 onMouseEnter=${() => setHoverEdge(e.id)} onMouseLeave=${() => setHoverEdge((h) => (h === e.id ? null : h))}>
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-hit" />
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${on ? e.w + 2 : e.w}`}
-                class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
+                class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''} ${e.irc === -1 ? 'unchecked' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
               ${!noFlux && e.main && html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-flow" style=${`stroke-width:${Math.max(2, e.w * 0.6)}`} />`}
               ${(labelledEdges.has(e.id) || on) && (() => {
                 const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2, txt = `‡ ${e.barrier.toFixed(1)}`, tw = txt.length * 6.6 + 10;
@@ -382,6 +382,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
             </div>
             ${e.barrier != null && e.barrier < 0 && html`<div class="small muted">Below zero: its TS lies under the energy recorded for ${nm(e.from)} (often a lower conformer found later).</div>`}
             <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC connects ✓' : e.irc === 0 ? ' · IRC does not connect' : ''}</div>
+            ${e.irc === -1 && html`<div class="small"><b>Unconfirmed:</b> the run ended before its IRC was checked, so it is left out of the final kinetics.</div>`}
           </div>`;
         })()}
       </div>
@@ -393,6 +394,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
           : html`<span class="ln-lg"><svg width="40" height="14"><line x1="2" y1="7" x2="30" y2="7" class="lg-l thick" /><path d="M30,2 L38,7 L30,12 z" class="lg-arr" /></svg>material flows this way; thicker = more</span>`}
         <span class="ln-lg"><svg width="40" height="16"><rect x="1" y="5" width="12" height="9" rx="2" class="lg-card" /><rect x="18" y="1" width="20" height="14" rx="2" class="lg-card" /></svg>bigger card: more of it formed</span>
         ${anyDft && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l dash" /></svg>dashed: g-xTB energy, DFT check to come</span>`}
+        ${edges.some((e) => e.irc === -1) && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l unchecked" /></svg>dotted: unconfirmed, no IRC yet (left out of the final kinetics)</span>`}
         ${gone.length > 0 && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l gone" /></svg>grey: step closed or replaced</span>`}
         ${knownIds.size > 0 && html`<span class="ln-lg"><b class="ln-known-k">↺</b>reused from an earlier run (${knownIds.size})</span>`}
         <span class="ln-lg muted">hover a step or a card for details</span>

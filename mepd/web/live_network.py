@@ -73,7 +73,7 @@ def compact(kin: dict) -> Optional[dict]:
     open_steps.sort(key=lambda st: -abs(st.get("flux") or 0))
     st_rows = [[str(st["id"]), str(st["from"]), str(st["to"]), _r(st.get("dG_fwd")), _r(st.get("dG_rev")),
                 {"dft": "d", "borrowed": "b"}.get(st.get("energy_source"), "g"),
-                {True: 1, False: 0}.get(st.get("irc_ok"), None), _sig(st.get("flux"))]
+                {True: 1, False: 0, "unchecked": -1}.get(st.get("irc_ok"), None), _sig(st.get("flux"))]
                for st in open_steps[:MAX_STEPS]]
     # Steps no longer in the network (closed out of reach, replaced, dropped)
     # among the shown species: drawn faint, so corrections stay visible.
@@ -103,7 +103,8 @@ def compact_legacy(kin: dict, known_steps: list) -> Optional[dict]:
         return None
     kin = {**kin, "species": [{**s, "id": s["index"]} for s in species]}
     have = {str(s["index"]) for s in species}
-    # One edge per pair of species (the lowest of its channels), lowest barriers first.
+    # One edge per pair of species (the lowest of its channels, an IRC-checked one before an unchecked one),
+    # lowest barriers first.
     best = {}
     for st in known_steps:
         a, b = str(st["a"]), str(st["b"])
@@ -112,10 +113,12 @@ def compact_legacy(kin: dict, known_steps: list) -> Optional[dict]:
         fwd, rev = (st["dG"][0], st["dG"][1]) if a < b else (st["dG"][1], st["dG"][0])
         key = (min(a, b), max(a, b))
         low = min(x for x in (fwd, rev) if x is not None) if (fwd, rev) != (None, None) else None
-        if key not in best or (low is not None and low < best[key][0]):
-            best[key] = (low, {"id": st["label"], "from": key[0], "to": key[1], "dG_fwd": fwd, "dG_rev": rev,
-                               "state": "open", "energy_source": "gxtb"})
-    kin["step_list"] = [v for _, v in sorted(best.values(), key=lambda x: (x[0] is None, x[0] or 0))]
+        rank = (bool(st.get("unchecked")), low is None, low or 0)
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, {"id": st["label"], "from": key[0], "to": key[1], "dG_fwd": fwd, "dG_rev": rev,
+                                "state": "open", "energy_source": "gxtb",
+                                **({"irc_ok": "unchecked"} if st.get("unchecked") else {})})
+    kin["step_list"] = [v for _, v in sorted(best.values(), key=lambda x: x[0][1:])]
     f = compact(kin)
     if f is not None:
         f["legacy"] = True
@@ -354,8 +357,12 @@ def _summary_steps(job_dir: Path) -> Optional[list]:
         return None
     if steps is None:
         return None
+    # A step the run had no time to IRC-check (files.verified False) stays in the network, left out of
+    # its final kinetics (files.left_out_of_final_kinetics): drawn as unconfirmed.
     return [{"label": st["label"], "a": st["a"], "b": st["b"],
-             "dG": (list(st.get("barrier_kcal") or []) + [None, None])[:2]} for st in steps if st.get("label")]
+             "dG": (list(st.get("barrier_kcal") or []) + [None, None])[:2],
+             "unchecked": (st.get("files") or {}).get("verified") is False,
+             "left_out": (st.get("files") or {}).get("left_out_of_final_kinetics")} for st in steps if st.get("label")]
 
 
 def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[list] = None) -> Optional[dict]:

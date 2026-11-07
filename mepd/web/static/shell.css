@@ -269,10 +269,12 @@
 .lg-l.thick { stroke: var(--muted); stroke-width: 6; } .lg-arr { fill: var(--muted); }
 .lg-l.dash { stroke: var(--muted); stroke-dasharray: 6 4; stroke-linecap: butt; }
 .lg-l.gone { stroke: var(--edge-idle); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.lg-l.unchecked { stroke: var(--muted); stroke-width: 2.4; stroke-dasharray: 0.1 6; stroke-linecap: round; }
 .lg-pill { fill: var(--panel); stroke: var(--chart-4); stroke-width: 1.5; }
 .lg-pill-t { font: 600 10px var(--font-mono); fill: var(--heading); text-anchor: middle; }
 .lg-card { fill: var(--node-bg); stroke: var(--accent); stroke-width: 1.5; }
 .ln-line.gxtb { stroke-dasharray: 8 4; }
+.ln-line.unchecked { stroke-dasharray: 0.1 6; stroke-linecap: round; }   /* dotted: no IRC yet */
 .ln-flow { stroke: var(--panel); opacity: .85; stroke-dasharray: 1 14; stroke-linecap: round; animation: ls-flow 1s linear infinite; pointer-events: none; }
 /* Species are their structures on light cards (as in Explore), readable in both themes. */
 .ln-card { fill: var(--node-bg); stroke: var(--border-strong); stroke-width: 1; }

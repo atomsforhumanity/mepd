@@ -135,3 +135,19 @@ def test_the_job_pages_kinetics_table_gets_perceived_smiles(tmp_path):
     kin = {"species": [{"index": 0, "smiles": ""}, {"index": 1, "smiles": ""}, {"index": 2, "smiles": "C"}]}
     ln.fill_species_smiles(tmp_path, kin)
     assert [s["smiles"] for s in kin["species"]] == ["O", "[H][H]", "C"]
+
+
+def test_a_step_the_run_had_no_time_to_check_is_drawn_unconfirmed():
+    """A run out of time leaves its IRC-unchecked steps out of the final kinetics (summary.json:
+    files.verified False): the final network keeps them as unconfirmed (irc -1), and a pair with a
+    checked step shows that one even when an unchecked one is lower."""
+    kin = {"basis": "free energy (1500 K)", "species": [
+        {"index": 0, "smiles": "O=CO", "rel_kcal": 0.0, "max_concentration": 1.0, "final": 0.5, "populated": True},
+        {"index": 1, "smiles": "O.[C-]#[O+]", "rel_kcal": -5.0, "max_concentration": 0.5, "final": 0.5, "populated": True},
+        {"index": 2, "smiles": "O=C=O.[H][H]", "rel_kcal": -10.0, "max_concentration": 0.2, "final": 0.2, "populated": True}]}
+    steps = [{"label": "ok01", "a": 0, "b": 1, "dG": [60.0, 65.0], "unchecked": False},
+             {"label": "low01", "a": 0, "b": 1, "dG": [50.0, 55.0], "unchecked": True},
+             {"label": "u02", "a": 0, "b": 2, "dG": [70.0, 80.0], "unchecked": True}]
+    f = ln.compact_legacy(kin, steps)
+    irc = {s[0]: s[6] for s in f["steps"]}
+    assert irc == {"ok01": None, "u02": -1}
