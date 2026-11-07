@@ -162,8 +162,21 @@ def _facts(out: Path) -> dict:
     populated = [{"index": k, "smiles": x.get("smiles"), "final": x.get("final_concentration"),
                   "max": x.get("max_concentration"), "known": bool(x.get("known"))}
                  for k, x in enumerate(sp) if (x.get("max_concentration") or 0) >= 0.01 or k == 0]
+    # the queue's own log: when its cycle started (after the seed and any --known import), its jobs by kind
+    ev = [json.loads(x) for x in (out / "network_aware.jsonl").read_text().splitlines() if x.strip()]
+    t0 = next((e["t"] for e in ev if e.get("event") == "phase" and e.get("phase") == "cycle_start"), None)
+    jobs: dict = {}
+    for e in ev:
+        if e.get("event") == "job":
+            j = jobs.setdefault(e["kind"], {"n": 0, "ok": 0, "run_s": 0.0})
+            j["n"] += 1
+            j["ok"] += bool(e.get("ok"))
+            j["run_s"] = round(j["run_s"] + float(e.get("run_s") or 0.0), 1)
+    queue = next((e for e in ev if e.get("event") == "horizontal_connect"), {})
     out_rec = {
-        "task": out.name, "wall_s": res.get("wall_s"), "cpu_h": (res.get("cpu_s") or 0) / 3600, "stopped": res.get("stopped"),
+        "task": out.name, "queue_start_s": None if t0 is None else round(t0 - res["start"], 1), "jobs": jobs,
+        "queue": {k: queue.get(k) for k in ("fast_ok", "fast_failed", "pieces", "searched", "dropped", "cancelled")},
+ "wall_s": res.get("wall_s"), "cpu_h": (res.get("cpu_s") or 0) / 3600, "stopped": res.get("stopped"),
         "code_commit": res.get("code_commit"), "mepd_file": res.get("mepd_file"), "host": res.get("host"),
         "species": len(sp), "steps": len(s["steps"]),
         "ts_searches_run": len([p for p in ts if not p.name.startswith("known")]),
@@ -191,6 +204,7 @@ def analyze(d: Path, dst: Path) -> None:
         print(json.dumps({k: r[k] for k in ("task", "wall_s", "stopped", "species", "steps", "ts_searches_run",
                                             "ts_taken_known", "irc_run", "single_points_run", "single_points_reused",
                                             "hessians_run", "hessians_reused", "species_reused", "steps_reused")}))
+        print("  queue starts at", r["queue_start_s"], "s; jobs:", r["jobs"], r["queue"])
         print("  back to Cp + MA:", r["back_to_cp_ma"])
         print("  populated:", r["populated"])
 
