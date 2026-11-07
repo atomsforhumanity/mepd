@@ -134,3 +134,11 @@ def test_geometric_coordsys_from_the_cli_is_ignored_like_sella_does():
     engine = _engine()
     traj = engine.compute_geometry_optimization(_node(FORMAMIDE), {"fmax": 0.001, "coordsys": "cart", "maxit": 500})
     assert _largest_force_ev(traj[-1]) < 0.001
+
+
+def test_irc_that_runs_out_of_steps_still_gives_a_path():
+    # qcopt >= 0.2 reports such an IRC as unconverged; mepd minimizes the ends itself
+    engine = _engine()
+    ts = engine.compute_transition_state(_node(HCN_TS_GUESS), {"fmax": 0.001})
+    chain = engine.compute_irc_chain(ts, {"dx": 0.05, "steps": 3})
+    assert len(chain.nodes) >= 5  # both branches and the TS

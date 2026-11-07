@@ -2371,8 +2371,8 @@ requires-dist = [
     { name = "qcdata", specifier = ">=0.19.0" },
     { name = "qcdata", extras = ["view"], marker = "extra == 'viz'", specifier = ">=0.19.0" },
     { name = "qcinf", specifier = ">=0.4.1" },
-    { name = "qcopt", marker = "python_full_version >= '3.11' and extra == 'ase'", specifier = ">=0.1.0" },
-    { name = "qcopt", marker = "python_full_version >= '3.11' and extra == 'gxtb'", specifier = ">=0.1.0" },
+    { name = "qcopt", marker = "python_full_version >= '3.11' and extra == 'ase'", specifier = ">=0.2.0" },
+    { name = "qcopt", marker = "python_full_version >= '3.11' and extra == 'gxtb'", specifier = ">=0.2.0" },
     { name = "qcref", specifier = ">=0.3.0" },
     { name = "rdchiral", marker = "extra == 'retro'", specifier = ">=1.1" },
     { name = "rdkit", specifier = ">=2025.3.6" },
@@ -4447,7 +4447,7 @@ wheels = [
 
 [[package]]
 name = "qcopt"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -4456,9 +4456,9 @@ dependencies = [
     { name = "qcdata", version = "0.23.1", source = { registry = "https://pypi.org/simple" } },
     { name = "qcref", version = "0.5.1", source = { registry = "https://pypi.org/simple" } },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/39/2d953c77b9a9b669922f8c2b58f0a4985d31f082f997b1e7c9b48b7751bc/qcopt-0.1.0.tar.gz", hash = "sha256:08f7802b7d883e6614ff698a7f797d1d56979d3f76e59a0a5b33bd7a0c071d0c", size = 163316, upload-time = "2026-11-06T22:12:50.36Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/67/f9f4a2e7ce6dfc997b8133945b64a69bd0fb4d677447b8b4231729e8a9f7/qcopt-0.2.0.tar.gz", hash = "sha256:0d515ed7995072d7fc9be57f0eb9d44312d26accba9d8463ccfea5e081dd9461", size = 181625, upload-time = "2026-11-07T04:16:50.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/30/28315ea11ab3a4a75c4c5341b246165f5921da794bc0d1f55ecb09f3f68c/qcopt-0.1.0-py3-none-any.whl", hash = "sha256:743d8916bb7e498df6f0620093343253b1d3120bfd916b0e5019be0669c59033", size = 55576, upload-time = "2026-11-06T22:12:48.91Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/b0/3e75347f0d586957ce792c5a82d8bca4d2522640dc7aad7799458c721864/qcopt-0.2.0-py3-none-any.whl", hash = "sha256:4ad4b21def900575e9e7099eea996f26867776ced3c0878069f1e10f7d33c754", size = 63709, upload-time = "2026-11-07T04:16:48.714Z" },
 ]
 
 [[package]]

@@ -22,6 +22,7 @@ raises.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,12 @@ _FORCE = float(c.EV_TO_HARTREE) / float(c.ANGSTROM_TO_BOHR)
 # Sella IRC options with no qcopt counterpart: `keep_going` steps past Sella's own
 # corrector failures (qcopt has no inner loop to fail); the others tune that corrector.
 _SELLA_IRC_IGNORED = ("keep_going",)
+# qcopt (>= 0.2) fails an IRC whose branches stop before their minima: out of steps, or
+# stalled or overshooting with the gradient above its end criterion. mepd minimizes the
+# ends afterwards, so such a path is used; a failed calculation, or a branch that never
+# went downhill, still raises.
+_IRC_UNFINISHED = ("max_steps", "energy rose", "stalled")
+log = logging.getLogger(__name__)
 # geomeTRIC's coordinate choice, which mepd's CLI adds to every minimization ("cart");
 # Sella ignores it too. qcopt's own is `coordinates` (TRIC by default).
 _GEOMETRIC_IGNORED = ("coordsys",)
@@ -209,8 +216,15 @@ def irc(engine, ts_node: StructureNode, keywords: dict[str, Any] | None = None):
         raise ValueError(f"qcopt IRC: {exc}") from exc
     if not out.success:
         reason = (out.traceback or "").strip()
-        raise ElectronicStructureError(msg=f"qcopt IRC failed: {reason.splitlines()[-1] if reason else ''}",
-                                       obj=reason)
+        ends = (out.results.extras or {}).get("branch_end") or {}
+        unfinished_only = (
+            bool(ends) and out.results.ts_index is not None and "downhill" not in reason
+            and all((r or "").startswith("converged") or r in _IRC_UNFINISHED for r in ends.values()))
+        if not unfinished_only:
+            raise ElectronicStructureError(msg=f"qcopt IRC failed: {reason.splitlines()[-1] if reason else ''}",
+                                           obj=reason)
+        log.warning("qcopt IRC did not reach both minima (%s); using its path, whose ends mepd minimizes",
+                    reason.splitlines()[-1])
     frames = out.results.frames
     k = int(out.results.ts_index)
     before, after = _nodes(frames[:k], ts_node), _nodes(frames[k + 1:], ts_node)
