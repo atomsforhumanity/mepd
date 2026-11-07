@@ -627,7 +627,7 @@ def expand(
         "sampling) use G = G_explorer + (E_high - E_low) on every species and TS they treat, each geometry "
         "computed once (kept in steer_single_points/). 'auto' (default): the --refine-energies profile when "
         "given; 'none': the explorer's own energies."),
-    max_species: int = typer.Option(200, "--max-species", help="Stop adding species beyond this many."),
+    max_species: int = typer.Option(400, "--max-species", help="Stop adding species beyond this many."),
     workers: int = typer.Option(
         min(4, max(1, available_cpus() // 2)), "--workers",
         help="Processes at once: product guesses, the web live view's animations, path-search jobs, and "

@@ -1542,3 +1542,11 @@ def test_async_schedule_at_max_species_ends_with_what_it_has():
                          refine=refine, max_species=4)
     assert res.rounds[0]["stopped"] == "max species" and res.steps
     assert asked == []
+
+
+def test_the_cli_caps_an_expansion_at_400_species_by_default():
+    import inspect
+
+    from mepd.discovery.cli_expand import expand
+
+    assert inspect.signature(expand).parameters["max_species"].default.default == 400
