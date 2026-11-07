@@ -286,6 +286,17 @@ def _perceived(job_dir: Path, lines: list) -> dict:
     return known
 
 
+def fill_species_smiles(job_dir: Path, kin: dict) -> None:
+    """In place: a kinetics refresh's empty species SMILES, perceived (the job page's tables)."""
+    species = kin.get("species") or []
+    if not any(not s.get("smiles") for s in species):
+        return
+    perceived = _perceived(job_dir, _events(job_dir))
+    for s in species:
+        if not s.get("smiles"):
+            s["smiles"] = perceived.get(str(s.get("id", s.get("index"))), "")
+
+
 def _fill_smiles(f: dict, perceived: dict) -> dict:
     for sid, smi in list(f.get("smiles", {}).items()):
         if not smi and perceived.get(sid):

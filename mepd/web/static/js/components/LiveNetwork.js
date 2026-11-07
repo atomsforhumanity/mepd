@@ -17,6 +17,7 @@ import { depictUrl } from '../util.js';
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_SEED = 88;   // card widths (px); height is 3/4 of it
 const band = (v) => (v == null ? 'var(--edge-idle)' : v < 10 ? 'var(--chart-3)' : v < 20 ? 'var(--chart-4)' : 'var(--chart-5)');
+const bandKey = (v) => (v == null ? 'idle' : v < 10 ? 'low' : v < 20 ? 'mid' : 'high');
 
 // A deterministic spring layout of every species the run ever showed, the seed in the middle.
 function layoutOf(tl) {
@@ -107,6 +108,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [hover, setHover] = useState(null);   // species id under the pointer: drawn large on top
+  const [hoverEdge, setHoverEdge] = useState(null);   // step id under the pointer: its details
   const job = useStore((s) => (jobId ? s.jobs[jobId] : null));
   const running = ['running', 'queued'].includes(job?.status);
   const url = example ? `/api/examples/${encodeURIComponent(example)}/timeline` : `/api/jobs/${jobId}/network-timeline`;
@@ -118,6 +120,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
     return () => { alive = false; if (t) clearInterval(t); };
   }, [url, running]);
   const lay = useMemo(() => (tl?.frames?.length ? layoutOf(tl) : null), [tl]);
+  const anyDft = useMemo(() => !!tl?.frames?.some((fr) => fr.species.some((x) => x[5]) || fr.steps.some((x) => x[5] === 'd')), [tl]);
   const n = tl?.frames?.length || 0;
   const cur = i == null ? (running ? n - 1 : tl?.final ?? n - 1) : Math.min(i, n - 1);
   useEffect(() => {
@@ -180,22 +183,86 @@ export function LiveNetworkView({ jobId = null, example = null }) {
     // Small cards first, so the ones that matter sit on top; the start last.
     .sort((a, b) => (a.id === lay.seed) - (b.id === lay.seed) || a.w - b.w);
   const shown = new Set(nodes.map((x) => x.id));
+  const sizeOf = Object.fromEntries(nodes.map((x) => [x.id, x]));
   const ends = (a, b) => {
     const [x, y] = [nodeOf[a], nodeOf[b]];
-    return x && y && x !== y && shown.has(x) && shown.has(y) ? [at[x], at[y]] : null;
+    return x && y && x !== y && shown.has(x) && shown.has(y) ? [x, y] : null;
+  };
+  // Where the segment from a's centre to b's leaves a's card (plus a gap).
+  const clip = (from, to, gap) => {
+    const [x0, y0] = at[from], [x1, y1] = at[to], n = sizeOf[from];
+    const dx = x1 - x0, dy = y1 - y0;
+    const t = Math.min(Math.abs((n.w / 2 + gap) / (dx || 1e-9)), Math.abs((n.h / 2 + gap) / (dy || 1e-9)));
+    return [x0 + dx * Math.min(t, 0.45), y0 + dy * Math.min(t, 0.45)];
   };
   const fluxMax = Math.max(1e-30, ...f.steps.map((s) => Math.abs(s[7] || 0)));
   const noFlux = !!f.legacy;   // runs before per-step flux was recorded: barriers only
+  // Without flux: read every step outward from the start (its barrier that way); hops from the seed.
+  const hops = {};
+  if (noFlux) {
+    hops[lay.seed] = 0;
+    let front = [lay.seed];
+    while (front.length) {
+      const next = [];
+      for (const s of f.steps) {
+        for (const [u, v] of [[nodeOf[s[1]], nodeOf[s[2]]], [nodeOf[s[2]], nodeOf[s[1]]]]) {
+          if (front.includes(u) && v && hops[v] == null) { hops[v] = hops[u] + 1; next.push(v); }
+        }
+      }
+      front = next;
+    }
+  }
+  // Without flux, the likely routes: from the start to each species holding material, the path whose
+  // highest barrier is lowest (as the Landscape reads it); their steps are the main ones, read that way.
+  const route = new Map();   // step id -> its direction along a route (true: from -> to)
+  if (noFlux) {
+    const best = { [lay.seed]: -Infinity }, via = {};
+    const todo = new Set([lay.seed]);
+    while (todo.size) {
+      const u = [...todo].reduce((x, y) => (best[x] <= best[y] ? x : y));
+      todo.delete(u);
+      for (const st of f.steps) {
+        const [id, a, b, dGf, dGr] = st;
+        for (const [x, y, bar, dir] of [[nodeOf[a], nodeOf[b], dGf, true], [nodeOf[b], nodeOf[a], dGr, false]]) {
+          if (x !== u || !y || !shown.has(y) || bar == null) continue;
+          const c = Math.max(best[u], bar);
+          if (best[y] == null || c < best[y]) { best[y] = c; via[y] = [id, x, dir]; todo.add(y); }
+        }
+      }
+    }
+    for (const x of nodes) {
+      if (x.id === lay.seed || !x.pop) continue;
+      for (let v = x.id, guard = 0; via[v] && guard < 50; v = via[v][1], guard += 1) route.set(via[v][0], via[v][2]);
+    }
+  }
   const edges = f.steps.map((s) => {
     const [id, a, b, dGf, dGr, src, irc, flux] = s;
-    const fwd = (flux || 0) >= 0;
-    const pq = ends(fwd ? a : b, fwd ? b : a);
-    if (!pq) return null;
-    const barrier = fwd ? dGf : dGr;
-    const w = noFlux ? 2 : Math.min(9, Math.max(1, 9 * Math.sqrt(Math.abs(flux || 0) / fluxMax)));
-    return { id, p: pq[0], q: pq[1], barrier, w, src, irc, flux, moved: moved.get(id) };
+    const fwd = noFlux ? (route.has(id) ? route.get(id) : (hops[nodeOf[a]] ?? 99) <= (hops[nodeOf[b]] ?? 99)) : (flux || 0) >= 0;
+    const ab = ends(fwd ? a : b, fwd ? b : a);
+    if (!ab) return null;
+    const barrier = fwd ? dGf : dGr, back = fwd ? dGr : dGf;
+    // Main routes: carry ≥ 5 % of the busiest step's material (no flux: touch a species that holds material).
+    const main = noFlux ? route.has(id) : Math.abs(flux || 0) >= 0.05 * fluxMax;
+    const w = noFlux ? (main ? 2.4 : 1.4) : Math.min(9, Math.max(1.2, 9 * Math.sqrt(Math.abs(flux || 0) / fluxMax)));
+    const p = clip(ab[0], ab[1], 3), q = clip(ab[1], ab[0], 9);
+    return { id, from: ab[0], to: ab[1], p, q, barrier, back, w, src, irc, flux, main, moved: moved.get(id),
+      flow: noFlux ? null : Math.abs(flux || 0) };
   }).filter(Boolean);
-  const gone = (f.gone || []).map(([id, a, b, state]) => { const pq = ends(a, b); return pq && { id, p: pq[0], q: pq[1], state }; }).filter(Boolean);
+  // The share of what leaves a species that takes this step.
+  const outOf = {};
+  for (const e of edges) outOf[e.from] = (outOf[e.from] || 0) + (e.flow || 0);
+  for (const e of edges) e.share = e.flow == null || !outOf[e.from] ? null : e.flow / outOf[e.from];
+  // Barrier labels on the main routes, the busiest first (at most 8, so they stay readable).
+  // (greedy: none within 40 px of one already placed)
+  const labelledEdges = new Set();
+  const placed = [];
+  for (const e of edges.filter((x) => x.main && x.barrier != null).sort((a, b) => (b.flow ?? 0) - (a.flow ?? 0) || a.barrier - b.barrier)) {
+    const m = [(e.p[0] + e.q[0]) / 2, (e.p[1] + e.q[1]) / 2];
+    if (labelledEdges.size >= 8 || placed.some((o) => Math.hypot(o[0] - m[0], o[1] - m[1]) < 40)) continue;
+    placed.push(m); labelledEdges.add(e.id);
+  }
+  const gone = (f.gone || []).map(([id, a, b, state]) => { const ab = ends(a, b); return ab && { id, p: at[ab[0]], q: at[ab[1]], state }; }).filter(Boolean);
+  const dashed = (src) => anyDft && src === 'g';
   // Labels: a benchmark's products by name (endo, exo), the start, and whatever else holds real material.
   const names = tl.names || {};
   const labelOf = (id) => (id === lay.seed ? names[id] || 'start' : productOf[id] || names[id]);
@@ -241,17 +308,30 @@ export function LiveNetworkView({ jobId = null, example = null }) {
       </div>
       <div class=${`ln-stage ${f.steered ? '' : 'unsteered'}`}>
         <svg viewBox=${`0 0 ${W} ${H}`} width="100%" role="img" aria-label="The network: species as their structures, on cards sized by the material they held; steps as lines coloured by barrier and as wide as their flux">
-          ${gone.map((e) => html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class=${`ln-gone ${e.state}`}><title>${e.id}: ${e.state}</title></line>`)}
-          ${edges.map((e) => html`<g class="ln-edge">
-            <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${e.w}`} class=${`ln-line ${e.src === 'g' ? 'gxtb' : ''}`} />
-            ${!noFlux && Math.abs(e.flux || 0) > 1e-3 * fluxMax && html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-flow" style=${`stroke:${band(e.barrier)};stroke-width:${Math.max(2, e.w * 0.8)}`} />`}
-            ${e.moved != null && Math.abs(e.moved) >= 0.1 && html`<text x=${(e.p[0] + e.q[0]) / 2} y=${(e.p[1] + e.q[1]) / 2 - 6} class=${`ln-delta ${e.moved < 0 ? 'down' : 'up'}`}>${sign(e.moved)}</text>`}
-            <title>${e.id}: barrier ${e.barrier != null ? e.barrier.toFixed(1) : '?'} kcal/mol${e.src === 'd' ? ' (DFT)' : e.src === 'b' ? ' (borrowed)' : ' (g-xTB)'}${e.irc === 1 ? ' · IRC ✓' : ''} · net flux ${(e.flux ?? 0).toPrecision(2)}</title>
-          </g>`)}
+          <defs>${['low', 'mid', 'high', 'idle'].map((k) => html`<marker id=${`ln-arr-${k}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" class=${`ln-arr ${k}`} /></marker>`)}</defs>
+          ${gone.map((e) => html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class=${`ln-gone ${e.state}`} />`)}
+          ${[...edges].sort((a, b) => a.main - b.main).map((e) => {
+            const k = bandKey(e.barrier), on = hoverEdge === e.id;
+            return html`<g class=${`ln-edge ${e.main ? 'main' : 'minor'} ${on ? 'on' : ''}`} key=${e.id}
+                onMouseEnter=${() => setHoverEdge(e.id)} onMouseLeave=${() => setHoverEdge((h) => (h === e.id ? null : h))}>
+              <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-hit" />
+              <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${on ? e.w + 2 : e.w}`}
+                class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
+              ${!noFlux && e.main && html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-flow" style=${`stroke-width:${Math.max(2, e.w * 0.6)}`} />`}
+              ${(labelledEdges.has(e.id) || on) && (() => {
+                const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2, txt = `‡ ${e.barrier.toFixed(1)}`, tw = txt.length * 6.6 + 10;
+                return html`<g class="ln-elabel" transform=${`translate(${mx},${my})`}>
+                  <rect x=${-tw / 2} y="-9" width=${tw} height="18" rx="3" style=${`stroke:${band(e.barrier)}`} />
+                  <text y="4">${txt}</text></g>`;
+              })()}
+              ${e.moved != null && Math.abs(e.moved) >= 0.1 && html`<text x=${(e.p[0] + e.q[0]) / 2} y=${(e.p[1] + e.q[1]) / 2 - 14} class=${`ln-delta ${e.moved < 0 ? 'down' : 'up'}`}>${sign(e.moved)}</text>`}
+            </g>`;
+          })}
           ${nodes.map((x) => html`<g class="ln-node" key=${x.id} transform=${`translate(${x.at[0]},${x.at[1]})`}
               onMouseEnter=${() => setHover(x.id)} onMouseLeave=${() => setHover((h) => (h === x.id ? null : h))}>
             ${x.fresh && html`<rect x=${-x.w / 2 - 6} y=${-x.h / 2 - 6} width=${x.w + 12} height=${x.h + 12} rx="6" class="ln-fresh" />`}
-            <rect x=${-x.w / 2} y=${-x.h / 2} width=${x.w} height=${x.h} rx="4" class=${`ln-card ${x.id === lay.seed ? 'seed' : x.pop ? 'pop' : ''} ${x.dft ? '' : 'gxtb'}`} />
+            <rect x=${-x.w / 2} y=${-x.h / 2} width=${x.w} height=${x.h} rx="4" class=${`ln-card ${x.id === lay.seed ? 'seed' : x.pop ? 'pop' : ''} ${anyDft && !x.dft ? 'gxtb' : ''}`} />
             ${tl.smiles[x.id] ? html`<image href=${depictUrl(tl.smiles[x.id], 160, 120)} x=${-x.w / 2 + 2} y=${-x.h / 2 + 2} width=${x.w - 4} height=${x.h - 4} preserveAspectRatio="xMidYMid meet" />`
               : html`<text x="0" y="5" class="ln-unknown">?</text>`}
             ${x.dE != null && Math.abs(x.dE) >= 0.1 && html`<text x=${x.w / 2 + 4} y=${-x.h / 2} class="ln-delta down">${sign(x.dE)}</text>`}
@@ -271,10 +351,35 @@ export function LiveNetworkView({ jobId = null, example = null }) {
           })()}
           ${nodes.filter((x) => labelled.has(x.id) && labelOf(x.id) && x.id !== hover).map((x) => html`<text x=${x.at[0]} y=${x.at[1] + x.h / 2 + 15} class=${`ln-label ${productOf[x.id] ? 'product' : ''}`}>${labelOf(x.id)}</text>`)}
         </svg>
-        <div class="ln-key small">
-          <span class="lg-scale"><i class="lg-band low"></i><i class="lg-band mid"></i><i class="lg-band high"></i>${'barrier <10 · 10–20 · >20'}</span>
-          <span>card size = material it held</span>${noFlux ? html`<span title="This run is from an explorer version that did not record each step's flux">no flux recorded</span>` : html`<span>width = flux</span>`}<span>┆ energy still g-xTB</span><span class="ln-k-gone">┄ closed or replaced</span>
-        </div>
+        ${(() => {
+          const e = hoverEdge && edges.find((x) => x.id === hoverEdge);
+          if (!e) return null;
+          const nm = (id) => labelOf(id) || (tl.smiles[id] ? short(tl.smiles[id]) : 'unidentified');
+          const dG = e.barrier != null && e.back != null ? e.barrier - e.back : null;
+          const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2;
+          return html`<div class="ln-edge-card" style=${`left:${(100 * mx) / W}%;top:${(100 * my) / H}%`}>
+            <div class="ln-ec-route"><b>${nm(e.from)}</b> <span class="muted">→</span> <b>${nm(e.to)}</b></div>
+            <div class="ln-ec-nums">
+              <span><b style=${`color:${band(e.barrier)}`}>${e.barrier?.toFixed(1) ?? '?'}</b>barrier</span>
+              ${e.back != null && html`<span><b>${e.back.toFixed(1)}</b>back</span>`}
+              ${dG != null && html`<span><b>${dG > 0 ? '+' : ''}${dG.toFixed(1)}</b>ΔG</span>`}
+              ${e.share != null && html`<span><b>${e.share >= 0.01 ? `${Math.round(100 * e.share)}%` : '<1%'}</b>of what leaves ${nm(e.from)}</span>`}
+            </div>
+            ${e.barrier != null && e.barrier < 0 && html`<div class="small muted">Below zero: its TS lies under the energy recorded for ${nm(e.from)} (often a lower conformer found later).</div>`}
+            <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC connects ✓' : e.irc === 0 ? ' · IRC does not connect' : ''}</div>
+          </div>`;
+        })()}
+      </div>
+      <div class="ln-legend small" aria-label="How to read the network">
+        <span class="ln-lg"><svg width="64" height="14"><line x1="2" y1="7" x2="18" y2="7" class="lg-l low" /><line x1="23" y1="7" x2="39" y2="7" class="lg-l mid" /><line x1="44" y1="7" x2="60" y2="7" class="lg-l high" /></svg>
+          ${'barrier to cross: low (<10) · medium · high (>20 kcal/mol)'}</span>
+        <span class="ln-lg"><svg width="52" height="16"><rect x="1" y="2" width="50" height="12" rx="3" class="lg-pill" /><text x="26" y="11.5" class="lg-pill-t">‡ 18.2</text></svg>its height, on the busiest steps</span>
+        ${noFlux ? html`<span class="ln-lg" title="This run comes from an explorer version that did not record how much material each step carries"><svg width="40" height="14"><line x1="2" y1="7" x2="30" y2="7" class="lg-l mid" /><path d="M30,2 L38,7 L30,12 z" class="lg-arr" /></svg>likely route: the lowest barriers from the start to each product (flows not recorded)</span>`
+          : html`<span class="ln-lg"><svg width="40" height="14"><line x1="2" y1="7" x2="30" y2="7" class="lg-l thick" /><path d="M30,2 L38,7 L30,12 z" class="lg-arr" /></svg>material flows this way; thicker = more</span>`}
+        <span class="ln-lg"><svg width="40" height="16"><rect x="1" y="5" width="12" height="9" rx="2" class="lg-card" /><rect x="18" y="1" width="20" height="14" rx="2" class="lg-card" /></svg>bigger card: more of it formed</span>
+        ${anyDft && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l dash" /></svg>dashed: g-xTB energy, DFT check to come</span>`}
+        ${gone.length > 0 && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l gone" /></svg>grey: step closed or replaced</span>`}
+        <span class="ln-lg muted">hover a step or a card for details</span>
       </div>
       <div class="ln-controls">
         <button class="btn primary" onClick=${() => { if (!playing && cur >= n - 1) setI(0); setPlaying(!playing); }}>${playing ? 'Pause' : 'Replay'}</button>
@@ -330,7 +435,7 @@ function Closer({ jobId, job, activity, running }) {
   const sims = activity?.sims || [];
   const reactor = ['nanoreactor', 'reactor'].includes(job?.params?.generator);
   const openSim = (stream) => {
-    update((s) => { s.liveSelection = { ...(s.liveSelection || {}), [jobId]: stream }; });
+    update((s) => { s.networkFocus = { jobId, stream }; });
     openJob(jobId, 'live');
   };
   const done = q?.finished ? Object.entries(q.finished).filter(([, v]) => v.done || v.failed) : [];

@@ -852,6 +852,14 @@ class JobManager:
                 continue
             try:
                 raw = json.loads(fp.read_text())
+                if fp.stem == "kinetics" and isinstance(raw.get("data"), dict):
+                    # Species the explorer left without a SMILES (radicals): perceived from their xyz.
+                    try:
+                        from mepd.web import live_network
+
+                        live_network.fill_species_smiles(jdir, raw["data"])
+                    except Exception:
+                        log.exception("could not perceive the species of %s", job["id"])
                 streams[fp.stem] = _reduce_chain_payload(raw)
             except Exception:
                 continue  # mid-write on a filesystem without atomic rename; next poll

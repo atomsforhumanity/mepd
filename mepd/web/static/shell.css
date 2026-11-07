@@ -247,9 +247,33 @@
 .ln-stage.unsteered svg { opacity: .55; transition: opacity var(--t-med); }
 .ln-gone { stroke: var(--edge-idle); stroke-width: 1; stroke-dasharray: 3 5; opacity: .45; }
 .ln-gone.replaced { stroke: var(--warn); opacity: .5; }
-.ln-line { opacity: .45; stroke-linecap: round; }
+.ln-line { stroke-linecap: round; transition: stroke-width var(--t-fast, .12s); }
+.ln-edge.main .ln-line { opacity: .9; }
+.ln-edge.minor .ln-line { opacity: .22; }
+.ln-edge.on .ln-line { opacity: 1; }
+.ln-hit { stroke: transparent; stroke-width: 14; cursor: help; }
+.ln-arr.low { fill: var(--chart-3); } .ln-arr.mid { fill: var(--chart-4); } .ln-arr.high { fill: var(--chart-5); } .ln-arr.idle { fill: var(--edge-idle); }
+.ln-elabel rect { fill: var(--panel); stroke-width: 1.5; }
+.ln-elabel text { font: 600 11px var(--font-mono); fill: var(--heading); text-anchor: middle; }
+.ln-edge-card { position: absolute; transform: translate(-50%, calc(-100% - 14px)); pointer-events: none; z-index: 3; min-width: 220px; max-width: 320px;
+  padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); display: grid; gap: 6px; }
+.ln-ec-route { font-size: var(--fs-sm); color: var(--text); }
+.ln-ec-nums { display: flex; gap: 14px; }
+.ln-ec-nums span { display: grid; font-size: 11px; color: var(--muted); }
+.ln-ec-nums b { font: 600 18px var(--font-serif); color: var(--heading); }
+.ln-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; color: var(--text); }
+.ln-lg { display: inline-flex; align-items: center; gap: 6px; }
+.ln-lg svg { flex: none; overflow: visible; }
+.lg-l { stroke-width: 3; stroke-linecap: round; }
+.lg-l.low { stroke: var(--chart-3); } .lg-l.mid { stroke: var(--chart-4); } .lg-l.high { stroke: var(--chart-5); }
+.lg-l.thick { stroke: var(--muted); stroke-width: 6; } .lg-arr { fill: var(--muted); }
+.lg-l.dash { stroke: var(--muted); stroke-dasharray: 6 4; stroke-linecap: butt; }
+.lg-l.gone { stroke: var(--edge-idle); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.lg-pill { fill: var(--panel); stroke: var(--chart-4); stroke-width: 1.5; }
+.lg-pill-t { font: 600 10px var(--font-mono); fill: var(--heading); text-anchor: middle; }
+.lg-card { fill: var(--node-bg); stroke: var(--accent); stroke-width: 1.5; }
 .ln-line.gxtb { stroke-dasharray: 8 4; }
-.ln-flow { stroke-dasharray: 2 16; stroke-linecap: round; animation: ls-flow 1s linear infinite; }
+.ln-flow { stroke: var(--panel); opacity: .85; stroke-dasharray: 1 14; stroke-linecap: round; animation: ls-flow 1s linear infinite; pointer-events: none; }
 /* Species are their structures on light cards (as in Explore), readable in both themes. */
 .ln-card { fill: var(--node-bg); stroke: var(--border-strong); stroke-width: 1; }
 .ln-card.pop { stroke: var(--accent); stroke-width: 2.2; }

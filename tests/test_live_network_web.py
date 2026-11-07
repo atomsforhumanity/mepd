@@ -128,3 +128,10 @@ def test_older_kinetics_refreshes_are_recorded_with_the_jobs_clock(tmp_path):
     f = tl["frames"][0]
     assert 41 <= f["t"] <= 60 and f.get("legacy")
     assert tl["smiles"]["1"] == "[H][H]"
+
+
+def test_the_job_pages_kinetics_table_gets_perceived_smiles(tmp_path):
+    _legacy_job(tmp_path)
+    kin = {"species": [{"index": 0, "smiles": ""}, {"index": 1, "smiles": ""}, {"index": 2, "smiles": "C"}]}
+    ln.fill_species_smiles(tmp_path, kin)
+    assert [s["smiles"] for s in kin["species"]] == ["O", "[H][H]", "C"]

@@ -12,6 +12,12 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: the live network's steps say what they are, and its key reads in words.**
+  - Steps end at the cards with an arrow the way material flows. The routes that carry material are drawn strong, with their barrier on them ("‡ 28.6"); steps that carry next to nothing fade back. In runs that did not record flows, the likely routes are marked instead: from the start to each species holding material, the path whose highest barrier is lowest.
+  - Hovering a step shows it in words: from → to, the barrier and the barrier back, ΔG, the share of what leaves its start that goes that way, the energy level and the IRC check.
+  - The key sits under the graph, each entry with a drawn sample, and lists only what the frame shows. Dashed lines and cards (g-xTB energy, DFT check to come) appear only in runs that have DFT energies.
+  - From the live network, a simulation opens on itself in the calculation's Live tab (played and scrolled into view). The Live tab's kinetics table shows perceived SMILES for species the explorer left without one.
+
 - **Web: a network expansion lands on its live network, which grows while it runs.**
   - Opening a network expansion (from Calculations, or right after Run) shows the live network, not the calculation page. Species appear as the explorer finds them, from the first one, before any kinetics.
   - Works with the explorer as it is on this branch: its kinetics refreshes are recorded with the job's clock, steps come from `live/events.jsonl`, and SMILES the explorer leaves empty (radicals) are perceived from each species' xyz (cached in `live/perceived_smiles.json`).
