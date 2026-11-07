@@ -41,7 +41,11 @@ function buildTree(res, ws) {
       extent: Math.abs(st.extent || 0), edge: st.edge, label: st.label, start: e ? (fwd ? e.source : e.target) : null };
   }).filter((s) => s && s.from.every((x) => x in g) && s.to.every((x) => x in g));
   const top = Math.max(0, ...steps.map((s) => s.extent));
-  const relevant = steps.filter((s) => top > 0 && s.extent >= 0.01 * top);
+  // The routes that carry material, plus the next few side routes however little they carry (drawn faint,
+  // with their real share): a 0.04 % side product is shown as one, not rounded away.
+  const byFlow = [...steps].sort((a, b) => b.extent - a.extent);
+  const relevant = byFlow.filter((s, k) => top > 0 && (s.extent >= 0.01 * top || (k < 5 && s.extent > 0)));
+  for (const s of relevant) s.faint = s.extent < 0.01 * top;
   const energy = (ids) => ids.reduce((t, x) => t + (g[x] ?? 0), 0);
   const root = { ids: start, e: energy(start), depth: 0, kids: [] };
   const seen = new Set([key(start)]);
@@ -75,7 +79,8 @@ function buildTree(res, ws) {
   for (const n of nodes) { n.e -= e0; if (n.ts != null) n.ts -= e0; }
   // The share of the material each new species ends up with (its final amount over all made species').
   const madeTotal = Object.entries(final).filter(([id]) => !start.includes(id)).reduce((t, [, v]) => t + Math.max(0, v || 0), 0);
-  return { root, nodes, top, name, final, madeTotal, hidden: steps.length - relevant.length };
+  const faint = relevant.filter((s) => s.faint).length;
+  return { root, nodes, top, name, final, madeTotal, hidden: steps.length - relevant.length, faint };
 }
 
 function layout(tree) {
@@ -139,13 +144,14 @@ export function LandscapeView() {
     const x0 = p.x + BAR / 2, x1 = n.x - BAR / 2, yT = Y(n.ts), mid = (x0 + x1) / 2;
     const d = `M${x0},${p.y} C${x0 + (mid - x0) * 0.6},${p.y} ${mid - (mid - x0) * 0.5},${yT} ${mid},${yT} C${mid + (x1 - mid) * 0.5},${yT} ${x1 - (x1 - mid) * 0.6},${n.y} ${x1},${n.y}`;
     const w = Math.max(1.5, 9 * Math.sqrt(n.via.extent / (tree.top || 1)));
-    return { n, d, w, mid, yT, color: band(n.via.barrier) };
+    return { n, d, w, mid, yT, color: band(n.via.barrier), faint: n.via.faint };
   });
   const label = (n) => n.ids.map((x) => tree.name[x] || x).join(' + ');
   const share = (n) => {
     if (!n.made?.length || !tree.madeTotal) return null;
     const v = n.made.reduce((t, x) => t + Math.max(0, tree.final[x] || 0), 0) / tree.madeTotal;
-    return v >= 0.005 ? `${Math.round(v * 100)}%` : '~0%';
+    // whole percent where that says it; small shares as they are (0.04 %), not '~0 %'
+    return v >= 0.995 && v < 1 ? '>99%' : v >= 0.01 ? `${Math.round(v * 100)}%` : v >= 1e-4 ? `${(v * 100).toPrecision(1)}%` : '<0.01%';
   };
   const basis = res.energies === 'free' ? 'free energy' : 'energy';
   const startNames = (res.species || []).filter((x) => x.c0 > 0).map((x) => x.name).join(' + ');
@@ -156,7 +162,7 @@ export function LandscapeView() {
         <text x=${PAD.l - 8} y=${Y(t) + 4} class="ls-tick">${t > 0 ? '+' : ''}${t}</text></g>`)}
       <text x="8" y="18" class="ls-axis">${basis}, kcal/mol</text>
       <text x=${W - PAD.r} y=${H - 10} class="ls-axis end">start → over the barrier → product</text>
-      ${paths.map((p) => html`<g class=${`ls-route ${p.n.via.edge && p.n.via.edge === last ? 'last' : ''}`} onClick=${() => p.n.via.edge && openReaction(p.n.via.edge,
+      ${paths.map((p) => html`<g class=${`ls-route ${p.n.via.edge && p.n.via.edge === last ? 'last' : ''} ${p.faint ? 'faint' : ''}`} onClick=${() => p.n.via.edge && openReaction(p.n.via.edge,
         { start: p.n.via.start, barrier: p.n.via.barrier, basis: res.energies === 'free' ? 'free energy' : 'electronic energy',
           separated: st0(p.n.via), T: res.temperature })}>
         <path d=${p.d} class="ls-path" style=${`stroke:${p.color};stroke-width:${p.w}`} />
@@ -170,6 +176,6 @@ export function LandscapeView() {
         ${share(n) && html`<text x=${n.x} y=${n.y + 38} class="ls-share">${share(n)}</text>`}
       </g>`)}
     </svg>
-    <p class="small muted ls-foot">from ${startNames} · relative to the start · ${res.temperature} K · ${tree.nodes.length - 1} step${tree.nodes.length === 2 ? '' : 's'} shown${tree.hidden ? ` · ${tree.hidden} carry almost nothing` : ''} · width = how much went that way</p>
+    <p class="small muted ls-foot">from ${startNames} · relative to the start · ${res.temperature} K · ${tree.nodes.length - 1} step${tree.nodes.length === 2 ? '' : 's'} shown${tree.faint ? ` · faint: side routes under 1 % of the main flow` : ''}${tree.hidden ? ` · ${tree.hidden} more carry less` : ''} · width = how much went that way</p>
   </div>`;
 }
