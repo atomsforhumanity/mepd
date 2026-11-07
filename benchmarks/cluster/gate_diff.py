@@ -30,7 +30,8 @@ def main(argv: list) -> int:
             f"{'/'.join(_f(v) for v in r['recall'])}, settle {'/'.join(_f(v) for v in r['settle'])}"
             if r else f"{name}: -" for name, r in (("old", a), ("new", b)))
         print(line)
-        if a is None or b is None or a["pass"] != b["pass"] or a["acc"] != b["acc"]:
+        r2 = lambda r: tuple(None if v is None else round(v, 2) for v in r["acc"])   # moved: by > 0.005 kcal/mol
+        if a is None or b is None or a["pass"] != b["pass"] or r2(a) != r2(b):
             moved.append({"system": sy, "old": a, "new": b})
     print(f"overall: old {'PASS' if old.get('pass') else 'FAIL'}, new {'PASS' if new.get('pass') else 'FAIL'}")
     print("moved (verdict or accuracy numbers): " + (", ".join(m["system"] for m in moved) or "none"))
