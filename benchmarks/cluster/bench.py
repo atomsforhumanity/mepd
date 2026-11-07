@@ -241,7 +241,7 @@ def afh(*args, check=True):
     return subprocess.run(["afh", *args], check=check)
 
 
-def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
+def score_run(runs, rescore: bool = False, name: str | None = None, reselect: bool = False) -> dict:
     """Unpack and score every finished task of the run(s); aggregate per (system, configuration) into
     results/<name> (default: the run's own name). Several runs = one result set; a later run's task replaces an
     earlier one's of the same id, and `commits_by_system` says which commit each system's runs used."""
@@ -253,7 +253,7 @@ def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
     manifests, scores = [], []
     by_id: dict = {}
     for run in runs:     # a later run's task replaces an earlier run's task of the same id (a rerun at a fix)
-        for o in _score_tasks(run, suite, rescore, manifests):
+        for o in _score_tasks(run, suite, rescore, manifests, reselect):
             by_id[o["id"]] = o
     scores = list(by_id.values())
     commits = sorted({c for m in manifests for c in (m["commit"] if isinstance(m["commit"], list) else [m["commit"]])})
@@ -271,20 +271,49 @@ def score_run(runs, rescore: bool = False, name: str | None = None) -> dict:
     return agg
 
 
-def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list) -> list:
+# the keys score.score_run's selectivity part writes (reselect replaces only these)
+SELECTIVITY_KEYS = ("targets", "worst_error_kcal", "worst_abs_error_kcal", "within_unattributable",
+                    "worst_error_final_amounts_kcal", "selectivity_measure", "first_passage_from",
+                    "first_passage_error")
+
+
+def _reselect(args):
+    """The selectivity part of one scored task again (score.py's current measure), the rest of its score.json kept:
+    settle and audit don't depend on it."""
+    sysdef, dst = args
+    o = json.loads((dst / "score.json").read_text())
+    if not o.get("ok"):
+        return o
+    result = json.loads((dst / "result.json").read_text()) if (dst / "result.json").is_file() else {}
+    new = score.score_run(sysdef, dst / "run", result, None, do_audit=False)
+    before = {"selectivity": [t.get("selectivity") for t in o.get("targets") or []],
+              "worst_error_kcal": o.get("worst_error_kcal")}
+    o.update({k: new.get(k) for k in SELECTIVITY_KEYS})
+    o["reselected"] = {"instrument": score.instrument(), "before": before}
+    (dst / "score.json").write_text(json.dumps(o, indent=1, default=str))
+    return o
+
+
+def _score_tasks(run: str, suite: dict, rescore: bool, manifests: list, reselect: bool = False) -> list:
     import tarfile
 
     d, res = AFH_DIR / run, RESULTS / run
     manifests.append(json.loads((d / "manifest.json").read_text()))
     tasks = [json.loads(line) for line in (d / "tasks.jsonl").read_text().splitlines() if line.strip()]
     scores = []
+    if reselect and not rescore:   # 4 processes (local <= 4 cores), one thread each
+        from concurrent.futures import ProcessPoolExecutor
+
+        todo = [(suite[t["system"]], res / t["id"]) for t in tasks if (res / t["id"] / "score.json").is_file()]
+        with ProcessPoolExecutor(4) as ex:
+            done = {str(o["id"]): o for o in ex.map(_reselect, todo)}
     for t in tasks:
         src = next((p for p in (d / "output" / t["id"], d / "errors" / t["id"]) if p.is_dir()), None)
         if src is None:
             continue
         dst = res / t["id"]
         if (dst / "score.json").is_file() and not rescore:
-            scores.append(json.loads((dst / "score.json").read_text()))
+            scores.append(done[t["id"]] if reselect else json.loads((dst / "score.json").read_text()))
             continue
         dst.mkdir(parents=True, exist_ok=True)
         for tgz in ("run.tgz", "snapshots.tgz"):
@@ -430,6 +459,8 @@ def main(argv: list) -> int:
     s = sub.add_parser("score")
     s.add_argument("run", nargs="+")
     s.add_argument("--rescore", action="store_true")
+    s.add_argument("--reselect", action="store_true",
+                   help="recompute only the selectivity part of scored tasks (score.py's current measure)")
     s.add_argument("--as", dest="name", default=None, help="results name for several runs (default: the first)")
     g = sub.add_parser("gate")
     g.add_argument("base")
@@ -460,7 +491,7 @@ def main(argv: list) -> int:
     elif a.cmd == "status":
         afh("status", a.run, check=False)
     elif a.cmd == "score":
-        score_run(a.run, a.rescore, a.name)
+        score_run(a.run, a.rescore, a.name, a.reselect)
     elif a.cmd == "local":
         local(a.run, a.threads)
     elif a.cmd == "report":

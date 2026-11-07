@@ -42,6 +42,16 @@ Definitions (BRIEF.md, "Shared definitions"), as computed here:
   each holding until the next one (the last until the end of the run): time-weighted mean and max over the
   snapshots with a finite, nonzero selectivity, and the time more than 0.5 kcal/mol off (a snapshot with no,
   zero or infinite selectivity counts as off), from the first snapshot on.
+- selectivity (the scored one, and the error from it): the first-passage yield of each channel -- the run's
+  final kinetics (same network, energies, mirror images, temperature, time) re-run with every channel's
+  product species absorbing (1 Hartree deeper, steps between two channel species closed): the targets are
+  primary branching from the seed (k-ratios, kinetic isomer ratios, methyl formate's primary-yield floor), and
+  the final amounts also count what a channel's products go on to form (sb-cut3: methanol's decomposition to
+  CH2O + H2 + CO, methyl formate's R5 product set). The network: the summary's `access` record, else rebuilt
+  from the open steps' kinetics_barrier_kcal (first_passage_from). rebuild_check_kcal: the rebuilt kinetics,
+  not absorbing, against the recorded final amounts' ratio. The final amounts' ratio is kept as
+  ratio_final_amounts / error_final_amounts_kcal (worst_error_final_amounts_kcal). Settle time and swings are
+  on the live kinetics' amounts, so they compare with the final amounts' ratio.
 - wall, CPU (user+sys of the expand process tree), stop reason: the task wrapper's result.json.
 
 The invariant audit (flags, never fixes): duplicate species, duplicate TS steps, mirror-image TS pairs
@@ -283,6 +293,97 @@ def folded_amounts(summary: dict) -> dict | None:
     return out
 
 
+HARTREE_KCAL = 627.509474
+
+
+def _kinetics_network(summary: dict):
+    """(energies, step TS energies, open step indices, how) of the run's final kinetics, Hartree, before the
+    mirror images: the summary's `access` record when it has one (team4x 3a047da on: the energies the cutoff
+    and the kinetics used), else rebuilt from the open steps' kinetics barriers (kinetics_barrier_kcal, which
+    the kinetics computed on the energies with the mirror images' corrections -- those corrections are taken
+    back out so Mirrors.extend applies them once): species energies along the open steps from the seed (the
+    clamp TS >= both ends keeps forward - reverse = E_b - E_a), a species no open step reaches from an
+    assigned one by its mirror image. Returns None when neither is possible."""
+    sp, steps = summary.get("species") or [], summary.get("steps") or []
+    acc = summary.get("access")
+    if acc:
+        return [float(e) for e in acc["energies"]], [float(t) for t in acc["ts_energies"]], set(acc["open"]), "access"
+    kbs = [st.get("kinetics_barrier_kcal") for st in steps]
+    if not sp or not any(kb is not None for kb in kbs):
+        return None
+    n = len(sp)
+    g = [None] * n
+    g[0] = 0.0
+    rec = summary.get("mirror_images") or {}
+    mir = rec.get("species_mirror") or []
+    opened = {m for m, kb in enumerate(kbs) if kb is not None}
+    changed = True
+    while changed:
+        changed = False
+        for m in opened:
+            a, b, (f, r) = steps[m]["a"], steps[m]["b"], kbs[m]
+            if g[a] is not None and g[b] is None:
+                g[b], changed = g[a] + (f - r) / HARTREE_KCAL, True
+            elif g[b] is not None and g[a] is None:
+                g[a], changed = g[b] - (f - r) / HARTREE_KCAL, True
+        for k in range(n):
+            j = mir[k] if k < len(mir) else None
+            if g[k] is None and j is not None and 0 <= j < n and g[j] is not None:
+                g[k], changed = g[j], True
+    if any(g[steps[m]["a"]] is None or g[steps[m]["b"]] is None for m in opened):
+        return None
+    rt = 1.987204259e-3 * float((summary.get("steering") or {}).get("temperature_K") or 298.15) / HARTREE_KCAL
+    for k, c in (rec.get("chiral_conformers") or {}).items():
+        if g[int(k)] is not None:
+            g[int(k)] += float(c) * rt * math.log(2.0)
+    top = max(x for x in g if x is not None)
+    g = [top if x is None else x for x in g]   # nothing reaches them: any energy
+    ts = [g[st["a"]] + kbs[m][0] / HARTREE_KCAL if m in opened else max(g[st["a"]], g[st["b"]]) + 1.0
+          for m, st in enumerate(steps)]
+    return g, ts, opened, "barriers"
+
+
+def first_passage_amounts(summary: dict, channel_set: set):
+    """{species: amount} of the run's final kinetics re-run with every channel product absorbing (first passage:
+    the channel species 1 Hartree deeper, so nothing climbs out, and steps between two of them closed; closed
+    steps TS + 1 Hartree as the explorer closes them), the same network, energies, mirror images, temperature
+    and time otherwise (benchmarks: cutoff/diag/sel_primary.py "absorbing"); virtual mirror images folded into
+    the species they mirror. Also the same kinetics without absorbing (`as_run`), to check the rebuild against
+    the amounts the run recorded. None when the network can't be rebuilt."""
+    from mepd.discovery.kinetics import Step, simulate
+    from mepd.discovery.mirror import Mirrors
+
+    net = _kinetics_network(summary)
+    if net is None:
+        return None
+    g0, ts0, opened, how = net
+    steps = summary.get("steps") or []
+    st_ = summary.get("steering") or {}
+    T, t_end = float(st_["temperature_K"]), float(st_["time_s"])
+    rec = summary.get("mirror_images") or {}
+    n0 = len(g0)
+
+    def run(absorbing):
+        g = [e - 1.0 if k in absorbing else e for k, e in enumerate(g0)]
+        ks = [Step(st["a"], st["b"], ts0[m] + (0.0 if m in opened and not {st["a"], st["b"]} <= absorbing else 1.0),
+                   st.get("label", "")) for m, st in enumerate(steps)]
+        n = n0
+        if rec:
+            mir = Mirrors(n0, [v["mirror_of"] for v in rec["virtual_species"]], rec["species_mirror"],
+                          {int(k): v for k, v in rec["chiral_conformers"].items()},
+                          [(t["step"], t["a"], t["b"]) for t in rec["added_twins"]],
+                          [tuple(p) for p in rec["found_twins"]])
+            n, ks, g = mir.extend(ks, g, T)
+        k = simulate(n, ks, g, temperature=T, time_s=t_end)
+        fin = list(k.final_concentration)
+        out = {i: fin[i] for i in range(n0)}
+        for v in rec.get("virtual_species") or []:
+            out[v["mirror_of"]] = out.get(v["mirror_of"], 0.0) + fin[v["index"]]
+        return out
+
+    return {"how": how, "absorbing": run(set(channel_set)), "as_run": run(set())}
+
+
 def reachable(n: int, steps: list, use=lambda st: True) -> set:
     adj = {}
     for st in steps:
@@ -375,7 +476,8 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
     cutoff = (summary.get("steering") or {}).get("cutoff_kcal")
     n_final = len(summary.get("species") or [])
     mir = (summary.get("mirror_images") or {}).get("species_mirror") or list(range(n_final))
-    final_sel = [x["selectivity"] for x in final["targets"]]
+    # the live kinetics hold amounts, not first passages: their course is compared with the run's final amounts
+    final_sel = [x.get("ratio_final_amounts", x["selectivity"]) for x in final["targets"]]
     req = sysdef.get("required") or list(sysdef["channels"])
     complete = all(final["recall"]["found"][c] and final["recall"]["connected"][c] for c in req)
     kin = sorted(snap_dir.glob("kinetics_*.json"), key=lambda p: int(p.stem.split("_")[-1]))
@@ -726,18 +828,45 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
            "connected": {c: any(k in reach_open for k in ks) for c, ks in chans.items()},
            "linked": {c: any(k in reach_any for k in ks) for c, ks in chans.items()},
            "species_of": chans}
+    # the scored selectivity: first-passage channel yields (every channel's products absorbing, the final
+    # kinetics otherwise); the final amounts' ratio is kept as ratio_final_amounts
+    fp = None
+    if amounts:
+        try:
+            fp = first_passage_amounts(s, {k for ks in chans.values() for k in ks})
+        except Exception as exc:
+            fp = {"error": f"{type(exc).__name__}: {exc}"}
+    fp_ok = bool(fp) and "absorbing" in fp
+    prim = target_values(sysdef, chans, lambda k: fp["absorbing"].get(k, 0.0)) if fp_ok else None
+    rebuilt = target_values(sysdef, chans, lambda k: fp["as_run"].get(k, 0.0)) if fp_ok else None
     targets = []
-    for t, (sel, a, b) in zip(sysdef["targets"], target_values(sysdef, chans, amount)):
+    for j, (t, (sel_f, a_f, b_f)) in enumerate(zip(sysdef["targets"], target_values(sysdef, chans, amount))):
         lo, hi = t["range"]
+        sel, a, b = prim[j] if prim else (None, None, None)
+        check = None
+        if rebuilt:
+            x = rebuilt[j][0]
+            check = 0.0 if x == sel_f else (abs(R_KCAL * temp * math.log(x / sel_f))
+                                            if x and sel_f and math.isfinite(x) and math.isfinite(sel_f) else None)
         targets.append({"name": _target_name(t), "selectivity": sel, "num_amount": a, "den_amount": b,
-                        "range": [lo, hi], "error_kcal": error_kcal(sel, lo, hi, temp) if amounts else None})
+                        "range": [lo, hi], "error_kcal": error_kcal(sel, lo, hi, temp) if prim else None,
+                        "ratio_final_amounts": sel_f, "final_num_amount": a_f, "final_den_amount": b_f,
+                        "error_final_amounts_kcal": error_kcal(sel_f, lo, hi, temp) if amounts else None,
+                        # |RT ln| between the rebuilt kinetics (not absorbing) and the run's recorded final ratio
+                        "rebuild_check_kcal": check})
     errs = [x["error_kcal"] for x in targets]
     worst = None if any(e is None for e in errs) or not errs else max(errs, key=abs)
+    errs_f = [x["error_final_amounts_kcal"] for x in targets]
+    worst_f = None if any(e is None for e in errs_f) or not errs_f else max(errs_f, key=abs)
     kin = (s.get("rounds") or [{}])[-1]
     out = {"species": len(sp), "steps": len(steps), "recall": rec,
+           "selectivity_measure": "first passage (channel products absorbing)",
+           "first_passage_from": (fp or {}).get("how") if fp_ok else None,
+           "first_passage_error": (fp or {}).get("error") if fp and not fp_ok else None,
            "required": req, "full_recall": all(rec["found"][c] and rec["connected"][c] for c in req),
            "targets": targets, "worst_error_kcal": worst,
            "worst_abs_error_kcal": None if worst is None else abs(worst),
+           "worst_error_final_amounts_kcal": worst_f,
            # |error| inside the experiment's own caveat (k-infinity vs fall-off): not attributable to the explorer
            "unattributable_kcal": sysdef.get("unattributable_kcal"),
            "within_unattributable": None if worst is None or sysdef.get("unattributable_kcal") is None
@@ -947,7 +1076,13 @@ def aggregate(scores: list, suite: dict) -> dict:
             name = _target_name(t)
             errs = [(o["targets"][i]["error_kcal"] if o.get("ok") else None) for o in runs]
             sels = [(o["targets"][i]["selectivity"] if o.get("ok") else None) for o in runs]
-            targets[name] = {"error_kcal": _stats(errs), "selectivity": _stats(sels), "range": t["range"]}
+            fin = [(o["targets"][i].get("ratio_final_amounts") if o.get("ok") else None) for o in runs]
+            efin = [(o["targets"][i].get("error_final_amounts_kcal") if o.get("ok") else None) for o in runs]
+            chk = [o["targets"][i].get("rebuild_check_kcal") for o in runs if o.get("ok")]
+            targets[name] = {"error_kcal": _stats(errs), "selectivity": _stats(sels), "range": t["range"],
+                             "ratio_final_amounts": _stats(fin), "error_final_amounts_kcal": _stats(efin),
+                             "rebuild_check_kcal_max": max((c for c in chk if c is not None), default=None),
+                             "rebuild_unchecked": sum(c is None for c in chk)}
         chans = list(suite[system]["channels"])
         rec = {c: {"found": sum(bool(o.get("ok") and o["recall"]["found"][c]) for o in runs) / len(runs),
                    "connected": sum(bool(o.get("ok") and o["recall"]["connected"][c]) for o in runs) / len(runs)}
@@ -990,10 +1125,11 @@ def _f(x, fmt=".2f"):
 
 def table(agg: dict, scores: list) -> str:
     """Markdown: one row per (system, configuration), then one per run."""
-    lines = ["| system / config | n | full recall | recall found / connected per channel | selectivity median [min, max] "
-             "(expt) | worst abs err kcal median [min, max] | not attributable (abs err within the expt caveat) | "
-             "settle s median [min, max] | settled <= 30 min | wall s median | CPU-h median | stopped | audit flags |",
-             "|" + "---|" * 13]
+    lines = ["| system / config | n | full recall | recall found / connected per channel | selectivity (first passage) "
+             "median [min, max] (expt) | worst abs err kcal median [min, max] | not attributable (abs err within the "
+             "expt caveat) | ratio_final_amounts median [min, max] | settle s median [min, max] | settled <= 30 min | "
+             "wall s median | CPU-h median | stopped | audit flags |",
+             "|" + "---|" * 14]
     for key, g in agg.items():
         if not isinstance(g, dict) or "system" not in g:
             continue
@@ -1001,28 +1137,33 @@ def table(agg: dict, scores: list) -> str:
         sel = "; ".join(f"{n}: {_f(t['selectivity']['median'], '.3g')} [{_f(t['selectivity']['min'], '.3g')}, "
                         f"{_f(t['selectivity']['max'], '.3g')}] ({_f(t['range'][0], '.3g')}-{_f(t['range'][1], '.3g')})"
                         for n, t in g["targets"].items())
+        fin = "; ".join(f"{_f((t.get('ratio_final_amounts') or {}).get('median'), '.3g')} "
+                        f"[{_f((t.get('ratio_final_amounts') or {}).get('min'), '.3g')}, "
+                        f"{_f((t.get('ratio_final_amounts') or {}).get('max'), '.3g')}]" for t in g["targets"].values())
         w, st = g["worst_abs_error_kcal"], g["settle_s"]
         stopped = ", ".join(f"{k} x{g['stopped'].count(k)}" for k in sorted(set(g["stopped"])))
         flags = ", ".join(f"{k} {v}" for k, v in g["audit_flags"].items() if v) or "none"
         lines.append(f"| {key}{' (held out)' if g['held_out'] else ''} | {g['n']} | {g['full_recall_fraction']:.0%} | "
                      f"{rec} | {sel} | {_f(w['median'])} [{_f(w['min'])}, {_f(w['max'])}]{' (+%d inf)' % w['n_inf'] if w['n_inf'] else ''} | "
                      f"{'-' if g.get('unattributable_kcal') is None else '%.0f%% of runs (<= %.1f kcal/mol)' % (100 * g['within_unattributable_fraction'], g['unattributable_kcal'])} | "
-                     f"{_f(st['median'], '.0f')} [{_f(st['min'], '.0f')}, {_f(st['max'], '.0f')}]{' (+%d never)' % st['n_inf'] if st['n_inf'] else ''} | "
+                     f"{fin} | {_f(st['median'], '.0f')} [{_f(st['min'], '.0f')}, {_f(st['max'], '.0f')}]{' (+%d never)' % st['n_inf'] if st['n_inf'] else ''} | "
                      f"{g['settled_30min_fraction']:.0%} | {_f(g['wall_s']['median'], '.0f')} | "
                      f"{_f(g['cpu_h']['median'], '.2f')} | {stopped} | {flags} |")
-    lines += ["", "| task | seeds | species | steps | found | connected | selectivity | err kcal | conversion | settle s | "
-                  "wall s | CPU-h | stopped | flags |", "|" + "---|" * 14]
+    lines += ["", "| task | seeds | species | steps | found | connected | selectivity (first passage) | err kcal | "
+                  "ratio_final_amounts (err) | conversion | settle s | wall s | CPU-h | stopped | flags |", "|" + "---|" * 15]
     for o in sorted(scores, key=lambda o: o["id"]):
         if not o.get("ok"):
-            lines.append(f"| {o['id']} | {(o.get('seeds') or {}).get('reactor_seed', '-')} | - | - | - | - | - | - | - | - | {_f(o.get('wall_s'), '.0f')} | "
+            lines.append(f"| {o['id']} | {(o.get('seeds') or {}).get('reactor_seed', '-')} | - | - | - | - | - | - | - | - | - | {_f(o.get('wall_s'), '.0f')} | "
                          f"{_f(o.get('cpu_h'))} | {o.get('stopped')} | - |")
             continue
         yn = lambda d: ",".join(f"{k}:{'Y' if v else 'N'}" for k, v in d.items())
         sels = "; ".join(_f(t["selectivity"], ".3g") for t in o["targets"])
         errs = "; ".join(_f(t["error_kcal"], "+.2f") for t in o["targets"])
+        fins = "; ".join(f"{_f(t.get('ratio_final_amounts'), '.3g')} ({_f(t.get('error_final_amounts_kcal'), '+.2f')})"
+                         for t in o["targets"])
         nf = (o.get("audit") or {}).get("n_flags") or {}
         lines.append(f"| {o['id']} | {o['seeds']['reactor_seed'] if o.get('seeds') else '-'} | {o['species']} | {o['steps']} | "
-                     f"{yn(o['recall']['found'])} | {yn(o['recall']['connected'])} | {sels} | {errs} | "
+                     f"{yn(o['recall']['found'])} | {yn(o['recall']['connected'])} | {sels} | {errs} | {fins} | "
                      f"{_f(o.get('conversion'), '.3g')} | {_f(o['settle'].get('settle_s'), '.0f')} | "
                      f"{_f(o.get('wall_s'), '.0f')} | {_f(o.get('cpu_h'))} | {o.get('stopped')} | "
                      f"{', '.join(f'{k} {v}' for k, v in nf.items() if v) or '-'} |")
