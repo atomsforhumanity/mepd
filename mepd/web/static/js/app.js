@@ -57,6 +57,8 @@ function App() {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || state.modal || e.defaultPrevented) return;
       if (e.key === 'Escape') {
         // Up one level: the selection first, then a drawer, then the page (modes leave by their own button).
+        // (a reaction page selects its own edge: Esc leaves it at once)
+        if (state.view.tab === 'reaction') { clearSelection(); upLevel(); return; }
         if (state.connectMode || state.selection.structures.length || state.selection.edges.length) {
           set({ connectMode: false });
           clearSelection();

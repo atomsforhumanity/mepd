@@ -4,7 +4,7 @@
 // barrier result of the reaction's own calculation.
 import { html, useEffect, useMemo, useState } from '../lib.js';
 import { api } from '../api.js';
-import { openJob, select, set, state, useStore } from '../store.js';
+import { goToPage, openJob, originLabel, select, set, state, useStore } from '../store.js';
 import { cls, edgeStatus, fmtKcal } from '../util.js';
 import { Viewer3D } from './Viewer3D.js';
 import { EnergyPlot } from './EnergyPlot.js';
@@ -134,14 +134,17 @@ export function ReactionFocus({ edgeId }) {
   const jobs = useStore((s) => s.jobs);
   const ctx = useStore((s) => (s.reactionContext?.edgeId === edgeId ? s.reactionContext : null));
   const edge = ws.edges?.[edgeId];
+  const from = useStore((s) => s.view.from || null);
+  const back = html`<a href=${`#${from || '/explore'}`} onClick=${(ev) => { ev.preventDefault(); goToPage(from); }}
+    title="Back where you opened it (Esc)">${originLabel(from)}</a>`;
   useEffect(() => { if (edge && !state.selection.edges.includes(edgeId)) select({ structures: [], edges: [edgeId] }); }, [edgeId, !!edge]);
   if (!edge) return html`<div class="focus-missing"><p>This reaction is not in this workspace.</p>
-    <button class="btn" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>Back to Explore</button></div>`;
+    <button class="btn" onClick=${() => goToPage(from)}>Back to ${originLabel(from)}</button></div>`;
   const name = (id) => ws.structures?.[id]?.name || id;
   const st = edgeStatus(edge, jobs);
   // Read the way it was opened from (the Landscape's route), else source -> target.
   const flip = ctx?.start && ctx.start === edge.target;
-  const [from, to] = flip ? [edge.target, edge.source] : [edge.source, edge.target];
+  const [start, end] = flip ? [edge.target, edge.source] : [edge.source, edge.target];
   const b1 = st.barrierFwd ?? st.barrier, b2 = st.barrierRev;
   const fwd = flip ? b2 : b1, rev = flip ? b1 : b2;
   // An expansion's step: play that very step (its own IRC), not its run's lowest path.
@@ -149,8 +152,7 @@ export function ReactionFocus({ edgeId }) {
   const ownStep = o.label && !o.proposed && jobs[o.job]?.op === 'graph-enumeration';
   const band = (v) => `band-${v < 10 ? 'low' : v < 20 ? 'mid' : 'high'}`;
   return html`<div class="focus reaction-focus">
-    <nav class="crumbs"><a href="#/explore" onClick=${(ev) => { ev.preventDefault(); set({ view: { tab: 'graph', jobId: null } }); }}>Explore</a>
-      <span>›</span><b>${name(from)} → ${name(to)}</b></nav>
+    <nav class="crumbs">${back}<span>›</span><b>${name(start)} → ${name(end)}</b></nav>
     <div class="focus-chips">
       ${ctx?.barrier != null && html`<span class="chip-k" title=${`What the Landscape drew: the kinetics' barrier (${ctx.basis}${ctx.T ? `, ${ctx.T} K` : ''}), ${ctx.separated ? 'from the molecules apart' : 'from the lowest structure found'}`}>
         <b class=${band(ctx.barrier)}>‡ ${fmtKcal(ctx.barrier)}</b> in the kinetics</span>`}
@@ -162,7 +164,7 @@ export function ReactionFocus({ edgeId }) {
       ${st.barrierJob && html`<a class="chip-k link" href=${`#/calc/${st.barrierJob}`} onClick=${(ev) => { ev.preventDefault(); openJob(st.barrierJob); }}>Calculation ›</a>`}
     </div>
     ${o.rejected_step ? html`<p class="small muted">${o.headline}</p>` : ''}
-    ${ownStep ? html`<${ReactionPlayer} jobId=${o.job} stepEdge=${edgeId} start=${from} key=${`${edgeId}:${from}`} />`
+    ${ownStep ? html`<${ReactionPlayer} jobId=${o.job} stepEdge=${edgeId} start=${start} key=${`${edgeId}:${start}`} />`
       : st.barrierJob
       ? html`<${ReactionPlayer} jobId=${st.barrierJob} />`
       : html`<div class="focus-empty"><p>No path computed for this reaction yet.</p><p class="small muted">Pick Transition state in the panel on the right.</p></div>`}

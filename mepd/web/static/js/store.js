@@ -218,7 +218,7 @@ export function formatHash(v, analyze = state.analyze) {
     case 'analyze': path = `/${['kinetics', 'landscape'].includes(analyze?.view) ? analyze.view : 'reactions'}`; break;
     case 'jobs': path = '/calculations'; break;
     case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
-    case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;
+    case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;   // (+ ?from=, below)
     case 'network': path = v.example ? `/network/example/${encodeURIComponent(v.example)}` : `/network/${encodeURIComponent(v.jobId || '')}`; break;
     case 'design': path = '/design'; break;
     case 'sandbox': path = `/reactor/${encodeURIComponent(sandboxId(v))}`; break;
@@ -226,6 +226,7 @@ export function formatHash(v, analyze = state.analyze) {
   }
   const q = [];
   if (v.tab === 'job' && v.run) q.push(`run=${encodeURIComponent(v.run)}`);
+  if (v.tab === 'reaction' && v.from && v.from !== '/explore') q.push(`from=${encodeURIComponent(v.from)}`);
   if (v.drawer) q.push(`d=${v.drawer}`);
   return `#${path}${q.length ? `?${q.join('&')}` : ''}`;
 }
@@ -246,7 +247,7 @@ export function parseHash(hash) {
     case 'landscape': return { ...base, tab: 'analyze', analyze: 'landscape' };
     case 'calculations': return { ...base, tab: 'jobs' };
     case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
-    case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1] } : { ...base, tab: 'graph' };
+    case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1], from: q.from || null } : { ...base, tab: 'graph' };
     case 'network': return parts[1] === 'example' && parts[2] ? { ...base, tab: 'network', example: parts[2] }
       : parts[1] ? { ...base, tab: 'network', jobId: parts[1] } : { ...base, tab: 'graph' };
     case 'design': return { ...base, tab: 'design' };
@@ -280,7 +281,7 @@ export function upLevel() {
   const v = state.view;
   if (v.drawer) { set({ view: { ...v, drawer: null } }); return; }
   if (v.tab === 'job') { set({ view: { tab: 'jobs', jobId: null } }); return; }
-  if (v.tab === 'reaction') { set({ view: { tab: 'graph', jobId: null } }); return; }
+  if (v.tab === 'reaction') { goToPage(v.from); return; }
   if (v.tab === 'network') { set({ view: v.jobId ? { tab: 'graph', jobId: null } : { tab: 'welcome', jobId: null } }); return; }
   if (v.tab !== 'graph') set({ view: { tab: 'graph', jobId: null } });
 }
@@ -315,8 +316,28 @@ if (typeof window !== 'undefined' && window.history) {
 // `context`: where it was opened from, e.g. the Landscape's route through it
 // ({ start: node id the route enters by, barrier, basis }): the page then reads
 // the reaction that way and shows that number beside its path.
+// The page it was opened from is kept (also in its address, `?from=`): its
+// breadcrumb and Esc go back there (the Landscape, Kinetics, a live network...).
 export function openReaction(edgeId, context = null) {
-  set({ view: { tab: 'reaction', jobId: null, edgeId }, reactionContext: context ? { edgeId, ...context } : null });
+  const from = state.view.tab === 'reaction' ? state.view.from || null : formatHash({ ...state.view, drawer: null }).slice(1);
+  set({ view: { tab: 'reaction', jobId: null, edgeId, from }, reactionContext: context ? { edgeId, ...context } : null });
+}
+// What a page address is called in a breadcrumb.
+export function originLabel(from) {
+  const p = (from || '').split('?')[0];
+  if (p === '/landscape') return 'Landscape';
+  if (p === '/kinetics') return 'Kinetics';
+  if (p === '/reactions') return 'Reactions';
+  if (p.startsWith('/network/')) return 'Live network';
+  if (p.startsWith('/calc/')) return 'Calculation';
+  if (p === '/calculations') return 'Calculations';
+  if (p === '/home') return 'Home';
+  return 'Explore';
+}
+// Back to a page by its address (the one a reaction page was opened from).
+export function goToPage(from) {
+  const v = viewFromHash(`#${from || '/explore'}`);
+  set({ view: v || { tab: 'graph', jobId: null } });
 }
 
 export function openJob(jobId, tab = null) {

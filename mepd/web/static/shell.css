@@ -345,3 +345,7 @@
 .ln-rp span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ln-rp i { font-style: normal; color: var(--warn); }
 .ln-rp b { color: var(--muted); font-weight: 600; }
+
+/* Landscape: the route opened last, marked on the way back */
+.ls-route.last .ls-path { filter: drop-shadow(0 0 5px var(--accent)); opacity: 1; }
+.ls-route.last .ls-ts { text-decoration: underline; }

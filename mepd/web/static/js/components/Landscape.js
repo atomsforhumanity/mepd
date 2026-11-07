@@ -100,6 +100,7 @@ function layout(tree) {
 
 export function LandscapeView() {
   const res = useStore((s) => s.kinetics?.res || null);
+  const last = useStore((s) => s.reactionContext?.edgeId || null);   // the route opened last: marked on return
   const ws = useStore((s) => s.workspace);
   const tree = useMemo(() => (res ? buildTree(res, ws) : null), [res, ws]);
   if (!res || !tree) {
@@ -131,7 +132,7 @@ export function LandscapeView() {
         <text x=${PAD.l - 8} y=${Y(t) + 4} class="ls-tick">${t > 0 ? '+' : ''}${t}</text></g>`)}
       <text x="8" y="18" class="ls-axis">${basis}, kcal/mol</text>
       <text x=${W - PAD.r} y=${H - 10} class="ls-axis end">start → over the barrier → product</text>
-      ${paths.map((p) => html`<g class="ls-route" onClick=${() => p.n.via.edge && openReaction(p.n.via.edge,
+      ${paths.map((p) => html`<g class=${`ls-route ${p.n.via.edge && p.n.via.edge === last ? 'last' : ''}`} onClick=${() => p.n.via.edge && openReaction(p.n.via.edge,
         { start: p.n.via.start, barrier: p.n.via.barrier, basis: res.energies === 'free' ? 'free energy' : 'electronic energy',
           separated: st0(p.n.via), T: res.temperature })}>
         <path d=${p.d} class="ls-path" style=${`stroke:${p.color};stroke-width:${p.w}`} />
