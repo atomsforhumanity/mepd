@@ -578,6 +578,10 @@ class ExpandParams(Params):
                     requires="schedule=rounds", stage=RUN)
     workers: int = P(4, "Parallel workers", "Processes at once: MD trajectories, optimizations, TS searches.",
                      cli="--workers", ge=1, stage=RUN)
+    reuse_known: bool = P(True, "Reuse earlier expansions", "What earlier network expansions in this workspace found "
+                          "at the same level of theory (species, verified steps, steering single points, Hessians) is "
+                          "taken as known: no re-optimization, no new TS search for a pair that has a verified step.",
+                          kind="custom", advanced=True, group="Reuse", stage=RUN)
     explore_within: Optional[float] = P(
         None, "Add to Explore within (kcal/mol)", "Only species at most this far above the start become nodes in "
         "Explore; the rest stay in the result, to add by hand. Empty: every species.", ge=0, advanced=True,
@@ -1098,11 +1102,34 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
             steer.parent.mkdir(parents=True, exist_ok=True)
             steer.write_text(ctx.ws.read_profile(p.steer_profile.strip()))
             add += ["--steer-energies", str(steer)]
+    # Reuse: earlier expansions' output folders at this level (`--known`, once the installed CLI has it)
+    if p.reuse_known:
+        add += _known_folders(ctx)
     # Run
     if p.schedule == "async" and p.steer == "access" and p.time_budget_h:
         add += ["--time-budget", f"{3600.0 * p.time_budget_h:g}"]
     argv[out:out] = add
     return argv
+
+
+def _known_folders(ctx: "JobContext") -> list[str]:
+    """`--known <folder>` for each finished (or stopped) network expansion of the session at this job's level of
+    theory: the explorer takes what they found as known instead of redoing it. Nothing while the installed
+    `mepd discovery expand` has no --known (an older explorer)."""
+    if "--known" not in (_cli_options(("discovery", "expand")) or frozenset()):
+        return []
+    try:
+        key = (ctx.level() or {}).get("key")
+    except Exception:
+        return []
+    out = []
+    for j in sorted((ctx.jobs or {}).values(), key=lambda j: j.get("created") or 0):
+        folder = Path(j.get("output_dir") or "")
+        if (j.get("op") == "graph-enumeration" and (j.get("level") or {}).get("key") == key and key
+                and j.get("status") not in ("running", "queued") and (folder / "summary.json").exists()
+                and folder != Path(ctx.output_dir)):
+            out += ["--known", str(folder)]
+    return out
 
 
 def _build_discovery(command: str):

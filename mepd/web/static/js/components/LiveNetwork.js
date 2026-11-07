@@ -267,6 +267,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
   const dashed = (src) => anyDft && src === 'g';
   // Labels: a benchmark's products by name (endo, exo), the start, and whatever else holds real material.
   const names = tl.names || {};
+  const knownIds = new Set(tl.known_ids || []);   // taken from an earlier run (`--known`), not found again
   // Species no SMILES fits are drawn from their geometry (a running job's own); examples have SMILES.
   const imgOf = (id, w = 160, h = 120) => (drawable(tl.smiles[id]) ? depictUrl(tl.smiles[id], w, h)
     : jobId ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
@@ -340,6 +341,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
             ${imgOf(x.id) ? html`<image href=${imgOf(x.id)} x=${-x.w / 2 + 2} y=${-x.h / 2 + 2} width=${x.w - 4} height=${x.h - 4} preserveAspectRatio="xMidYMid meet" />`
               : html`<text x="0" y="5" class="ln-unknown">?</text>`}
             ${x.dE != null && Math.abs(x.dE) >= 0.1 && html`<text x=${x.w / 2 + 4} y=${-x.h / 2} class="ln-delta down">${sign(x.dE)}</text>`}
+            ${knownIds.has(x.id) && html`<text x=${x.w / 2 - 7} y=${-x.h / 2 + 11} class="ln-known">↺</text>`}
             <title>${drawable(tl.smiles[x.id]) ? tl.smiles[x.id] : names[x.id] || 'structure not perceived'} · ${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''} · peak ${(x.peak ?? 0).toPrecision(2)} · final ${(x.fin ?? 0).toPrecision(2)}${x.dft ? ' · DFT' : ' · g-xTB'}</title>
           </g>`)}
           ${(() => {
@@ -384,6 +386,7 @@ export function LiveNetworkView({ jobId = null, example = null }) {
         <span class="ln-lg"><svg width="40" height="16"><rect x="1" y="5" width="12" height="9" rx="2" class="lg-card" /><rect x="18" y="1" width="20" height="14" rx="2" class="lg-card" /></svg>bigger card: more of it formed</span>
         ${anyDft && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l dash" /></svg>dashed: g-xTB energy, DFT check to come</span>`}
         ${gone.length > 0 && html`<span class="ln-lg"><svg width="30" height="14"><line x1="2" y1="7" x2="28" y2="7" class="lg-l gone" /></svg>grey: step closed or replaced</span>`}
+        ${knownIds.size > 0 && html`<span class="ln-lg"><b class="ln-known-k">↺</b>reused from an earlier run (${knownIds.size})</span>`}
         <span class="ln-lg muted">hover a step or a card for details</span>
       </div>
       <div class="ln-controls">

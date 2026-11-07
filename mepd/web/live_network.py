@@ -607,6 +607,17 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
     formulas = {sid: species_formula(job_dir, sid) for sid, smi in tl["smiles"].items() if not drawable(smi)}
     tl["names"] = {**names_of(tl["smiles"], formulas), **{k: v for k, v in tl["names"].items() if v}}
     tl["graph_ids"] = sorted(k for k, v in tl["smiles"].items() if not drawable(v))
+    # Species the run took from an earlier one (`--known`): shown as reused, not found again.
+    known = set()
+    for line in lines:
+        if '"known"' in line and '"species"' in line[:40]:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("event") == "species" and ev.get("known"):
+                known.add(str(ev.get("index")))
+    tl["known_ids"] = sorted(known)
     tl["activity"] = activity(job_dir)
     return tl
 

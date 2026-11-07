@@ -22,6 +22,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **Web: follow-up network expansions hand earlier runs to the explorer as known (`--known`).** An expansion passes the output folders of the workspace's finished or stopped expansions at the same level of theory, so the explorer can take their species, verified steps, steering single points and Hessians as known instead of redoing them ("Reuse earlier expansions", on by default under Run). Only once the installed `mepd discovery expand` has `--known` (the explorer team's change, in progress); until then nothing changes. The live network marks species reused from an earlier run (↺).
+
 - **Kinetics from an expansion's own start just works.** A network expansion queues one minimization job (per charge and spin) for the molecules of its mixtures that have no energy at its level -- its start's too, e.g. acetone and an ylide it was run on together -- as they appear: kinetics counts a reaction from its molecules apart, and the run optimizes each mixture whole. The Kinetics page now says first when the starting mixture is not in the model and why (no energy yet: **Compute them**), and when steps of a running expansion are left out until their IRC check (**Include them now**).
 - **Web: the network expansion's steering cards say what they do.** "Material flow, within reach" (the default: the live kinetics' flux threshold, and only species some route reaches under the barrier cutoff), "Material flow, no cutoff" (the older rounds-only mode, a full path search per reaction) and "Energy window"; the manual and "?" entries say the same.
 

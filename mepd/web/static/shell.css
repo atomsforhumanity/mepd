@@ -373,3 +373,5 @@
 .ls-status { margin: 0 0 4px; color: var(--accent-strong); }
 .ls-route.faint .ls-path, .ls-route.faint .ls-flow { opacity: .35; }
 .ls-route.faint .ls-ts { opacity: .6; }
+.ln-known { font: 700 11px var(--font-ui); fill: var(--accent-strong); text-anchor: middle; }
+.ln-known-k { color: var(--accent-strong); }

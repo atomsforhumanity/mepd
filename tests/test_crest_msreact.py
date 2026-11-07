@@ -111,3 +111,41 @@ def test_ts_and_channels_are_one_card():
     ts, ch = OPERATIONS["ts"], OPERATIONS["channels"]
     assert ts.family == ch.family and ts.family["title"] == "Transition state"
     assert [m["label"] for m in ts.methods + ch.methods] == ["These endpoints", "Sample conformers and mappings"]
+
+
+def test_follow_up_expansions_pass_earlier_runs_as_known_once_the_cli_has_it(tmp_path, monkeypatch):
+    """Earlier expansions at the same level are handed over as `--known <folder>` (the explorer reuses their
+    species, verified steps, steering points and Hessians); nothing while the CLI has no --known."""
+    import mepd.web.operations as ops
+
+    op = OPERATIONS["graph-enumeration"]
+    done = tmp_path / "j1" / "output"
+    done.mkdir(parents=True)
+    (done / "summary.json").write_text("{}")
+    other = tmp_path / "j2" / "output"
+    other.mkdir(parents=True)
+    (other / "summary.json").write_text("{}")
+
+    class Ctx:
+        output_dir = str(tmp_path / "new" / "output")
+        structures = ["s_1"]
+        jobs = {"j1": {"op": "graph-enumeration", "status": "done", "created": 1, "output_dir": str(done), "level": {"key": "k1"}},
+                "j2": {"op": "graph-enumeration", "status": "done", "created": 2, "output_dir": str(other), "level": {"key": "k2"}},
+                "j3": {"op": "graph-enumeration", "status": "running", "created": 3, "output_dir": str(done), "level": {"key": "k1"}}}
+
+        def snapshot_structure(self, sid, name):
+            return f"/in/{name}.xyz"
+
+        def common_flags(self):
+            return []
+
+        def level(self):
+            return {"key": "k1"}
+
+    p = op.parse_params({})
+    assert "--known" not in op.build(Ctx(), p)              # today's CLI: no such option
+    real = ops._cli_options
+    monkeypatch.setattr(ops, "_cli_options", lambda path: (real(path) or frozenset()) | {"--known"})
+    argv = op.build(Ctx(), p)
+    assert [argv[i + 1] for i, w in enumerate(argv) if w == "--known"] == [str(done)]   # same level, finished
+    assert "--known" not in op.build(Ctx(), op.parse_params({"reuse_known": False}))
