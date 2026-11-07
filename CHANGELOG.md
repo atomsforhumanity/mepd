@@ -602,7 +602,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   136 s for F0007, 53 s instead of 115 s for (HCOOH)4, 9 s instead of 17 s for methyl formate, 3 s instead of 10 s
   for HCOOH. g-xTB MD costs 451, 41 and 17 s there and proposes no more (F0007 exo in 0 of 64 trajectories).
   UMA MD, 32 trajectories per GPU through the model server: ~1000 s per batch for F0007 and (HCOOH)4 (16-18x
-  GFN2 on axtb), stable, F0007 exo in 0 of 64.
+  GFN2 on axtb), stable, F0007 exo in 0 of 64. Each reactor batch's log line names the method (`reactor: batch 1 (MD: gfn2 on
+  axtb): ...`).
 
 - **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
   (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).

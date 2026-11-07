@@ -254,7 +254,8 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
         runs += got
         errors += bad
         first = _first(runs, cutoff_kcal)
-        converged = _report_batch(batch, first, {k for r in runs for k, *_ in r["keys"]}, cutoff_kcal, unseen)
+        converged = _report_batch(batch, first, {k for r in runs for k, *_ in r["keys"]}, cutoff_kcal, unseen,
+                                   md_method)
         if converged:
             break
     # the products the seed reached most often first (fewest steps, most often), then the earliest
@@ -295,7 +296,7 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
     first = Counter(st["first"]) + _first(runs, cutoff_kcal)
     count = Counter(st["count"]) + Counter(k for r in runs for k, *_ in r["keys"])
     states = set(st["states"]) | {k for r in runs for k, *_ in r["keys"]}
-    converged = _report_batch(batch, first, states, cutoff_kcal, unseen)
+    converged = _report_batch(batch, first, states, cutoff_kcal, unseen, md_method)
     done = converged or batch + 1 >= max(1, int(max_batches))
     proposed = list(st["proposed"])
     taken = set(proposed)
@@ -339,13 +340,14 @@ def _first(runs, cutoff_kcal) -> Counter:
                    if from_seed and (cutoff_kcal is None or de is None or de <= float(cutoff_kcal)))
 
 
-def _report_batch(batch: int, first: Counter, states: set, cutoff_kcal, unseen) -> bool:
-    """Print the batch's line; whether the seed's reactions have converged."""
+def _report_batch(batch: int, first: Counter, states: set, cutoff_kcal, unseen, md_method: str = "gfn2") -> bool:
+    """Print the batch's line (with the MD's method); whether the seed's reactions have converged."""
     events = sum(first.values())
     f1 = sum(c == 1 for c in first.values()) / events if events else 1.0
     below = "" if cutoff_kcal is None else f"; counted: products at most {float(cutoff_kcal):.0f} kcal/mol up"
-    print(f"reactor: batch {batch + 1}: {len(first)} distinct products in {events} events from the seed's state "
-          f"({len(states)} states in all{below}); {f1:.0%} of them gave a product "
+    on = "fairchem" if md_method == "uma" else "axtb"
+    print(f"reactor: batch {batch + 1} (MD: {md_method} on {on}): {len(first)} distinct products in {events} events "
+          f"from the seed's state ({len(states)} states in all{below}); {f1:.0%} of them gave a product "
           f"seen once (converged at {unseen:.0%}).", flush=True)
     # Good-Turing's estimate resolves 1/events: below 1/unseen events, none seen once proves nothing
     return f1 <= float(unseen) and events * float(unseen) >= 1

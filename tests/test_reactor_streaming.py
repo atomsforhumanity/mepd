@@ -117,9 +117,9 @@ def test_the_reactor_in_batches_keeps_its_convergence_rule_and_proposes_each_pro
     assert got == [2, 0, 0]
 
 
-def test_the_explorer_hands_md_method_to_every_reactor_batch(monkeypatch):
+def test_the_explorer_hands_md_method_to_every_reactor_batch(monkeypatch, capsys):
     """md_method (axtb's GFN2-xTB by default) reaches each batch's trajectory jobs, from the explorer's
-    generator options through Generator.propose_batch and reactor_batch."""
+    generator options through Generator.propose_batch and reactor_batch; each batch's log line names it."""
     pytest.importorskip("axtb")
     import mepd.discovery.reactor_generator as rg
 
@@ -136,3 +136,6 @@ def test_the_explorer_hands_md_method_to_every_reactor_batch(monkeypatch):
         kw["generator_options"] = {"n_seeds": 1, "max_batches": 2, **opts}
         expand_network(_node("C#N"), _GraphEngine(), connect=_AsyncConnector(), **kw)
         assert len(methods) == 2 and set(methods) == {(want, None)}     # both batches, no UMA server
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("reactor: batch")]
+        assert [ln.split(":")[1] for ln in lines] == [f" batch {b} (MD" for b in (1, 2)]
+        assert all(f"(MD: {want} on axtb)" in ln for ln in lines)
