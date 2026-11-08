@@ -63,7 +63,10 @@ CONFIGS = {
     "program": ["--inputs", "{RUN_DIR}/inputs/f0007_mlpgi_program.toml"],
     # team21's unified generator, spelled as the old reactor (coordinator 2026-11-08): replaces COMMON's --generator
     "nano400": ["--max-species", "400", "--generator", "nanoreactor", "--generator-option", "forces=piston,collide"],
+    # team22: linus DFT steering (RI-JK, wB97X-D3BJ/def2-TZVP, memory_gb 1.5) in place of ORCA (coordinator 2026-11-08)
+    "linus400": ["--max-species", "400", "--steer-energies", "{RUN_DIR}/inputs/linus_steer_mem1.5.toml"],
 }
+REPLACING = ("--generator", "--steer-energies")   # a configuration's value for these replaces COMMON's
 COMMON = ["--steer", "access", "--schedule", "async", "--generator", "reactor",
           "--steer-energies", "{RUN_DIR}/inputs/orca_steer.toml"]
 
@@ -90,12 +93,14 @@ def system_argv(name: str, sysdef: dict, budget: float) -> list:
 
 
 def with_config(argv: list, cargs: list) -> list:
-    """argv + a configuration's arguments; a configuration's --generator replaces COMMON's (in place)."""
+    """argv + a configuration's arguments; a configuration's value of an option in REPLACING replaces COMMON's
+    (in place)."""
     argv, cargs = list(argv), list(cargs)
-    if "--generator" in cargs and "--generator" in argv:
-        i, j = argv.index("--generator"), cargs.index("--generator")
-        argv[i + 1] = cargs[j + 1]
-        del cargs[j:j + 2]
+    for opt in REPLACING:
+        if opt in cargs and opt in argv:
+            i, j = argv.index(opt), cargs.index(opt)
+            argv[i + 1] = cargs[j + 1]
+            del cargs[j:j + 2]
     return argv + cargs
 
 

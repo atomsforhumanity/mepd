@@ -1,0 +1,9 @@
+# Steering level for the explorer through linus (atomsforhumanity/linus f42e608), in process via qccompute's codec:
+# wB97X-D3BJ/def2-TZVP with RI-JK (def2-universal-jkfit) on ORCA's DefGrid2 (orca:2), 1 thread, 1.5 GB (memory_gb):
+# memory_gb 1.5: the worker peaks at 1.35 GB at 25 atoms instead of 1.88 (same energies to 1e-13 Eh, ~7% slower).
+# on 42 sampled species and TSs, 3.8x faster than ORCA 6.0.0 RIJCOSX at 20+ atoms, TS-TS energies within 0.11 kcal/mol.
+engine_name = "qccompute"
+program = "linus"
+[program_kwds]
+model = {method = "wb97x-d3bj", basis = "def2-tzvp"}
+keywords = {jk = "df", grid = "orca:2", threads = 1, memory_gb = 1.5}

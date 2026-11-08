@@ -51,3 +51,11 @@ def test_a_configuration_generator_replaces_the_common_one():
                     "--generator-option", "forces=piston"]
     assert bench.with_config(["--generator", "reactor"], ["--max-species", "400"]) == \
         ["--generator", "reactor", "--max-species", "400"]
+
+
+def test_a_configuration_steering_level_replaces_the_common_one():
+    import bench   # noqa: E402  (benchmarks/cluster)
+
+    argv = bench.with_config(["--steer-energies", "{RUN_DIR}/inputs/orca_steer.toml", "--x", "1"],
+                             ["--max-species", "400", "--steer-energies", "{RUN_DIR}/inputs/linus.toml"])
+    assert argv == ["--steer-energies", "{RUN_DIR}/inputs/linus.toml", "--x", "1", "--max-species", "400"]
