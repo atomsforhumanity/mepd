@@ -94,7 +94,7 @@ export function applicability(op, sel) {
       const recs = sel.structures.map((id) => state.workspace.structures[id]).filter(Boolean);
       const key = (r) => `${r.formula}|${r.charge}|${r.multiplicity}`;
       if (new Set(recs.map(key)).size > 1) {
-        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. The Nanoreactor handles molecules with different atoms.';
+        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. The Reacting mixture handles molecules with different atoms.';
       }
     }
     return fit;

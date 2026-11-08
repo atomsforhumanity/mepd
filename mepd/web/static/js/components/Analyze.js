@@ -160,7 +160,7 @@ function ReactionsAnalyze() {
   if (!all.length && !nav.compose) {
     return html`<div class="analyze empty-hint">
       <h3>No reactions yet</h3>
-      <p>Run the <b>Nanoreactor</b> on some molecules (Explore › select them › Reaction network expansion), or compose a reaction
+      <p>Grow a network with the <b>Nanoreactor</b> (Explore › select a molecule, or several for a Reacting mixture › Network expansion), or compose a reaction
         from species you already have.</p>
       <button class="btn primary" onClick=${() => set({ analyze: { ...nav, compose: true } })}>New reaction</button>
     </div>`;

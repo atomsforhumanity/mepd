@@ -438,7 +438,7 @@ class ExpandParams(Params):
     grow next (Steer), and how the work is scheduled and stopped (Run)."""
     # ------------------------------------------------------------------ Grow
     generator: Literal["bond-rules", "crest-msreact", "md", "collide", "reactor", "nanoreactor"] = P(
-        "bond-rules", "Grow by", "How each species' possible products are proposed.", kind="custom", stage=GROW,
+        "md", "Grow by", "How each species' possible products are proposed.", kind="custom", stage=GROW,
         cards={
             "md": NANOREACTOR_CARD,
             "bond-rules": {"title": "Bond enumeration",
@@ -2182,7 +2182,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output")),
     Operation(
         "graph-enumeration", "Reaction network expansion", "Grow a reaction network from this species in four "
-        "stages you choose: propose new species (bond enumeration, CREST msreact, collision or reactor MD), connect "
+        "stages you choose: propose new species (the Nanoreactor's MD, bond enumeration or CREST msreact), connect "
         "each proposed reaction with a TS, steer growth to the species the kinetics reach, and run it as a live "
         "queue or in rounds. (`mepd discovery expand`)",
         "structure", EXPLORE, ExpandParams, _build_expand, stoppable=True,
@@ -2226,6 +2226,9 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "set", EXPLORE, NanoreactorParams, _build_nanoreactor, min_structures=1, stoppable=True, stop_kind="md",
         produces=["species", "reactions with only the molecules they need", "TSs on those subsystems"],
         cli_path=("discovery", "nanoreactor"), cli_extra_flags=("--charge", "--inputs", "--output"),
+        # Merged into the network expansion's and the mixture's Nanoreactor (Grow): not offered as its own tool.
+        # Kept for older jobs, Run longer, reaction retries and the interactive Reactor's Stop & analyze.
+        hidden=True,
         family=NETWORK, methods=({
             "label": "Nanoreactor", "rank": -1,
             "summary": "Hot, periodically squeezed molecular dynamics of the selected molecules (several copies, "
@@ -2234,7 +2237,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "network-splits", "Paths between isomers", "Search a path between every pair of the selected isomers (same "
         "atoms, same charge and spin) and join the steps it finds, with any intermediates, into one network. For "
-        "molecules with different atoms, use the Nanoreactor. (`mepd network-splits`)",
+        "molecules with different atoms, use the Reacting mixture. (`mepd network-splits`)",
         "set", SET, NetworkSplitsParams, _build_network_splits, min_structures=2, same_atoms=True,
         produces=["network edges", "intermediates"]),
     Operation(

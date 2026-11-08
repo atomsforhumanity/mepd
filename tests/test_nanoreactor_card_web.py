@@ -101,3 +101,12 @@ def test_the_reactor_view_has_the_forces_and_pulls_of_the_run(tmp_path):
     assert d["forces"] == ["collide"] and d["pulls"] == [pull] and d["n_frames"] == 5
     (md / "schedule.json").write_text(json.dumps({"dump_fs": 2.0, "time_ps": 0.01, "segments": [[0.01, 5.0]]}))
     assert reactor_view(tmp_path)["pulls"] == [] and reactor_view(tmp_path)["forces"] is None
+
+
+def test_the_nanoreactor_tool_is_merged_into_the_expansions_grow():
+    """The standalone Nanoreactor is no longer its own tool: the expansion grows by the Nanoreactor by default
+    (several molecules: the Reacting mixture). The operation stays for older jobs and the Reactor's Stop & analyze."""
+    nano = OPERATIONS["nanoreactor"]
+    assert nano.hidden and nano.describe()["hidden"]
+    assert OPERATIONS["graph-enumeration"].parse_params({}).generator == "md"
+    assert OPERATIONS["network-mixture"].parse_params({}).grow_by == "md"

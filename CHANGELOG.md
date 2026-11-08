@@ -13,6 +13,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 ### Fixed
 
 - **Web: one Nanoreactor in place of Reactor MD and Collision MD.** A network expansion's Grow stage and the Reacting mixture offer one MD choice, the Nanoreactor, with its forces switched on and off: Piston (the wall squeezes in and out), Collide (springs pull pairs together), or both. It sends `--generator nanoreactor --generator-option forces=...`. Piston and Collide together run what Reactor MD ran, and Collide alone what Collision MD ran. Remembered forms and Run again of older jobs open on the Nanoreactor with those forces. The Reactor view names the forces and draws each pull, as a spring between the two atoms and a band on the timeline, from the run's `schedule.json`. Expansions with Collide now show the Reactor view too.
+  The standalone Nanoreactor tool is merged into it: the network expansion grows by the Nanoreactor by default, several molecules go to the Reacting mixture, and the old tool is no longer offered (its operation stays for older jobs, Run longer and the interactive Reactor's Stop & analyze).
 
 - **Web: the g-xTB backend defaults to automatic (axtb).** The g-xTB settings' Backend leaves the choice to the engine (axtb, or the g-xTB program for what axtb can't run) unless a profile names one. Same level of theory either way.
 
