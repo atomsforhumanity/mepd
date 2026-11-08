@@ -31,7 +31,8 @@ def main(argv: list) -> int:
             if r else f"{name}: -" for name, r in (("old", a), ("new", b)))
         print(line)
         r2 = lambda r: tuple(None if v is None else round(v, 2) for v in r["acc"])   # moved: by > 0.005 kcal/mol
-        r0 = lambda r: tuple(None if v is None else round(v) for v in r["settle"][:2])   # settle medians, s
+        r0 = lambda r: tuple(v if v is None or v != v or abs(v) == float("inf") else round(v)
+                             for v in r["settle"][:2])   # settle medians, s
         if a is None or b is None or a["pass"] != b["pass"] or r2(a) != r2(b) or r0(a) != r0(b):
             moved.append({"system": sy, "old": a, "new": b})
     ov = lambda g: (g.get("overall") or ("pass" if g.get("pass") else "fail")).upper()
