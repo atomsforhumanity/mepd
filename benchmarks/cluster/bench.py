@@ -61,6 +61,8 @@ CONFIGS = {
     "T2200": ["--generator-option", "temperature=2200"],
     # F0007 only: the g-xTB program instead of axtb (the profiles use axtb since 37250d5), for the equivalence check
     "program": ["--inputs", "{RUN_DIR}/inputs/f0007_mlpgi_program.toml"],
+    # team21's unified generator, spelled as the old reactor (coordinator 2026-11-08): replaces COMMON's --generator
+    "nano400": ["--max-species", "400", "--generator", "nanoreactor", "--generator-option", "forces=piston,collide"],
 }
 COMMON = ["--steer", "access", "--schedule", "async", "--generator", "reactor",
           "--steer-energies", "{RUN_DIR}/inputs/orca_steer.toml"]
@@ -85,6 +87,16 @@ def system_argv(name: str, sysdef: dict, budget: float) -> list:
             "--inputs", "{RUN_DIR}/inputs/" + Path(sysdef["profile"]).name, "--standard-state", c["standard_state"],
             "--cutoff-temperature", f"{c['temperature_K']:g}", "--cutoff-time", f"{c['time_s']:g}",
             "--temperature", f"{c['temperature_K']:g}", "--time", f"{c['time_s']:g}", "--time-budget", f"{budget:g}"]
+
+
+def with_config(argv: list, cargs: list) -> list:
+    """argv + a configuration's arguments; a configuration's --generator replaces COMMON's (in place)."""
+    argv, cargs = list(argv), list(cargs)
+    if "--generator" in cargs and "--generator" in argv:
+        i, j = argv.index("--generator"), cargs.index("--generator")
+        argv[i + 1] = cargs[j + 1]
+        del cargs[j:j + 2]
+    return argv + cargs
 
 
 def seed_argv(replicate: int) -> tuple[dict, list]:
@@ -142,7 +154,7 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
         tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
                       "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                       "hard_timeout": hard_factor * budget,
-                      "argv": system_argv(name, suite[name], budget) + cargs + sargs,
+                      "argv": with_config(system_argv(name, suite[name], budget), cargs) + sargs,
                       "harness_commit": harness,
                       **({"code": f"code-{shas[g_commit][:7]}"} if g_commit else {})})
     if control:   # replicate 0 again: what the seeds don't fix (queue timing); the first group, last in order
@@ -154,7 +166,7 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
                           "control_of": f"{name}-{cname}-r0", "seeds": seeds,
                           "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                           "hard_timeout": hard_factor * budget,
-                          "argv": system_argv(name, suite[name], budget) + cargs + sargs, "harness_commit": harness})
+                          "argv": with_config(system_argv(name, suite[name], budget), cargs) + sargs, "harness_commit": harness})
     for t in tasks:     # input files a configuration names ({RUN_DIR}/inputs/X): from benchmarks/ or cluster/suite/
         for a in t["argv"]:
             if a.startswith("{RUN_DIR}/inputs/") and not (d / "inputs" / a.split("/")[-1]).is_file():

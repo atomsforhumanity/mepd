@@ -40,3 +40,14 @@ def test_accuracy_and_settle_still_fail_on_their_own():
     c = entry(5, {"x": 5}, 5)
     c["settle_s"]["median"] = 1000.0
     assert gate.compare({"s": entry(5, {"x": 5}, 5)}, {"s": c})["s"]["status"] == "fail"
+
+
+def test_a_configuration_generator_replaces_the_common_one():
+    import bench   # noqa: E402  (benchmarks/cluster)
+
+    argv = bench.with_config(["--steer", "access", "--generator", "reactor", "--x", "1"],
+                             ["--max-species", "400", "--generator", "nanoreactor", "--generator-option", "forces=piston"])
+    assert argv == ["--steer", "access", "--generator", "nanoreactor", "--x", "1", "--max-species", "400",
+                    "--generator-option", "forces=piston"]
+    assert bench.with_config(["--generator", "reactor"], ["--max-species", "400"]) == \
+        ["--generator", "reactor", "--max-species", "400"]
