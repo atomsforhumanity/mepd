@@ -28,14 +28,21 @@ METHOD = "gxtb-v2.0.1"
 FALLBACKS = ({"etemp": 1000.0, "max_iter": 1000}, {"etemp": 3000.0, "max_iter": 1000})
 # xtb command-line options axtb takes (as Calculator keywords); anything else raises.
 _OPTIONS = {"--etemp": ("etemp", float), "--acc": ("accuracy", float), "--iterations": ("max_iter", int)}
+# SCF accuracy (xtb --acc) unless extra_args set one. At the program's default (1.0) the SCF stops loosely
+# enough that its gradients can be off by ~1e-4 Eh/bohr, five times the minimizations' 1e-3 eV/Angstrom
+# (1.9e-5 Eh/bohr), on structures far from equilibrium: qcopt then never reached it on 35 of 31k IRC ends
+# (methyl formate, scoreboard sb-t11). At 0.01 the error is ~1e-6 for ~4 more SCF iterations (9 -> 13);
+# qcopt's benchmarks are at 0.01 too.
+ACCURACY = 0.01
 
 _LOCAL = threading.local()
 
 
 def settings_from_args(extra_args) -> dict[str, Any]:
     """axtb Calculator keywords for the xtb options in `extra_args` that axtb takes (--etemp K,
-    --acc X, --iterations N). Any other option raises ValueError: axtb would not apply it."""
-    out: dict[str, Any] = {}
+    --acc X, --iterations N); the accuracy is ACCURACY unless --acc sets it. Any other option raises
+    ValueError: axtb would not apply it."""
+    out: dict[str, Any] = {"accuracy": ACCURACY}
     args = [str(a) for a in extra_args]
     k = 0
     while k < len(args):

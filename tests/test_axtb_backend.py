@@ -61,6 +61,7 @@ def test_energy_and_gradient_match_the_program(conventions, tol_e, tol_g):
     # "gxtb" reproduces the program's SCF step by step; the default conventions converge to the same
     # state along another path, so their gradients differ by the SCF's own convergence error.
     ref = _program()
+    ref.extra_args = ["--acc", "0.01"]      # the axtb backend's default SCF accuracy (axtb_backend.ACCURACY)
     ax = GXTBCalculator(backend="axtb", axtb_conventions=conventions, n_parallel=1)
     a, b = _node(), _node()
     e_ref, g_ref = ref.compute_energies([a])[0], a.gradient
@@ -100,6 +101,36 @@ def test_hessian_is_symmetric_and_matches_gradient_differences():
             s = node.structure.model_copy(update={"geometry": x.reshape(-1, 3)})
             cols.append(np.asarray(eng.compute_gradients([StructureNode(structure=s)])[0]).reshape(-1))
         assert np.abs((cols[0] - cols[1]) / (2 * step) - h[:, k]).max() < 1e-5
+
+
+# A methyl formate IRC end from the scoreboard (sb-t11 methyl_formate r0, ch_14_15_3, first end, unminimized),
+# 1e-3 eV/Angstrom from a minimum: at the program's SCF accuracy (1.0) its gradients are off by ~1e-4 Eh/bohr
+# near that minimum, and qcopt took 3000 steps of 6e-8 bohr without reaching 1e-3 eV/Angstrom.
+STALLED_END = """8
+
+C  -0.13048586113018570 0.82638120508557267 -0.63158958588896341
+O   0.33297317255590825 0.62450503273393010 0.67091335629957016
+C  -0.54816062225775986 0.55994364146377240 1.65174908170331647
+O   0.25774782666901480 -1.01058244716271828 -1.28201480947908153
+H   0.54334785454241097 -0.81683686785019716 -2.18230811213430043
+H  -1.20268330013034697 0.62798735694769581 -0.59957594161902716
+H   1.04841243024736297 -1.16527278222517183 -0.74869469204531924
+H   0.08105929314821832 0.58271664590564853 2.55740232518638511
+"""
+
+
+def test_scf_accuracy_defaults_to_0_01_and_acc_overrides_it():
+    assert GXTBCalculator(backend="axtb")._axtb_settings["accuracy"] == 0.01
+    assert GXTBCalculator(backend="axtb", extra_args=["--acc", "1.0"])._axtb_settings["accuracy"] == 1.0
+
+
+def test_qcopt_minimizes_an_end_the_loose_scf_stalled():
+    pytest.importorskip("qcopt")
+    import mepd
+
+    eng = GXTBCalculator(backend="axtb", axtb_conventions="gxtb", n_parallel=1)
+    end = mepd.minimize(_node(STALLED_END), eng, check_frequencies=False, maxiter=200)
+    assert np.linalg.norm(np.asarray(end.gradient).reshape(-1, 3), axis=1).max() < 1e-3 / 27.211386 * 0.529177
 
 
 def test_options_it_cannot_apply_raise():

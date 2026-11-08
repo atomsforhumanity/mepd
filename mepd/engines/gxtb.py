@@ -458,7 +458,8 @@ class GXTBCalculator(Engine):
     # "xtb": run the g-xTB program for every calculation. "axtb": g-xTB 2.0.1 from axtb, AFH's Rust
     # reimplementation, in this process (mepd.engines.axtb_backend): the program's energies, no
     # process start per call, analytic Hessians. It takes only --etemp/--acc/--iterations in
-    # extra_args, g-xTB only (add_gxtb_flag), no minimizer = "xtb", and timeout_s does not apply.
+    # extra_args (SCF accuracy 0.01 unless --acc is given: axtb_backend.ACCURACY), g-xTB only
+    # (add_gxtb_flag), no minimizer = "xtb", and timeout_s does not apply.
     backend: str = "xtb"
     # axtb's conventions: None/"axtb" (its default) or "gxtb" (reproduces the program to ~1e-12 Eh).
     axtb_conventions: str | None = None
