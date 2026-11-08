@@ -386,6 +386,17 @@ def first_passage_amounts(summary: dict, channel_set: set, only_steps: set | Non
     return {"how": how, "absorbing": run(set(channel_set)), "as_run": run(set()) if as_run else None}
 
 
+def partial_steps(summary: dict, labels: set) -> set:
+    """The final summary's step indices a partial network had (by label), with the mirror-image twin of each:
+    a pair the final record lists as found twins (mirror_images.found_twins) had a virtual twin in the live
+    kinetics until the second one was found under its own label (qcopt/NOTES.md 3)."""
+    keep = {m for m, x in enumerate(summary.get("steps") or []) if x.get("label") in labels}
+    for m, o in ((summary.get("mirror_images") or {}).get("found_twins") or []):
+        if m in keep or o in keep:
+            keep |= {m, o}
+    return keep
+
+
 def live_first_passage(data: dict, channel_set: set, temperature: float, time_s: float) -> dict | None:
     """{species index: first-passage amount} on the network a live kinetics snapshot was solved on (live-network
     emitters, team5x 53bbabb on: `step_list` with dG_fwd per open step, species and mirror_species with G, kcal/mol
@@ -521,8 +532,7 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         if i not in part_fp:
             try:
                 labels = {x.get("label") for x in json.loads(parts[i].read_text()).get("steps") or []}
-                keep = {m for m, x in enumerate(summary.get("steps") or []) if x.get("label") in labels}
-                r = first_passage_amounts(summary, chan_set, only_steps=keep, as_run=False)
+                r = first_passage_amounts(summary, chan_set, only_steps=partial_steps(summary, labels), as_run=False)
                 part_fp[i] = r["absorbing"] if r else None
             except (ValueError, KeyError, IndexError, OSError):
                 part_fp[i] = None
@@ -656,8 +666,9 @@ def _frames(fp):
 
 
 def queue_jobs(na_path, budget_s) -> tuple[list, list]:
-    """(failed job events, those cancelled by the time budget) from network_aware.jsonl: a failed job that
-    ended within 1 s of the deadline (cycle_start + budget) or after it was cancelled by the budget."""
+    """(failed job events, those cancelled) from network_aware.jsonl: a failed job is cancelled when its event
+    says so ("cancelled": true -- a queue stopped at the species cap) or it ended within 1 s of the deadline
+    (cycle_start + budget) or after it."""
     events = []
     if na_path and Path(na_path).is_file():
         for line in Path(na_path).read_text().splitlines():
@@ -668,7 +679,8 @@ def queue_jobs(na_path, budget_s) -> tuple[list, list]:
     t_cycle = next((e["t"] for e in events if e.get("event") == "phase" and e.get("phase") == "cycle_start"), None)
     deadline = t_cycle + float(budget_s) if t_cycle is not None and budget_s else None
     failed = [e for e in events if e.get("event") == "job" and not e.get("ok")]
-    cancelled = [e for e in failed if deadline is not None and e["t"] >= deadline - 1.0]
+    # cancelled: marked so (e.g. the queue stopping at the species cap), or ended at the time budget's deadline
+    cancelled = [e for e in failed if e.get("cancelled") or (deadline is not None and e["t"] >= deadline - 1.0)]
     return [e for e in failed if e not in cancelled], cancelled
 
 
