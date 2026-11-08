@@ -1525,6 +1525,55 @@ def test_async_a_species_first_found_as_an_irc_end_is_connected_from_the_species
     assert (0, k) in forked.pairs                              # connected from the seed all the same
 
 
+class _DrainCheckingConnector(_AsyncConnector):
+    """_AsyncConnector whose TSs are written to files (the steering level needs their geometry), and which,
+    like the real queue, takes the drain hook at its word: jobs it queued while saying it added nothing are
+    left over (the real queue tried to ice them as pieces)."""
+
+    def __init__(self, tmp_path):
+        super().__init__()
+        self.tmp_path, self.left_over = tmp_path, []
+
+    def _found(self, i, j, nodes):
+        rec = super()._found(i, j, nodes)
+        fp = self.tmp_path / f"ts_{i}_{j}.xyz"
+        rec["ts"].structure.save(fp)
+        return {**rec, "files": {"ts": str(fp)}}
+
+    def __call__(self, *args, **kwargs):
+        out = super().__call__(*args, **kwargs)
+        self.left_over += [job[1] for job in self.queue if job[0] == "own"]
+        return out
+
+
+def test_async_the_steering_single_points_the_drains_kinetics_ask_for_run(monkeypatch, tmp_path):
+    """sb-t14 hcooh r4 (develop 544cb14) crashed, "TypeError: 'NoneType' object is not iterable": the queue's
+    last job added a step, its kinetics refresh was held back (at most once in three times as long as the last
+    took), the drain's refresh queued that step's TS single point at the steering level, and the drain hook
+    said it had queued nothing -- so the queue iced the single point's job as if it were a piece. Here every
+    refresh but the first and the drains' is held back (the kinetics 'take' 100 s on a clock that only they move)."""
+    import time
+
+    import mepd.discovery.kinetics as kinetics
+
+    clock = [0.0]
+    simulate = kinetics.simulate
+
+    def slow_simulate(*a, **k):
+        clock[0] += 100.0
+        return simulate(*a, **k)
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kinetics, "simulate", slow_simulate)
+    connect = _DrainCheckingConnector(tmp_path)
+    res = expand_network(_node("C=O"), _GraphEngine(), steer="access", connect=connect, access_cutoff_kcal=60.0,
+                         max_products=20, kinetics={"threshold": 1e-6}, schedule="async", allow_zwitterions=True,
+                         steer_engine=_SteerEngine(), steer_save_dir=tmp_path / "steer")
+    assert res.rounds[0]["stopped"] == "converged"
+    assert any(kind == "steer" for kind, _, _ in connect.at_submit)
+    assert connect.left_over == []
+
+
 def test_async_schedule_at_max_species_ends_with_what_it_has():
     """An async run stopped by max_species, like one out of time, doesn't go on to sample channels or IRC-check
     steps after its queue (unbudgeted, outside the queue: F0007 reached 200 species at 1459 s of a 1800 s budget,

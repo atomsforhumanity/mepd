@@ -2611,8 +2611,9 @@ def expand_network(
             ran out: the queue then cancels the jobs running and ends."""
             if _out_of_budget():
                 return False
-            hot = _live_hot(final)          # (queues the steering single points they lack)
-            n = 0
+            steers = len(queued_steer)
+            hot = _live_hot(final)          # (queues the steering single points they lack: queued work too)
+            n = len(queued_steer) - steers
             if verify is not None:          # IRC checks of the steps that touch a populated species
                 for st in list(result.steps):
                     fp = st.files.get("ts")
