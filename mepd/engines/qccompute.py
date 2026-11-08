@@ -414,6 +414,16 @@ class QCComputeEngine(Engine):
         return grads
 
     def compute_energies(self, chain: Chain) -> NDArray:
+        if self.compute_program == "qccompute":
+            # Local: an energy is a single point, not a gradient (half the cost or less).
+            nodes = list(chain.nodes if isinstance(chain, Chain) else chain)
+            todo = [node for node in nodes if node._cached_energy is None]
+            if todo:
+                self._run_calc(chain=todo, calctype="energy")
+            failed = [node._cached_result for node in nodes if node._cached_energy is None]
+            if failed:
+                raise ElectronicStructureError(msg="Energy calculation failed.", obj=failed)
+            return np.array([node.energy for node in nodes])
         self.compute_gradients(chain)
         enes = np.array([node.energy for node in chain])
 
@@ -565,12 +575,17 @@ class QCComputeEngine(Engine):
             if len(non_frozen_prog_inps) == 1:
                 non_frozen_results = [non_frozen_results]
 
+        elif self.compute_program == "qccompute":
+            # Local, one input at a time (a program running in this process, e.g. linus's codec).
+            non_frozen_results = [self.compute_func(pi, collect_files=self.collect_files)
+                                  for pi in non_frozen_prog_inps]
+
         else:
             raise ExternalProgramError(
                 program=self.program,
                 message=(
                     f"Unsupported compute_program={self.compute_program!r}. "
-                    "Only 'chemcloud' is supported."
+                    "Only 'chemcloud' and 'qccompute' are supported."
                 ),
             )
 
