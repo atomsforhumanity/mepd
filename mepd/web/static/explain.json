@@ -1783,7 +1783,7 @@
   "does": "Grows a reaction network from the selected species in four stages you choose: how new species are proposed (Grow), how each proposed reaction gets its transition state (Connect), which species grow next (Steer), and how the work is scheduled and stopped (Run).",
   "how": [
    "The seed is minimized first (and Hessian-checked), so every energy is relative to a minimum at this level.",
-   "Grow: the product generator proposes products in the seed's atom order. Bond enumeration: up to n breaks and m formations. Or CREST msreact, collision MD, Reactor MD (its products join after every batch), or the nanoreactor (QM/MM).",
+   "Grow: the product generator proposes products in the seed's atom order. Bond enumeration: up to n breaks and m formations. Or CREST msreact, or the Nanoreactor: MD driven by the forces you switch on (piston, collide), every trajectory streamed to the Reactor view.",
    "For bond rules, each product's 3D guess is a restrained relaxation of the seed geometry onto the new bonds (embed_product, mepd's own heuristic).",
    "Each guess is optimized with the engine. Species identity is connectivity + stereo; the lowest conformer is kept. New species can be Hessian-validated.",
    "Connect + Steer: 'Material flow, within reach' grows every species some route reaches under a barrier cutoff, each reaction connected Fast (a TS from an interpolation's peak, a path search where that fails) or by a full path search; 'Where material flows' runs microkinetics on verified TSs; 'Energy window' needs no TSs."
@@ -1824,9 +1824,8 @@
   "how": [
    "Bond rules (mepd): every combination of ≤ n breaks and ≤ m formations between atoms within 'Form bonds within' (4 Å). Products must pass coordination limits and have an RDKit DetermineBondOrders (xyz2mol) Lewis structure. Fewest changes first; at most 500,000 combinations.",
    "CREST msreact: `crest --msreact -T 1 -msnbonds n` (plus -msnoiso / -msiso by mode). Biased GFN2-xTB optimizations; products are ranked lowest GFN2 energy first.",
-   "Collision MD: Langevin MD on GFN2-xTB that pulls two atoms (or two molecules) together for a moment, over many pairs.",
-   "Reactor MD: Langevin MD in a periodically squeezing wall with random collisions, in batches until few events give new products; in the live queue each batch's products join the network at once.",
-   "Nanoreactor (QM/MM systems only): hot piston MD of the QM region. Its state after each event is a product."
+   "Nanoreactor: Langevin MD on GFN2-xTB (axtb) in a soft wall, with the forces you switch on. Piston + Collide (the default): the wall squeezes once a picosecond while springs pull random pairs together, in batches until few events give new products; each batch's products join the network at once (this was Reactor MD). Piston alone: the same without pulls. Collide alone: every pair the method picks pulled together once at 1000 K, each its own short trajectory (this was Collision MD). Every trajectory streams to the Reactor view (output/reactor/run_kk). The CLI: --generator nanoreactor --generator-option forces=piston,collide.",
+   "On a QM/MM system the Nanoreactor runs on the QM region in vacuum and puts each product back; with 'MD with QM/MM forces' (piston only), on QM/MM forces. Older QM/MM jobs ran the xtb program's piston MD of the QM region."
   ],
   "default": "Bond rules: built in, deterministic, nothing to install.",
   "swap": [

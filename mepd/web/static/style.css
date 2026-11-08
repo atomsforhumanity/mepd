@@ -927,6 +927,9 @@ input.invalid { border-color: var(--danger); outline-color: var(--danger); }
 .rx-legend { position: absolute; bottom: 8px; left: 10px; font-family: var(--font-ui); pointer-events: none; }
 .rx-legend .lg-form { color: var(--ok); } .rx-legend .lg-break { color: var(--danger); margin-left: 8px; }
 .rx-legend .lg-wall { color: var(--accent); } .rx-legend .lg-squeeze { color: var(--warn); margin-left: 8px; }
+.rx-legend .lg-forces { color: var(--text); font-weight: 600; margin-right: 10px; }
+.rx-legend .lg-pull { color: var(--danger); margin-left: 8px; }
+.rx-pullband { position: absolute; top: 0; bottom: 0; background: var(--danger); opacity: 0.18; pointer-events: auto; }
 .rx-live-pill { color: var(--accent); font-weight: 600; }
 .rx-transport { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .rx-transport input[type=range] { flex: 1; }

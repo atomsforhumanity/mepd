@@ -451,7 +451,7 @@ const WORK = { propose: 'proposing', fast: 'quick paths', channels: 'channels', 
 function Closer({ jobId, job, activity, running }) {
   const q = activity?.queue;
   const sims = activity?.sims || [];
-  const reactor = ['nanoreactor', 'reactor'].includes(job?.params?.generator);
+  const reactor = ['md', 'nanoreactor', 'reactor', 'collide'].includes(job?.params?.generator);
   const openSim = (stream) => {
     update((s) => { s.networkFocus = { jobId, stream }; });
     openJob(jobId, 'live');

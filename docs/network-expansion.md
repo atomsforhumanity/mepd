@@ -182,8 +182,8 @@ reported). It costs one QM/MM gradient per MD step (about 0.07-0.1 s for a
 small QM region in a GFN-FF water shell: tens of minutes per 10 ps).
 
 In the web UI the expansion is one form in four stages, each chosen on its
-own: **Grow** (bond enumeration, CREST msreact, collision MD, Reactor MD, or the
-nanoreactor on a QM/MM system), **Connect** (Fast, path search, or no TSs),
+own: **Grow** (bond enumeration, CREST msreact, or the Nanoreactor, whose forces
+you switch on: Piston, Collide, or both, each trajectory streamed live), **Connect** (Fast, path search, or no TSs),
 **Steer** (within reach, where material flows, or an energy window) and **Run**
 (the live queue or rounds). Choices that cannot run together are greyed out with
 the reason, and a stage moves to the nearest allowed choice when another rules

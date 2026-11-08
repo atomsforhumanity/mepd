@@ -1067,7 +1067,7 @@ export function JobView({ jobId: openedId }) {
     result_rev: family.reduce((n, j) => n + (j.result_rev || 0), 0) } : job;
   const hasOutput = job.status !== 'queued';
   // A network expansion whose products come from nanoreactor MD: it has a reactor to watch too.
-  const reactorGen = job.op === 'graph-enumeration' && ['nanoreactor', 'reactor'].includes(job.params?.generator);
+  const reactorGen = job.op === 'graph-enumeration' && ['md', 'nanoreactor', 'reactor', 'collide'].includes(job.params?.generator);
   // An interactive reactor's analysis opens on its plain-words summary (ReactorStory).
   const story = job.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(job.params?.trajectory || '');
   const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'

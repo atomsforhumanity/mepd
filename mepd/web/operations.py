@@ -56,6 +56,8 @@ def P(default, title: str, help: str = "", *, cli: Optional[str] = None, kind: s
         extra["labels"] = kw.pop("labels")
     if "choices_from" in kw:   # "profiles": the form offers the workspace's saved profiles
         extra["choices_from"] = kw.pop("choices_from")
+    if "qmmm_only" in kw:   # shown only when the selection is a QM/MM system
+        extra["qmmm_only"] = kw.pop("qmmm_only")
     if "stage" in kw:   # the form groups an operation's fields by the stage of the job they set (network expansion)
         extra["stage"] = kw.pop("stage")
     if "cards" in kw:
@@ -70,11 +72,18 @@ class Params(BaseModel):
 
 
 def requirement_met(params: Params, requires: Optional[str]) -> bool:
+    """"other" (truthy), "other=a|b", or several joined by ";" (all must hold). A list value
+    reads as its sorted items joined by "," ("collide,piston"); ParamForm.js does the same."""
     if not requires:
         return True
-    name, _, allowed = requires.partition("=")
-    value = getattr(params, name)
-    return str(value) in allowed.split("|") if allowed else bool(value)
+    for one in requires.split(";"):
+        name, _, allowed = one.partition("=")
+        value = getattr(params, name)
+        if isinstance(value, (list, tuple)):
+            value = ",".join(sorted(str(v) for v in value))
+        if not (str(value) in allowed.split("|") if allowed else bool(value)):
+            return False
+    return True
 
 
 def generic_flags(params: Params) -> list[str]:
@@ -414,14 +423,24 @@ def _build_conformers(ctx: JobContext, p: ConformersParams) -> list[str]:
 GROW, CONNECT, STEER, RUN = "Grow", "Connect", "Steer", "Run"
 
 
+FORCE_LABELS = {"piston": "Piston (the wall squeezes in and out)",
+                "collide": "Collide (springs pull pairs together)"}
+NANOREACTOR_CARD = {
+    "title": "Nanoreactor",
+    "blurb": "Langevin MD in a soft wall, driven by the forces you switch on: the piston squeezes the wall, "
+             "collisions pull molecules or atoms together. Nothing picks the chemistry; every trajectory streams "
+             "to the Reactor view, and products join the network as they appear."}
+
+
 class ExpandParams(Params):
     """A network expansion in four stages, each chosen on its own: how new species are
     proposed (Grow), how each proposed reaction gets its TS (Connect), which species
     grow next (Steer), and how the work is scheduled and stopped (Run)."""
     # ------------------------------------------------------------------ Grow
-    generator: Literal["bond-rules", "crest-msreact", "collide", "reactor", "nanoreactor"] = P(
+    generator: Literal["bond-rules", "crest-msreact", "md", "collide", "reactor", "nanoreactor"] = P(
         "bond-rules", "Grow by", "How each species' possible products are proposed.", kind="custom", stage=GROW,
         cards={
+            "md": NANOREACTOR_CARD,
             "bond-rules": {"title": "Bond enumeration",
                            "blurb": "Break and form up to n bonds on the molecular graph; keep products with a valid "
                                     "Lewis structure. Fast, systematic, blind to energy."},
@@ -429,19 +448,49 @@ class ExpandParams(Params):
                               "blurb": "Biased GFN2-xTB optimizations find the fragments and isomers a molecule can "
                                        "reach. One molecule at a time.",
                               "programs": ["crest", "xtb"], "install": "conda install -c conda-forge crest xtb"},
-            "collide": {"title": "Collision MD",
+            # Older forms and jobs: the Nanoreactor with these forces (the same runs, seed for seed).
+            "collide": {"title": "Collision MD", "hidden": True, "moved_to": {"generator": "md", "md_forces": ["collide"]},
                         "blurb": "Langevin MD that pulls two atoms (or two molecules) together for a moment, over many "
                                  "pairs: decompositions, rearrangements, additions."},
-            "reactor": {"title": "Reactor MD",
+            "reactor": {"title": "Reactor MD", "hidden": True,
+                        "moved_to": {"generator": "md", "md_forces": ["piston", "collide"]},
                         "blurb": "Langevin MD in a squeezing wall with random collisions; nothing picks the "
                                  "chemistry. Each batch's products join the network at once (live queue), while "
                                  "batches go on until few new products appear."},
-            "nanoreactor": {"title": "Nanoreactor (QM/MM)", "qmmm_only": True,
+            # The xtb-program nanoreactor of older QM/MM jobs (the Nanoreactor card runs QM/MM systems too).
+            "nanoreactor": {"title": "Nanoreactor (QM/MM, xtb program)", "qmmm_only": True, "hidden": True,
                             "blurb": "Hot MD of the QM region in a periodically squeezing wall, each product put back "
                                      "into its environment."},
         })
     n_break: int = P(2, "Bonds broken (max)", cli="--n-break", ge=0, requires="generator=bond-rules", stage=GROW)
     n_form: int = P(2, "Bonds formed (max)", cli="--n-form", ge=0, requires="generator=bond-rules", stage=GROW)
+    md_forces: list[Literal["piston", "collide"]] = P(
+        ["piston", "collide"], "Forces", "What drives the reactions; switch on any. Piston: the wall squeezes in and "
+        "out once a picosecond. Collide: springs pull two molecules (or two atoms of one) together for a moment. "
+        "Both: the squeezing MD with random pulls.", kind="custom", min_length=1, requires="generator=md",
+        labels=FORCE_LABELS, stage=GROW)
+    md_temperature: Optional[float] = P(None, "MD temperature (K)", "Empty: 2200 K with the piston, 1000 K for "
+                                        "collisions alone (the pull supplies the energy).", kind="custom", gt=0,
+                                        requires="generator=md", stage=GROW)
+    md_seeds: int = P(0, "Trajectories per batch", "Independent trajectories of 'MD time' each. 0: one per worker.",
+                      kind="custom", ge=0, requires="generator=md;md_forces=piston|collide,piston", stage=GROW)
+    md_collisions: int = P(0, "Collisions", "Pulls per species, each its own short trajectory. 0: every pair the "
+                           "method picks (up to 96).", kind="custom", ge=0, requires="generator=md;md_forces=collide",
+                           stage=GROW)
+    md_time_ps: float = P(5.0, "MD time (ps)", "Per trajectory.", kind="custom", gt=0,
+                          requires="generator=md;md_forces=piston|collide,piston", advanced=True, group="Nanoreactor",
+                          stage=GROW)
+    md_max_batches: int = P(4, "Batches at most", "Batches run until few events give a product seen only once (5%), "
+                            "or this many ran.", kind="custom", ge=1,
+                            requires="generator=md;md_forces=piston|collide,piston", advanced=True,
+                            group="Nanoreactor", stage=GROW)
+    md_compress: float = P(0.7, "Squeeze to (of the wall radius)", "How far the piston closes the wall.",
+                           kind="custom", gt=0, le=1, requires="generator=md;md_forces=piston|collide,piston",
+                           advanced=True, group="Nanoreactor", stage=GROW)
+    md_embedded: bool = P(False, "MD with QM/MM forces", "QM/MM systems: run the MD with the environment present "
+                          "(QM/MM forces every step). Off: the QM region alone in vacuum, its products embedded "
+                          "afterwards (much faster). Piston only: no pulls inside QM/MM MD yet.", kind="custom",
+                          requires="generator=md", qmmm_only=True, advanced=True, group="Nanoreactor", stage=GROW)
     msreact_mode: Literal["all", "fragments", "isomers"] = P(
         "all", "Products", "fragments: dissociated products only (e.g. to read as precursors, backwards); "
         "isomers: non-dissociated only; all: both.", kind="custom", requires="generator=crest-msreact", stage=GROW)
@@ -1069,8 +1118,10 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
     out = argv.index("--output")
     add = []
     # Grow: always named (the CLI's 'auto' would pick an MD generator under access steering).
-    add += ["--generator", p.generator]
-    if p.generator == "crest-msreact":
+    add += ["--generator", "nanoreactor" if p.generator == "md" else p.generator]
+    if p.generator == "md":
+        add += _nanoreactor_options(p)
+    elif p.generator == "crest-msreact":
         add += ["--generator-option", f"mode={p.msreact_mode}", "--generator-option", f"nbonds={p.msreact_nbonds}",
                 "--generator-option", f"nshifts={p.msreact_nshifts}"]
     elif p.generator == "collide":
@@ -1110,6 +1161,32 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
         add += ["--time-budget", f"{3600.0 * p.time_budget_h:g}"]
     argv[out:out] = add
     return argv
+
+
+def _forces(forces) -> str:
+    """The Nanoreactor's forces in the CLI's order (always given: no forces is the legacy nanoreactor)."""
+    chosen = {str(f) for f in forces or ()}
+    if not chosen:
+        raise WorkspaceError("the Nanoreactor needs at least one force: Piston, Collide, or both")
+    return ",".join(f for f in ("piston", "collide") if f in chosen)
+
+
+def _nanoreactor_options(p: "ExpandParams") -> list[str]:
+    forces = _forces(p.md_forces)
+    opts = [f"forces={forces}"]
+    if p.md_temperature:
+        opts.append(f"temperature={p.md_temperature:g}")
+    if "piston" in forces:
+        opts += [f"n_seeds={p.md_seeds}", f"max_batches={p.md_max_batches}", f"time_ps={p.md_time_ps:g}",
+                 f"compress={p.md_compress:g}"]
+    elif p.md_collisions:
+        opts.append(f"n_collisions={p.md_collisions}")
+    if p.md_embedded:
+        if "collide" in forces:
+            raise WorkspaceError("MD with QM/MM forces runs the piston only (no pulls inside QM/MM MD yet): switch "
+                                 "Collide off, or the QM/MM forces")
+        opts.append("embedded=true")
+    return [w for o in opts for w in ("--generator-option", o)]
 
 
 def _known_folders(ctx: "JobContext") -> list[str]:
@@ -1321,18 +1398,29 @@ class MixtureParams(Params):
     """A reacting mixture (`mepd discovery mixture`): one explorer run per combination of the feed molecules
     (copies of one included: A + A) and, in later generations, per populated product next to each feed
     molecule, merged into one network of molecules with mass-action kinetics."""
-    grow_by: Literal["collide", "bond-rules", "reactor", "crest-msreact"] = P(
-        "collide", "Grow each seed by", "How each seed's explorer run proposes products.", kind="custom", stage=GROW,
+    grow_by: Literal["md", "collide", "bond-rules", "reactor", "crest-msreact"] = P(
+        "md", "Grow each seed by", "How each seed's explorer run proposes products.", kind="custom", stage=GROW,
         cards={
-            "collide": {"title": "Collision MD", "blurb": "Langevin MD that pulls atoms or molecules together for a "
-                        "moment, over many pairs. The mixture's default."},
+            "md": NANOREACTOR_CARD,
             "bond-rules": {"title": "Bond enumeration", "blurb": "Break and form up to two bonds on the molecular "
                            "graph. Fast, systematic, blind to energy."},
-            "reactor": {"title": "Reactor MD", "blurb": "MD in a squeezing wall with random collisions, in batches "
-                        "until few new products appear."},
+            # Older forms and jobs: the Nanoreactor with these forces (the same runs).
+            "collide": {"title": "Collision MD", "hidden": True, "moved_to": {"grow_by": "md", "md_forces": ["collide"]},
+                        "blurb": "Langevin MD that pulls atoms or molecules together for a moment, over many pairs."},
+            "reactor": {"title": "Reactor MD", "hidden": True,
+                        "moved_to": {"grow_by": "md", "md_forces": ["piston", "collide"]},
+                        "blurb": "MD in a squeezing wall with random collisions, in batches until few new products "
+                                 "appear."},
             "crest-msreact": {"title": "CREST msreact", "blurb": "Biased GFN2-xTB optimizations find fragments and "
                               "isomers.", "programs": ["crest", "xtb"], "install": "conda install -c conda-forge crest xtb"},
         })
+    md_forces: list[Literal["piston", "collide"]] = P(
+        ["collide"], "Forces", "What drives each seed's reactions; switch on any. Piston: the wall squeezes in and out "
+        "once a picosecond. Collide: springs pull two molecules (or two atoms of one) together for a moment, every "
+        "pair once (the mixture's default).", kind="custom", min_length=1, requires="grow_by=md", labels=FORCE_LABELS,
+        stage=GROW)
+    md_temperature: Optional[float] = P(None, "MD temperature (K)", "Empty: 2200 K with the piston, 1000 K for "
+                                        "collisions alone.", kind="custom", gt=0, requires="grow_by=md", stage=GROW)
     copies: int = P(2, "Molecules per seed", "Generation 0 explores every combination of 1 to this many feed molecules, "
                     "copies of one molecule included (2: A, B, A+A, A+B, B+B): reactions of a molecule with itself "
                     "are in the same model as the ones you are after.", kind="custom", ge=1, stage=GROW)
@@ -1357,6 +1445,13 @@ class MixtureParams(Params):
                                       kind="custom", gt=0, stage=RUN)
 
 
+def _mixture_grow(p: MixtureParams) -> str:
+    if p.grow_by != "md":
+        return f"--generator {p.grow_by}"
+    out = f"--generator nanoreactor --generator-option forces={_forces(p.md_forces)}"
+    return out + (f" --generator-option temperature={p.md_temperature:g}" if p.md_temperature else "")
+
+
 def _build_mixture(ctx: JobContext, p: MixtureParams) -> list[str]:
     feeds = [str(ctx.snapshot_structure(r, f"feed_{i}")) for i, r in enumerate(ctx.structures)]
     conc = [c.strip() for c in str(p.concentrations).replace(";", ",").split(",") if c.strip()] or ["1"]
@@ -1378,7 +1473,7 @@ def _build_mixture(ctx: JobContext, p: MixtureParams) -> list[str]:
     argv += ["--temperature", f"{p.temperature:g}", "--time", f"{p.time_s:g}", "--standard-state", p.standard_state,
              "--copies", str(p.copies), "--generations", str(p.generations), "--threshold", f"{p.threshold:g}",
              # one token: the value starts with "--", which a parser could take for an option of its own
-             *inputs, f"--expand-args=--generator {p.grow_by}"
+             *inputs, f"--expand-args={_mixture_grow(p)}"
              + (f" --time-budget {60.0 * p.seed_minutes:g}" if p.seed_minutes else ""), "--workers", str(p.workers),
              "--seed-workers", str(p.seed_workers), "--continuous" if p.continuous else "--by-generation",
              "--output", str(ctx.output_dir)]

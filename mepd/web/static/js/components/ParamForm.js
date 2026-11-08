@@ -73,7 +73,10 @@ function Field({ name, prop, value, onChange, op }) {
     const on = new Set(value || []);
     control = html`<div class="chips" role="group">
       ${t.options.map((o) => html`<button type="button" aria-pressed=${on.has(o)} class=${`chip ${on.has(o) ? 'on' : ''}`}
-        title=${shown(o)} onClick=${() => onChange(on.has(o) ? (value || []).filter((v) => v !== o) : [...(value || []), o])}>
+        title=${shown(o)} onClick=${() => {
+          const next = on.has(o) ? (value || []).filter((v) => v !== o) : [...(value || []), o];
+          if (next.length >= (prop.minItems || 0)) onChange(next);   // e.g. the Nanoreactor keeps one force on
+        }}>
         ${String(shown(o)).replace(/\s*\(.*\)$/, '')}</button>`)}
     </div>`;
   } else if (t.kind === 'enum') {
@@ -122,7 +125,18 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 export function rememberedValues(op, extra = {}) {
   const defaults = defaultsFor(op.schema);
-  return clampToSchema(op.schema, { ...defaults, ...prefs.get(REMEMBERED(op.key), {}), ...extra });
+  return clampToSchema(op.schema, movedCards(op.schema, { ...defaults, ...prefs.get(REMEMBERED(op.key), {}), ...extra }));
+}
+
+// A card that became another card's setting (Reactor MD -> the Nanoreactor with Piston and Collide) opens as that
+// card: remembered forms and Run again of older jobs land on the choice the form offers now.
+function movedCards(schema, values) {
+  let out = values;
+  for (const [k, p] of Object.entries(schema?.properties || {})) {
+    const moved = p.cards?.[out[k]]?.moved_to;
+    if (moved) out = { ...out, ...moved };
+  }
+  return out;
 }
 
 export function rememberValues(op, values) {
@@ -138,11 +152,13 @@ export function defaultsFor(schema) {
 }
 
 // Mirrors operations.requirement_met: "other" or "other=a|b" (a card's `needs` may join several with ";").
+// A list value reads as its sorted items joined by "," ("collide,piston").
 function requirementMet(values, requires) {
   if (!requires) return true;
   return requires.split(';').every((one) => {
     const [name, allowed] = one.split('=');
-    return allowed === undefined ? !!values[name] : allowed.split('|').includes(String(values[name]));
+    const v = Array.isArray(values[name]) ? [...values[name]].sort().join(',') : values[name];
+    return allowed === undefined ? (Array.isArray(values[name]) ? values[name].length > 0 : !!v) : allowed.split('|').includes(String(v));
   });
 }
 
@@ -159,7 +175,8 @@ const firstSentence = (t) => (t || '').split(/(?<=\.)\s/)[0];
 
 // A choice shown as cards: one per value, greyed out (with why) when another stage rules it out.
 function Cards({ name, prop, value, values, onChange, context, op }) {
-  const cards = Object.entries(prop.cards).filter(([, c]) => !c.qmmm_only || context?.qmmm);
+  // hidden: an older choice kept for older jobs, shown only while it is the one chosen
+  const cards = Object.entries(prop.cards).filter(([v, c]) => (!c.qmmm_only || context?.qmmm) && (!c.hidden || v === value));
   return html`<div class="stage-cards" role="radiogroup" aria-label=${prop.title || name}>
     ${cards.map(([v, c]) => {
       const blocked = c.unavailable || (!requirementMet(values, c.needs) ? c.needs_text || `needs ${c.needs}` : '');
@@ -205,7 +222,7 @@ function StagedForm({ schema, values, onChange, op, context }) {
   };
   return html`<div class="param-form staged">
     ${stages.map((st, i) => {
-      const fields = all.filter(([, p]) => p.stage === st && requirementMet(values, p.requires));
+      const fields = all.filter(([, p]) => p.stage === st && requirementMet(values, p.requires) && (!p.qmmm_only || context?.qmmm));
       const choice = fields.find(([, p]) => p.cards);
       const rest = fields.filter(([, p]) => !p.cards);
       const basic = rest.filter(([, p]) => !p.advanced), more = rest.filter(([, p]) => p.advanced);

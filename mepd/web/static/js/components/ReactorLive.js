@@ -8,6 +8,8 @@ import { api, attempt } from '../api.js';
 import { ReactionCard, reactionOf } from './Reactions.js';
 import { prefs, useStore } from '../store.js';
 
+const FORCE_NAME = { piston: 'Piston', collide: 'Collide' };
+
 const FPS = 30;   // reactor frames shown per second at 1x (a frame is ~10 fs)
 const POLL_S = 2.5;   // seconds between fetches of new frames while the MD runs
 
@@ -117,16 +119,22 @@ export function useStage(host) {
     v.render();
   };
   // The piston wall: a faint shell plus a wireframe cage (a translucent
-  // sphere alone is all but invisible), rebuilt only when it moves.
-  const setWall = (r, color) => {
+  // sphere alone is all but invisible), rebuilt only when it moves. `pull`
+  // ({ends: [[x, y, z], [x, y, z]], color}): a Collide pull, a dashed spring
+  // between the two atoms (the atoms themselves are marked in their style).
+  const setWall = (r, color, pull = null) => {
     const v = viewer.current;
-    const key = `${r}|${color}`;
+    const key = `${r}|${color}|${pull ? pull.ends.flat().map((x) => x.toFixed(2)).join(',') : ''}`;
     if (!v || wall.current === key) return;
     v.removeAllShapes();
     if (r) {
       const center = { x: 0, y: 0, z: 0 };
       v.addSphere({ center, radius: r, color, opacity: 0.12, resolution: 32 });
       v.addSphere({ center, radius: r, color, opacity: 0.6, wireframe: true, linewidth: 1, resolution: 14 });
+    }
+    if (pull) {   // opaque, after the wall (translucent shapes don't show through it)
+      const [a, b] = pull.ends.map(([x, y, z]) => ({ x, y, z }));
+      v.addCylinder({ start: a, end: b, radius: 0.08, color: pull.color, dashed: true, fromCap: 1, toCap: 1 });
     }
     wall.current = key;
     v.render();
@@ -469,11 +477,16 @@ export function ReactorLive({ job }) {
     const sel = act.map((e) => e.event).join(',');
     // (3Dmol perceives the bonds anew each frame: that is how they form and break.)
     const parts = regionParts(dd);
+    const tFs = raw * dd.dump_fs;
+    const pulling = (dd.pulls || []).find((q) => q.t0_fs <= tFs && tFs <= q.t1_fs && q.atoms?.length === 2);
+    const pullColor = cssVar('--danger', '#c53030');
+    const PULLED = { stick: { radius: 0.12 }, sphere: { scale: 0.34, color: pullColor } };
     stage.draw((v) => {
       if (!parts) {
         v.addModel(xyzText(dd.symbols, flat), 'xyz');
         v.setStyle({}, act.length ? faded() : FULL);
         if (act.length) v.setStyle({ index: [...new Set(act.flatMap((e) => e.atoms))] }, FULL);
+        if (pulling) v.setStyle({ index: pulling.atoms }, PULLED);
         return;
       }
       const m = v.addModel(subsetXyz(dd.symbols, flat, parts.qm), 'xyz');
@@ -482,6 +495,7 @@ export function ReactorLive({ job }) {
         const index = [...new Set(act.flatMap((e) => e.atoms))].map((a) => parts.local.get(a)).filter((k) => k !== undefined);
         m.setStyle({ index }, FULL);
       }
+      if (pulling) m.setStyle({ index: pulling.atoms.map((a) => parts.local.get(a)).filter((k) => k !== undefined) }, PULLED);
       if (parts.env.length) v.addModel(subsetXyz(dd.symbols, flat, parts.env), 'xyz').setStyle({}, ENV);
     }, {
       extent: reach(dd),
@@ -493,12 +507,13 @@ export function ReactorLive({ job }) {
     });
     const wide = wallWide(dd);
     const squeezed = dd.radius[i] && wide && dd.radius[i] < wide - 0.05;
-    stage.setWall(dd.radius[i] || null, squeezed ? cssVar('--warn', '#b7791f') : accent);
+    const at = (k) => [flat[3 * k], flat[3 * k + 1], flat[3 * k + 2]];
+    stage.setWall(dd.radius[i] || null, squeezed ? cssVar('--warn', '#b7791f') : accent,
+      pulling ? { ends: pulling.atoms.map(at), color: pullColor } : null);
     // The clock and the playhead, without React.
-    const tFs = raw * dd.dump_fs;
     if (hud.current) {
       const edge = runningRef.current && i >= dd.frames.length - 1;
-      hud.current.textContent = `${fmtPs(tFs)}${dd.radius[i] ? ` · wall ${dd.radius[i].toFixed(1)} Å${squeezed ? ' (squeezing)' : ''}` : ''}${runningRef.current ? (edge ? ' · live · waiting for the MD…' : ' · live') : ''}`;
+      hud.current.textContent = `${fmtPs(tFs)}${dd.radius[i] ? ` · wall ${dd.radius[i].toFixed(1)} Å${squeezed ? ' (squeezing)' : ''}` : ''}${pulling ? ` · pulling ${pulling.molecules ? 'two molecules' : `atoms ${pulling.atoms[0] + 1}–${pulling.atoms[1] + 1}`} together` : ''}${runningRef.current ? (edge ? ' · live · waiting for the MD…' : ' · live') : ''}`;
     }
     if (headEl.current) headEl.current.style.left = `${Math.min(100, (100 * tFs) / Math.max(dd.total_ps * 1000, dd.n_frames * dd.dump_fs))}%`;
     setActiveIds((old) => (old === sel ? old : sel));
@@ -559,8 +574,11 @@ export function ReactorLive({ job }) {
       <div class="rx-stage-wrap">
         <div class="rx-stage" ref=${host}></div>
         <div class="rx-hud" ref=${hud}></div>
-        ${d.radius.some(Boolean) && html`<div class="rx-legend small" title="The piston: a soft spherical wall that keeps the molecules together, and periodically closes in to push them into each other">
-          <span class="lg-wall">◯ wall (wide)</span> <span class="lg-squeeze">◯ squeezing</span></div>`}
+        ${(d.radius.some(Boolean) || d.forces?.length) && html`<div class="rx-legend small" title="The piston: a soft spherical wall that keeps the molecules together, and periodically closes in to push them into each other. Collide: a spring pulls two molecules (or two atoms) together for a moment.">
+          ${d.forces?.length > 0 && html`<span class="lg-forces">Forces: ${d.forces.map((f) => FORCE_NAME[f] || f).join(' + ')}</span>`}
+          ${d.radius.some(Boolean) && (d.forces && !d.forces.includes('piston') ? html`<span class="lg-wall">◯ wall</span>`
+            : html`<span class="lg-wall">◯ wall (wide)</span> <span class="lg-squeeze">◯ squeezing</span>`)}
+          ${d.forces?.includes('collide') && html` <span class="lg-pull">┅ pull</span>`}</div>`}
         ${active.length > 0 && html`<div class="rx-now">${active.map((e) => html`<div class=${`rx-eq ${e.tentative ? 'tentative' : ''}`} title=${e.label}>
           ${e.tentative ? 'analyzing: ' : ''}${short(e.label, 70)}</div>`)}</div>`}
       </div>
@@ -571,6 +589,8 @@ export function ReactorLive({ job }) {
         </div>
         <div class="rx-timeline" onClick=${seek} title="Click to jump; marks are reaction events">
           <div class="rx-done" style=${{ width: pct(d.n_frames * d.dump_fs) }}></div>
+          ${(d.pulls || []).map((q) => html`<b class="rx-pullband" style=${{ left: pct(q.t0_fs), width: pct(q.t1_fs - q.t0_fs) }}
+            title=${`${fmtPs(q.t0_fs)}–${fmtPs(q.t1_fs)}: pulling ${q.molecules ? 'two molecules' : `atoms ${q.atoms[0] + 1} and ${q.atoms[1] + 1}`} together`}></b>`)}
           ${shown.map((e) => html`<i class=${`rx-tick ${on.has(e.event) ? 'on' : ''} ${e.reaction == null ? 'deg' : ''}`}
             style=${{ left: pct(e.start_fs) }} title=${`${fmtPs(e.start_fs)}: ${e.label}`}></i>`)}
           <div class="rx-head" ref=${headEl}></div>

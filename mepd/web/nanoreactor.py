@@ -540,7 +540,10 @@ def reactor_view(out: Path, start: int = 0) -> dict:
         frames = frames - np.asarray(sched["centre_bohr"], dtype=float) / ANGSTROM_TO_BOHR
     return {**region, "prep": _prep(out) if not len(frames) else None, "symbols": list(symbols), "dump_fs": dump_fs, "stride": stride, "total_ps": total_ps,
             "n_frames": int(len(frames)), "start": first, "frames": [frames[k].reshape(-1).tolist() for k in idx],
-            "radius": [radius(k) for k in idx], "events": events, "final": final}
+            "radius": [radius(k) for k in idx], "events": events, "final": final,
+            # The Nanoreactor's forces (["piston", "collide"]) and its pulls so far: {t0_fs, t1_fs, atoms: [i, j],
+            # molecules, push}, atom indices the trajectory's own.
+            "forces": sched.get("forces"), "pulls": sched.get("pulls") or []}
 
 
 def event_view(out: Path, k: int, pad_fs: float = 60.0) -> dict:

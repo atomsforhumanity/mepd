@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web: one Nanoreactor in place of Reactor MD and Collision MD.** A network expansion's Grow stage and the Reacting mixture offer one MD choice, the Nanoreactor, with its forces switched on and off: Piston (the wall squeezes in and out), Collide (springs pull pairs together), or both. It sends `--generator nanoreactor --generator-option forces=...`. Piston and Collide together run what Reactor MD ran, and Collide alone what Collision MD ran. Remembered forms and Run again of older jobs open on the Nanoreactor with those forces. The Reactor view names the forces and draws each pull, as a spring between the two atoms and a band on the timeline, from the run's `schedule.json`. Expansions with Collide now show the Reactor view too.
+
 - **Web: the g-xTB backend defaults to automatic (axtb).** The g-xTB settings' Backend leaves the choice to the engine (axtb, or the g-xTB program for what axtb can't run) unless a profile names one. Same level of theory either way.
 
 - **Web: g-xTB's optimizers are shown and can be chosen.** The g-xTB settings have a TS optimizer (qcopt, the default, or Sella; it also follows the IRCs) and a Minimizer (qcopt, Sella, geomeTRIC, L-BFGS or the g-xTB program's own, which the form flags with axtb). Their defaults come from the engine. Neither changes a profile's level of theory, so results with either optimizer stay comparable. The help text no longer says g-xTB's TS searches, IRCs and minimizations run on Sella: since qcopt became the default (PR #43), they ran on qcopt. Other ASE engines still use Sella.
