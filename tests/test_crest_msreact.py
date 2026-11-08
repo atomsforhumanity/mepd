@@ -42,7 +42,9 @@ def test_the_network_card_is_one_expansion_in_stages_and_msreact_builds_its_comm
     props = op.describe()["schema"]["properties"]
     assert {k: v["stage"] for k, v in props.items() if v.get("cards")} == {
         "generator": "Grow", "connect_strategy": "Connect", "steer": "Steer", "schedule": "Run"}
-    assert set(props["generator"]["cards"]) == {"bond-rules", "crest-msreact", "collide", "reactor", "nanoreactor"}
+    assert set(props["generator"]["cards"]) == {"bond-rules", "crest-msreact", "md", "collide", "reactor", "nanoreactor"}
+    # one Nanoreactor card; the older MD cards are kept (hidden) so older jobs still open
+    assert [k for k, c in props["generator"]["cards"].items() if not c.get("hidden")] == ["bond-rules", "crest-msreact", "md"]
     # Retrosynthesis has its own card, with its methods.
     assert not [op for op, _ in ordered if op.key == "retrosynthesis"]
     retro = OPERATIONS["retrosynthesis"]
@@ -66,8 +68,10 @@ def test_the_network_card_is_one_expansion_in_stages_and_msreact_builds_its_comm
     i = argv.index("--generator")
     assert argv[i + 1] == "crest-msreact" and "mode=isomers" in argv and "nshifts=2" in argv
     assert "--n-break" not in argv and argv[-2:] == ["--output", "/out"]
-    # Bond enumeration is named too: the CLI's 'auto' would pick an MD generator under access steering.
+    # The default (the Nanoreactor) is named too, as is bond enumeration: never the CLI's 'auto'.
     argv = op.build(Ctx(), op.parse_params({}))
+    assert argv[argv.index("--generator") + 1] == "nanoreactor"
+    argv = op.build(Ctx(), op.parse_params({"generator": "bond-rules"}))
     assert argv[argv.index("--generator") + 1] == "bond-rules"
 
 
