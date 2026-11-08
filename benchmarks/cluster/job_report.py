@@ -10,6 +10,7 @@ scored channels get, and the open steps without an IRC check or with a TS below 
   channels' species' amount / converted (median and min over runs).
 - IRC failures (run/ts/<label>_irc.failed, the explorer's record of an IRC that failed; qcopt/NOTES.md): count and
   by message (numbers stripped, forward/reverse and first/last folded).
+- channel sampling (expand.log "Path searches: N of the M pair(s)" lines): samplings and path searches per run.
 - by run: TS-search jobs per run, failed IRC queue jobs by message (`why`, numbers stripped), seconds in steering jobs
   (kind steer, run_s summed), seconds in TS-search + IRC jobs, and the run's CPU hours (result.json).
 - open steps (a kinetics barrier): `unverified` = no IRC check (files.verified not true); `below_seed` = TS below
@@ -77,9 +78,12 @@ def run_facts(o: dict) -> dict | None:
         msg = re.sub(r"[-+]?\d[\d.eE+-]*", "#", msg)
         msg = re.sub(r"\b(forward|reverse)\b", "forward|reverse", re.sub(r"\b(first|last)\b", "first|last", msg))[:140]
         irc_files[msg] = irc_files.get(msg, 0) + 1
+    log = d / "expand.log"
+    ps = [int(m.group(1)) for m in re.finditer(r"^Path searches: (\d+) of", log.read_text(errors="replace"), re.M)] \
+        if log.is_file() else []
     steer_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") == "steer")
     ts_irc_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") in TS_KINDS | {"irc"})
-    return {"irc_files": irc_files, "irc_why": why, "steer_s": steer_s, "ts_irc_s": ts_irc_s, "cpu_h": o.get("cpu_h"),
+    return {"samplings": len(ps), "path_searches": sum(ps), "irc_files": irc_files, "irc_why": why, "steer_s": steer_s, "ts_irc_s": ts_irc_s, "cpu_h": o.get("cpu_h"),
             "done": done, "failed": fail, "neg": len(((o.get("audit") or {}).get("flags") or {}).get("negative_barrier") or []),
             "converted": conv, "share": share, "unverified": unver, "below_seed": below, "both": both}
 
@@ -102,13 +106,16 @@ def main(argv: list) -> int:
                                     "below_seed_open": 0, "unverified_and_below_seed_open": 0,
                                     "ts_jobs_per_run": [], "irc_failed_by_why": {}, "steer_s_per_run": [],
                                     "ts_irc_s_per_run": [], "cpu_h_per_run": [], "irc_failed_files": 0,
-                                    "irc_failed_files_by_message": {}})
+                                    "irc_failed_files_by_message": {}, "samplings_per_run": [],
+                                    "path_searches_per_run": []})
             g["n"] += 1
             if f is None:
                 continue
             for k, v in f["irc_files"].items():
                 g["irc_failed_files"] += v
                 g["irc_failed_files_by_message"][k] = g["irc_failed_files_by_message"].get(k, 0) + v
+            g["samplings_per_run"].append(f["samplings"])
+            g["path_searches_per_run"].append(f["path_searches"])
             g["ts_jobs_per_run"].append(f["done"]["ts"])
             for k, v in f["irc_why"].items():
                 g["irc_failed_by_why"][k] = g["irc_failed_by_why"].get(k, 0) + v
