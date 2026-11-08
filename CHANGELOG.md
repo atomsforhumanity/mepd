@@ -30,6 +30,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **axtb is a dependency of the `gxtb` and `discovery` extras** (axtb 0.1.0, on PyPI as a wheel for Linux x86_64,
+  Python 3.10+). `backend = "axtb"` and the proposal MD (reactor, collide) used it but nothing installed it.
 - **`mepd discovery expand --max-species` defaults to 400 (was 200).** On the scoreboard (8 systems x 5 replicates, runs sb-mc5 and sb-cap400) 11 of 40 runs at 200 stopped early at the cap and none at 400; recall was equal or better (cp_mbl full recall 4/5 -> 5/5). The cost: methyl formate's median settle time rose from 593 s to 1206 s (15 replicates each, sb-mf15; Mann-Whitney p = 0.051), within 30 min in all 15 runs. The web's expansions take the CLI's default.
 - **Web: follow-up network expansions hand earlier runs to the explorer as known (`--known`).** An expansion passes the output folders of the workspace's finished or stopped expansions at the same level of theory, so the explorer can take their species, verified steps, steering single points and Hessians as known instead of redoing them ("Reuse earlier expansions", on by default under Run). Only once the installed `mepd discovery expand` has `--known` (the explorer team's change, in progress); until then nothing changes. The live network marks species reused from an earlier run (↺).
 
@@ -141,6 +143,41 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 ### Added
 
 - **Web: Reacting mixture (experimental).** `mepd discovery mixture` from the network card, on several selected molecules: one explorer run per combination of the feed molecules (copies of one included: A + A, so a molecule's reactions with itself are in the model) and, generation by generation, per populated product next to each feed molecule (growth), merged into one network of molecules with mass-action kinetics. Its form has the expansion's stages (grow each seed by collision MD, bond enumeration, Reactor MD or CREST msreact; molecules per seed, generations, threshold, conditions and concentrations; continuous, workers, time per seed). Its page (#/network/<job>) follows mixture.json as seeds merge: molecules as structures sized by their peak amount, reactions as dots joining reactants and products (×2 for a molecule twice, dashed for one on both sides), coloured by barrier and sized by the amount converted, what forms and the seeds' progress. Experimental: the mixture explorer is not yet benchmarked (the explorer team is adding it to their scoreboard). Demo: capped (4 workers, 2 molecules per seed, 2 generations, 15 min per seed).
+
+- **qcopt, AFH's optimizer, for g-xTB minimizations, TS searches and IRCs** (`GXTBCalculator(minimizer="qcopt",
+  ts_optimizer="qcopt")`, or `minimizer = "qcopt"` and `ts_optimizer = "qcopt"` in `[gxtb_engine_kwds]`). The
+  defaults are unchanged (Sella); `ts_optimizer` is a new field (`"sella"` or `"qcopt"`).
+  - qcopt (github.com/atomsforhumanity/qcopt, on PyPI) minimizes by RS-RFO and climbs by RS-P-RFO in TRIC
+    coordinates, with TS-BFGS updates, and follows IRCs by Gonzalez-Schlegel steps. `mepd.engines._qcopt` runs it
+    on the engine's gradients and Hessians.
+  - On qcopt 0.2.0's own benchmark (100 Reaction-QM reactions, g-xTB from axtb at SCF accuracy 0.01): every TS
+    search reached a first-order saddle with a median of 12 gradients (Sella 16.5); 197 of 200 minimizations
+    reached a true minimum with a median of 33.5 (Sella 191, 143.5); IRCs, their ends minimized, ended in the same
+    minima as Sella's in 94 of 100 with a median of 349.5 gradients (Sella 848).
+  - Inside mepd (`mepd.find_ts`, then `mepd.irc` with its ends minimized and frequency-checked; g-xTB from axtb,
+    mepd's defaults otherwise; Reaction-QM rxn_000-099, both optimizers set for every step; qcopt 0.2.0, Sella
+    2.6.0; all 100 runs counted):
+
+    | | qcopt | Sella |
+    |---|---|---|
+    | Errors | 0 | 1 (an IRC end whose minimization stopped at a saddle point) |
+    | TS searches ending with one imaginary mode | 100 | 100 |
+    | TS search, median gradients (Hessians) | 14 (2) | 19 (2) |
+    | IRC with its ends minimized, median gradients (Hessians) | 303 (5) | 717 (2) |
+    | Total time, TS searches / IRCs | 201 s / 1,099 s | 254 s / 1,428 s |
+    | IRCs connecting Reaction-QM's reactant and product (bond graph) | 69 | 52 |
+
+    96 of the 100 TS searches found the same saddle as Sella (within 0.01 kcal/mol and 0.01 Angstrom). Most of
+    the difference in connections is the Sella IRC issue under Known issues.
+  - Sella's keywords carry over: `fmax` (eV/Angstrom), `maxiter`/`steps`, and for IRCs `dx` (Sella's step,
+    Angstrom amu^1/2); `keep_going` is ignored, and so is geomeTRIC's `coordsys`, which mepd's CLI adds to every
+    minimization. Sella-only options raise `ValueError`.
+  - A run that runs out of steps raises `GeometryOptimizationNotConvergedError` with `.structure`, so `find_ts`
+    goes on from where it stopped, as with Sella.
+  - Minimizations start from Lindh's model Hessian (an exact g-xTB Hessian costs about 38 gradients and did not pay
+    for itself on the 200 minimizations), or from g-xTB's with `hessian_every`; TS searches and IRCs start from
+    g-xTB's Hessian.
+  - Needs Python 3.11 or later, like the current qc* packages; the `gxtb` and `ase` extras install it there.
 
 - **Explorer, async: the rotamers of every TS the kinetics use.** Once a step's TS has its IRC (open within the
   cutoff, touching a populated species), its rotatable bonds outside the reacting core (the bonds its IRC ends
@@ -615,6 +652,18 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   GFN2 on axtb), stable, F0007 exo in 0 of 64. Each reactor batch's log line names the method (`reactor: batch 1 (MD: gfn2 on
   axtb): ...`).
 
+- **g-xTB minimizations, TS searches and IRCs use qcopt by default** (`GXTBCalculator.DEFAULT_MINIMIZER` and
+  `DEFAULT_TS_OPTIMIZER`), for the numbers under Added. `minimizer = "sella"` and `ts_optimizer = "sella"` restore
+  Sella. Without qcopt installed (Python 3.10, or neither the `gxtb` nor the `ase` extra), g-xTB optimizations stop
+  with an error that says to install it or choose Sella.
+
+- **The qc\* packages are locked at their current versions on Python 3.11 and later**: qcdata 0.23.1, qccompute
+  0.22.0, qccodec 0.21.0, qcinf 0.5.1 and qcref 0.5.1 (qcopt needs qcdata 0.23.1). qccompute no longer has a
+  `qcengine` extra, so qcengine and qcelemental are no longer installed; mepd imports neither.
+- **The Python API docs said g-xTB minimizations use Sella with g-xTB's exact Hessian.** Sella 2.6.0's minimizer
+  ignores `hessian_function` unless `hessian_every` is set (its defaults for minima have `eig=False`), so it uses its
+  own estimate; the docs now say so.
+
 - **Collide prefers no molecule when it picks two to collide,** in both the reactor generator
   (`reactor_generator.collision_pair`) and the interactive Reactor's automatic Collide (`Sandbox.js collisionPair`).
   It used to avoid pairing two waters: water was never the first partner when there was another molecule, and a
@@ -947,6 +996,11 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
 ### Fixed
+
+- **The ORCA engine works with qccodec 0.21 and later.** qccodec 0.21's `encode()` returns its input files in
+  `.files` instead of `.input_file` and `.geometry_file`, so `OrcaEngine` failed with an `AttributeError`. It now
+  writes every file the codec returns, and still reads the old attributes on older qccodec (`tests/test_orca_engine.py`
+  passes on both).
 
 - **`mepd optimize` on a single atom** (an ion such as Cl⁻, Br⁻, H⁻) failed with an AssertionError in the optimizer, which left halide ions without energies and kept them out of kinetics. An atom now gets one single point and counts as a minimum by definition (no Hessian).
 
@@ -1355,6 +1409,14 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
   Paracetamol now gives 23 solved routes, led by acetic anhydride + 4-aminophenol.
 
 ### Known issues
+
+- **With Sella, a g-xTB IRC often ends both branches in the same minimum.** In the qcopt comparison above, 27 of 99
+  Sella IRCs (axtb backend) ended with both minimized ends at the same energy (within 0.1 kcal/mol): one branch
+  stopped high on the surface and its minimization rolled into the other branch's valley (rxn_004), or both
+  branches went down the same side (rxn_050, in an earlier run of this comparison). That is 27 of Sella's 47 IRCs
+  that do not connect the reference reactant and product. qcopt's IRCs did this twice in 100. It also happens on
+  main before this change (f8512aa, its own lock: rxn_004 and rxn_050 the same way), so it comes from mepd's Sella
+  IRC path, not from the qc\* update. Sella's own IRC, run outside mepd with its defaults, connected 68 of these 100.
 
 - **A new AiZynthFinder environment is broken.** `mepd retro setup --aizynthfinder` now installs
   pyarrow 26 (released 2026-10), which needs NumPy 2. AiZynthFinder's RDKit needs NumPy 1, so it fails to

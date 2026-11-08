@@ -38,6 +38,7 @@ viz = [
 ]
 discovery = [
     "rich>=13.0.0",
+    "axtb>=0.1.0",      # the proposal MD (reactor, collide): GFN2-xTB / g-xTB in process
 ]
 # `mepd web`: browser UI (FastAPI server; Preact, Cytoscape and 3Dmol are
 # vendored under mepd/web/static/vendor, so no JS build step or internet).
@@ -62,6 +63,7 @@ ase = [
     "ase>=3.26.0",
     "sella>=2.3.4",
     "tblite>=0.4",
+    "qcopt>=0.2.0; python_version >= '3.11'",   # minimizer/ts_optimizer = "qcopt" (qc* needs 3.11)
 ]
 # GXTBCalculator (engine_name="gxtb") wraps g-xTB as an ase.Calculator --
 # a temporary workaround until qccompute supports g-xTB natively. TS-opt/IRC
@@ -70,6 +72,8 @@ ase = [
 gxtb = [
     "ase>=3.26.0",
     "sella>=2.3.4",
+    "qcopt>=0.2.0; python_version >= '3.11'",
+    "axtb>=0.1.0",      # backend = "axtb"
 ]
 # mepd.atom_mapping: SLAPMapper-based atom-to-atom mapping (WL-like iterative
 # label refinement + sequential linear assignment problems), used to sanity-

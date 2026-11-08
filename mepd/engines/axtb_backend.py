@@ -65,8 +65,8 @@ def _import():
         from mepd.errors import ElectronicStructureError
 
         raise ElectronicStructureError(
-            msg="backend = \"axtb\" needs the axtb Python package (github.com/atomsforhumanity/axtb: "
-                "`maturin build --release` in crates/axtb-py, then install the wheel).") from exc
+            msg="backend = \"axtb\" needs the axtb Python package (`pip install axtb`, or mepd's gxtb "
+                "extra).") from exc
     return axtb
 
 

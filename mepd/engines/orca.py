@@ -109,10 +109,14 @@ class OrcaEngine(Engine):
         inp = ProgramInput(program="orca", calctype=calctype, structure=structure,
                            model=Model(method=self._model_words(extra_words), basis=self.basis), keywords=kw)
         native = qccodec.encode(inp)
+        files = getattr(native, "files", None)
+        if files is None:   # qccodec < 0.21: the input and geometry files as attributes
+            files = {"orca.inp": native.input_file, native.geometry_filename: native.geometry_file}
         with tempfile.TemporaryDirectory(prefix="mepd-orca-") as tmp:
             wd = Path(tmp)
-            (wd / "orca.inp").write_text(native.input_file)
-            (wd / native.geometry_filename).write_text(native.geometry_file)
+            for name, content in files.items():
+                path = wd / name
+                path.write_bytes(content) if isinstance(content, bytes) else path.write_text(content)
             env = {**os.environ, "OMP_NUM_THREADS": "1"}
             env["PATH"] = f"{Path(self.executable).parent}{os.pathsep}{env.get('PATH', '')}"
             try:
