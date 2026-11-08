@@ -236,8 +236,14 @@ def test_gxtb_backend_is_a_choice_and_not_a_level(monkeypatch):
 
     f = pf.form(BASE)
     field = next(x for g in f["groups"] for x in g["fields"] if x["path"] == "gxtb_engine_kwds.backend")
-    assert field["type"] == "select" and field["key"] and field["default"] == "xtb"
-    assert [o["value"] for o in field["options"]] == ["xtb", "axtb"]
+    from mepd.engines.gxtb import GXTBCalculator
+
+    # unset: the engine's own choice (axtb where it can run), so a GFN-xTB profile still runs the program
+    assert field["type"] == "select" and field["key"] and field["default"] is None
+    assert GXTBCalculator.__dataclass_fields__["backend"].default is None
+    assert [o["value"] for o in field["options"]] == ["", "axtb", "xtb"]
+    assert "backend" not in tomllib.loads(pf.apply(pf.apply(BASE, "gxtb_engine_kwds.backend", "xtb")["text"],
+                                                   "gxtb_engine_kwds.backend", "")["text"]).get("gxtb_engine_kwds", {})
     ax = pf.apply(BASE, "gxtb_engine_kwds.backend", "axtb")["text"]
     assert tomllib.loads(ax)["gxtb_engine_kwds"]["backend"] == "axtb"
     with pytest.raises(WorkspaceError):

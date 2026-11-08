@@ -12,6 +12,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web: the g-xTB backend defaults to automatic (axtb).** The g-xTB settings' Backend leaves the choice to the engine (axtb, or the g-xTB program for what axtb can't run) unless a profile names one. Same level of theory either way.
+
 - **Web: g-xTB's optimizers are shown and can be chosen.** The g-xTB settings have a TS optimizer (qcopt, the default, or Sella; it also follows the IRCs) and a Minimizer (qcopt, Sella, geomeTRIC, L-BFGS or the g-xTB program's own, which the form flags with axtb). Their defaults come from the engine. Neither changes a profile's level of theory, so results with either optimizer stay comparable. The help text no longer says g-xTB's TS searches, IRCs and minimizations run on Sella: since qcopt became the default (PR #43), they ran on qcopt. Other ASE engines still use Sella.
 
 - **Explorer (async): a run no longer crashes when its last job adds a step.** Formic acid run r4 of scoreboard batch sb-t14 (develop 544cb14) stopped after 85 s with "Network expansion failed: TypeError: 'NoneType' object is not iterable". The queue's last job, a single TS between two dihydroxycarbene conformers, added a step. Its kinetics refresh was held back (it runs at most once in three times as long as the last refresh took), so it ran only when the queue drained, and it then queued that step's TS single point at the steering level. The drain hook reported that it had queued nothing, so the queue tried to ice the single point's job as if it were a path-search piece: `list(None)` of its missing pair. The hook now counts the steering single points its kinetics queued, and the queue runs them before it ends.

@@ -101,7 +101,7 @@ OPTIMIZER_DEFAULTS = {
 OPTIMIZER_ALIASES = {"conjugate_gradient": "cg", "velocity_projected": "vpo", "stochastic_gradient_descent": "sgd",
                      "gradient_descent": "gd", "deterministic_gradient_descent": "gd", "adaptive_momentum": "amg"}
 
-GXTB_DEFAULTS = {"backend": "xtb", "ts_optimizer": "qcopt", "minimizer": "qcopt", "executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
+GXTB_DEFAULTS = {"backend": None, "ts_optimizer": "qcopt", "minimizer": "qcopt", "executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
                  "timeout_s": 3600.0, "add_gxtb_flag": True, "keep_workdirs": False}
 FAIRCHEM_DEFAULTS = {"model": "uma-s-1p2p1", "task": "omol", "device": "", "checkpoint": None,
                      "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGS"}
@@ -197,7 +197,8 @@ OPTIONS = {
                          ("cage", "cage: the environment frozen, the path found in its field"),
                          ("mean_force", "free energy: mean force over environment dynamics")],
     "atom_mapping_inputs.metric": [(m, _MAPPING_LABELS[m]) for m in _OFFERED_METRICS],
-    "gxtb_engine_kwds.backend": [("xtb", "the g-xTB program"), ("axtb", "axtb, in process")],
+    "gxtb_engine_kwds.backend": [("", "automatic: axtb, or the program where axtb can't"), ("axtb", "axtb, in process"),
+                                 ("xtb", "the g-xTB program")],
     "gxtb_engine_kwds.ts_optimizer": [("qcopt", "qcopt"), ("sella", "Sella")],
     "gxtb_engine_kwds.minimizer": [("qcopt", "qcopt"), ("sella", "Sella"), ("geometric", "geomeTRIC"),
                                    ("lbfgs", "L-BFGS (ASE)"), ("xtb", "g-xTB program's own (ANCopt)")],
@@ -279,7 +280,7 @@ HELP = {
     "min_nebk": "Smallest spring constant.",
     "max_nebk": "Largest spring constant (empty: same as the smallest).",
     "min_image": "Images (empty: the chain length).",
-    "backend": "What computes g-xTB 2.0.1: the g-xTB program (one run per call), or axtb, AFH's Rust version of it, inside mepd (no program start per call, analytic Hessians). Both give the same energies (to 1e-10 Eh), so this is not a different level of theory.",
+    "backend": "What computes g-xTB 2.0.1: axtb, AFH's Rust version of it, inside mepd (no program start per call, analytic Hessians), or the g-xTB program (one run per call). Both give the same energies (to 1e-10 Eh), so this is not a different level of theory. Automatic (the default): axtb, except for GFN-xTB (add_gxtb_flag off), the program's own minimizer, extra arguments axtb doesn't take, or a program path you set, which run the program.",
     "n_threads": "Threads per g-xTB call. Keep 1 and parallelize across calls instead.",
     "n_parallel": "g-xTB calls at once (0: all cores).",
     "hessian_acc": "SCC accuracy for numerical Hessians (smaller = tighter).",
