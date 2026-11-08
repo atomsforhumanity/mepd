@@ -1618,11 +1618,13 @@ def test_in_budget_the_final_kinetics_are_as_before(monkeypatch, tmp_path):
     kinetics as with the out-of-time rule switched off, and no step marked left out."""
     from mepd.discovery import network_expansion as ne
 
-    def run(sub):
+    def run(sub):   # by SMILES, not index: the async workers' finishing order (so the numbering) varies with load
         res = _run_unchecked(tmp_path / sub)
-        return res, ([(s.smiles, s.node.energy) for s in res.species],
-                     [(st.a, st.b, st.ts_energy, st.label, sorted(st.files.items())) for st in res.steps],
-                     res.kinetics.barriers_kcal, res.kinetics.final_concentration, res.rounds[0]["kinetics"]["energies"])
+        smi = [s.smiles for s in res.species]
+        steps = sorted((tuple(sorted((smi[st.a], smi[st.b]))), st.ts_energy, b is None, b or 0.0)
+                       for st, b in zip(res.steps, res.kinetics.barriers_kcal))
+        return res, (sorted((s.smiles, s.node.energy) for s in res.species), steps,
+                     sorted(zip(smi, res.kinetics.final_concentration)), res.rounds[0]["kinetics"]["energies"])
 
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -1631,5 +1633,4 @@ def test_in_budget_the_final_kinetics_are_as_before(monkeypatch, tmp_path):
     _, without = run("b")
     assert res.rounds[0]["stopped"] == "converged" and res.steps
     assert not any("left_out_of_final_kinetics" in st.files for st in res.steps)
-    assert [x[:4] for x in with_rule[1]] == [x[:4] for x in without[1]] and with_rule[0] == without[0]
-    assert with_rule[2:] == without[2:]
+    assert with_rule == without
