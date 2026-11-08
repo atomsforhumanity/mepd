@@ -10,7 +10,7 @@ import sys
 def row(g: dict) -> dict:
     c = g.get("checks") or {}
     acc, rec, st = c.get("accuracy") or {}, c.get("recall") or {}, c.get("settle") or {}
-    return {"pass": g.get("pass"), "acc": (acc.get("base_median"), acc.get("cand_median"), acc.get("tolerance")),
+    return {"pass": g.get("status", g.get("pass")), "acc": (acc.get("base_median"), acc.get("cand_median"), acc.get("tolerance")),
             "recall": (rec.get("base_full"), rec.get("cand_full")),
             "settle": (st.get("base_median_s"), st.get("cand_median_s"), st.get("tolerance_s")), "why": g.get("why")}
 
@@ -31,10 +31,12 @@ def main(argv: list) -> int:
             if r else f"{name}: -" for name, r in (("old", a), ("new", b)))
         print(line)
         r2 = lambda r: tuple(None if v is None else round(v, 2) for v in r["acc"])   # moved: by > 0.005 kcal/mol
-        if a is None or b is None or a["pass"] != b["pass"] or r2(a) != r2(b):
+        r0 = lambda r: tuple(None if v is None else round(v) for v in r["settle"][:2])   # settle medians, s
+        if a is None or b is None or a["pass"] != b["pass"] or r2(a) != r2(b) or r0(a) != r0(b):
             moved.append({"system": sy, "old": a, "new": b})
-    print(f"overall: old {'PASS' if old.get('pass') else 'FAIL'}, new {'PASS' if new.get('pass') else 'FAIL'}")
-    print("moved (verdict or accuracy numbers): " + (", ".join(m["system"] for m in moved) or "none"))
+    ov = lambda g: (g.get("overall") or ("pass" if g.get("pass") else "fail")).upper()
+    print(f"overall: old {ov(old)}, new {ov(new)}")
+    print("moved (verdict, accuracy or settle medians): " + (", ".join(m["system"] for m in moved) or "none"))
     for m in moved:
         print(" ", m["system"], "why old:", (m["old"] or {}).get("why"), "new:", (m["new"] or {}).get("why"))
     return 0
