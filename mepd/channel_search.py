@@ -158,7 +158,11 @@ def _expand_pairs_by_mechanism(
         kept = []
         for key in keys:
             mine = [r for r in rows if r["key"] == key]
-            mine.sort(key=lambda r: (r["score"] is None, r["score"] if r["score"] is not None else 0.0))
+            # a start from the wrong face goes after every right-face one, whatever its score (see _wrong_face)
+            wrong = {id(r): len(mine) > pairs_per_mechanism and r["score"] is not None and _wrong_face(
+                structures[r["i"]].structure, r["structure"] or structures[r["j"]].structure) for r in mine}
+            mine.sort(key=lambda r: (r["score"] is None, wrong[id(r)],
+                                     r["score"] if r["score"] is not None else 0.0))
             kept += mine[:pairs_per_mechanism]
         rows = kept
     if metric == "snap-gi-xtb":
@@ -241,6 +245,37 @@ def _expand_pairs_by_mechanism(
 
     summary = {"n_mechanisms": len(keys), "path_searches_per_mechanism": counts}
     return new_structures, new_candidates, summary
+
+
+def _wrong_face(start, end) -> bool:
+    """Whether `start` holds a partner of a bond `end` forms on the other side of an atom that `end` makes a
+    stereocentre: an atom forming a bond, keeping at least two of its start neighbours, with four neighbours
+    of four kinds in `end` (Weisfeiler-Lehman classes of its bond graph), whose handedness of (two kept
+    neighbours, the partner) differs between the two structures. Its path has to turn the partner over.
+    Endpoint RMSD does not see it: isoprene + methyl acrylate's para adduct gave its concerted TS in 1 of 29
+    searches from complexes with the acrylate's other face to the diene (mostly an ene TS 20 kcal/mol higher),
+    in 30 of 46 from the right face (isoprene-free/NOTES.md, 2026-11-07). Same atom numbering in both."""
+    import networkx as nx
+    import numpy as np
+
+    from mepd.qcdata_structure_helpers import structure_to_molecule
+
+    g0, g1 = structure_to_molecule(start), structure_to_molecule(end)
+    formed = [(a, b) for a, b in g1.edges() if not g0.has_edge(a, b)]
+    if not formed:
+        return False
+    kind = {k: h[-1] for k, h in nx.weisfeiler_lehman_subgraph_hashes(g1, node_attr="element", iterations=4).items()}
+    x0, x1 = np.asarray(start.geometry, dtype=float), np.asarray(end.geometry, dtype=float)
+    for c, p in formed + [(b, a) for a, b in formed]:
+        around = sorted(g1.neighbors(c))
+        kept = [k for k in around if k != p and g0.has_edge(c, k)]
+        if len(around) != 4 or len({kind[k] for k in around}) != 4 or len(kept) < 2:
+            continue
+        a, b = kept[:2]
+        hand = [np.dot(x[a] - x[c], np.cross(x[b] - x[c], x[p] - x[c])) for x in (x0, x1)]
+        if hand[0] * hand[1] < 0:
+            return True
+    return False
 
 
 def _gi_near_lowest_rmsd(rows: list[dict], keys: list, score_pair, workers: int, window: float, keep: int,
