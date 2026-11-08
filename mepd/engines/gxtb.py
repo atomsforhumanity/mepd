@@ -460,13 +460,18 @@ class GXTBCalculator(Engine):
     # process start per call, analytic Hessians. It takes only --etemp/--acc/--iterations in
     # extra_args (SCF accuracy 0.01 unless --acc is given: axtb_backend.ACCURACY), g-xTB only
     # (add_gxtb_flag), no minimizer = "xtb", and timeout_s does not apply.
-    backend: str = "xtb"
+    # None (the default): "axtb", unless the settings need the program -- GFN-xTB (add_gxtb_flag
+    # false), minimizer = "xtb", an extra_args option axtb does not take, an explicit `executable`,
+    # or no axtb installed -- then "xtb". A profile that names a backend keeps it.
+    backend: str | None = None
     # axtb's conventions: None/"axtb" (its default) or "gxtb" (reproduces the program to ~1e-12 Eh).
     axtb_conventions: str | None = None
 
     def __post_init__(self) -> None:
         if self._ts_optimizer() not in ("sella", "qcopt"):
             raise ValueError(f"ts_optimizer must be \"sella\" or \"qcopt\", not {self.ts_optimizer!r}.")
+        if self.backend is None:
+            self.backend = self._default_backend()
         if self.backend not in ("xtb", "axtb"):
             raise ValueError(f"backend must be \"xtb\" or \"axtb\", not {self.backend!r}.")
         if self.backend == "axtb":
@@ -494,6 +499,21 @@ class GXTBCalculator(Engine):
                     "Use a profile [solvation] table (method = \"correction\": GFN2-xTB solvation on top of "
                     "g-xTB) instead.")
         self.env = {str(k): str(v) for k, v in dict(self.env or {}).items()}
+
+    def _default_backend(self) -> str:
+        """axtb when it computes what these settings ask for, else the g-xTB program."""
+        if (not self.add_gxtb_flag or self.executable is not None
+                or (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb"):
+            return "xtb"
+        from mepd.engines import axtb_backend
+
+        if axtb_backend.version() is None:
+            return "xtb"
+        try:
+            axtb_backend.settings_from_args(_split_args(self.extra_args))
+        except ValueError:
+            return "xtb"
+        return "axtb"
 
     def _ts_optimizer(self) -> str:
         return str(self.ts_optimizer or self.DEFAULT_TS_OPTIMIZER).lower()

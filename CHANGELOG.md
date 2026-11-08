@@ -40,6 +40,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Changed
 
+- **g-xTB runs on axtb by default.** A g-xTB engine whose profile names no `backend` now computes with axtb, AFH's in-process Rust g-xTB 2.0.1, at SCF accuracy 0.01. It gives the program's energies, needs no program start per call and has analytic Hessians. Settings axtb can't serve fall back to the g-xTB program, with no error: GFN-xTB (`add_gxtb_flag = false`), `minimizer = "xtb"`, an `extra_args` option other than `--etemp`/`--acc`/`--iterations`, an explicit `executable`, or no axtb installed. A profile that names a backend keeps it. The level of theory and the cache keys are unchanged, so earlier results stay at the same level. The benchmarks already ran with `backend = "axtb"`, and an engine built without that line is field-for-field the same.
 - **axtb is a dependency of the `gxtb` and `discovery` extras** (axtb 0.1.0, on PyPI as a wheel for Linux x86_64,
   Python 3.10+). `backend = "axtb"` and the proposal MD (reactor, collide) used it but nothing installed it.
 - **`mepd discovery expand --max-species` defaults to 400 (was 200).** On the scoreboard (8 systems x 5 replicates, runs sb-mc5 and sb-cap400) 11 of 40 runs at 200 stopped early at the cap and none at 400; recall was equal or better (cp_mbl full recall 4/5 -> 5/5). The cost: methyl formate's median settle time rose from 593 s to 1206 s (15 replicates each, sb-mf15; Mann-Whitney p = 0.051), within 30 min in all 15 runs. The web's expansions take the CLI's default.
