@@ -82,6 +82,7 @@ def _expand_pairs_by_mechanism(
     pairs_per_mechanism: int = 0,
     workers: int = 1,
     output: Optional[Path] = None,
+    mirrors: frozenset = frozenset(),
 ) -> tuple[list, list[tuple[int, int]], dict]:
     """--atom-mapping for conformer pairs: turn every (reactant, product)
     conformer pair into one path search PER MECHANISM.
@@ -96,7 +97,10 @@ def _expand_pairs_by_mechanism(
     mechanisms, nothing is thrown away (`select_per_mechanism`).
 
     `pairs_per_mechanism` > 0 then keeps, for each mechanism, only the pairs
-    it scores best on, instead of every pair x every mechanism.
+    it scores best on, instead of every pair x every mechanism -- that many
+    of the pairs with a conformer in `mirrors` (indices into `structures`: mirror
+    images added to one end, see run_channels) and that many of the others, as
+    the mirror half scores worse yet is a different approach.
 
     Each kept (pair, mechanism) gets its own product entry appended to
     `structures` (the conformer pools on disk stay as sampled), and the
@@ -156,8 +160,8 @@ def _expand_pairs_by_mechanism(
                                     max(1, pairs_per_mechanism), near_lowest)
     if pairs_per_mechanism > 0:
         kept = []
-        for key in keys:
-            mine = [r for r in rows if r["key"] == key]
+        for key, half in ((k, h) for k in keys for h in ((False, True) if mirrors else (False,))):
+            mine = [r for r in rows if r["key"] == key and ((r["i"] in mirrors or r["j"] in mirrors) == half)]
             # a start from the wrong face goes after every right-face one, whatever its score (see _wrong_face)
             wrong = {id(r): len(mine) > pairs_per_mechanism and r["score"] is not None and _wrong_face(
                 structures[r["i"]].structure, r["structure"] or structures[r["j"]].structure) for r in mine}
@@ -1164,7 +1168,7 @@ def run_channels(
 
     from mepd.conformers import (
         ConformerInputs, CrestInputs, _subselect_conformers,
-        merge_degenerate_complex_conformers, merge_mirror_images,
+        is_own_mirror_molecule, merge_degenerate_complex_conformers, merge_mirror_images, mirror_images_missing,
     )
     from mepd.sampling import generate_seed_pairs
     from mepd.nodes.node import StructureNode
@@ -1362,8 +1366,26 @@ def run_channels(
     # the other. Merging one pool drops exactly the redundant pairs; pick
     # whichever leaves fewer.
     # (Not on QM/MM: the environment is not achiral, so no conformer has a mirror twin.)
-    merged = {label: merge_mirror_images(pools[label], rmsd_cutoff) if region is None else list(pools[label])
-              for label in pools}
+    #
+    # When only one end is achiral (isoprene + methyl acrylate -> a chiral adduct), its
+    # pool must hold every conformer's mirror image instead: (R*, P) is the mirror of
+    # (R, P*), a pair with the other enantiomer, which no pool holds -- without R* one
+    # approach (one face of the reactant to the other) is never searched. That pool is
+    # then not merged (the other end has no twins to merge).
+    closed, added = None, []
+    if region is None and pair_from == "both":
+        achiral = {label: is_own_mirror_molecule(endpoints[label]) for label in pools}
+        if achiral["start"] != achiral["end"]:
+            closed = "start" if achiral["start"] else "end"
+            added = mirror_images_missing(pools[closed], rmsd_cutoff)
+            if added:
+                pools[closed] = pools[closed] + added
+                _log(f"Added the mirror images of {len(added)} {'reactant' if closed == 'start' else 'product'} "
+                     f"conformer(s): that end is achiral and the other is not, so pairs from mirror-image "
+                     f"conformers are different approaches.")
+            stats["conformers"][closed]["n_mirror_images_added"] = len(added)
+    merged = {label: merge_mirror_images(pools[label], rmsd_cutoff)
+              if region is None and label != closed else list(pools[label]) for label in pools}
     n_if = {
         "start": len(merged["start"]) * len(pools["end"]),
         "end": len(pools["start"]) * len(merged["end"]),
@@ -1487,6 +1509,7 @@ def run_channels(
 
     structures = start_confs + end_confs
     n_start = len(start_confs)
+    mirrors = frozenset(k for k, n in enumerate(structures) if any(n is m for m in added))
     candidates = [
         (i, n_start + j) for i in range(n_start) for j in range(len(end_confs))
     ] if pair_from == "both" else [(i, n_start + i) for i in (built_chosen if built_chosen is not None
@@ -1524,7 +1547,7 @@ def run_channels(
     # --pair-from: each pair was built from one atom correspondence already.
     structures, candidates, mechanism_summary = _expand_pairs_by_mechanism(
         structures, candidates, atom_mapping and pair_from == "both", run_inputs,
-        pairs_per_mechanism=pairs_per_mechanism, workers=workers, output=output,
+        pairs_per_mechanism=pairs_per_mechanism, workers=workers, output=output, mirrors=mirrors,
     )
     stats["pair_atom_mapping_seconds"] = round(time.perf_counter() - t0, 3)
     stats.update(mechanism_summary)

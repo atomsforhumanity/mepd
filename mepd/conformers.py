@@ -650,6 +650,35 @@ def merge_mirror_images(
     return kept
 
 
+def is_own_mirror_molecule(node: StructureNode) -> bool:
+    """Whether `node`'s mirror image is the same molecule (bond graph and stereo,
+    `mepd.compare.same_molecule`): an achiral molecule, or a set of them. False when
+    the stereochemistry cannot be compared."""
+    from mepd.compare import same_molecule
+
+    try:
+        return bool(same_molecule(node, StructureNode(structure=mirror_image(node.structure))))
+    except Exception:
+        return False
+
+
+def mirror_images_missing(conformers: list[StructureNode], rmsd_cutoff: float) -> list[StructureNode]:
+    """The mirror image of each conformer that neither it nor another conformer
+    (or an image added before it) matches within `rmsd_cutoff` (snap-RMSD, bohr),
+    with its energy: what makes the pool mirror-closed."""
+    added: list[StructureNode] = []
+    for node in conformers:
+        image = node.update_coords(mirror_image(node.structure).geometry)
+        image._cached_energy = node._cached_energy   # a mirror image has the same energy
+        try:
+            known = any(snap_rmsd(k.structure, image.structure) < rmsd_cutoff for k in [*conformers, *added])
+        except ValueError:
+            known = False
+        if not known:
+            added.append(image)
+    return added
+
+
 def fragments(structure: Structure) -> list[list[int]]:
     """Atom indices of each separate molecule in `structure` (bonding
     perceived from the geometry); one group for a single molecule, and a
