@@ -1952,8 +1952,8 @@ def expand_network(
             missed = asked if asked and set(asked) != {a, b} else ()
         # The single TS optimization found a TS of some other step (kept,
         # under its real ends) or none: the pair asked for still needs its
-        # path search -- the steps between them, intermediates included.
-        if len(missed) == 2 and tuple(missed) not in searched:
+        # path search -- the steps between them, intermediates included. (Not a rotamer's: its pair has its TS.)
+        if len(missed) == 2 and tuple(missed) not in searched and not st.files.get("rotamer_of"):
             retry.append(tuple(missed))
         if dropped or duplicate:
             result.steps[:] = [x for x in result.steps if x is not st]
@@ -2554,7 +2554,7 @@ def expand_network(
                 if corr is not None and free is not None:
                     free._cache[corr[0]] = corr[1]
                 _add_found({"pair": (a, b), "ts": ts, "label": Path(fp).stem,
-                            "files": {"ts": fp, "verified": False, "rotamer_of": parent}})
+                            "files": {"ts": fp, "verified": False, "rotamer_of": parent, "pair": [a, b]}})
             _save()
             _follow_up()
 

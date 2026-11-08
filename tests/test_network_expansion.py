@@ -1574,6 +1574,64 @@ def test_async_the_steering_single_points_the_drains_kinetics_ask_for_run(monkey
     assert connect.left_over == []
 
 
+def test_async_a_species_first_found_as_a_rotamers_irc_end_is_connected_from_the_species_asked(monkeypatch, tmp_path):
+    """Isoprene + methyl acrylate r3 (sb-t14, both arms; para:meta 2.8e8, 15 kcal/mol off): no proposal made the
+    meta adduct, and it was found only as the IRC end of a rotamer of the seed's hetero-Diels-Alder TS (the [3,3]
+    shift of that adduct to meta). A rotamer's step carried no asked pair, so the rule above passed it by: the seed
+    was never paired with meta, whose only route stayed the stepwise one. Now it is, as for any TS's IRC end; a
+    rotamer whose IRC goes elsewhere still asks for no path search of its step's pair (its TS is the parent's)."""
+    import mepd
+    from mepd.discovery import generators
+
+    reactant, adduct = _butadiene_acrylate()
+    x = _ang(adduct)
+    h = next(i for i, s in enumerate(adduct.structure.symbols) if str(s) == "H")
+    x[h] = x[h] + 3.0                                          # an H torn off: a species no proposal makes
+    torn = StructureNode(structure=_structure_with(adduct.structure, x))
+
+    def diels_alder(structure, *, max_products, options):
+        return [adduct.structure] if len(graph_edges(StructureNode(structure=structure))) == 20 else []
+
+    def find_ts(node, engine, **kw):
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.012 + 1e-3 * (float(np.abs(np.asarray(node.structure.geometry)).sum()) % 1.0)
+        return ts
+
+    def verify(items):                                         # the first rotamer's IRC joins the adduct and `torn`
+        out = []
+        for idx, fp in items:
+            a, b = (adduct, torn) if Path(fp).stem == "fast_0_1_rot0" else (reactant, adduct)
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [a, b])
+            out.append((idx, a.copy(), b.copy()))
+        return out
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", diels_alder, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    from pathlib import Path
+
+    forked = _TSFileAsyncConnector(tmp_path)
+    searched = []
+    add_pairs = forked.add_pairs
+    forked.add_pairs = lambda pairs, search=False: (searched.extend(pairs) if search else None, add_pairs(pairs))
+    try:
+        res = expand_network(reactant.copy(), _GraphEngine(), connect=forked, verify=verify, refine=refine,
+                             steer="access", access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+                             schedule="async", generator="reactor", generator_options={"n_seeds": 1},
+                             allow_radicals=True)
+    finally:
+        forked.close()
+    k = next(i for i, sp in enumerate(res.species) if graph_edges(sp.node) == graph_edges(torn))
+    assert any(st.files.get("rotamer_of") and {st.a, st.b} == {1, k} for st in res.steps)
+    assert not any(e.target == k and e.source != k for e in res.edges)    # no proposal made it
+    assert (0, k) in forked.pairs                              # connected from the seed all the same
+    assert (0, 1) not in searched                              # and no path search of the seed-adduct pair
+
+
 def test_async_schedule_at_max_species_ends_with_what_it_has():
     """An async run stopped by max_species, like one out of time, doesn't go on to sample channels or IRC-check
     steps after its queue (unbudgeted, outside the queue: F0007 reached 200 species at 1459 s of a 1800 s budget,
