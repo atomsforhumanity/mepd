@@ -1623,14 +1623,16 @@ def test_in_budget_the_final_kinetics_are_as_before(monkeypatch, tmp_path):
         smi = [s.smiles for s in res.species]
         steps = sorted((tuple(sorted((smi[st.a], smi[st.b]))), st.ts_energy, b is None, b or 0.0)
                        for st, b in zip(res.steps, res.kinetics.barriers_kcal))
+        conc = dict(zip(smi, res.kinetics.final_concentration))   # equal to rounding: the solve's order differs too
         return res, (sorted((s.smiles, s.node.energy) for s in res.species), steps,
-                     sorted(zip(smi, res.kinetics.final_concentration)), res.rounds[0]["kinetics"]["energies"])
+                     res.rounds[0]["kinetics"]["energies"]), conc
 
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    res, with_rule = run("a")
+    res, with_rule, conc_with = run("a")
     monkeypatch.setattr(ne, "OUT_OF_TIME", ())
-    _, without = run("b")
+    _, without, conc_without = run("b")
     assert res.rounds[0]["stopped"] == "converged" and res.steps
     assert not any("left_out_of_final_kinetics" in st.files for st in res.steps)
     assert with_rule == without
+    assert conc_with == pytest.approx(conc_without, rel=1e-9, abs=1e-15)
