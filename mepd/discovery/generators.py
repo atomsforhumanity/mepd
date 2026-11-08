@@ -11,8 +11,13 @@ live view, and path searches between the species found.
                   see network_expansion.enumerate_bond_changes and REFERENCES
     crest-msreact CREST's msreact fragment generator (fragments and isomers
                   from biased GFN2-xTB optimizations); see crest_msreact
-    nanoreactor   hot piston MD of the structure: its state after each
-                  reaction event; see nanoreactor_generator
+    nanoreactor   with forces=piston,collide / piston / collide (resolve_forces):
+                  Langevin MD on axtb in the soft wall with the forces chosen --
+                  the reactor (piston, collide or both) or collide's collisions;
+                  without forces, hot piston MD of the structure with xtb's MD
+                  (the older nanoreactor; see nanoreactor_generator)
+    reactor       nanoreactor forces=piston,collide (reactor_generator)
+    collide       nanoreactor forces=collide (collide_generator)
 
 Anything else plugs in by import path ("package.module:function", returning
 product Structures in the same atom order); see network_expansion.
@@ -87,6 +92,9 @@ def _crest_msreact(structure, *, max_products, options):
 def _nanoreactor(structure, *, max_products, options):
     from mepd.discovery.nanoreactor_generator import OPTIONS, reactor_products
 
+    if "forces" in options:
+        raise ValueError("nanoreactor forces=... is resolved by `mepd discovery expand` (resolve_forces); from "
+                         "Python use generator 'reactor' (forces piston,collide or piston) or 'collide'.")
     if "embedded" in options or "environment_temperature" in options:
         raise ValueError("nanoreactor embedded=true (MD with QM/MM forces) runs only on a QM/MM system "
                          "(a profile with a [qmmm] table).")
@@ -147,7 +155,8 @@ GENERATORS: dict[str, Generator] = {
         "unattended over many pairs. Finds unimolecular decompositions and rearrangements the piston nanoreactor "
         "rarely makes, and bimolecular reactions (cycloadditions included) without templates.",
         _collide, kind="structures", package="axtb", install="axtb (github.com/atomsforhumanity/axtb; part of mepd's environment)",
-        options=dict(__import__("mepd.discovery.collide_generator", fromlist=["OPTIONS"]).OPTIONS),
+        options={k: v for k, v in __import__("mepd.discovery.collide_generator", fromlist=["OPTIONS"]).OPTIONS.items()
+                 if k != "workdir"},   # set by the explorer
         references={"collide": {
             "method": "steered Langevin MD (a capped harmonic pull between two atoms, or between two whole molecules, "
                       "then a free run and a quench) on GFN2-xTB or g-xTB (axtb)",
@@ -183,6 +192,45 @@ GENERATORS: dict[str, Generator] = {
             "cite": ["L.-P. Wang, A. Titov, R. McGibbon, F. Liu, V. S. Pande, T. J. Martinez, Nat. Chem. 6, 1044-1048 "
                      "(2014), doi:10.1038/nchem.2099"]}}),
 }
+
+
+PULL_OPTIONS = ("pull_fs", "gap_fs", "k", "intra_hops")   # the reactor's pulls: nothing to set without collide
+
+
+def resolve_forces(name: str, options: Sequence[str]) -> tuple[str, list]:
+    """`nanoreactor` with `forces=...` among its key=value `options`: the generator that runs it and the
+    options to pass, so every older spelling stays what it was --
+
+        forces=piston,collide  -> reactor (the Reactor, unattended: the piston and random pulls)
+        forces=piston          -> reactor forces=piston (the same MD without the pulls)
+        forces=collide         -> collide (one short pull, free run and quench per possible pull)
+
+    With embedded=true (QM/MM forces) only forces=piston, the QM/MM nanoreactor. Any other name, or
+    nanoreactor without forces (xtb's piston MD), is returned as it came."""
+    from mepd.discovery.reactor_generator import forces_of
+
+    options = list(options or [])
+    if str(name).strip().lower() != "nanoreactor":
+        return name, options
+    kv = [(o.partition("=")[0].strip(), o.partition("=")[2].strip()) for o in options]
+    given = [v for k, v in kv if k == "forces"]
+    if not given:
+        return name, options
+    forces = forces_of(given[-1].strip('"\''))
+    rest = [o for (k, _), o in zip(kv, options) if k != "forces"]
+    keys = {k for k, _ in kv}
+    if any(k == "embedded" and v.lower() in ("true", "1", "yes") for k, v in kv):
+        if forces != ["piston"]:
+            raise ValueError("nanoreactor embedded=true (MD with QM/MM forces) has the piston only: forces=piston.")
+        return "nanoreactor", rest
+    if forces == ["collide"]:
+        return "collide", rest
+    if forces == ["piston"]:
+        if keys & set(PULL_OPTIONS):
+            raise ValueError(f"{', '.join(sorted(keys & set(PULL_OPTIONS)))}: options of the collide force; "
+                             "forces=piston has no pulls.")
+        return "reactor", rest + ["forces=piston"]
+    return "reactor", rest
 
 
 def get_generator(name: str) -> Generator:

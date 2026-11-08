@@ -15,10 +15,10 @@ from mepd.cpus import available_cpus
 
 
 def _generator_options(generator: str, values: List[str], output: Path) -> dict:
-    """--generator-option values; the nanoreactor's and the reactor's MD go into
+    """--generator-option values; the nanoreactor's, the reactor's and collide's MD go into
     <output>/reactor/run_kk (the web UI's Reactor view reads it there)."""
     out = _parse_options(values)
-    if str(generator).strip().lower() in ("nanoreactor", "reactor"):
+    if str(generator).strip().lower() in ("nanoreactor", "reactor", "collide"):
         out.setdefault("workdir", str((Path(output) / "reactor").resolve()))
     return out
 
@@ -586,12 +586,15 @@ def expand(
         False, "--allow-zwitterions", help="Also propose products that need separated formal charges."),
     generator: str = typer.Option(
         "auto", "--generator",
-        help="Which tool proposes the products: 'nanoreactor' (hot piston MD of the species; with --steer access "
+        help="Which tool proposes the products: 'nanoreactor' with --generator-option forces=piston,collide, "
+        "forces=piston or forces=collide (Langevin MD on axtb with those forces: the piston squeezes the wall, "
+        "collide pulls atoms or molecules together; piston,collide is 'reactor', collide alone 'collide'); "
+        "'nanoreactor' without forces (xtb's hot piston MD of the species; with --steer access "
         "the default, 8 trajectories x 5 ps at 2500 K unless --generator-option says otherwise), 'bond-rules' "
         "(built in: the ZStruct/YARP break-and-form enumeration, reimplemented), or 'package.module:function' for "
         "your own: function(structure, **options) returning product Structures (or xyz paths) in the same atom "
         "order; 'collide' (the Reactor's Collide: steered GFN2 MD pulling atom pairs together, with a bond dragged "
-        "apart); 'reactor' (the Reactor unattended: piston MD with random collisions, 800 K, one 5 ps trajectory per "
+        "apart); 'reactor' (the Reactor unattended: piston MD with random collisions, 2200 K, one 5 ps trajectory per "
         "worker). 'auto' (default): with --steer access, collide for one molecule and nanoreactor for several; "
         "else bond-rules."),
     generator_option: List[str] = typer.Option(
@@ -690,7 +693,7 @@ def expand(
     if n_break < 0 or n_form < 0 or n_break + n_form == 0:
         raise typer.BadParameter("--n-break and --n-form must be >= 0 and not both 0.")
 
-    from mepd.discovery.generators import get_generator, is_named
+    from mepd.discovery.generators import get_generator, is_named, resolve_forces
 
     # Network-aware exploration proposes products by nanoreactor MD, several
     # short trajectories per species (bond-change enumeration capped at N
@@ -716,6 +719,10 @@ def expand(
             defaults = {"n_seeds": "8", "time_ps": "5", "temperature": "2500", "parallel": str(max(1, workers))}
             generator_option = list(generator_option or []) + [f"{k}={v}" for k, v in defaults.items() if k not in given]
 
+    try:   # nanoreactor forces=...: the reactor or collide (generators.resolve_forces)
+        generator, generator_option = resolve_forces(generator, generator_option)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--generator-option") from None
     if str(generator).strip().lower() in ("collide", "reactor"):
         # its processes follow --workers (a pod's os.cpu_count() is the node's, not the pod's)
         given = {o.partition("=")[0].strip() for o in (generator_option or [])}

@@ -155,6 +155,21 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Added
 
+- **Explorer: one MD generator, the nanoreactor, with its forces switched on and off.** `mepd discovery expand
+  --generator nanoreactor --generator-option forces=piston,collide` (or `forces=piston`, `forces=collide`): Langevin
+  MD on axtb in the soft wall, where the piston squeezes the wall and collide pulls two molecules (or two atoms of
+  one) together. `forces=piston,collide` runs the reactor and `forces=collide` collide, unchanged (the same products
+  with the same seeds); `forces=piston` is the reactor's MD without its pulls (`pull_fs`, `gap_fs`, `k`,
+  `intra_hops` are refused). `reactor` and `collide` stay as they were, and `nanoreactor` without `forces` is still
+  xtb's piston MD. With `embedded=true` (a QM/MM system's MD with QM/MM forces) only `forces=piston`.
+  (`generators.resolve_forces`, applied by the CLI, so `discovery mixture` too.)
+- **Explorer: collide's trajectories are streamed to the web's Reactor view.** Each collision's MD (the pull and the
+  free run, not the quench) is written as it runs into `<output>/reactor/run_kk`, as the reactor's trajectories are
+  (`md/segment_kkk.xyz`, `md/schedule.json`, `live_events.json`, `md/done`); the products are the same.
+  Every trajectory's `md/schedule.json` also lists its `forces` and its `pulls` (`t0_fs`, `t1_fs`, `atoms`, and the
+  two `molecules` pushed together, or the bond a collision drags apart as `push`), the reactor's appended as each
+  pull starts.
+
 - **Web: Reacting mixture (experimental).** `mepd discovery mixture` from the network card, on several selected molecules: one explorer run per combination of the feed molecules (copies of one included: A + A, so a molecule's reactions with itself are in the model) and, generation by generation, per populated product next to each feed molecule (growth), merged into one network of molecules with mass-action kinetics. Its form has the expansion's stages (grow each seed by collision MD, bond enumeration, Reactor MD or CREST msreact; molecules per seed, generations, threshold, conditions and concentrations; continuous, workers, time per seed). Its page (#/network/<job>) follows mixture.json as seeds merge: molecules as structures sized by their peak amount, reactions as dots joining reactants and products (×2 for a molecule twice, dashed for one on both sides), coloured by barrier and sized by the amount converted, what forms and the seeds' progress. Experimental: the mixture explorer is not yet benchmarked (the explorer team is adding it to their scoreboard). Demo: capped (4 workers, 2 molecules per seed, 2 generations, 15 min per seed).
 
 - **qcopt, AFH's optimizer, for g-xTB minimizations, TS searches and IRCs** (`GXTBCalculator(minimizer="qcopt",
