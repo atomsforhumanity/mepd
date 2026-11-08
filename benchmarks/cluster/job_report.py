@@ -8,6 +8,10 @@ scored channels get, and the open steps without an IRC check or with a TS below 
 - negative_barrier: the audit's flags (summed).
 - product: final amounts (score.folded_amounts): converted = 1 - the seed's amount; channel share = the scored
   channels' species' amount / converted (median and min over runs).
+- IRC failures (run/ts/<label>_irc.failed, the explorer's record of an IRC that failed; qcopt/NOTES.md): count and
+  by message (numbers stripped, forward/reverse and first/last folded).
+- by run: TS-search jobs per run, failed IRC queue jobs by message (`why`, numbers stripped), seconds in steering jobs
+  (kind steer, run_s summed), seconds in TS-search + IRC jobs, and the run's CPU hours (result.json).
 - open steps (a kinetics barrier): `unverified` = no IRC check (files.verified not true); `below_seed` = TS below
   the seed on the energies the kinetics used (summary access: ts_energies vs energies[0]; else ts_energy vs
   seed_energy); `both`; summed over runs.
@@ -15,6 +19,7 @@ scored channels get, and the open steps without an IRC check or with a TS below 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -61,7 +66,21 @@ def run_facts(o: dict) -> dict | None:
         u = not (st.get("files") or {}).get("verified")
         b = e0 is not None and ts[m] is not None and float(ts[m]) < float(e0)
         unver, below, both = unver + u, below + b, both + (u and b)
-    return {"done": done, "failed": fail, "neg": len(((o.get("audit") or {}).get("flags") or {}).get("negative_barrier") or []),
+    why = {}
+    for e in failed:
+        if e.get("kind") == "irc":
+            k = re.sub(r"[-+]?\d[\d.eE+-]*", "#", str(e.get("why") or "no why logged"))[:90]
+            why[k] = why.get(k, 0) + 1
+    irc_files = {}
+    for fp in sorted((d / "run" / "ts").glob("*_irc.failed")) if (d / "run" / "ts").is_dir() else []:
+        msg = fp.read_text(errors="replace").strip().splitlines()[0] if fp.stat().st_size else "empty"
+        msg = re.sub(r"[-+]?\d[\d.eE+-]*", "#", msg)
+        msg = re.sub(r"\b(forward|reverse)\b", "forward|reverse", re.sub(r"\b(first|last)\b", "first|last", msg))[:140]
+        irc_files[msg] = irc_files.get(msg, 0) + 1
+    steer_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") == "steer")
+    ts_irc_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") in TS_KINDS | {"irc"})
+    return {"irc_files": irc_files, "irc_why": why, "steer_s": steer_s, "ts_irc_s": ts_irc_s, "cpu_h": o.get("cpu_h"),
+            "done": done, "failed": fail, "neg": len(((o.get("audit") or {}).get("flags") or {}).get("negative_barrier") or []),
             "converted": conv, "share": share, "unverified": unver, "below_seed": below, "both": both}
 
 
@@ -80,10 +99,22 @@ def main(argv: list) -> int:
             f = run_facts({**o, "run": o.get("run") or res})
             g = arm.setdefault(sy, {"n": 0, "ts_jobs": 0, "ts_failed": 0, "irc_jobs": 0, "irc_failed": 0,
                                     "negative_barrier": 0, "shares": [], "unverified_open": 0,
-                                    "below_seed_open": 0, "unverified_and_below_seed_open": 0})
+                                    "below_seed_open": 0, "unverified_and_below_seed_open": 0,
+                                    "ts_jobs_per_run": [], "irc_failed_by_why": {}, "steer_s_per_run": [],
+                                    "ts_irc_s_per_run": [], "cpu_h_per_run": [], "irc_failed_files": 0,
+                                    "irc_failed_files_by_message": {}})
             g["n"] += 1
             if f is None:
                 continue
+            for k, v in f["irc_files"].items():
+                g["irc_failed_files"] += v
+                g["irc_failed_files_by_message"][k] = g["irc_failed_files_by_message"].get(k, 0) + v
+            g["ts_jobs_per_run"].append(f["done"]["ts"])
+            for k, v in f["irc_why"].items():
+                g["irc_failed_by_why"][k] = g["irc_failed_by_why"].get(k, 0) + v
+            g["steer_s_per_run"].append(round(f["steer_s"]))
+            g["ts_irc_s_per_run"].append(round(f["ts_irc_s"]))
+            g["cpu_h_per_run"].append(None if f["cpu_h"] is None else round(f["cpu_h"], 2))
             g["ts_jobs"] += f["done"]["ts"]
             g["ts_failed"] += f["failed"]["ts"]
             g["irc_jobs"] += f["done"]["irc"]
