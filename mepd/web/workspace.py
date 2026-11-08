@@ -123,9 +123,10 @@ def _engine_level(data: dict) -> dict:
     if engine == "gxtb":
         # Everything but how it runs: extra arguments (e.g. solvation) or
         # add_gxtb_flag = false change the method; threads etc. do not, nor
-        # does axtb in place of the program (the same energies to 1e-10 Eh).
+        # does axtb in place of the program (the same energies to 1e-10 Eh), nor the optimizers
+        # (qcopt or Sella: the same surface).
         runtime = {"executable", "n_threads", "n_parallel", "hessian_acc", "keep_workdirs", "backend",
-                   "axtb_conventions"}
+                   "axtb_conventions", "ts_optimizer", "minimizer"}
         kw = {k: v for k, v in table("gxtb_engine_kwds").items() if k not in runtime and v not in (None, "", {}, [])}
         if kw.get("add_gxtb_flag") is True:
             kw.pop("add_gxtb_flag")      # the default

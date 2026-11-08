@@ -101,7 +101,7 @@ OPTIMIZER_DEFAULTS = {
 OPTIMIZER_ALIASES = {"conjugate_gradient": "cg", "velocity_projected": "vpo", "stochastic_gradient_descent": "sgd",
                      "gradient_descent": "gd", "deterministic_gradient_descent": "gd", "adaptive_momentum": "amg"}
 
-GXTB_DEFAULTS = {"backend": "xtb", "executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
+GXTB_DEFAULTS = {"backend": "xtb", "ts_optimizer": "qcopt", "minimizer": "qcopt", "executable": None, "n_threads": 1, "n_parallel": 0, "hessian_acc": 0.001,
                  "timeout_s": 3600.0, "add_gxtb_flag": True, "keep_workdirs": False}
 FAIRCHEM_DEFAULTS = {"model": "uma-s-1p2p1", "task": "omol", "device": "", "checkpoint": None,
                      "inference_settings": "default", "batch_size": 32, "geometry_optimizer": "LBFGS"}
@@ -117,8 +117,9 @@ TS_FIELDS = [
     ("check_frequencies", True, "Keep a TS only if it has exactly one imaginary mode (a Hessian per TS)."),
     ("imaginary_cutoff_cm", 10.0, "Modes below minus this (cm⁻¹) count as imaginary; smaller ones are numerical "
                                   "noise along very soft modes."),
-    ("exact_hessian", True, "g-xTB: start Sella from g-xTB's Hessian instead of estimating the curvature from "
-                            "gradients (the estimate found a higher saddle in 4 of 500 benchmark TSs)."),
+    ("exact_hessian", True, "g-xTB: start the TS optimizer (qcopt or Sella) from g-xTB's Hessian instead of "
+                            "estimating the curvature from gradients (with Sella, the estimate found a higher saddle "
+                            "in 4 of 500 benchmark TSs)."),
     ("hessian_every", 0, "g-xTB: recompute that Hessian every this many steps (0: only at the start)."),
 ]
 CHAIN_DEFAULTS = {"k": 0.1, "delta_k": 0.09, "do_parallel": True, "node_freezing": True, "fraction_freeze": 0.1,
@@ -197,6 +198,9 @@ OPTIONS = {
                          ("mean_force", "free energy: mean force over environment dynamics")],
     "atom_mapping_inputs.metric": [(m, _MAPPING_LABELS[m]) for m in _OFFERED_METRICS],
     "gxtb_engine_kwds.backend": [("xtb", "the g-xTB program"), ("axtb", "axtb, in process")],
+    "gxtb_engine_kwds.ts_optimizer": [("qcopt", "qcopt"), ("sella", "Sella")],
+    "gxtb_engine_kwds.minimizer": [("qcopt", "qcopt"), ("sella", "Sella"), ("geometric", "geomeTRIC"),
+                                   ("lbfgs", "L-BFGS (ASE)"), ("xtb", "g-xTB program's own (ANCopt)")],
 }
 
 HELP = {
@@ -316,6 +320,12 @@ HELP = {
                        'e.g. model = "medium", device = "cpu".',
     "family": "Only for a local checkpoint: which kind of model it is.",
     "geometry_optimizer": "ASE optimizer for minimizations (TS optimizations use Sella).",
+    "ts_optimizer": "What optimizes g-xTB transition states and follows their IRCs: qcopt (AFH's optimizer, from "
+                    "g-xTB's exact Hessian; on 100 Reaction-QM TSs, the same saddle in 97 with median 12 gradients "
+                    "against Sella's 16.5, and IRCs with 349.5 against 848) or Sella.",
+    "minimizer": "What minimizes g-xTB structures (IRC ends, conformers, endpoints): qcopt (TRIC coordinates, "
+                 "Lindh's model Hessian; on 200 Reaction-QM structures 197 true minima, about 5x faster than "
+                 "Sella), Sella, geomeTRIC, ASE's L-BFGS, or the g-xTB program's own optimizer (not with axtb).",
 }
 
 _WORDS = {"thre": "threshold", "tol": "tolerance", "rtol": "relative tolerance", "ts": "TS", "rms": "RMS",
@@ -692,9 +702,12 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
                               'pick the g-xTB program.')
             if gx.get("add_gxtb_flag", True) is False:
                 issues.append('axtb computes g-xTB only: with add_gxtb_flag = false (GFN2-xTB), pick the g-xTB program.')
+            if str(gx.get("minimizer") or "") == "xtb":
+                issues.append('Minimizer "g-xTB program\'s own" needs the g-xTB program: pick another minimizer, or '
+                              'the g-xTB program as the backend.')
         groups.append({"id": "engine", "title": "g-xTB",
                        "fields": [_field(data, f"gxtb_engine_kwds.{k}", v,
-                                         key=k in ("backend", "n_threads", "n_parallel"))
+                                         key=k in ("backend", "ts_optimizer", "minimizer", "n_threads", "n_parallel"))
                                   for k, v in GXTB_DEFAULTS.items()]})
     elif engine in ("qccompute", "chemcloud"):
         fields = [_field(data, f"geometry_optimizer_kwds.{k}", v) for k, v in GEOMOPT_DEFAULTS.items()]

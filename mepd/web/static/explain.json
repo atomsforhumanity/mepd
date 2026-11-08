@@ -7,7 +7,7 @@
    "Minimizes endpoints not yet minima at this level (engine geometry optimization, up to 500 cycles), then SLAPMapper checks and, if on, fixes the atom correspondence.",
    "Builds the initial path (the profile's interpolation, default geodesic, 10 images) and relaxes it with the profile's path method (default FSM-TS).",
    "Recursive: MSMEP checks each path for intermediate minima and pseudo-IRC endpoints and splits it into new searches (msmep.MSMEP.run_recursive_minimize).",
-   "TS optimization from each leaf's highest image, then IRC; for g-xTB both through ASE/Sella (cli_common._optimize_ts_and_irc)."
+   "TS optimization from each leaf's highest image, then IRC; for g-xTB both with qcopt (or Sella, the TS optimizer in the g-xTB settings) (cli_common._optimize_ts_and_irc)."
   ],
   "default": "Recursive splitting, TS optimization and IRC on, atom-mapping check on: a path with an intermediate otherwise gives one meaningless TS guess.",
   "swap": [
@@ -74,7 +74,7 @@
   "does": "Refines each path's highest-energy image to a first-order saddle point, written as ts*.xyz.",
   "how": [
    "Takes each leaf's highest-energy image (QM/MM: the interpolated maximum plus the path tangent) as the guess (cli._ts_guess).",
-   "mepd.find_ts: for g-xTB, Sella (order 1) started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
+   "mepd.find_ts: for g-xTB, qcopt (Sella with ts_optimizer = \"sella\") started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
    "A failed optimization is reported and skipped; the path stays."
   ],
   "default": "On: path images are only TS guesses.",
@@ -96,10 +96,10 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
-   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "g-xTB: qcopt's IRC from the TS with g-xTB's exact Hessian (Sella's with ts_optimizer = \"sella\"); other ASE engines: Sella's IRC, both branches at once in two threads. fmax 0.01 eV/Å, up to 3000 steps per direction.",
+   "With Sella, if its inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
-   "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
+   "Both IRC ends are then minimized (for g-xTB with its minimizer, qcopt by default, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
   ],
   "default": "On; needs Optimize TS.",
   "swap": [
@@ -874,8 +874,8 @@
   "does": "Treats the structure as a TS guess: optimizes it to a first-order saddle point and, by default, follows its IRC to the two minima it connects.",
   "how": [
    "The structure (or design) is written as guess.xyz and `mepd ts --guess` runs with the job's profile.",
-   "mepd.find_ts: for g-xTB, Sella (order 1) started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
-   "With IRC: Sella IRC both ways (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
+   "mepd.find_ts: for g-xTB, qcopt (Sella with ts_optimizer = \"sella\") started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
+   "With IRC: qcopt's IRC both ways for g-xTB, Sella's for other ASE engines (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
   ],
   "default": "IRC on (the CLI default is off).",
   "swap": [
@@ -903,10 +903,10 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
-   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "g-xTB: qcopt's IRC from the TS with g-xTB's exact Hessian (Sella's with ts_optimizer = \"sella\"); other ASE engines: Sella's IRC, both branches at once in two threads. fmax 0.01 eV/Å, up to 3000 steps per direction.",
+   "With Sella, if its inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
-   "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
+   "Both IRC ends are then minimized (for g-xTB with its minimizer, qcopt by default, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
   ],
   "default": "On in the web form; the CLI default is off.",
   "swap": [
@@ -930,8 +930,8 @@
   "does": "Treats the Design tab's molecule as a TS guess: saddle optimization, then an IRC to the reactant and product it connects. If it does not converge, the design goes back to the submitted structure.",
   "how": [
    "The design's molblock is converted to xyz (web.design.to_xyz) and written as inputs/guess.xyz.",
-   "mepd.find_ts: for g-xTB, Sella (order 1) started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
-   "With IRC: Sella IRC both ways (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
+   "mepd.find_ts: for g-xTB, qcopt (Sella with ts_optimizer = \"sella\") started from g-xTB's own Hessian, to fmax 0.001 eV/Å, up to 1000 steps, continued once from where it stopped if it runs out; for other ASE engines Sella from its estimated curvature; for QCCompute engines geomeTRIC's transition_state. Profile: [ts_inputs].",
+   "With IRC: qcopt's IRC both ways for g-xTB, Sella's for other ASE engines (fmax 0.01 eV/Å, 3000 steps), or geomeTRIC IRC for engines without one; then both ends minimized and frequency-checked."
   ],
   "default": "IRC on.",
   "swap": [
@@ -952,10 +952,10 @@
   "title": "Run IRC",
   "does": "Follows each optimized TS downhill in both directions, giving the two minima it connects (irc*.xyz).",
   "how": [
-   "g-xTB/ASE engines: Sella's IRC from the TS, fmax 0.01 eV/Å, up to 3000 steps per direction; g-xTB runs both branches at once in two threads.",
-   "If Sella's inner loop fails on the first steps, it is retried once from the TS with keep_going.",
+   "g-xTB: qcopt's IRC from the TS with g-xTB's exact Hessian (Sella's with ts_optimizer = \"sella\"); other ASE engines: Sella's IRC, both branches at once in two threads. fmax 0.01 eV/Å, up to 3000 steps per direction.",
+   "With Sella, if its inner loop fails on the first steps, it is retried once from the TS with keep_going.",
    "Frames are aligned to remove rigid drift. Engines without their own IRC use geomeTRIC (irc.compute_irc_chain_with_geometric).",
-   "Both IRC ends are then minimized (Sella with the exact Hessian for g-xTB, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
+   "Both IRC ends are then minimized (for g-xTB with its minimizer, qcopt by default, fmax 0.001 eV/Å, frequency-checked, pushed off a saddle if one stops there): the path runs minimum → TS → minimum (mepd.irc)."
   ],
   "default": "On in the web form; the CLI default is off.",
   "swap": [
@@ -979,7 +979,7 @@
   "does": "Minimizes the selected structures at the chosen profile's level, replacing their geometry and energy in place.",
   "how": [
    "Runs `mepd optimize` on snapshots of the structures with the job's profile; one job per charge/spin group.",
-   "engine.compute_geometry_optimization; g-xTB: Sella with g-xTB's exact Hessian to fmax 0.001 eV/Å (xtb's own optimizer with minimizer = \"xtb\"), run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.001 eV/Å. An optimization that runs out of steps fails instead of returning its last frame.",
+   "engine.compute_geometry_optimization; g-xTB: qcopt (TRIC coordinates, Lindh's model Hessian) to fmax 0.001 eV/Å (or the minimizer chosen in the g-xTB settings: Sella, geomeTRIC, L-BFGS, or xtb's own optimizer), run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.001 eV/Å. An optimization that runs out of steps fails instead of returning its last frame.",
    "Optional Hessian check with rescue (elementarystep.validate_minimum_with_rescue).",
    "Geometry, energy and level replace the structure's in place; if bonds changed it is flagged 'reacted while being minimized' (Workspace.apply_optimization)."
   ],
@@ -1057,7 +1057,7 @@
   "does": "Minimizes the Design tab's molecule at the chosen profile's level; its geometry and energy are replaced in place.",
   "how": [
    "The design's molblock is converted to xyz (web.design.to_xyz) and written as inputs/design.xyz.",
-   "engine.compute_geometry_optimization; g-xTB: Sella with g-xTB's exact Hessian to fmax 0.001 eV/Å (xtb's own optimizer with minimizer = \"xtb\"), run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.001 eV/Å. An optimization that runs out of steps fails instead of returning its last frame.",
+   "engine.compute_geometry_optimization; g-xTB: qcopt (TRIC coordinates, Lindh's model Hessian) to fmax 0.001 eV/Å (or the minimizer chosen in the g-xTB settings: Sella, geomeTRIC, L-BFGS, or xtb's own optimizer), run in parallel, SCF retried with Fermi smearing if it oscillates; ASE engines: ASE LBFGSLineSearch, fmax 0.001 eV/Å. An optimization that runs out of steps fails instead of returning its last frame.",
    "Optional Hessian check with rescue (elementarystep.validate_minimum_with_rescue)."
   ],
   "default": "Hessian check follows the workspace 'Confirm minima with a Hessian' switch.",
@@ -1172,7 +1172,7 @@
   "does": "Scans the IRC from this edge's TS for a valley-ridge transition, where the path can split after the TS into two products (P1, P2), and tests whether it really bifurcates.",
   "how": [
    "Takes the lowest IRC-verified TS known for the edge (operations.edge_route_ts); checks it has an imaginary mode.",
-   "Tight IRC (Sella dx 0.05, fmax 0.01 eV/Å), Hessians along it; lowest frequency orthogonal to the path (Miller–Handy–Adams projection); sign change bisected → VRT (vri.scan_irc_for_vrt).",
+   "Tight IRC (step 0.05 Å·amu½, fmax 0.01 eV/Å), Hessians along it; lowest frequency orthogonal to the path (Miller–Handy–Adams projection); sign change bisected → VRT (vri.scan_irc_for_vrt).",
    "Pushes along the ridge mode past the VRT and optimizes to find P2; searches TS2 between P1 and P2.",
    "Basin test: sideways pushes off the IRC drained by optimization; split into P1 and P2 = bifurcation. Repeats from symmetrized TS1 candidates."
   ],
@@ -1332,9 +1332,9 @@
   "title": "IRC step (Å·amu½)",
   "does": "Step size of the tighter IRC the scan runs on; smaller resolves the VRT better.",
   "how": [
-   "Passed as Sella's dx for g-xTB/ASE engines (discovery.cli._run_vri_irc); other engines use their own IRC defaults, or geomeTRIC on failure."
+   "Passed as the IRC step for g-xTB (qcopt's step_size) and ASE engines (Sella's dx) (discovery.cli._run_vri_irc); other engines use their own IRC defaults, or geomeTRIC on failure."
   ],
-  "default": "0.05, with stopping force 0.01 eV/Å (mepd's usual IRC uses Sella's default step and fmax 0.01).",
+  "default": "0.05, with stopping force 0.01 eV/Å (mepd's usual IRC uses the optimizer's default step and fmax 0.01).",
   "code": [
    "mepd/discovery/cli.py:_run_vri_irc"
   ],
@@ -2861,7 +2861,7 @@
   "does": "Picks the algorithm that relaxes the path between two minima. Every method runs inside the same recursive driver (MSMEP), which splits a path at intermediates and searches each piece again.",
   "how": [
    "MSMEP builds the initial path (Initial path choice), then hands it to the path minimizer chosen here (mepd/msmep.py:_construct_path_minimizer).",
-   "NEB: mepd's own nudged elastic band, images moved by the Chain optimizer. FSM (FNEB): freezing string grown from both ends. FSM + TS check: FSM, Sella/geomeTRIC TS optimization from the highest image, then a pseudo-IRC.",
+   "NEB: mepd's own nudged elastic band, images moved by the Chain optimizer. FSM (FNEB): freezing string grown from both ends. FSM + TS check: FSM, a TS optimization (qcopt for g-xTB, Sella for ASE engines, geomeTRIC for QCCompute) from the highest image, then a pseudo-IRC.",
    "GSM: the compiled molecularGSM binary, which calls back into this profile's engine per node through a generated grad.py.",
    "MLP-GI: minimizes the path's energy-weighted geodesic length with two FIRE stages (mepd/mlp_geodesic.py). geomeTRIC NEB: geometric.neb. DL-FIND NEB: TeraChem's DL-FIND via QCCompute/ChemCloud.",
    "Unless switched off, the converged path is checked for being one elementary step; if not, it is split and each piece searched again."
@@ -2923,7 +2923,7 @@
   ],
   "caveats": [
    "g-xTB's own --hess Hessian is not consistent with its gradients; Hessian-based checks that matter (FSM + TS check, VRI) use gradient finite differences instead.",
-   "TS optimization and IRC for g-xTB, MLIP, FAIR-Chem and ASE engines run through Sella in ASE; QCCompute/ChemCloud use geomeTRIC."
+   "TS optimization and IRC run through qcopt for g-xTB (Sella if chosen in its settings), Sella in ASE for MLIP, FAIR-Chem and ASE engines; QCCompute/ChemCloud use geomeTRIC."
   ],
   "code": [
    "mepd/inputs.py:RunInputs.__post_init__",

@@ -253,3 +253,28 @@ def test_gxtb_backend_is_a_choice_and_not_a_level(monkeypatch):
     assert not any("axtb" in i for i in pf.form(BASE)["issues"])
     gfn2 = pf.apply(ax, "gxtb_engine_kwds.add_gxtb_flag", "false")["text"]
     assert any("g-xTB only" in i for i in pf.form(gfn2)["issues"])
+
+
+def test_gxtb_optimizers_are_choices_defaulting_to_the_engines_and_not_a_level():
+    """qcopt runs g-xTB's TS searches, IRCs and minimizations unless the profile picks Sella (or another
+    minimizer); the form shows mepd's own defaults, and the choice leaves the level of theory alone."""
+    from mepd.engines.gxtb import GXTBCalculator as GXTBEngine
+    from mepd.web.workspace import level_key
+
+    fields = {x["path"]: x for g in pf.form(BASE)["groups"] for x in g["fields"]}
+    ts, mn = fields["gxtb_engine_kwds.ts_optimizer"], fields["gxtb_engine_kwds.minimizer"]
+    assert ts["key"] and mn["key"] and ts["type"] == mn["type"] == "select"
+    assert ts["default"] == GXTBEngine.DEFAULT_TS_OPTIMIZER and mn["default"] == GXTBEngine.DEFAULT_MINIMIZER
+    assert [o["value"] for o in ts["options"]] == ["qcopt", "sella"]
+    assert {"qcopt", "sella", "geometric", "lbfgs", "xtb"} == {o["value"] for o in mn["options"]}
+    sella = pf.apply(pf.apply(BASE, "gxtb_engine_kwds.ts_optimizer", "sella")["text"],
+                     "gxtb_engine_kwds.minimizer", "sella")["text"]
+    kw = tomllib.loads(sella)["gxtb_engine_kwds"]
+    assert kw["ts_optimizer"] == kw["minimizer"] == "sella"
+    GXTBEngine(**kw)            # the engine takes what the form writes
+    assert level_key(sella) == level_key(BASE)
+    with pytest.raises(WorkspaceError):
+        pf.apply(BASE, "gxtb_engine_kwds.ts_optimizer", "geometric")
+    ax = pf.apply(pf.apply(BASE, "gxtb_engine_kwds.backend", "axtb")["text"], "gxtb_engine_kwds.minimizer", "xtb")["text"]
+    assert any("g-xTB program" in i for i in pf.form(ax)["issues"])
+    assert "qcopt" in fields["ts_inputs.exact_hessian"]["help"]
