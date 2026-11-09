@@ -138,8 +138,10 @@ def test_options_it_cannot_apply_raise():
         GXTBCalculator(backend="axtb", extra_args=["--gfn", "2"])
     with pytest.raises(ValueError, match="minimizer"):
         GXTBCalculator(backend="axtb", minimizer="xtb")
-    with pytest.raises(ValueError, match="g-xTB only"):
-        GXTBCalculator(backend="axtb", add_gxtb_flag=False)
+    # GFN2-xTB (add_gxtb_flag false) runs in axtb too, but not with g-xTB's solvation composite
+    assert GXTBCalculator(backend="axtb", add_gxtb_flag=False)._axtb_kwds()["method"] == "gfn2"
+    with pytest.raises(ValueError, match="composite"):
+        GXTBCalculator(backend="axtb", add_gxtb_flag=False, axtb_solvation={"solvent": "water"})
     with pytest.raises(ValueError, match="backend"):
         GXTBCalculator(backend="tblite")
 

@@ -9,10 +9,13 @@ import { LevelBar } from './Library.js';
 export function ProfilesView() {
   const theme = useStore((st) => st.theme || 'auto');
   const everything = useStore((s) => s.everything);
-  const profiles = useStore((s) => s.profiles);
+  const own = useStore((s) => s.profiles);
+  // mepd's own built-ins (the linus steering level): listed after the workspace's, read-only, Save as… copies one.
+  const mepdBuiltins = useStore((s) => s.builtinProfiles) || {};
+  const profiles = [...own, ...Object.keys(mepdBuiltins).filter((n) => !own.includes(n))];
   const summaries = useStore((s) => s.pathSummaries);
   // The demo: the built-in profiles are read-only; a visitor's own (Save as…) are theirs to edit.
-  const builtin = useStore((s) => s.demo?.builtin_profiles) || null;
+  const builtin = [...(useStore((s) => s.demo?.builtin_profiles) || []), ...Object.keys(mepdBuiltins)];
   // Come back to the profile you were editing (not the first in the list).
   const [name, setNameState] = useState(() => {
     const last = prefs.get('profileName', null);
@@ -29,10 +32,11 @@ export function ProfilesView() {
   useEffect(() => {
     setCheck(null);
     if (!name) { setText(''); setSaved(''); return; }
+    if (mepdBuiltins[name] != null) { setText(mepdBuiltins[name]); setSaved(mepdBuiltins[name]); return; }
     api.get(`/api/profiles/${encodeURIComponent(name)}`).then((t) => { setText(t); setSaved(t); }).catch(() => {});
   }, [name]);
 
-  const isBuiltin = !!builtin && builtin.includes(name);   // edits go to a copy (Save as…), never back
+  const isBuiltin = builtin.includes(name);   // edits go to a copy (Save as…), never back
   const dirty = text !== saved;
   useEffect(() => { setCheck(null); }, [text]);   // a Validate result describes the text it checked
   const save = async () => {
@@ -61,7 +65,8 @@ export function ProfilesView() {
     setName(p);
   };
   const saveAs = async () => {
-    const n = prompt('New profile name (letters, digits, - and _):', `${name || 'profile'}-copy`);
+    const base = mepdBuiltins[name] != null ? name.split(' ')[0] : (name || 'profile');   // "linus · …" -> "linus-copy"
+    const n = prompt('New profile name (letters, digits, - and _):', `${base}-copy`);
     if (!n) return;
     const ok = await attempt(() => api.put(`/api/profiles/${encodeURIComponent(n)}`, { text }), `Created ${n}`);
     if (ok) markQuest('method');
@@ -93,19 +98,19 @@ export function ProfilesView() {
       </div>
       <div class="profiles-body">
         <ul class="profile-list">
-          ${profiles.map((p) => html`<li class=${p === name ? 'on' : ''} onClick=${() => pick(p)}>${p}${builtin?.includes(p) ? html` <span class="small muted">built-in</span>` : ''}</li>`)}
+          ${profiles.map((p) => html`<li class=${p === name ? 'on' : ''} onClick=${() => pick(p)}>${p}${builtin.includes(p) ? html` <span class="small muted">built-in</span>` : ''}</li>`)}
         </ul>
         ${name ? html`
           <div class="profile-editor">
             <div class="editor-bar">
-              <strong class="mono">${name}.toml</strong>${dirty && html` <span class="badge">unsaved</span>`}
+              <strong class="mono">${mepdBuiltins[name] != null ? name : `${name}.toml`}</strong>${dirty && html` <span class="badge">unsaved</span>`}
               <span class="spacer"></span>
               ${isBuiltin && html`<span class="small muted">built-in: change it, then Save as… to keep your own copy</span>`}
               <button class="btn" onClick=${validate} disabled=${checking} title="Builds RunInputs (engine included) from this text in a scratch process">${checking ? 'Checking…' : 'Validate'}</button>
               <button class=${`btn${isBuiltin ? ' primary' : ''}`} onClick=${saveAs}>Save as…</button>
               ${!isBuiltin && html`<button class="btn primary" onClick=${save} disabled=${!dirty}>Save</button>
-              <button class="btn danger-outline" onClick=${del} disabled=${profiles.length < 2}
-                title=${profiles.length < 2 ? "The only profile can't be deleted: every calculation needs one (Save as… makes another)" : 'Delete this profile'}>Delete</button>`}
+              <button class="btn danger-outline" onClick=${del} disabled=${own.length < 2}
+                title=${own.length < 2 ? "The only profile can't be deleted: every calculation needs one (Save as… makes another)" : 'Delete this profile'}>Delete</button>`}
             </div>
             ${summaries[name] && html`<div class="path-summary small">
               <span>Saved version: <b>${summaries[name].text}</b>${dirty ? ' · unsaved edits are not used by jobs until you Save' : ''}</span>

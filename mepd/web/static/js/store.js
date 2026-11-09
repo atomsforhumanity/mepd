@@ -28,6 +28,7 @@ export const state = {
   levelProfile: null,    // the workspace's level of theory (a profile name)
   validateMinima: true,  // Hessian-check structures optimized on entry
   levels: {},            // profile name ('' = built-in defaults) -> {profile, key, label}
+  builtinProfiles: {},   // mepd's built-in profiles (linus steering): name -> TOML, read-only
   pathSummaries: {},     // profile name -> {text, warnings}: what its path search will really do
   profileEditor: null,   // {name, dirty, save()} while the Profiles tab holds edits
   demo: null,            // public demo policy (limits, allowed ops) or null
