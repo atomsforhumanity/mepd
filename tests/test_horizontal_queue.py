@@ -207,15 +207,55 @@ def test_a_wide_job_is_not_starved_by_narrow_ones_queued_behind_it(tmp_path):
 
 
 def test_lower_rank_jobs_start_first(tmp_path):
-    """A rank-0 job of the caller's (e.g. a steering single point) starts before TS searches queued earlier."""
+    """A rank-0 job of the caller's (e.g. a steering single point) starts before TS searches queued earlier
+    (of pairs without the seed: the seed's start first of all)."""
     hc = _connector(tmp_path)
     hc.workers = 1
     started = []
     hc._fast_ts = lambda i, j, a, b: started.append("fast") or (SimpleNamespace(energy=-1.0), f"fast_{i}_{j}", None)
     hc.register("steer", lambda: "steer", rank=0)
     nodes = [Node(name=n) for n in "ABCD"]
-    hc([(0, 1), (0, 2), (0, 3)], nodes, start=lambda: hc.submit("steer", (), started.append))
+    hc([(1, 2), (1, 3), (2, 3)], nodes, start=lambda: hc.submit("steer", (), started.append))
     assert started[0] == "steer"
+
+
+def test_the_seeds_reactions_start_before_other_work_queued_earlier(tmp_path):
+    """A piece of a seed pair's path search, and its split pieces, start before every other job waiting -- TS
+    searches of other pairs, IRC checks, a steering single point, the seed's own conformer pairs -- however
+    many were queued first; then those run in their usual order."""
+    hc = _connector(tmp_path)
+    hc.workers = 1
+    started = []
+    A, B, I = Node(name="A"), Node(name="B"), Node(name="I")
+    others = [Node(name=f"O{k}") for k in range(6)]
+    nodes = [A, B, I] + others
+
+    def fast(i, j, a, b, label=None):
+        started.append(label or f"fast {i}-{j}")
+        return SimpleNamespace(energy=-1.0), label or f"fast_{i}_{j}", None
+
+    def piece(chain, index, depth):
+        started.append(f"piece {chain[0].name}-{chain[-1].name}")
+        if depth == 0:
+            return SimpleNamespace(index=index), [[A, I], [I, B]]
+        return SimpleNamespace(index=index, data=SimpleNamespace(chain_trajectory=[chain])), []
+
+    hc._fast_ts, hc._piece = fast, piece
+    hc.register("irc", lambda k: started.append(f"irc {k}"), rank=1)
+    hc.register("steer", lambda: started.append("steer"), rank=0)
+
+    def start():
+        hc.add_pairs([(3 + k, 4 + k) for k in range(5)])              # other species' reactions
+        for k in range(3):
+            hc.submit("irc", (k,), lambda out: None)
+        hc.submit("steer", (), lambda out: None)
+        hc.add_channel((0, 3), A, others[0], "ch_0_3_0")               # a conformer pair of a seed step
+        hc.add_pairs([(0, 1)], search=True)                             # the seed pair's path search, queued last
+
+    hc([], nodes, start=start, relevant=lambda chain, final: True)
+    assert started[:3] == ["piece A-B", "piece A-I", "piece I-B"]
+    assert started[3] == "steer" and started.index("ch_0_3_0") > started.index("irc 2")
+    assert len(started) == 3 + 1 + 3 + 5 + 1
 
 
 def test_the_budget_cancels_running_jobs(tmp_path):

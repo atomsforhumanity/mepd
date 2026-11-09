@@ -59,6 +59,11 @@ _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
 # Which waiting job starts first (lower first; within a rank, the lower priority given at submit, then queue
 # order): a TS search before a path search's next piece. The caller ranks its own kinds (`register`).
 _RANK = {"fast": 2, "ts": 2, "piece": 3}
+# ... but the seed's own reactions (a pair with species 0: its fast TS, path-search pieces at any depth and their
+# leaf TSs; not its steps' conformer pairs) start before anything else. In the scoreboard's runs (320, team29) a
+# seed piece ran a median 2-18 s but waited up to 1749 s (median 970 s in F0007), behind every fast TS, IRC,
+# steering single point and channel sampling of the whole network, while the prediction waited for it.
+SEED_RANK = -1
 
 
 _HELD = threading.local()   # .slots: the workers the job running in this thread holds (`_run_job`)
@@ -481,9 +486,13 @@ class HorizontalConnector:
                 return now - queued_at.get(id(job[2]), now) > self.wide_wait_s
 
             def rank(job) -> tuple:
-                kind = job[0]
-                p = priority.get(id(job[2]), 0.0)
-                return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind], p() if callable(p) else p
+                kind, pair, args = job
+                p = priority.get(id(args), 0.0)
+                p = p() if callable(p) else p
+                # (a fast job with a label, len(args) > 4, is a conformer pair's)
+                if pair is not None and 0 in pair and not (kind == "fast" and len(args) > 4):
+                    return SEED_RANK, p
+                return self._jobs[kind[4:]][2] if kind.startswith("own:") else _RANK[kind], p
 
             def halted() -> bool:
                 return self.stop_when is not None and bool(self.stop_when())
