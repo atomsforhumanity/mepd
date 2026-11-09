@@ -153,9 +153,20 @@ def test_a_step_the_run_had_no_time_to_check_is_drawn_unconfirmed():
     assert irc == {"ok01": None, "u02": -1}
 
 
-def test_reactor_events_arrive_once_each_with_their_species(tmp_path):
+METHANOL = ["C 0 0 0", "O 1.42 0 0", "H -0.36 1.03 0", "H -0.36 -0.51 0.89", "H -0.36 -0.51 -0.89", "H 1.75 0.9 0"]
+FORMALDEHYDE_H2 = ["C 0 0 0", "O 1.21 0 0", "H -0.55 0.94 0", "H -0.55 -0.94 0", "H 4.0 0 0", "H 4.74 0 0"]
+
+
+def _xyz(rows, frames=1):
+    return "".join(f"{len(rows)}\n\n" + "\n".join(rows) + "\n" for _ in range(frames))
+
+
+def test_reactor_events_arrive_once_each_and_name_only_verified_species(tmp_path):
     """The live views' reactor overlay: each MD event once, timed by the segment that holds its product
-    frame, from the species whose propose job ran then, and what it became once that species exists."""
+    frame, from the species whose propose job ran then. It names the species it made only when that is
+    verified on its own frames: the molecules its atoms form are the molecules that make the species differ
+    from the start (as the network compares species); an exchange (its products are its reactants) makes
+    nothing, and nor does an event whose products are only part of what a species changed."""
     import os
 
     job_dir, out = tmp_path / "job", tmp_path / "job" / "output"
@@ -163,26 +174,33 @@ def test_reactor_events_arrive_once_each_with_their_species(tmp_path):
     (run / "md").mkdir(parents=True)
     (job_dir / "live").mkdir(parents=True)
     (job_dir / "inputs").mkdir()
-    (job_dir / "inputs" / "seed.xyz").write_text("2\n\nC 0 0 0\nO 1.4 0 0\n")
-    (run / "md" / "segment_000.xyz").write_text("2\n\nC 0 0 0\nO 1.4 0 0\n")
-    (run / "md" / "segment_001.xyz").write_text("2\n\nC 0 0 0\nO 1.2 0 0\n")
+    (job_dir / "inputs" / "seed.xyz").write_text(_xyz(METHANOL))
+    (run / "md" / "segment_000.xyz").write_text(_xyz(METHANOL, 125))
+    (run / "md" / "segment_001.xyz").write_text(_xyz(FORMALDEHYDE_H2, 30))
     t0 = 1000.0
     os.utime(run / "md" / "segment_000.xyz", (t0 + 2, t0 + 2))
     os.utime(run / "md" / "segment_001.xyz", (t0 + 5, t0 + 5))
     (out / "network_aware.jsonl").write_text(json.dumps({"t": t0 + 9, "event": "job", "kind": "propose", "what": "species 0",
                                                          "run_s": 9.0, "wait_s": 0.0, "ok": True}) + "\n")
     (job_dir / "live" / "kinetics.json").write_text(json.dumps({"data": {"species": [{"index": 0, "smiles": "CO"}]}}))
-    ev = {"event": 0, "reactant_frame": 120, "product_frame": 130, "atoms": [0, 1], "label": "CO -> C=O + [H][H]",
-          "bond_changes": [{"frame": 125, "atoms": [0, 1], "formed": True}]}
-    (run / "live_events.json").write_text(json.dumps({"events": [ev]}))
+    made = {"event": 0, "reactant_frame": 120, "product_frame": 130, "atoms": [0, 1, 2, 3, 4, 5],
+            "label": "CO -> C=O + [H][H]", "bond_changes": [{"frame": 125, "atoms": [0, 4], "formed": False}]}
+    exchange = {"event": 1, "reactant_frame": 126, "product_frame": 132, "atoms": [0, 1, 2, 3], "label": "C=O -> C=O"}
+    (run / "live_events.json").write_text(json.dumps({"events": [made, exchange]}))
     job = {"op": "graph-enumeration", "output_dir": str(out), "started": t0}
     got = ln.reactor_events(job_dir, job, 0)
-    assert got["n"] == 1 and got["runs"] == 1
+    assert got["n"] == 2 and got["runs"] == 1
     e = got["events"][0]
     assert (e["t"], e["src"], e["prod"], e["run"], e["k"]) == (5.0, "0", None, "0", 0)   # segment_001 holds frame 130
-    assert ln.reactor_events(job_dir, job, 1)["events"] == []                            # nothing new: nothing twice
-    # the species it became turns up: the next poll says so (prods) for the event the client has
-    (job_dir / "live" / "kinetics.json").write_text(json.dumps({"data": {"species": [
-        {"index": 0, "smiles": "CO"}, {"index": 1, "smiles": "[H][H].C=O"}]}}))
-    later = ln.reactor_events(job_dir, job, 1)
+    assert ln.reactor_events(job_dir, job, 2)["events"] == []                            # nothing new: nothing twice
+    # a species of formaldehyde + H2 and H2 again (it changed more than the event made): not that one
+    (job_dir / "live" / "events.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        {"event": "species", "index": 2, "parent": 0, "smiles": "C=O.[H][H].[H][H]",
+         "xyz": _xyz(FORMALDEHYDE_H2[:4] + ["H 4.0 0 0", "H 4.74 0 0", "H 8.0 0 0", "H 8.74 0 0"])}]) + "\n")
+    assert ln.reactor_events(job_dir, job, 2)["prods"] == {}
+    # the species it made turns up: the next poll names it, for the event the client already has; never the exchange
+    with open(job_dir / "live" / "events.jsonl", "a") as fh:
+        fh.write(json.dumps({"event": "species", "index": 1, "parent": 0, "smiles": "C=O.[H][H]",
+                             "xyz": _xyz(FORMALDEHYDE_H2)}) + "\n")
+    later = ln.reactor_events(job_dir, job, 2)
     assert later["events"] == [] and later["prods"] == {0: "1"}
