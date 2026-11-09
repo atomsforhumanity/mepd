@@ -236,6 +236,37 @@ def test_a_finished_runs_last_moment_is_when_it_ended(tmp_path):
     assert tl["frames"][-1]["t"] == 90.0
 
 
+def test_a_finished_runs_end_holds_its_summarys_amounts(tmp_path):
+    """The last live kinetics can predate a finished run's last species (isoprene + methyl acrylate: the meta
+    adduct's mirror twin, a fifth of the material, has no species event at all): the end holds the run's own
+    species and final amounts (summary.json), its virtual mirror images counted with the species they mirror."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out)}))
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "kinetics.json").write_text(json.dumps({"basis": "free energy (418 K, 1M)", "threshold": 0.01, "species": [
+        {"index": 0, "smiles": "C=CC(=C)C.C=CC(=O)OC", "rel_kcal": 0.0, "max_concentration": 1.0, "final": 0.5, "populated": True},
+        {"index": 1, "smiles": "COC(=O)C1CC=C(C)CC1", "rel_kcal": -41.0, "max_concentration": 0.5, "final": 0.5, "populated": True}]}))
+    (live / "events.jsonl").write_text("\n".join(json.dumps(e) for e in [
+        {"event": "species", "index": 1, "smiles": "COC(=O)C1CC=C(C)CC1", "parent": 0},
+        {"event": "species", "index": 2, "smiles": "COC(=O)C1CCC=C(C)C1", "parent": 0},      # after the last refresh
+    ]) + "\n")                                                                                # (3: no event at all)
+    (out / "summary.json").write_text(json.dumps({
+        "steps": [{"label": "a", "a": 0, "b": 1, "barrier_kcal": [25.0, 66.0]}, {"label": "b", "a": 0, "b": 2, "barrier_kcal": [26.0, 67.0]},
+                  {"label": "c", "a": 0, "b": 3, "barrier_kcal": [26.0, 66.0]}],
+        "species": [{"index": 0, "max_concentration": 1.0, "final_concentration": 0.1},
+                    {"index": 1, "max_concentration": 0.25, "final_concentration": 0.25},
+                    {"index": 2, "max_concentration": 0.2, "final_concentration": 0.2},
+                    {"index": 3, "smiles": "COC(=O)C1CCC=C(C)C1", "rel_energy_kcal": -40.0, "max_concentration": 0.2,
+                     "final_concentration": 0.2}],
+        "mirror_images": {"virtual_species": [{"index": 4, "mirror_of": 1, "max_concentration": 0.25, "final_concentration": 0.25}]}}))
+    end = ln.from_job(tmp_path, running=False, t0=0.0, t_end=60.0)["frames"][-1]
+    held = {s[0]: (s[1], s[2], s[3], s[4]) for s in end["species"]}
+    assert held == {"0": (0.0, 1.0, 0.1, 1), "1": (-41.0, 0.5, 0.5, 1), "2": (None, 0.2, 0.2, 1), "3": (-40.0, 0.2, 0.2, 1)}
+    assert {s[0] for s in end["steps"]} == {"a", "b", "c"}
+
+
 def test_a_species_an_irc_end_made_is_drawn_while_the_run_is_on(tmp_path):
     """The run reports no species event for an IRC end and writes output/species only at its end: until then
     the species' geometry is its step's IRC end that is not the step's other species."""
