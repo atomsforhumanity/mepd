@@ -387,10 +387,35 @@ def _summary_steps(job_dir: Path) -> Optional[list]:
              "left_out": (st.get("files") or {}).get("left_out_of_final_kinetics")} for st in steps if st.get("label")]
 
 
+def _summary_species(job_dir: Path) -> Optional[dict]:
+    """A finished run's own species and final amounts: {species: {smiles, rel_kcal, peak, final}} from
+    summary.json, the virtual mirror images its kinetics add counted with the species they mirror (as a
+    live refresh's mirror_species are). None without amounts."""
+    try:
+        out = Path(json.loads((Path(job_dir) / "job.json").read_text()).get("output_dir") or "")
+        summ = json.loads((out / "summary.json").read_text())
+    except (OSError, ValueError):
+        return None
+    species = summ.get("species") or []
+    if not species or any(s.get("final_concentration") is None for s in species):
+        return None
+    got = {str(s["index"]): {"smiles": s.get("smiles") or "", "rel_kcal": s.get("rel_energy_kcal"),
+                             "peak": float(s.get("max_concentration") or 0), "final": float(s["final_concentration"])}
+           for s in species}
+    for v in (summ.get("mirror_images") or {}).get("virtual_species") or []:
+        twin = got.get(str(v.get("mirror_of")))
+        if twin is not None:
+            twin["peak"] += float(v.get("max_concentration") or 0)
+            twin["final"] += float(v.get("final_concentration") or 0)
+    return got
+
+
 def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[list] = None,
-             t_end: Optional[float] = None) -> Optional[dict]:
+             t_end: Optional[float] = None, summary: Optional[dict] = None) -> Optional[dict]:
     """The network as events.jsonl has it now, on top of the last kinetics
-    refresh: species and steps found since then show at once (no amounts yet)."""
+    refresh: species and steps found since then show at once (no amounts yet).
+    `summary` (a finished run's, _summary_species): its species and what each holds at the end, in place
+    of the last refresh's (a species found after it holds its share too)."""
     import time
 
     try:
@@ -418,6 +443,15 @@ def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[li
             have.add(sid)
             species.append({"index": ev.get("index"), "smiles": ev.get("smiles") or "", "rel_kcal": ev.get("rel_energy_kcal"),
                             "max_concentration": 0.0, "final": 0.0, "populated": False})
+    thr = float(kin.get("threshold") or 0.01)
+    for sid, x in (summary or {}).items():
+        if sid not in have:
+            have.add(sid)
+            species.append({"index": int(sid), "smiles": x["smiles"], "rel_kcal": x["rel_kcal"]})
+    for k, sp in enumerate(species):
+        x = (summary or {}).get(str(sp.get("index")))
+        if x is not None:
+            species[k] = {**sp, "max_concentration": x["peak"], "final": x["final"], "populated": x["peak"] >= thr}
     kin["species"] = species
     f = compact_legacy(kin, steps if steps is not None else _legacy_steps(lines))
     if f is None:
@@ -736,7 +770,7 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
         for f in frames:
             f["steps"] = [x for x in f["steps"] if real.get(x[0]) == {x[1], x[2]}]
             f["gone"] = [x for x in f.get("gone") or [] if real.get(x[0]) == {x[1], x[2]}]
-        g = _growing(job_dir, lines, t0, steps=final_steps, t_end=t_end) if lines else None
+        g = _growing(job_dir, lines, t0, steps=final_steps, t_end=t_end, summary=_summary_species(job_dir)) if lines else None
         recorded = len(frames)
         if g is not None:
             g.pop("growing", None)
