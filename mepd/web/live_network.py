@@ -940,14 +940,16 @@ def _runs_of(job: dict) -> list:
     return [(str(k), d, None) for k, d in enumerate(sorted((out / "reactor").glob("run_*")))]
 
 
-def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000) -> dict:
+def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000, budget_s: float = 1.0) -> dict:
     """The reactor events of a job after the first `since` this server has numbered (see above).
     Each: {i, t (s from the job's start, when its MD segment was written), run, seed, k, label, atoms
     (count), src (species id or the mixture molecule it started from), prod (the species or molecule it
-    became, once there is one), changes (bonds formed and broken)}."""
+    made, only once that is verified on the event's own frames (see _Verifier); events are verified a
+    few at a time, `budget_s` per call, and a match found later comes with a later call), changes}."""
     job_dir = Path(job_dir)
     key = str(job_dir)
-    st = _REACTOR.setdefault(key, {"seen": {}, "events": [], "src": {}, "state": {}, "prod_pending": []})
+    st = _REACTOR.setdefault(key, {"seen": {}, "events": [], "src": {}, "raw": {}, "todo": [], "prods": {},
+                                    "verifier": _Verifier(), "skeletons": {}, "version": 0, "tried": {}})
     t0 = float(job.get("started") or 0.0)
     mixture = job.get("op") == "network-mixture"
     states = None
@@ -956,9 +958,12 @@ def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000) 
         try:
             mx = json.loads((Path(job["output_dir"]) / "mixture.json").read_text())
             seeds_mol = {s["name"]: s.get("molecules") or [] for s in mx.get("seeds") or []}
-            mols = {_canon_multiset(m["molecule"]): m["molecule"] for m in mx.get("molecules") or []}
+            for m_ in mx.get("molecules") or []:
+                if m_["molecule"] not in st["skeletons"]:
+                    st["skeletons"][m_["molecule"]] = _skeleton_of_smiles(m_["molecule"].split("|")[0])
+                    st["version"] += 1
         except (OSError, ValueError, KeyError):
-            mols = {}
+            pass
     fresh = []
     for rid, run, seed in _runs_of(job):
         fp = run / "live_events.json"
@@ -989,7 +994,8 @@ def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000) 
             except OSError:
                 t = m
             label = ev.get("label") or ""
-            fresh.append({"t": round(t - t0, 1) if t0 else 0.0, "run": rid.split("/")[-1], "seed": seed, "rid": rid,
+            fresh.append({"_raw": {"atoms": ev.get("atoms"), "product_frame": ev.get("product_frame"), "label": label, "run": run},
+                          "t": round(t - t0, 1) if t0 else 0.0, "run": rid.split("/")[-1], "seed": seed, "rid": rid,
                           "k": ev.get("event"), "label": label, "atoms": len(ev.get("atoms") or []),
                           "src": st["src"].get(rid), "prod": None,
                           "changes": [[c["atoms"][0], c["atoms"][1], 1 if c.get("formed") else 0] for c in ev.get("bond_changes") or []][:8]})
@@ -1004,61 +1010,373 @@ def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000) 
         fresh.sort(key=lambda e: e["t"])
         for e in fresh:
             e["i"] = len(st["events"])
+            st["raw"][e["i"]] = e.pop("_raw")
             st["events"].append(e)
-            st["prod_pending"].append(e["i"])
-    # what each event became: the state after it (the run's start, less its reactants, plus its products)
-    # once that is a species of the run (or, in a mixture, a product that is one of its molecules)
-    if st["prod_pending"]:
+            st["todo"].append(e["i"])
+    # What each event made, verified on its own frames (_Verifier, mixture_product), within the budget.
+    if not mixture:
+        states = states if states is not None else _species_states(job_dir)
+        v = st["verifier"]
+        n_before = len(v.changed)
+        v.index(states, Path(job["output_dir"]))
+        if len(v.changed) != n_before:
+            st["version"] += 1
+    deadline = _time.time() + budget_s
+    left = []
+    for n, i in enumerate(st["todo"]):
+        if _time.time() > deadline:
+            left += st["todo"][n:]
+            break
+        if st["tried"].get(i) == st["version"]:   # nothing new to match it against since
+            left.append(i)
+            continue
+        raw, e = st["raw"][i], st["events"][i]
         if mixture:
-            for i in list(st["prod_pending"]):
-                e = st["events"][i]
-                sides = e["label"].split(" -> ")
-                prods = [p.strip() for p in sides[1].split(" + ")] if len(sides) == 2 else []
-                reac = set(p.strip() for p in sides[0].split(" + ")) if sides else set()
-                for p in prods:
-                    c = _canon_multiset(p)
-                    if c and c in mols and p not in reac:
-                        e["prod"] = mols[c]
-                        break
-                if e["prod"] is not None:
-                    st["prod_pending"].remove(i)
+            verdict, hit = mixture_product(raw["run"], raw, st["skeletons"])
         else:
-            states = states if states is not None else _species_states(job_dir)
-            by_state = {}
-            for sid, (smi, _, _, _) in states.items():
-                c = _canon_multiset(smi) if smi else None
-                if c and c not in by_state:
-                    by_state[c] = sid
-            after_of = st.setdefault("after", {})
-            for i in list(st["prod_pending"]):
-                e = st["events"][i]
-                if i not in after_of:   # the state after it, worked out once, in the run's own order
-                    rs = st["state"].get(e["rid"])
-                    if rs is None and e["src"] is not None and states.get(e["src"], [""])[0]:
-                        rs = list(_canon_multiset(states[e["src"]][0]) or [])
-                    sides = e["label"].split(" -> ")
-                    reac = _side(sides[0]) if len(sides) == 2 else [None]
-                    prods = _side(sides[1]) if len(sides) == 2 else [None]
-                    after = None
-                    if rs is not None and not any(x is None or len(x) != 1 for x in reac + prods):
-                        left = list(rs)
-                        if all(x[0] in left and not left.remove(x[0]) for x in reac):
-                            after = tuple(sorted(left + [x[0] for x in prods]))
-                            st["state"][e["rid"]] = list(after)
-                    after_of[i] = after
-                after = after_of[i]
-                if after is None:
-                    st["prod_pending"].remove(i)
-                    continue
-                hit = by_state.get(after)
-                if hit is not None and hit != e["src"]:
-                    e["prod"] = hit
-                    st["prod_pending"].remove(i)
-            st["prod_pending"] = st["prod_pending"][-3000:]
+            if i not in st["prods"]:
+                st["prods"][i] = None if _is_exchange(raw["label"]) else (_event_products(raw["run"], raw) or None)
+                if st["prods"][i] is not None and _label_key(raw["label"]) != _key(st["prods"][i]):
+                    st["prods"][i] = None   # the frames and the reactor's label disagree on what formed
+            prods = st["prods"][i]
+            verdict, hit = "none", None
+            if prods is not None:
+                for sid in st["verifier"].by_key.get(_key(prods), []):
+                    if st["verifier"].drawn.get(sid) != _key(prods):
+                        continue   # its card draws other molecules (its SMILES and its geometry disagree)
+                    vv = _same_molecules(prods, st["verifier"].changed[sid])
+                    if vv == "same":
+                        verdict, hit = "same", sid
+                        break
+            elif i in st["prods"]:
+                verdict = "never"
+        if verdict == "same":
+            e["prod"] = hit
+            st.setdefault("late", []).append(i)
+            st["prods"].pop(i, None)
+        elif verdict != "never" and not (mixture and verdict == "cant"):
+            st["tried"][i] = st["version"]
+            left.append(i)
+    st["todo"] = left
     evs = st["events"]
     since = max(0, int(since))
     # (products matched since: the client updates those it has)
     return {"epoch": EPOCH, "n": len(evs), "events": evs[since:since + limit],
-            "prods": {e["i"]: e["prod"] for e in evs[max(0, since - 400):since] if e["prod"] is not None},
+            "prods": {i: evs[i]["prod"] for i in (st.get("late") or [])[-2000:] if i < since},
             "srcs": {i: evs[i]["src"] for i in sorted(st.get("src_late") or ()) if i < since},
             "runs": len(st["seen"]), "running": sum(1 for _, run, _ in _runs_of(job) if not (run / "md" / "done").exists())}
+
+
+# ---------------------------------------------------------------------------------------------------
+# Which species (or mixture molecule) a reactor event made, verified on the event itself. A link is
+# shown only when it holds:
+# - the molecules the event's reacting atoms form just after its product frame (the bond graph seen in
+#   most of the next dozen MD frames, on their averaged geometry) are what the reactor's label says;
+# - they are, one for one, the molecules that make the species differ from the run's start (a species
+#   is a whole box: its molecules less the start's, as its card draws it), compared as the network
+#   compares species: the same bond graph (hydrogens included), and for a molecule that can have
+#   stereoisomers the same stereochemistry (mepd.compare, from 3D; "can't tell" is no link);
+# - the event is not an exchange (its products are its reactants).
+# A mixture molecule has no geometry here: its bond graph must be the product's, and a molecule that
+# can have stereoisomers is not claimed.
+
+_Z = {"H": 1, "He": 2, "Li": 3, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "Mg": 12, "Si": 14, "P": 15,
+      "S": 16, "Cl": 17, "K": 19, "Br": 35, "I": 53}
+
+
+def _skeleton(mol) -> Optional[str]:
+    """A molecule's bond graph as a canonical string: hydrogens as atoms, every bond single, no charges
+    (bond orders and charges are perception; the graph is what the network compares first)."""
+    from rdkit import Chem
+
+    try:
+        m = Chem.RWMol(Chem.AddHs(mol) if any(a.GetNumImplicitHs() or a.GetNumExplicitHs() for a in mol.GetAtoms()) else mol)
+        for a in m.GetAtoms():
+            a.SetFormalCharge(0)
+            a.SetNumExplicitHs(0)
+            a.SetNoImplicit(True)
+            a.SetIsAromatic(False)
+            a.SetNumRadicalElectrons(0)
+        for bd in m.GetBonds():
+            bd.SetBondType(Chem.BondType.SINGLE)
+            bd.SetIsAromatic(False)
+        return Chem.MolToSmiles(m.GetMol(), canonical=True, isomericSmiles=False, allHsExplicit=True)
+    except Exception:
+        return None
+
+
+def _skeleton_of_smiles(smiles: str) -> Optional[str]:
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():
+        mol = Chem.MolFromSmiles(smiles) or Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return None
+    try:
+        mol.UpdatePropertyCache(strict=False)
+    except Exception:
+        pass
+    return _skeleton(mol)
+
+
+def _may_have_stereo_smiles(smiles: str) -> bool:
+    """Whether a molecule (from its SMILES) can have stereoisomers (a possible stereocentre or stereo
+    double bond); True when that cannot be told."""
+    from rdkit import Chem, rdBase
+
+    with rdBase.BlockLogs():
+        mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return True
+    try:
+        return len(Chem.FindPotentialStereo(Chem.AddHs(mol))) > 0
+    except Exception:
+        return True
+
+
+class _Mol:
+    """One molecule of a geometry: formula, bond-graph skeleton, and lazily its StructureNode and
+    whether it can have stereoisomers."""
+
+    def __init__(self, symbols, coords, skeleton):
+        from collections import Counter
+
+        self.symbols, self.coords, self.skeleton = list(symbols), coords, skeleton
+        c = Counter(self.symbols)
+        self.formula = "".join(f"{k}{c[k]}" for k in sorted(c))
+        self._node = None
+        self._stereo = None
+
+    @property
+    def node(self):
+        if self._node is None:
+            from qcdata import Structure
+
+            from mepd.nodes.node import StructureNode
+
+            xyz = f"{len(self.symbols)}\n\n" + "".join(f"{s} {x:.4f} {y:.4f} {z:.4f}\n" for s, (x, y, z) in zip(self.symbols, self.coords))
+            st = Structure.from_xyz(xyz)
+            electrons = sum(_Z.get(x, 6) for x in self.symbols)
+            self._node = StructureNode(structure=st.model_copy(update={"charge": 0, "multiplicity": 2 if electrons % 2 else 1}))
+        return self._node
+
+    @property
+    def may_have_stereo(self) -> bool:
+        """From its own geometry (bond orders perceived): a possible stereocentre or stereo double bond;
+        True when bond orders cannot be perceived."""
+        if self._stereo is None:
+            from rdkit import Chem
+            from rdkit.Chem import rdDetermineBonds
+
+            try:
+                mol = Chem.MolFromXYZBlock(f"{len(self.symbols)}\n\n" + "".join(
+                    f"{s} {x:.4f} {y:.4f} {z:.4f}\n" for s, (x, y, z) in zip(self.symbols, self.coords)))
+                electrons = sum(_Z.get(x, 6) for x in self.symbols)
+                if electrons % 2:
+                    raise ValueError("odd electron count")
+                rdDetermineBonds.DetermineBonds(mol, charge=0)
+                self._stereo = len(Chem.FindPotentialStereo(mol)) > 0
+            except Exception:
+                self._stereo = True
+        return self._stereo
+
+
+def _molecules(symbols: list, coords) -> Optional[list]:
+    """The separate molecules of a geometry (bonds perceived from distances), as _Mol."""
+    from rdkit import Chem
+    from rdkit.Chem import rdDetermineBonds
+
+    try:
+        xyz = f"{len(symbols)}\n\n" + "".join(f"{s} {x:.4f} {y:.4f} {z:.4f}\n" for s, (x, y, z) in zip(symbols, coords))
+        mol = Chem.MolFromXYZBlock(xyz)
+        rdDetermineBonds.DetermineConnectivity(mol)
+        out = []
+        for idx, frag in zip(Chem.GetMolFrags(mol), Chem.GetMolFrags(mol, asMols=True, sanitizeFrags=False)):
+            out.append(_Mol([symbols[i] for i in idx], [coords[i] for i in idx], _skeleton(frag)))
+        return out
+    except Exception:
+        return None
+
+
+def _key(mols: list) -> tuple:
+    return tuple(sorted(m.skeleton or "?" for m in mols))
+
+
+def _same_molecules(a: list, b: list) -> str:
+    """'same' when `a` and `b` pair up one for one as the same molecule, as the network compares species
+    (mepd.compare: heavy-atom bond graphs, then stereochemistry from 3D), 'differ' when they cannot,
+    'cant' when only an undecided stereochemistry stands in the way. (The skeletons only pick candidates.)"""
+    from mepd.compare import compare_structures
+
+    if _key(a) != _key(b):
+        return "differ"
+    left, undecided = list(b), False
+    for ma in a:
+        hit = None
+        for k, mb in enumerate(left):
+            if mb.skeleton != ma.skeleton:
+                continue
+            c = compare_structures(ma.node, mb.node)
+            if c.same:
+                hit = k
+                break
+            undecided = undecided or c.undetermined
+        if hit is None:
+            return "cant" if undecided else "differ"
+        left.pop(hit)
+    return "same"
+
+
+def _changed_molecules(start: list, species: list) -> list:
+    """A species' molecules less the start's, as its box depiction draws them (those that differ)."""
+    left = list(species)
+    for ms in start:
+        for k, mb in enumerate(left):
+            if mb.skeleton == ms.skeleton and _same_molecules([ms], [mb]) == "same":
+                left.pop(k)
+                break
+    return left
+
+
+def _event_products(run: Path, ev: dict, window: int = 12) -> Optional[list]:
+    """The molecules an event's reacting atoms form just after its product frame: the bond graph seen in
+    most of the next `window` MD frames (one hot frame can stretch a bond past its cutoff), on their
+    averaged geometry."""
+    from collections import Counter
+
+    from mepd.web.nanoreactor import _segment
+
+    atoms = list(ev.get("atoms") or [])
+    if not atoms:
+        return None
+    pf = int(ev.get("product_frame", 0))
+    frames, syms = [], None
+    for f in range(pf, pf + window + 1, 2):
+        fp = run / "md" / f"segment_{f // SEGMENT_FRAMES:03d}.xyz"
+        try:
+            sy, xyz = _segment(fp)
+            frames.append(xyz[f % SEGMENT_FRAMES][atoms])
+            syms = [sy[a] for a in atoms]
+        except (OSError, IndexError, ValueError):
+            continue
+    if not frames:
+        return None
+    per = [(_molecules(syms, fr), fr) for fr in frames]
+    per = [(m, fr) for m, fr in per if m]
+    if not per:
+        return None
+    mode = Counter(_key(m) for m, _ in per).most_common(1)[0][0]
+    import numpy as np
+
+    avg = np.mean([fr for m, fr in per if _key(m) == mode], axis=0)
+    mols = _molecules(syms, avg)
+    return mols if mols and _key(mols) == mode else next(m for m, _ in per if _key(m) == mode)
+
+
+def _is_exchange(label: str) -> bool:
+    sides = str(label).split(" -> ")
+    return len(sides) == 2 and sorted(x for x in _side(sides[0]) if x) == sorted(x for x in _side(sides[1]) if x)
+
+
+def _label_key(label: str) -> Optional[tuple]:
+    """The products the reactor's label names, as bond-graph skeletons."""
+    sides = str(label).split(" -> ")
+    if len(sides) != 2:
+        return None
+    out = []
+    for part in sides[1].split(" + "):
+        part = part.strip()
+        n, _, smi = part.partition(" ")
+        k = int(n) if n.isdigit() and smi else 1
+        sk = _skeleton_of_smiles(smi if n.isdigit() and smi else part)
+        if sk is None:
+            return None
+        out += [sk] * k
+    return tuple(sorted(out))
+
+
+class _Verifier:
+    """Per job: the start's and each species' changed molecules (indexed by their skeletons)."""
+
+    def __init__(self):
+        self.start = None
+        self.changed: dict = {}     # species id -> changed molecules
+        self.by_key: dict = {}      # their skeletons -> [species ids]
+        self.drawn: dict = {}       # species id -> the skeletons its card draws (its SMILES less the start's)
+
+    def index(self, states: dict, out: Path) -> None:
+        if self.start is None:
+            st = states.get("0")
+            sy, xyz = (st[1], st[2]) if st and st[1] else _species_file(out, "0")
+            self.start = _molecules(sy, xyz) if sy else None
+        if not self.start:
+            return
+        for sid, st in states.items():
+            if sid in self.changed or sid == "0":
+                continue
+            sy, xyz = (st[1], st[2]) if st[1] else _species_file(out, sid)
+            mols = _molecules(sy, xyz) if sy else None
+            if not mols:
+                continue
+            ch = _changed_molecules(self.start, mols)
+            self.changed[sid] = ch
+            self.by_key.setdefault(_key(ch), []).append(sid)
+            # A card draws a species from its SMILES (by the molecules that differ from the start's), or from
+            # its geometry when it has none: a link must agree with that drawing too.
+            smi, start_smi = st[0] if st else "", (states.get("0") or [""])[0]
+            if smi and drawable(smi) and start_smi:
+                from collections import Counter
+
+                drawn = Counter(_skeleton_of_smiles(x) for x in smi.split("|")[0].split(".")) \
+                    - Counter(_skeleton_of_smiles(x) for x in start_smi.split("|")[0].split("."))
+                self.drawn[sid] = tuple(sorted(drawn.elements())) if None not in drawn else None
+            else:
+                self.drawn[sid] = _key(ch)
+
+    def check(self, run: Path, ev: dict) -> tuple:
+        """('same', species) when verified, else (verdict, None): 'differ', 'cant' or 'none' (no candidate)."""
+        if _is_exchange(ev.get("label") or ""):
+            return "none", None
+        prods = _event_products(run, ev)
+        if not prods:
+            return "none", None
+        if _label_key(ev.get("label") or "") != _key(prods):
+            return "cant", None   # the frames and the reactor's label disagree on what formed
+        verdicts = []
+        for sid in self.by_key.get(_key(prods), []):
+            if self.drawn.get(sid) != _key(prods):
+                continue
+            v = _same_molecules(prods, self.changed[sid])
+            if v == "same":
+                return "same", sid
+            verdicts.append(v)
+        return ("cant" if "cant" in verdicts else "differ" if verdicts else "none"), None
+
+
+def _species_file(out: Path, sid: str):
+    fp = Path(out) / "species" / f"species_{sid}.xyz"
+    try:
+        return _xyz_rows(fp.read_text())
+    except OSError:
+        return None, None
+
+
+def mixture_product(run: Path, ev: dict, skeletons: dict) -> tuple:
+    """(verdict, molecule) for a mixture: a product molecule of the event (from its frames) whose bond graph
+    is a mixture molecule's, that is not one of its reactants; one that can have stereoisomers is not
+    claimed ('cant'). `skeletons`: molecule SMILES -> skeleton."""
+    if _is_exchange(ev.get("label") or ""):
+        return "none", None
+    prods = _event_products(run, ev)
+    if not prods or _label_key(ev.get("label") or "") != _key(prods):
+        return "none", None
+    sides = str(ev.get("label") or "").split(" -> ")
+    reac = set(_skeleton_of_smiles(x.strip().partition(" ")[2] if x.strip().partition(" ")[0].isdigit() else x.strip())
+               for x in sides[0].split(" + "))
+    for m in prods:
+        if m.skeleton in reac:
+            continue
+        for smi, sk in skeletons.items():
+            if sk and sk == m.skeleton:
+                return ("cant", None) if _may_have_stereo_smiles(smi.split("|")[0]) else ("same", smi)
+    return "none", None
