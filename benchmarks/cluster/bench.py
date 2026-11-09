@@ -476,7 +476,10 @@ def main(argv: list) -> int:
     b.add_argument("--memory", default="64Gi")
     b.add_argument("--control", action="store_true")
     for name in ("submit", "pull", "status", "digest"):
-        sub.add_parser(name).add_argument("run")
+        sp = sub.add_parser(name)
+        sp.add_argument("run")
+        if name == "submit":
+            sp.add_argument("--force", action="store_true", help="afh submit --force (e.g. memory above afh's estimate)")
     s = sub.add_parser("score")
     s.add_argument("run", nargs="+")
     s.add_argument("--rescore", action="store_true")
@@ -505,7 +508,7 @@ def main(argv: list) -> int:
     elif a.cmd == "submit":
         record_digest(a.run, after_submit=False)
         afh("push", str(AFH_DIR / a.run), a.run)
-        afh("submit", a.run)
+        afh("submit", a.run, *(["--force"] if a.force else []))
     elif a.cmd == "digest":       # for runs submitted before digests were recorded
         record_digest(a.run, after_submit=True)
     elif a.cmd == "pull":
