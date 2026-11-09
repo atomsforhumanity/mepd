@@ -28,7 +28,9 @@ def test_results_flag_negative_barriers_loudly():
     assert "cannot happen" in summarize(result)["barrier_warning"]
 
 
-def test_an_edge_shows_a_negative_barrier_with_its_warning(tmp_path):
+def test_an_edge_with_a_ts_below_its_ends_gets_no_barrier_but_says_why(tmp_path):
+    """A TS below one of its own ends is not this reaction's TS (a saddle of another motion, mostly never
+    IRC-checked): the edge shows no barrier from it, and says why instead of hiding it."""
     from tests.test_expansion_steps_web import _ws
 
     ws, jobs, (s0, s1, _) = _ws(tmp_path)
@@ -36,5 +38,5 @@ def test_an_edge_shows_a_negative_barrier_with_its_warning(tmp_path):
     ev = {"event": "step", "a": 0, "b": 1, "label": "s", "barrier_kcal": [-2.5, 6.0]}
     assert jobs._adopt_step(job, ev, job["live_nodes"], ws.snapshot()["structures"])
     (edge,) = ws.snapshot()["edges"].values()
-    assert edge["origin"]["barrier_kcal"] == -2.5                    # as computed, not 0
-    assert "negative" in edge["origin"]["barrier_warning"]
+    assert edge["origin"].get("barrier_kcal") is None and edge["origin"]["ts_below_ends"]
+    assert edge["origin"]["headline"].startswith("TS below its ends")
