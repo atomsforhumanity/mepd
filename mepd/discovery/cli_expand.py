@@ -468,6 +468,11 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
                     # A TS with spectators: the IRC of its subsystem, put back among them.
                     sub = cut.sub(ts) if cut else ts
                     path = mepd.irc(sub, eng, end_keywords={"check_frequencies": False}).path
+                    if cut is not None and any(cut.clashes(cut.whole(n, sub)) for n in (path.nodes[0], path.nodes[-1])):
+                        # an end put back in a spectator's room (Subsystem.clashes) would be minimized whole into
+                        # a species made across the cut: the IRC of the whole box instead
+                        cut = None
+                        path = mepd.irc(ts, eng, end_keywords={"check_frequencies": False}).path
                     missing = [n for n in path.nodes if n._cached_energy is None]
                     if missing:
                         eng.compute_energies(missing)

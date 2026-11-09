@@ -83,6 +83,23 @@ def test_when_every_molecule_reacts_there_is_no_cut():
     assert subsystem(start, end, type("Restrained", (_Engine,), {"restraints": [object()]})()) is None
 
 
+DATA = Path(__file__).parent / "data"
+
+
+def test_a_put_back_that_lands_in_a_spectators_room_clashes():
+    # sb-t24 f0007-nano400-3d972d5-r0, fast_0_75: cyclopentadiene + methyl acrylate -> cyclopentadiene + a
+    # ketene. The subsystem's TS, put back, has an O 0.66 A from a spectator C (their covalent radii: 1.45 A)
+    import mepd
+
+    a, b, ts = mepd.read_frames(DATA / "subsystem_clash_f0007_fast_0_75.xyz")
+    cut = subsystem(a, b, _Engine())
+    assert len(cut.atoms) == 12                            # methyl acrylate; cyclopentadiene looks on
+    assert cut.clashes(ts)
+    assert not cut.clashes(a) and not cut.clashes(b)       # the start states hold their molecules apart
+    assert not subsystem(_node(HCOOH, WATER, energy=-20.0), _node(CO_H2O, WATER), _Engine()).clashes(
+        _node(CO_H2O, WATER))
+
+
 # --- the explorer end to end (g-xTB) -------------------------------------------------------------------
 
 def _xyz(text):
@@ -227,3 +244,71 @@ def test_when_every_molecule_reacts_the_explorer_gives_what_it_gave_before(name,
     # that noise (5.5e-4 kcal/mol on the image)
     assert [s[0] for s in steps] == pytest.approx([s[0] for s in want_steps], rel=0, abs=1e-6)
     assert [x for s in steps for x in s[1:]] == pytest.approx([x for s in want_steps for x in s[1:]], rel=0, abs=1e-2)
+
+
+def _spy_sizes(monkeypatch):
+    import mepd
+    import mepd.compute
+
+    seen = {"find_ts": [], "irc": []}
+    for name in seen:
+        real = getattr(mepd.compute, name)
+
+        def spy(node, *a, _real=real, _key=name, **k):
+            seen[_key].append(len(node.symbols))
+            return _real(node, *a, **k)
+
+        monkeypatch.setattr(mepd.compute, name, spy)
+        monkeypatch.setattr(mepd, name, spy, raising=False)
+    return seen
+
+
+def test_a_fast_ts_that_lands_in_a_spectators_room_is_searched_on_the_whole_box(tmp_path, monkeypatch):
+    # sb-t24 f0007-nano400-3d972d5-r0 fast_0_75 again, from its two start states: the subsystem's TS (12 atoms)
+    # lands in cyclopentadiene's room, so the search runs again on all 23 atoms and its TS keeps them apart
+    pytest.importorskip("axtb")
+    import mepd
+    from mepd.discovery.horizontal import HorizontalConnector
+    from mepd.inputs import RunInputs
+
+    a, b, _ = mepd.read_frames(DATA / "subsystem_clash_f0007_fast_0_75.xyz")
+    seen = _spy_sizes(monkeypatch)
+    conn = HorizontalConnector(RunInputs(), tmp_path, 1, say=lambda *x: None)
+    conn.ts_dir.mkdir(parents=True)
+    ts, label, _ = conn._fast_ts(0, 1, a, b, "fast_0_75")
+    assert seen["find_ts"] == [12, 23]
+    assert len(ts.symbols) == 23 and not subsystem(a, b, RunInputs().engine).clashes(ts)
+    # its energy the whole box's own, as the file the network reads it from says
+    from mepd.discovery.network_expansion import _open_structure, _xyz_energy
+
+    assert _xyz_energy(_open_structure(tmp_path / "ts" / "fast_0_75.xyz")) == pytest.approx(float(ts.energy))
+    assert float(ts.energy) == pytest.approx(float(RunInputs().engine.compute_energies([ts.copy()])[0]), abs=1e-8)
+    # ... and no ends file, so its IRC check runs on the whole box too (its subsystem alone is no saddle)
+    from mepd.discovery.cli_expand import _irc_verifier
+
+    assert not (tmp_path / "ts" / "fast_0_75_ends.xyz").exists()
+    ((_, start, end),) = _irc_verifier(RunInputs(), tmp_path, 1)([(0, str(tmp_path / "ts" / "fast_0_75.xyz"))])
+    assert seen["irc"] == [23] and start is not None
+
+
+def test_an_irc_whose_ends_land_in_a_spectators_room_is_followed_on_the_whole_box(tmp_path, monkeypatch):
+    # sb-t24 isoprene_ma-nano400-3d972d5-r0 fast_0_184: its TS put back keeps clear of isoprene, but the IRC of
+    # its subsystem (methyl acrylate, 12 atoms) ends with an atom at 0.60 of the covalent radii sum from an
+    # isoprene atom. Minimized whole, that end became species 193, C=C(C)C1CC1=O.C=COC: bonds made across the
+    # cut, which no TS of the step describes. The IRC now runs on all 25 atoms, its ends clear of the spectator.
+    pytest.importorskip("axtb")
+    import mepd
+    from mepd.discovery.cli_expand import _irc_verifier
+    from mepd.inputs import RunInputs
+
+    a, b, ts = mepd.read_frames(DATA / "subsystem_clash_isoprene_fast_0_184.xyz")
+    (tmp_path / "ts").mkdir()
+    mepd.write_xyz(tmp_path / "ts" / "fast_0_184.xyz", ts)
+    mepd.write_xyz(tmp_path / "ts" / "fast_0_184_ends.xyz", [a, b])
+    eng = RunInputs().engine
+    cut = subsystem(a, b, eng)
+    assert len(cut.atoms) == 12 and not cut.clashes(ts)
+    seen = _spy_sizes(monkeypatch)
+    ((_, start, end),) = _irc_verifier(RunInputs(), tmp_path, 1)([(0, str(tmp_path / "ts" / "fast_0_184.xyz"))])
+    assert seen["irc"] == [12, 25]
+    assert start is not None and not cut.clashes(start) and not cut.clashes(end)

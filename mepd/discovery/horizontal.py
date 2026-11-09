@@ -234,14 +234,22 @@ class HorizontalConnector:
             return ts, label, self._ts_correction(ts, label, (a, b))
         from mepd.discovery.network_expansion import subsystem
 
-        # only the molecules the reaction takes part in (network_expansion.subsystem); the TS back among the rest
-        cut = subsystem(a, b, self.job_inputs.engine)
-        path = mepd.interpolate(*((cut.sub(a), cut.sub(b)) if cut else (a, b)), nimages=self.nimages)
-        en = mepd.energies(list(path.nodes), self.job_inputs.engine)
-        k = max(range(1, len(en) - 1), key=lambda m: en[m])
-        ts = mepd.find_ts(path.nodes[k], self.job_inputs.engine, maxiter=self.fast_ts_steps, continue_unconverged=0)
-        ts = cut.whole(ts, path.nodes[0]) if cut else ts
-        self._write_ts(ts, label, (a, b))
+        # only the molecules the reaction takes part in (network_expansion.subsystem); the TS back among the rest,
+        # unless it lands in a spectator's room (Subsystem.clashes): then the whole box, as without spectators
+        first = subsystem(a, b, self.job_inputs.engine)
+        for cut in ((first, None) if first else (None,)):
+            path = mepd.interpolate(*((cut.sub(a), cut.sub(b)) if cut else (a, b)), nimages=self.nimages)
+            en = mepd.energies(list(path.nodes), self.job_inputs.engine)
+            k = max(range(1, len(en) - 1), key=lambda m: en[m])
+            ts = mepd.find_ts(path.nodes[k], self.job_inputs.engine, maxiter=self.fast_ts_steps, continue_unconverged=0)
+            if cut is None:
+                break
+            ts = cut.whole(ts, path.nodes[0])
+            if not cut.clashes(ts):
+                break
+        # a TS of the whole box keeps no ends file, so its IRC check runs on the whole box too (cli_expand: its
+        # subsystem alone is no saddle); its spectators are then told from its step's species (step_ends)
+        self._write_ts(ts, label, None if first is not None and cut is None else (a, b))
         return ts, label, self._ts_correction(ts, label, (a, b))
 
     def _piece(self, chain, index: int, depth: int, cut=None):

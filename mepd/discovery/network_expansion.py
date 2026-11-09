@@ -606,6 +606,25 @@ class Subsystem:
     ref: object       # the whole Structure
     env: float
 
+    def clashes(self, node) -> bool:
+        """Whether whole structure `node` (put back by `whole`) has a subsystem atom closer to a spectator atom
+        than the sum of their covalent radii (closer than a bond): the subsystem needs room a spectator holds,
+        so the cut's premise -- spectators that sit apart -- fails and the step is computed on the whole box.
+        sb-t24 (40 cut-arm runs, g-xTB): start states never come closer than 1.26 of that sum; IRC ends put
+        back closer than 1.0 bonded across the cut when minimized whole in 28 of 65 IRCs, against 4 of 200
+        sampled from those at 1.25 or more."""
+        from rdkit import Chem
+
+        x = np.asarray(node.structure.geometry, dtype=float)
+        sub = np.zeros(len(x), dtype=bool)
+        sub[self.atoms] = True
+        if sub.all():
+            return False
+        table = Chem.GetPeriodicTable()
+        r = np.array([table.GetRcovalent(str(s)) for s in node.structure.symbols]) * ANGSTROM_TO_BOHR
+        d = np.linalg.norm(x[sub][:, None] - x[~sub][None], axis=-1)
+        return bool((d < r[sub][:, None] + r[~sub][None]).any())
+
     def sub(self, node) -> StructureNode:
         from mepd.discovery.mixture import _sub
 
