@@ -246,7 +246,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
     }
   }
   const edges = f.steps.map((s) => {
-    const [id, a, b, dGf, dGr, src, irc, flux] = s;
+    const [id, a, b, dGf, dGr, src, irc, flux, below] = s;   // below: its TS lies under one of its ends (no barrier)
     const fwd = noFlux ? (route.has(id) ? route.get(id) : (hops[nodeOf[a]] ?? 99) <= (hops[nodeOf[b]] ?? 99)) : (flux || 0) >= 0;
     const ab = ends(fwd ? a : b, fwd ? b : a);
     if (!ab) return null;
@@ -255,7 +255,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
     const main = noFlux ? route.has(id) : Math.abs(flux || 0) >= 0.05 * fluxMax;
     const w = noFlux ? (main ? 2.4 : 1.4) : Math.min(9, Math.max(1.2, 9 * Math.sqrt(Math.abs(flux || 0) / fluxMax)));
     const p = clip(ab[0], ab[1], 3), q = clip(ab[1], ab[0], 9);
-    return { id, from: ab[0], to: ab[1], p, q, barrier, back, w, src, irc, flux, main, moved: moved.get(id),
+    return { id, from: ab[0], to: ab[1], p, q, barrier, back, w, src, irc, flux, main, below: !!below, moved: moved.get(id),
       flow: noFlux ? null : Math.abs(flux || 0) };
   }).filter(Boolean);
   // The share of what leaves a species that takes this step.
@@ -277,7 +277,9 @@ function ExpansionNetwork({ jobId = null, example = null }) {
   const names = tl.names || {};
   const knownIds = new Set(tl.known_ids || []);   // taken from an earlier run (`--known`), not found again
   // Species no SMILES fits are drawn from their geometry (a running job's own); examples have SMILES.
-  const imgOf = (id, w = 160, h = 120) => (drawable(tl.smiles[id]) ? depictUrl(tl.smiles[id], w, h)
+  // A box of several molecules: those that differ from the start's, the rest in a muted line.
+  const startSmiles = drawable(tl.smiles[lay.seed]) ? tl.smiles[lay.seed] : null;
+  const imgOf = (id, w = 160, h = 120) => (drawable(tl.smiles[id]) ? depictUrl(tl.smiles[id], w, h, id === lay.seed ? null : startSmiles)
     : jobId ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
   const labelOf = (id) => (id === lay.seed ? names[id] || 'start' : productOf[id] || names[id]);
   // The structure says what it is; a name only where one exists and the species matters.
@@ -333,7 +335,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${on ? e.w + 2 : e.w}`}
                 class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''} ${e.irc === -1 ? 'unchecked' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
               ${!noFlux && e.main && html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-flow" style=${`stroke-width:${Math.max(2, e.w * 0.6)}`} />`}
-              ${(labelledEdges.has(e.id) || on) && (() => {
+              ${(labelledEdges.has(e.id) || on) && e.barrier != null && (() => {
                 const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2, txt = `‡ ${e.barrier.toFixed(1)}`, tw = txt.length * 6.6 + 10;
                 return html`<g class="ln-elabel" transform=${`translate(${mx},${my})`}>
                   <rect x=${-tw / 2} y="-9" width=${tw} height="18" rx="3" style=${`stroke:${band(e.barrier)}`} />
@@ -374,15 +376,15 @@ function ExpansionNetwork({ jobId = null, example = null }) {
           const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2;
           return html`<div class="ln-edge-card" style=${`left:${(100 * mx) / W}%;top:${(100 * my) / H}%`}>
             <div class="ln-ec-route"><b>${nm(e.from)}</b> <span class="muted">→</span> <b>${nm(e.to)}</b></div>
-            <div class="ln-ec-nums">
+            ${e.below ? html`<div class="small muted">TS below its ends: not this reaction, unchecked</div>` : html`<div class="ln-ec-nums">
               <span><b style=${`color:${band(e.barrier)}`}>${e.barrier?.toFixed(1) ?? '?'}</b>barrier</span>
               ${e.back != null && html`<span><b>${e.back.toFixed(1)}</b>back</span>`}
               ${dG != null && html`<span><b>${dG > 0 ? '+' : ''}${dG.toFixed(1)}</b>ΔG</span>`}
               ${e.share != null && html`<span><b>${e.share >= 0.01 ? `${Math.round(100 * e.share)}%` : '<1%'}</b>of what leaves ${nm(e.from)}</span>`}
-            </div>
+            </div>`}
             ${e.barrier != null && e.barrier < 0 && html`<div class="small muted">Below zero: its TS lies under the energy recorded for ${nm(e.from)} (often a lower conformer found later).</div>`}
-            <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC connects ✓' : e.irc === 0 ? ' · IRC does not connect' : ''}</div>
-            ${e.irc === -1 && html`<div class="small"><b>Unconfirmed:</b> the run ended before its IRC was checked, so it is left out of the final kinetics.</div>`}
+            ${!e.below && html`<div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC connects ✓' : e.irc === 0 ? ' · IRC does not connect' : ''}</div>`}
+            ${e.irc === -1 && !e.below && html`<div class="small"><b>Unconfirmed:</b> the run ended before its IRC was checked, so it is left out of the final kinetics.</div>`}
           </div>`;
         })()}
       </div>
@@ -463,7 +465,7 @@ function Closer({ jobId, job, activity, running }) {
         ${Array.from({ length: q.workers || 0 }, (_, k) => html`<i class=${k < (q.busy || 0) ? 'on' : ''}></i>`)}
         <span class="small muted">${q.busy || 0}/${q.workers} busy</span>
       </div>
-      ${(q.running || []).slice(0, 4).map((r) => html`<div class="small ln-now">${WORK[r.kind] || r.kind} · <span class="mono">${r.what}</span></div>`)}`}
+      ${(q.running || []).slice(0, 4).map((r) => html`<div class="small ln-now">${WORK[r.kind] || r.kind} · <span class="mono">${r.what}</span>${r.phase && html` · <b>${r.phase}</b>`}</div>`)}`}
     ${done.length > 0 && html`<span class="section-title">${running ? 'Done so far' : 'Work done'}</span><div class="ln-done small muted">${done.map(([k, v]) => html`<span title=${v.failed ? `${v.failed} failed` : ''}><b>${v.done}</b> ${WORK[k] || k}</span>`)}</div>`}
     ${activity?.reactor?.distinct > 0 && html`<span class="section-title">Reactor found so far</span>
       <span class="small muted">${activity.reactor.distinct} kind${activity.reactor.distinct === 1 ? '' : 's'} of product in ${activity.reactor.events} reaction events
@@ -480,9 +482,9 @@ function Closer({ jobId, job, activity, running }) {
       <button class="btn small" onClick=${() => openJob(jobId, 'log')}>Log</button>
     </div>
     ${sims.length > 0 && html`<div class="ln-sims">${sims.slice(0, 5).map((m) => html`<button class="ln-sim" onClick=${() => openSim(m.stream)} title=${`${m.label}${m.caption ? ` · ${m.caption}` : ''}: open it`}>
-      ${drawable(m.from) ? html`<img src=${depictUrl(m.from, 120, 90)} alt=${m.from} />` : html`<span class="ln-sim-txt">${(m.from || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
+      ${drawable(m.from) ? html`<img src=${depictUrl(m.from, 120, 90, drawable(m.to) ? m.to : null)} alt=${m.from} />` : html`<span class="ln-sim-txt">${(m.from || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
       <span class="ln-sim-arrow">→</span>
-      ${drawable(m.to) ? html`<img src=${depictUrl(m.to, 120, 90)} alt=${m.to} />` : html`<span class="ln-sim-txt">${(m.to || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
+      ${drawable(m.to) ? html`<img src=${depictUrl(m.to, 120, 90, drawable(m.from) ? m.from : null)} alt=${m.to} />` : html`<span class="ln-sim-txt">${(m.to || '?').replace(/ \(unusual bonding #\w+\)/g, '*')}</span>`}
       <span class="small muted">${(m.label || '').replace(/ from species.*/, '')}</span>
     </button>`)}</div>`}
   </section>`;

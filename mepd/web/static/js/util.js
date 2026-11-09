@@ -266,8 +266,19 @@ export function structureName(id) {
   return state.workspace.structures[id]?.name ?? '(deleted)';
 }
 
-export function depictUrl(smiles, w = 220, h = 160) {
-  return smiles ? `/api/depict?smiles=${encodeURIComponent(smiles)}&w=${w}&h=${h}` : null;
+// An xyz frame with only `atoms` (0-based, in their order): a network expansion's step shown on the
+// molecules its path search ran on (its `subsystem`).
+export function subsetXyz(xyz, atoms) {
+  const lines = xyz.split('\n');
+  const n = parseInt(lines[0], 10);
+  const body = lines.slice(2, 2 + n);
+  return [String(atoms.length), lines[1] || '', ...atoms.map((i) => body[i])].join('\n') + '\n';
+}
+
+// `start`: a network expansion's start state -- a species of several molecules is drawn by the molecules
+// that differ from it, the rest named in a muted line.
+export function depictUrl(smiles, w = 220, h = 160, start = null) {
+  return smiles ? `/api/depict?smiles=${encodeURIComponent(smiles)}&w=${w}&h=${h}${start ? `&start=${encodeURIComponent(start)}` : ''}` : null;
 }
 
 export function readFileText(file) {

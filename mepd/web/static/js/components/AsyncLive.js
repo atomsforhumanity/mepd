@@ -60,6 +60,7 @@ function Kinetics({ k }) {
     .map((s) => ({ ...s, load: Math.max(s.max_concentration || 0, s.flux || 0) }))
     .sort((a, b) => b.load - a.load || a.index - b.index);
   const shown = all ? rows : rows.filter((s) => s.populated);
+  const start = (k.species || []).find((s) => s.index === 0)?.smiles;   // a box: each species by what differs from it
   return html`
     <div class="card-block async-kinetics">
       <h4>Live kinetics <span class="muted small">· ${k.species?.length || 0} species, ${k.steps} steps · ${k.basis}${k.steered ? ` · ${k.steered} steering single points back` : ''}</span></h4>
@@ -70,7 +71,7 @@ function Kinetics({ k }) {
         <thead><tr><th>#</th><th></th><th>species</th><th>ΔE</th><th title="largest concentration, as a fraction of the seed">max</th><th title="material that flowed through it">flux</th><th>final</th><th></th></tr></thead>
         <tbody>${shown.map((s) => html`<tr key=${s.index} class=${s.populated ? 'ak-hot' : ''}>
           <td class="mono">${s.index}</td>
-          <td>${s.smiles ? html`<img class="ak-depict" src=${depictUrl(s.smiles, 90, 60)} alt="" />` : ''}</td>
+          <td>${s.smiles ? html`<img class="ak-depict" src=${depictUrl(s.smiles, 90, 60, s.index === 0 ? null : start)} alt="" />` : ''}</td>
           <td class="mono ak-smiles" title=${s.smiles}>${s.smiles || '?'}
             <div class="ak-bar"><div style=${`width:${barWidth(s.load)}%`}></div></div></td>
           <td class="mono">${s.rel_kcal != null ? s.rel_kcal.toFixed(1) : ''}</td>

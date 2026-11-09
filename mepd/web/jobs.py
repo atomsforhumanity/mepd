@@ -1151,6 +1151,20 @@ class JobManager:
         fwd, rev = (list(ev.get("barrier_kcal") or []) + [None, None])[:2]
         barrier = fwd if edge["source"] == a else rev
         old = edge.get("origin") or {}
+        from mepd.web.live_network import ts_below_ends
+
+        if ts_below_ends((fwd, rev)):
+            # Its TS lies below one of its own ends: not this reaction's TS (never IRC-checked). No barrier,
+            # no energy profile from it; an edge holding a step with a barrier keeps that one.
+            if (old.get("barrier_kcal") is not None and not old.get("proposed")) \
+                    or (old.get("ts_below_ends") and old.get("label") == label):
+                return False
+            with self.ws._lock:
+                edge["origin"] = {"kind": "job", "job": job["id"], "label": label, "has_ts": True, "ts_below_ends": True,
+                                  "barrier_verified": False,
+                                  "headline": "TS below its ends: not this reaction, unchecked"}
+                self.ws._save()
+            return True
         old_verified = not old.get("proposed") and old.get("barrier_kcal") is not None and old.get("barrier_verified") is not False
         if final:
             if old.get("job") == job["id"] and old.get("barrier_kcal") == barrier and not old.get("proposed") \
@@ -1163,11 +1177,6 @@ class JobManager:
             if old_verified == verified and old["barrier_kcal"] <= barrier and old.get("label") != label:
                 return False   # already the lower barrier of this pair
         warning = ev.get("warning")
-        if barrier is not None and barrier < -0.1:
-            from mepd.web.results import negative_barrier_text
-
-            # In the edge's direction: this end is above its TS. Shown as it is, never as 0.
-            warning = negative_barrier_text(barrier, "This edge's barrier")
         with self.ws._lock:
             edge["origin"] = {"kind": "job", "job": job["id"], "entry": f"{label}_irc", "group": "irc",
                               "has_ts": True, "barrier_kcal": barrier, "label": label,
@@ -1182,7 +1191,6 @@ class JobManager:
                                            "TS + IRC from the flux-steered expansion") if verified
                               else "TS from the flux-steered expansion, reported under the pair searched; "
                                    "its IRC has not confirmed these two ends yet",
-                              # A negative barrier is shown as it is, with why it is a problem.
                               "barrier_warning": warning}
             self.ws._save()
         return True

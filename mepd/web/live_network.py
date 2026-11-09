@@ -180,9 +180,29 @@ def _selectivity(data: Optional[dict], t_start: float, entries: Optional[list] =
     }
 
 
+BELOW_KCAL = -0.1   # a barrier under this: the TS lies below that end (the edge cards' negative-barrier rule)
+
+
+def ts_below_ends(barriers) -> bool:
+    """A step whose TS lies below one of its own ends (a barrier, either way, under BELOW_KCAL): not that
+    reaction's TS (unchecked; a separate question why the run found it)."""
+    return any(b is not None and b < BELOW_KCAL for b in list(barriers or [])[:2])
+
+
+def _unfit(frames: list) -> list:
+    """In place: each frame's steps whose TS lies below one of their ends (ts_below_ends) without their
+    barriers, as unchecked, and marked (a 9th entry, 1): the page draws them as a TS that doesn't fit."""
+    for f in frames:
+        f["steps"] = [s if not ts_below_ends(s[3:5]) else [*s[:3], None, None, s[5], -1, s[7] if len(s) > 7 else None, 1]
+                      for s in f.get("steps") or []]
+    return frames
+
+
 def timeline(frames: list, events: list, selectivity: Optional[dict], *, source: dict) -> dict:
     """Frames share one smiles table; the end state is the last steered frame
-    (a trailing unsteered refresh is not the answer)."""
+    (a trailing unsteered refresh is not the answer). A step whose TS lies below one of its ends draws
+    without a barrier (_unfit)."""
+    _unfit(frames)
     smiles = {}
     for f in frames:
         smiles.update({k: v for k, v in f.pop("smiles", {}).items() if v or k not in smiles})
@@ -445,14 +465,15 @@ def species_formula(job_dir: Path, sid: str) -> Optional[str]:
 
 
 def species_graph_svg(job_dir: Path, sid: str) -> Optional[str]:
-    """A species drawn from its geometry (mepd.web.depict_graph), cached in live/graphs/."""
+    """A species drawn from its geometry (mepd.web.depict_graph), cached in live/graphs/: of several
+    molecules, those that differ from the run's start (species 0)."""
     from mepd.web.depict_graph import depict_xyz_svg
 
-    cache = Path(job_dir) / "live" / "graphs" / f"{sid}.svg"
+    cache = Path(job_dir) / "live" / "graphs" / f"{sid}.changed.svg"
     if cache.exists():
         return cache.read_text()
     xyz = species_xyz(job_dir, sid)
-    svg = depict_xyz_svg(xyz) if xyz else None
+    svg = depict_xyz_svg(xyz, start=species_xyz(job_dir, "0") if str(sid) != "0" else None) if xyz else None
     if svg:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(svg)
@@ -543,15 +564,50 @@ def reactor_product_svg(job_dir: Path, run: str, event: int) -> Optional[str]:
     return svg
 
 
+def propose_phase(job_dir: Path, species: int) -> Optional[str]:
+    """What a running propose job (the explorer's live/propose_<species>.json) is doing: its reactor's MD
+    (trajectories started since the job began, in <output>/reactor/run_*, and those done), minimizing its
+    products, or their Hessian checks."""
+    try:
+        d = json.loads((Path(job_dir) / "live" / f"propose_{int(species)}.json").read_text())
+        d = d.get("data", d)
+    except (OSError, ValueError):
+        return None
+    phase, total = d.get("phase"), d.get("total")
+    if phase == "generate":
+        runs = []
+        try:
+            out = Path(json.loads((Path(job_dir) / "job.json").read_text()).get("output_dir") or "")
+        except (OSError, ValueError):
+            out = None
+        if out and d.get("runs_from") is not None:
+            runs = [r for r in (out / "reactor").glob("run_*")
+                    if r.name[4:].isdigit() and int(r.name[4:]) >= int(d["runs_from"])]
+        if not runs:
+            return "generating proposals"
+        done = sum((r / "md" / "done").exists() for r in runs)
+        return f"MD: {done}/{len(runs)} trajector{'y' if len(runs) == 1 else 'ies'} done"
+    if phase == "minimize":
+        return f"minimizing {total} product{'' if total == 1 else 's'}"
+    if phase == "hessian":
+        return f"Hessian checks {d.get('done', 0)}/{total}"
+    return None
+
+
 def activity(job_dir: Path) -> dict:
-    """What the explorer is doing now (its queue) and the simulations under the
-    network (one live stream each: proposed reactions, path searches)."""
+    """What the explorer is doing now (its queue, each propose job with its phase) and the simulations
+    under the network (one live stream each: proposed reactions, path searches)."""
     live = Path(job_dir) / "live"
     out = {"queue": None, "sims": []}
     try:
         q = json.loads((live / "queue.json").read_text())
         out["queue"] = q.get("data", q)
-    except (OSError, ValueError):
+        for r in out["queue"].get("running") or []:
+            what = str(r.get("what") or "")
+            if r.get("kind") == "propose" and what.startswith("species "):
+                k = what[len("species "):].split(" ")[0]
+                r["phase"] = propose_phase(job_dir, int(k)) if k.isdigit() else None
+    except (OSError, ValueError, AttributeError):
         pass
     sims = []
     for fp in sorted(live.glob("rxn*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:12]:
@@ -654,6 +710,7 @@ def example_timeline(slug: str) -> Optional[dict]:
         tl = json.load(fh)
     if "names" not in tl:    # packed before names were part of the timeline
         tl["names"] = names_of(tl.get("smiles") or {})
+    _unfit(tl.get("frames") or [])
     return tl
 
 

@@ -3,7 +3,7 @@
 import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
 import { familyOf, goBack, historyDepth, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
-import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, reactionOfEdge, safeName, structureName, tsFrameIndex } from '../util.js';
+import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, reactionOfEdge, safeName, structureName, subsetXyz, tsFrameIndex } from '../util.js';
 import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { JobControls, useTick } from './Jobs.js';
@@ -38,7 +38,7 @@ function livePaths(progress, now) {
   if (!Object.keys(streams).length && progress?.chain) streams.main = progress.chain;  // older jobs
   const out = [];
   for (const [name, st] of Object.entries(streams)) {
-    if (st.kind === 'queue' || st.kind === 'kinetics') continue;   // whole-state streams: AsyncLive shows them
+    if (st.kind === 'queue' || st.kind === 'kinetics' || st.kind === 'phase') continue;   // whole-state streams: AsyncLive and the live network show them
     const age = st.updated ? now - st.updated : Infinity;
     const state = st.finished ? (st.status === 'failed' ? 'failed' : 'done') : age < 30 ? 'running' : 'idle';
     if (st.kind === 'morph') {
@@ -429,7 +429,9 @@ function ResultPanel({ job }) {
   useEffect(() => { load(); }, [job.id, job.status, job.finished, job.result_rev]);
 
   const entry = useMemo(() => result?.groups.flatMap((g) => g.entries).find((e) => e.id === entryId), [result, entryId]);
-  const frameXyz = useMemo(() => entry?.frames.map((x) => x.xyz), [entry]);
+  // A network expansion's step: the molecules its path search ran on (its subsystem), not the whole box.
+  const frameXyz = useMemo(() => entry?.frames.map((x) => (entry.subsystem ? subsetXyz(x.xyz, entry.subsystem.atoms) : x.xyz)), [entry]);
+  const atomNumbers = useMemo(() => (entry?.subsystem ? entry.subsystem.atoms.map((i) => i + 1) : true), [entry]);
   const plotXs = useMemo(() => entry?.frames.map((x) => x.path_length), [entry]);
   const plotYs = useMemo(() => entry?.frames.map((x) => x.energy_kcal) ?? [], [entry]);
   useEffect(() => {
@@ -534,7 +536,7 @@ function ResultPanel({ job }) {
               ${entry.barrier_kcal != null && html`<span class="badge accent">ΔE‡ ${fmtKcal(entry.barrier_kcal)} kcal/mol</span>`}
             </div>
             ${entry.note && html`<div class="small mono muted note">${entry.note}</div>`}
-            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels} labelBase=${1} height=${300} system=${job.qmmm} orbitals=${jobChem(job)} />
+            <${Viewer3D} frames=${frameXyz} frame=${frame} labels=${labels && atomNumbers} labelBase=${1} height=${300} system=${job.qmmm} orbitals=${entry.subsystem ? { ...jobChem(job), charge: entry.subsystem.charge, multiplicity: entry.subsystem.multiplicity } : jobChem(job)} />
             ${multi && html`
               <div class="frame-bar">
                 <button class="btn-icon" onClick=${() => setPlaying(!playing)} title=${playing ? 'Pause' : 'Play'}>${playing ? '❚❚' : '▶'}</button>

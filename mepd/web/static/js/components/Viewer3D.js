@@ -92,7 +92,8 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
     if (!labels) return;
     const model = v.getModel();
     if (!model) return;
-    model.selectedAtoms({}).forEach((a, i) => v.addLabel(String(i + labelBase), {
+    // `labels` an array: each atom's own number (e.g. a subsystem's atoms by their numbers in the whole system)
+    model.selectedAtoms({}).forEach((a, i) => v.addLabel(String(Array.isArray(labels) ? labels[i] : i + labelBase), {
       position: { x: a.x, y: a.y, z: a.z }, fontSize: 10, backgroundOpacity: 0.55, inFront: true,
     }));
   };

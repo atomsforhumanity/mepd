@@ -1200,6 +1200,34 @@ def test_async_reactor_expands_species_found_after_the_job_workers_started(monke
     assert [c["cutoff_kcal"] for c in calls] == pytest.approx([30.0 - s.rel_energy_kcal for s in res.species[:2]])
 
 
+def test_async_propose_jobs_report_their_phase_and_return_the_same(monkeypatch, tmp_path):
+    """A propose job writes its phase for the live view (live/propose_<species>.json: the generator's MD,
+    minimizing its products, their Hessian checks, done) and nothing else changes: the same species,
+    energies and steps as with no live viewer attached."""
+    import json
+
+    from mepd.discovery import generators
+
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", _hcn_reactor([]), kind="structures"))
+    kw = dict(steer="access", access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+              schedule="async", generator="reactor", generator_options={"n_seeds": 1}, allow_zwitterions=True)
+
+    def run():
+        res = expand_network(_node("C#N"), _GraphEngine(), connect=_AsyncConnector(), **kw)
+        return ([(sp.smiles, round(float(sp.node.energy), 10)) for sp in res.species],
+                [(st.a, st.b, st.label) for st in res.steps], res.rounds[0]["sources"])
+
+    monkeypatch.delenv("MEPD_DRIVE_CHAIN_DIR", raising=False)
+    plain = run()
+    monkeypatch.setenv("MEPD_DRIVE_CHAIN_DIR", str(tmp_path / "live"))
+    assert run() == plain
+    phases = {int(fp.stem.split("_")[1]): json.loads(fp.read_text())["data"]
+              for fp in (tmp_path / "live").glob("propose_*.json")}
+    assert set(phases) == set(plain[2])                 # one per species proposed from
+    assert all(d["phase"] == "done" and list(d["began"]) == ["generate", "minimize", "done"] for d in phases.values())
+
+
 def test_async_a_failed_proposal_job_is_said_and_not_counted_as_an_expansion(monkeypatch):
     """A species whose proposals failed is listed under the round's proposals_failed, not its sources: the
     summary must not read it as expanded (07c1cd9's IndexError hid behind exactly that)."""

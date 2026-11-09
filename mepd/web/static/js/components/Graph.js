@@ -539,6 +539,7 @@ function edgeLabel(e, st, reaction = null) {
   else if (e.origin?.estimate?.barrier_shift != null && e.origin.estimate.status === 'ok')
     // A network variant's fast estimate: the shift from its parent reaction, until re-optimized.
     parts.push(`est. ${e.origin.estimate.barrier_shift >= 0 ? '+' : ''}${e.origin.estimate.barrier_shift.toFixed(1)}`);
+  else if (e.origin?.ts_below_ends) parts.push('TS below its ends');
   else if (st.status === 'running') parts.push('running…');
   else if (st.status === 'queued') parts.push('queued');
   else if (st.status === 'failed') parts.push('failed');

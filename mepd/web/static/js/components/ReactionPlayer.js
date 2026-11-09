@@ -5,7 +5,7 @@
 import { html, useEffect, useMemo, useState } from '../lib.js';
 import { api } from '../api.js';
 import { goToPage, openJob, originLabel, select, set, state, useStore } from '../store.js';
-import { cls, edgeStatus, fmtKcal } from '../util.js';
+import { cls, edgeStatus, fmtKcal, subsetXyz } from '../util.js';
 import { Viewer3D } from './Viewer3D.js';
 import { EnergyPlot } from './EnergyPlot.js';
 
@@ -21,8 +21,10 @@ const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 // Bonds that exist at one end of the path and not the other: forming
 // (absent at the start, present at the end) and breaking (the reverse).
-export function bondChanges(frames) {
+// `numbers`: each atom's number to name it by (default its position, from 1).
+export function bondChanges(frames, numbers = null) {
   if (!frames || frames.length < 2) return [];
+  const no = (i) => (numbers ? numbers[i] : i + 1);
   const first = parseXyz(frames[0]), last = parseXyz(frames[frames.length - 1]);
   const out = [];
   for (let i = 0; i < first.length; i += 1) {
@@ -30,7 +32,7 @@ export function bondChanges(frames) {
       const s = cov(first[i].e) + cov(first[j].e);
       const d0 = dist(first[i].p, first[j].p), d1 = dist(last[i].p, last[j].p);
       const bonded0 = d0 < 1.2 * s, bonded1 = d1 < 1.2 * s;
-      if (bonded0 !== bonded1) out.push({ i, j, label: `${first[i].e}${i + 1}–${first[j].e}${j + 1}`, kind: bonded1 ? 'form' : 'break' });
+      if (bonded0 !== bonded1) out.push({ i, j, label: `${first[i].e}${no(i)}–${first[j].e}${no(j)}`, kind: bonded1 ? 'form' : 'break' });
     }
   }
   return out.slice(0, 6);
@@ -48,8 +50,6 @@ function bestEntry(result) {
 // IRC, from `start`, energies from that node's energy), not the run's lowest path.
 export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start = null }) {
   const job = useStore((s) => s.jobs[jobId]);
-  // The orbitals of each frame, from this calculation's own run (Viewer3D's Orbitals bar).
-  const chem = job ? { charge: job.charge, multiplicity: job.multiplicity, job: job.id } : null;
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [frame, setFrame] = useState(0);
@@ -64,10 +64,15 @@ export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start 
   }, [jobId, stepEdge, start]);
   const entry = useMemo(() => (stepEdge ? (result?.frames?.length > 1 ? { frames: result.frames.map((f, k) => ({ ...f, path_length: k })), ts_index: result.ts_index } : null)
     : bestEntry(result)), [result, stepEdge]);
-  const frames = useMemo(() => entry?.frames.map((f) => f.xyz), [entry]);
+  // A network expansion's step: the molecules its path search ran on (its subsystem; a step's own path
+  // comes cut already), with their charge. The orbitals of each frame, from this calculation's own run
+  // (Viewer3D's Orbitals bar).
+  const cut = stepEdge ? result?.subsystem : entry?.subsystem;
+  const chem = job ? { charge: cut ? cut.charge : job.charge, multiplicity: cut ? cut.multiplicity : job.multiplicity, job: job.id } : null;
+  const frames = useMemo(() => entry?.frames.map((f) => (entry.subsystem ? subsetXyz(f.xyz, entry.subsystem.atoms) : f.xyz)), [entry]);
   const xs = useMemo(() => entry?.frames.map((f) => f.path_length), [entry]);
   const ys = useMemo(() => entry?.frames.map((f) => f.energy_kcal) ?? [], [entry]);
-  const changes = useMemo(() => bondChanges(frames), [frames]);
+  const changes = useMemo(() => bondChanges(frames, cut ? cut.atoms.map((i) => i + 1) : null), [frames, cut]);
   const coords = useMemo(() => frames?.map((x) => parseXyz(x).map((a) => a.p)), [frames]);
   useEffect(() => { if (entry) { setFrame(entry.ts_index ?? 0); setPlaying(false); } }, [entry]);
   useEffect(() => {

@@ -1545,11 +1545,13 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return out
 
     @app.get("/api/depict")
-    def depict(smiles: str, w: int = 220, h: int = 160):
-        if demo is not None and len(smiles) > demo.max_smiles_length:
+    def depict(smiles: str, w: int = 220, h: int = 160, start: Optional[str] = None):
+        """`start`: a network expansion's start state; a species of several molecules is drawn by those
+        that differ from it (chem.depict_changed_svg)."""
+        if demo is not None and max(len(smiles), len(start or "")) > demo.max_smiles_length:
             raise HTTPException(400, "SMILES too long")
         w, h = min(max(w, 40), 800), min(max(h, 40), 800)
-        svg = chem.depict_svg(smiles, w, h)
+        svg = chem.depict_changed_svg(smiles, start, w, h) if start else chem.depict_svg(smiles, w, h)
         if svg is None:
             raise HTTPException(404, "cannot depict")
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
@@ -2891,6 +2893,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         job = J().jobs.get(o.get("job") or "")
         if job is None or not o.get("label"):
             raise HTTPException(404, "this edge has no step of its own")
+        if o.get("ts_below_ends"):
+            raise HTTPException(404, "TS below its ends: not this reaction, unchecked. Its TS lies below one of the "
+                                     "two species, so it is no barrier between them and has no energy profile here.")
         if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
             raise HTTPException(404, "No TS was found for this step: its barrier is the highest point of a path "
                                      "between the two (an upper bound), so there is no path through a TS to play.")
@@ -2909,9 +2914,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         ref = st.get(a, {}).get("energy")
         kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in energies]
         ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
+        # Only the molecules the step's path search ran on (the explorer's subsystem); energies stay the
+        # whole system's.
+        cut = step_check.subsystem(job, o["label"])
+        if cut is not None:
+            frames = [step_check.subset_xyz(x, cut["atoms"]) for x in frames]
         return {"label": o["label"], "job": job["id"], "start": a, "end": b, "checked": v is not None,
                 "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
-                "reference": "the start's node energy (its lowest structure found), electronic"}
+                "subsystem": cut, "reference": "the start's node energy (its lowest structure found), electronic"}
 
     @app.get("/api/jobs/{jid}/mixture")
     def mixture_network(jid: str):

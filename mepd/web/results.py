@@ -1036,6 +1036,9 @@ def _expansion_steps(out: Path, s: dict, charge: int, multiplicity: int) -> tupl
     (drawn from species a to species b), barriers from species a. Entry
     ids are the step label (`<label>` TS, `<label>_irc` IRC), which the
     graph edge for that step points at."""
+    from mepd.web.live_network import ts_below_ends
+    from mepd.web.step_check import subsystem
+
     names = {sp.get("index"): sp.get("smiles") or f"species {sp.get('index')}" for sp in s.get("species") or []}
     ts_entries, irc_entries = [], []
     for st in s.get("steps") or []:
@@ -1047,16 +1050,27 @@ def _expansion_steps(out: Path, s: dict, charge: int, multiplicity: int) -> tupl
         barriers = st.get("barrier_kcal") or []
         forward = barriers[0] if barriers else None
         note = f"{names.get(st['a'], st['a'])}  ⇌  {names.get(st['b'], st['b'])}"
+        if ts_below_ends(barriers):
+            # Its TS lies below one of its ends: no barrier, no energy profile (its IRC, if any, left out)
+            ts_entries.append({**_entry(label, f"TS {st['a']} → {st['b']}", [ts[0]], None,
+                                        note=f"TS below its ends: not this reaction, unchecked · {note}"),
+                               "ts_below_ends": True})
+            continue
         e_ts = _node_energy(ts[0])
         floor = e_ts - forward / HARTREE_TO_KCAL if forward is not None and e_ts is not None else None
-        ts_entries.append(_entry(label, f"TS {st['a']} → {st['b']}", [ts[0]], floor, barrier=forward, note=note))
+        # The molecules its path search ran on (the explorer's subsystem): what the views show of its
+        # whole-system frames.
+        cut = {"subsystem": subsystem({"output_dir": str(out), "charge": charge, "multiplicity": multiplicity},
+                                      label)}
+        ts_entries.append({**_entry(label, f"TS {st['a']} → {st['b']}", [ts[0]], floor, barrier=forward,
+                                    note=note), **cut})
         if irc is not None:
             first, last = _node_energy(irc[0]), _node_energy(irc[-1])
             if len(irc) > 1 and None not in (floor, first, last) and abs(last - floor) < abs(first - floor):
                 irc = irc.copy()
                 irc.nodes.reverse()   # start at species a's side (its energy), like the edge
-            irc_entries.append(_entry(f"{label}_irc", f"IRC {st['a']} → {st['b']}", irc.nodes, floor,
-                                      barrier=forward, note=note))
+            irc_entries.append({**_entry(f"{label}_irc", f"IRC {st['a']} → {st['b']}", irc.nodes, floor,
+                                         barrier=forward, note=note), **cut})
     return ts_entries, irc_entries
 
 
@@ -1979,7 +1993,7 @@ def _log_warnings(log: Path, limit: int = 8) -> list[str]:
 
 
 # Bump when collectors change what they return, so cached results are rebuilt.
-RESULT_VERSION = 37   # 37: multi-step routes as chains ("routes"), IRC entries say if they join the ends
+RESULT_VERSION = 38   # 38: an expansion step's TS and IRC entries carry its subsystem; 37: multi-step routes as chains ("routes"), IRC entries say if they join the ends
 
 
 def collect_cached(job: dict, job_dir: Path) -> dict:

@@ -799,6 +799,23 @@ def _takes_fmax(engine) -> bool:
     return any(c.__name__ in _FMAX_ENGINES for c in type(engine).__mro__)
 
 
+def _propose_progress(src: int, **extra) -> Callable:
+    """A propose job's progress for the live view: `phase(name, **counts)` rewrites live/propose_<src>.json
+    with its phase now ("generate" -- the reactor's MD --, "minimize", "hessian", "done"), its counts, and
+    when each phase began. It only writes that file (nothing without a live viewer): the job is unchanged."""
+    import time
+
+    from mepd.progress import write_live_state
+
+    began: dict = {}
+
+    def phase(name: str, **counts) -> None:
+        began.setdefault(name, time.time())
+        write_live_state(f"propose_{src}", "phase", {"species": src, "phase": name, **extra, **counts,
+                                                     "began": dict(began)})
+    return phase
+
+
 def _optimize(engine, nodes: list[StructureNode], maxiter: int, on_event: OnEvent,
               on_start: Callable[[int], None] = lambda k: None, fmax: Optional[float] = None) -> list:
     """Optimized node (or an exception) per input, isolating failures.
@@ -2401,9 +2418,13 @@ def expand_network(
             batches for `src` left); its result then carries {"state", "done"} for the next. The seed's are one
             job, all its batches pooled (isoprene + methyl acrylate: its first batch alone filled the product cap
             with 12-18 of the seed's own products, where all four found 42-57, and its next batch then waited
-            behind the TS searches; the Diels-Alder adducts were proposed in 3 of 10 instead of 9 of 10)."""
+            behind the TS searches; the Diels-Alder adducts were proposed in 3 of 10 instead of 9 of 10).
+            Its phase, as it goes, is in live/propose_<src>.json for the live view (`_propose_progress`)."""
             node = StructureNode(structure=structure)
             meta = None
+            workdir = (gen_opts or {}).get("workdir") if isinstance(gen_opts, dict) else None
+            phase = _propose_progress(src, runs_from=len(list(Path(workdir).glob("run_*"))) if workdir else None)
+            phase("generate")
             if gen_obj.kind == "structures" and gen_obj.propose_batch is not None and src != 0:
                 gen_obj.check()
                 before = len((batch_state or {}).get("proposed") or ())
@@ -2426,19 +2447,24 @@ def expand_network(
                 _build_guesses(props, node, coords, SimpleNamespace(enabled=False), width, view)
             todo = [k for k, p in enumerate(props) if p.smiles not in known_smiles]
             eng = connect.job_inputs.engine
+            phase("minimize", total=len(todo))
             opts = _optimize(eng, [StructureNode(structure=props[k].structure) for k in todo], maxiter, None,
                              fmax=loose_fmax)
             out = ["known"] * len(props)
+            checks = [0, sum(not isinstance(opt, Exception) for opt in opts)]   # Hessian checks: done, all
             for k, opt in zip(todo, opts):
                 record = None
                 if not isinstance(opt, Exception) and validate_minima is not None:
                     from mepd.elementarystep import validate_minimum_with_rescue
 
+                    phase("hessian", done=checks[0], total=checks[1])
+                    checks[0] += 1
                     opt, record = validate_minimum_with_rescue(
                         opt, eng, frequency_cutoff=float(validate_minima.get("frequency_cutoff", -20.0)),
                         rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
                         label=f"proposal {props[k].label}")
                 out[k] = (opt, record)
+            phase("done")
             return (props, out) if meta is None else (props, out, meta)
 
         # The seed's proposals are the queue's first job; a later species' wait until the steps found so far have

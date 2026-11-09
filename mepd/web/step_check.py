@@ -131,3 +131,79 @@ def step_events(job_dir: Path) -> list[dict]:
         if ev.get("event") == "step":
             out.append(ev)
     return out
+
+
+class _NoEnergies:
+    """An engine for `subsystem` that only picks atoms: the energies it asks for (its `env`) are no view's."""
+
+    region = None
+
+    def __init__(self, restraints=None):
+        self.restraints = restraints
+
+    def compute_energies(self, nodes):
+        return [0.0] * len(nodes)
+
+
+_SUBSYSTEMS: dict = {}
+
+
+def step_files(job: dict, label: str) -> dict:
+    """A network expansion's step `label`: its files as the run's summary lists them (a channel's TS and
+    IRC put back among the spectators), else ts/<label>.xyz and ts/<label>_irc.xyz."""
+    out = Path(job.get("output_dir") or "")
+    for name in ("summary.json", "summary_partial.json"):
+        try:
+            steps = json.loads((out / name).read_text()).get("steps") or []
+        except (OSError, ValueError):
+            continue
+        for st in steps:
+            if st.get("label") == label and (st.get("files") or {}).get("ts"):
+                return st["files"]
+    return {"ts": str(out / "ts" / f"{label}.xyz"), "irc": str(irc_path(job, label))}
+
+
+def subsystem(job: dict, label: str) -> Optional[dict]:
+    """{"atoms", "charge", "multiplicity"}: the molecules step `label` of a network expansion ran its path
+    search, TS and IRC on -- the explorer's own cut (network_expansion.subsystem) of the step's two ends
+    (free_energy.step_ends: its IRC's first and last frames, else the ends its TS search started between).
+    None when it ran on every atom: every molecule takes part, or a QM/MM system, or a profile's restraints."""
+    if job.get("qmmm"):
+        return None
+    files = step_files(job, label)
+    profile = Path(job.get("output_dir") or "").parent / "inputs" / "profile.toml"
+    paths = [Path(p) for p in (files.get("irc"), files.get("ts")) if p] + [profile]
+    key = tuple((str(p), p.stat().st_mtime if p.exists() else None) for p in paths)
+    if key in _SUBSYSTEMS:
+        return _SUBSYSTEMS[key]
+    cut = None
+    try:
+        from mepd.discovery.free_energy import step_ends
+        from mepd.discovery.network_expansion import subsystem as explorer_subsystem
+        from mepd.nodes.node import StructureNode
+
+        restraints = None
+        if profile.exists():
+            import tomli
+
+            restraints = tomli.loads(profile.read_text()).get("restraints")
+        ends = step_ends(files, ())
+        if len(ends) == 2:
+            q = {k: job[k] for k in ("charge", "multiplicity") if job.get(k) is not None}
+            a, b = (StructureNode(structure=e.model_copy(update=q)) for e in ends)
+            found = explorer_subsystem(a, b, _NoEnergies(restraints))
+            if found is not None:
+                cut = {"atoms": [int(i) for i in found.atoms], "charge": found.charge,
+                       "multiplicity": found.multiplicity}
+    except Exception:
+        cut = None
+    _SUBSYSTEMS[key] = cut
+    return cut
+
+
+def subset_xyz(xyz: str, atoms: list) -> str:
+    """An xyz frame with only `atoms` (0-based), in their order; the comment line kept."""
+    lines = xyz.splitlines()
+    n = int(lines[0].split()[0])
+    body = lines[2:2 + n]
+    return "\n".join([str(len(atoms)), lines[1] if len(lines) > 1 else ""] + [body[i] for i in atoms]) + "\n"

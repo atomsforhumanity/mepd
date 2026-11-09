@@ -248,3 +248,95 @@ def depict_svg(smiles: str, width: int = 220, height: int = 160) -> Optional[str
         return svg.replace("<?xml version='1.0' encoding='iso-8859-1'?>\n", "")
     except Exception:
         return None
+
+
+def _molecules(smiles: str) -> list[str]:
+    """A species' molecules, each canonical (a SMILES the explorer joined with "|" read by its first form)."""
+    return [_canonical(m) or m for m in str(smiles).split("|")[0].split(".") if m]
+
+
+_SUBSCRIPT = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def molecule_formula(mol) -> str:
+    """A molecule's formula as chemists write it: Hill order (CH₄, H₂O, H₂O₂), but a hydride of boron or
+    the nitrogen group with its element first (NH₃, PH₃, N₂H₄)."""
+    from collections import Counter
+
+    from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+
+    text = CalcMolFormula(mol)
+    heavy = Counter(a.GetSymbol() for a in mol.GetAtoms() if a.GetSymbol() != "H")
+    if len(heavy) == 1 and next(iter(heavy)) in ("B", "N", "P", "As", "Si") and text.startswith("H"):
+        m = re.match(r"(H\d*)([A-Z][a-z]?\d*)(.*)", text)
+        if m:
+            text = m.group(2) + m.group(1) + m.group(3)
+    return text.translate(_SUBSCRIPT)
+
+
+def changed_svg(mols: list, counts: list[int], unchanged: list[tuple[str, int]], width: int, height: int,
+                draw=None) -> Optional[str]:
+    """Distinct molecules side by side, each with its count when there are several ("3×"), and a muted
+    line under them naming the rest ("+ unchanged: 3 CH₄, 2 NH₃, H₂O"). `draw(drawer, mols)` draws them
+    (default RDKit's DrawMolecules, prepared as depict_svg's)."""
+    from rdkit.Chem.Draw import rdMolDraw2D
+
+    rest = ", ".join(f"{n} {f}" if n > 1 else f for f, n in unchanged)
+    line = f"+ unchanged: {rest}" if rest else ""
+    cols = min(len(mols), 3)
+    rows = -(-len(mols) // cols)
+    strip = max(12, height // 9) if line else 0
+    pw, ph = width // cols, (height - strip) // rows
+    drawer = rdMolDraw2D.MolDraw2DSVG(width, height, pw, ph)
+    opts = drawer.drawOptions()
+    opts.clearBackground = False
+    opts.bondLineWidth = 2
+    opts.padding = 0.12
+    if draw is None:
+        drawer.DrawMolecules([rdMolDraw2D.PrepareMolForDrawing(m) for m in mols])
+    else:
+        draw(drawer, mols)
+    drawer.FinishDrawing()
+    svg = drawer.GetDrawingText().replace("<?xml version='1.0' encoding='iso-8859-1'?>\n", "")
+    text = [(k % cols * pw + 2, k // cols * ph + max(10, ph // 9), "start", "#000000", max(9, ph // 9), f"{n}×")
+            for k, n in enumerate(counts) if n > 1]   # (RDKit's legend font has no ×)
+    if line:
+        text.append((width / 2, height - strip / 3, "middle", "#8a8f98", min(strip - 2, 1.8 * width / len(line)), line))
+    return svg.replace("</svg>", "".join(
+        f'<text x="{x:.0f}" y="{y:.0f}" text-anchor="{a}" font-family="sans-serif" font-size="{size:.1f}" '
+        f'fill="{fill}">{t.replace("&", "&amp;").replace("<", "&lt;")}</text>\n' for x, y, a, fill, size, t in text)
+        + "</svg>")
+
+
+@lru_cache(maxsize=512)
+def depict_changed_svg(smiles: str, start: str, width: int = 220, height: int = 160) -> Optional[str]:
+    """A species of several molecules drawn by what differs from the run's start state `start` (the
+    multiset difference of their molecules): each changed molecule once, with its count when repeated, and
+    a muted line for the unchanged rest. A single molecule, the start itself, or a species that keeps
+    every molecule of the start, as depict_svg."""
+    from collections import Counter
+
+    try:
+        from rdkit import Chem
+
+        have, had = Counter(_molecules(smiles)), Counter(_molecules(start))
+        changed, same = have - had, have & had
+        if sum(have.values()) < 2 or not changed:
+            return depict_svg(smiles, width, height)
+        mols = []
+        for m in changed:
+            mol = Chem.MolFromSmiles(m)
+            if mol is None:
+                mol = Chem.MolFromSmiles(m, sanitize=False)
+                if mol is None:
+                    return depict_svg(smiles, width, height)
+                mol.UpdatePropertyCache(strict=False)
+            mols.append(mol)
+        rest = Counter()
+        for m, n in same.items():
+            mol = Chem.MolFromSmiles(m) or Chem.MolFromSmiles(m, sanitize=False)
+            rest[molecule_formula(mol) if mol is not None else m] += n
+        return changed_svg(mols, list(changed.values()), sorted(rest.items(), key=lambda x: (-x[1], x[0])),
+                           width, height)
+    except Exception:
+        return depict_svg(smiles, width, height)

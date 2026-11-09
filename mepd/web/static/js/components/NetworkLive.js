@@ -115,7 +115,7 @@ export function NetworkLive({ job, reactions }) {
     const from = stage.getBoundingClientRect();
     const target = (tile.querySelector('.nl-depict') || tile).getBoundingClientRect();
     const ghost = document.createElement('img');
-    ghost.src = depictUrl(smiles, 180, 120);
+    ghost.src = depictUrl(smiles, 180, 120, ordered[0]?.plot?.reactant_smiles);
     ghost.className = 'nl-ghost';
     Object.assign(ghost.style, { left: `${target.left}px`, top: `${target.top}px`, width: `${target.width}px`, height: `${target.height}px` });
     document.body.appendChild(ghost);
@@ -213,7 +213,7 @@ export function NetworkLive({ job, reactions }) {
                 class=${`nl-tile ${r.id === flying ? 'arriving' : ''} ${r.id === pinned ? 'pinned' : ''} ${r.outcome && r.outcome !== 'new species' ? 'dim' : ''}`}
                 onClick=${() => pin(r.id)} title=${r.caption || ''}>
               ${drawable(r.plot?.product_smiles)
-                ? html`<img class="nl-depict" src=${depictUrl(r.plot.product_smiles, 180, 120)} alt=${r.plot.product_smiles} />`
+                ? html`<img class="nl-depict" src=${depictUrl(r.plot.product_smiles, 180, 120, seedSmiles)} alt=${r.plot.product_smiles} />`
                 : html`<div class="nl-depict"></div>`}
               <div class="nl-tile-foot">
                 <span class="small"><b>#${Number(r.id.slice(3))}</b>${deltaE(r) != null ? html` <span class="mono muted">${signed(deltaE(r))}</span>` : ''}</span>
