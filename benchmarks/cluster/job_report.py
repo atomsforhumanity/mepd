@@ -81,9 +81,18 @@ def run_facts(o: dict) -> dict | None:
     log = d / "expand.log"
     ps = [int(m.group(1)) for m in re.finditer(r"^Path searches: (\d+) of", log.read_text(errors="replace"), re.M)] \
         if log.is_file() else []
+    steer_jobs = [e for e in jobs if e.get("kind") == "steer"]
+    steer_fail = {}
+    for e in failed:
+        if e.get("kind") == "steer":
+            k = re.sub(r"[-+]?\d[\d.eE+-]*", "#", str(e.get("why") or "no why logged"))[:120]
+            steer_fail[k] = steer_fail.get(k, 0) + 1
+    meta = d / "_meta.json"
+    peak = json.loads(meta.read_text()).get("max_task_memory_bytes") if meta.is_file() else None
     steer_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") == "steer")
     ts_irc_s = sum(float(e.get("run_s") or 0.0) for e in jobs if e.get("kind") in TS_KINDS | {"irc"})
-    return {"samplings": len(ps), "path_searches": sum(ps), "irc_files": irc_files, "irc_why": why, "steer_s": steer_s, "ts_irc_s": ts_irc_s, "cpu_h": o.get("cpu_h"),
+    return {"steer_points": len(steer_jobs), "steer_point_s": sorted(float(e.get("run_s") or 0) for e in steer_jobs),
+            "steer_failed_by_why": steer_fail, "peak_mem_bytes": peak, "samplings": len(ps), "path_searches": sum(ps), "irc_files": irc_files, "irc_why": why, "steer_s": steer_s, "ts_irc_s": ts_irc_s, "cpu_h": o.get("cpu_h"),
             "done": done, "failed": fail, "neg": len(((o.get("audit") or {}).get("flags") or {}).get("negative_barrier") or []),
             "converted": conv, "share": share, "unverified": unver, "below_seed": below, "both": both}
 
@@ -107,13 +116,19 @@ def main(argv: list) -> int:
                                     "ts_jobs_per_run": [], "irc_failed_by_why": {}, "steer_s_per_run": [],
                                     "ts_irc_s_per_run": [], "cpu_h_per_run": [], "irc_failed_files": 0,
                                     "irc_failed_files_by_message": {}, "samplings_per_run": [],
-                                    "path_searches_per_run": []})
+                                    "path_searches_per_run": [], "steer_points_per_run": [], "steer_point_s_all": [],
+                                    "steer_failed_by_why": {}, "peak_mem_gib_per_run": []})
             g["n"] += 1
             if f is None:
                 continue
             for k, v in f["irc_files"].items():
                 g["irc_failed_files"] += v
                 g["irc_failed_files_by_message"][k] = g["irc_failed_files_by_message"].get(k, 0) + v
+            g["steer_points_per_run"].append(f["steer_points"])
+            g["steer_point_s_all"].extend(f["steer_point_s"])
+            for k, v in f["steer_failed_by_why"].items():
+                g["steer_failed_by_why"][k] = g["steer_failed_by_why"].get(k, 0) + v
+            g["peak_mem_gib_per_run"].append(None if f["peak_mem_bytes"] is None else round(f["peak_mem_bytes"] / 2**30, 1))
             g["samplings_per_run"].append(f["samplings"])
             g["path_searches_per_run"].append(f["path_searches"])
             g["ts_jobs_per_run"].append(f["done"]["ts"])
@@ -132,6 +147,8 @@ def main(argv: list) -> int:
             g["below_seed_open"] += f["below_seed"]
             g["unverified_and_below_seed_open"] += f["both"]
         for g in arm.values():
+            sp = sorted(g.pop("steer_point_s_all"))
+            g["steer_point_s_median"] = round(sp[len(sp) // 2], 1) if sp else None
             xs = sorted(x for x in g["shares"] if x is not None)
             g["channel_share_median"] = xs[len(xs) // 2] if xs else None
             g["channel_share_min"] = xs[0] if xs else None
