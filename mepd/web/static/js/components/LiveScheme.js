@@ -4,10 +4,13 @@
 //   with its structure once it matters (holds 2 % of the largest amount), lifting out of its column's
 //   pile of what was explored, above, where every species found lands first; routes read left to
 //   right, start to product (a species a route reaches through another moves right of it);
-// - on the right an outcome lane: the three leading products with their amounts (% of the start at
-//   the end of the simulated time), and a benchmark's measured selectivity;
-// - a strip on top: run time against the budget, what the explorer does now, counts, the leading
-//   products and how long the answer has held, the steering level, a door to the reactor's MD;
+// - on the right an outcome lane: what forms, per molecule (the five leading molecules and how much of
+//   each forms per starting box at the end of the simulated time; the server counts each molecule over
+//   the box's states, so 2 H2 in a box count twice), and a benchmark's measured selectivity; or, toggled,
+//   the outcomes as whole mixtures (the box's states, as shares of the starting boxes);
+// - a strip on top: run time against the budget, what the explorer does now, counts, the three leading
+//   molecules and what is left of the start, how long the answer has held, the steering level, a door to
+//   the reactor's MD;
 // - steps coloured by speed at the run's temperature (half-life against the simulated time), routes in
 //   their product's colour; magenta is what runs now: searches marching between two species, arrivals,
 //   a step just found; the reactor's events as faint ghosts of their movies, caught by the species
@@ -40,6 +43,17 @@ export function fmtTime(s) {
 const fmtClock = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 const pct = (x) => (x == null ? '—' : x >= 0.995 ? `${Math.round(100 * x)} %` : x >= 0.0995 ? `${Math.round(100 * x)} %`
   : x >= 0.001 ? `${(100 * x).toFixed(1)} %` : x > 0 ? '< 0.1 %' : '0 %');
+// An amount per starting box (or per mol of feed), never a percentage: a molecule can form more than once.
+const amt = (x) => (x == null ? '—' : x >= 0.01 ? x.toFixed(2) : x >= 0.001 ? x.toFixed(3) : x > 0 ? '< 0.001' : '0');
+const amtFine = (x) => (x != null && x > 0 && x < 0.001 ? x.toExponential(1) : amt(x));   // (tables)
+// What the amounts are counted per: the start's one molecule, a pair, a box of several, or the feed.
+function perText(tl) {
+  if (tl.mixture) return 'mol per mol of feed';
+  const start = tl.start || [];
+  if (start.length === 1) return `per ${tl.molecules?.[start[0]]?.name || 'starting molecule'}`;
+  return start.length === 2 ? 'per starting pair' : `per starting box of ${start.length} molecules`;
+}
+const LANE_N = 5, LANE_STEP = 86;
 
 // The run's temperature (from the kinetics basis) and simulated time (the job's --time), which set
 // what "fast" means; without a time the speeds are read against 1 s and the key says so.
@@ -279,6 +293,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const hc = useHoverCard();
   const hover = hc.cur ? { kind: hc.cur.key[0], id: hc.cur.data } : null;
   const [view, setView] = useState('scheme');
+  const [outcome, setOutcome] = useState('mol');
   const sc = useScheme(`${jobId || example}`);
   const f = m.f;
   const cond = conditionsFrom(tl, f.basis, job);
@@ -325,7 +340,8 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   for (const e of edges) outOf[e.from] = (outOf[e.from] || 0) + Math.abs(e.flux || 0);
   for (const e of edges) e.share = noFlux || !outOf[e.from] ? null : Math.abs(e.flux || 0) / outOf[e.from];
 
-  // what forms: amounts at the end of the simulated time, as a share of the start
+  // what forms, per molecule (f.yields: the server counts each molecule over the box's states), and as whole
+  // mixtures (the box's states, as shares of the starting boxes); amounts at the end of the simulated time
   const groups = new Map();
   for (const s of f.species) {
     if (s[0] === m.seed || !(s[3] > 0)) continue;
@@ -334,15 +350,20 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
     g.fin += s[3];
     groups.set(k, g);
   }
-  const products = [...groups.values()].sort((a, b) => b.fin - a.fin).slice(0, 3);
-  const startLeft = amount.get(m.seed)?.[3];
-  const leadAt = (fr) => {
-    let best = null;
-    const g = new Map();
-    for (const s of fr.species) if (s[0] !== m.seed && s[3] > 0) g.set(m.keyOf(s[0]), (g.get(m.keyOf(s[0])) || 0) + s[3]);
-    for (const [k, v] of g) if (!best || v > best[1]) best = [k, v];
-    return best;
+  const mixtures = [...groups.values()].sort((a, b) => b.fin - a.fin).slice(0, LANE_N);
+  const molOf = tl.molecules || {}, per = perText(tl), isMixture = !!tl.mixture;
+  const molName = (k) => {
+    const sid = molOf[k]?.species;
+    return molOf[k]?.name || (sid != null && m.productOf[sid] && !String(tl.smiles[sid] || '').includes('.') ? m.productOf[sid] : '')
+      || molOf[k]?.formula || (String(k).startsWith('#') ? `species ${String(k).slice(1)}` : short(k, 24));
   };
+  const molImg = (k, w = 240, h = 180) => {
+    const smi = isMixture ? tl.smiles[k] : k;   // (a mixture's species are its molecules)
+    return drawable(smi) && !String(smi).startsWith('#') ? `${depictUrl(smi, w, h, null)}&bond=${Math.round(w / 3)}` : imgOf(molOf[k]?.species, w, h);
+  };
+  const molecules = (f.yields || []).slice(0, LANE_N).map(([key, a, sid]) => ({ key, fin: a, id: sid, mol: true }));
+  const left = (f.left || []).map(([key, a]) => ({ key, fin: a, name: molName(key) }));
+  const leadAt = (fr) => fr.yields?.[0] || null;
   const lead = leadAt(f);
   let steadySince = f.t;
   for (let i = cur; i >= 0 && lead; i -= 1) {
@@ -350,8 +371,9 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
     if (!l || l[0] !== lead[0] || Math.abs(l[1] - lead[1]) > 0.02) break;
     steadySince = m.frames[i].t;
   }
-  const series = products.map((p) => ({ ...p, hue: hues.get(p.key),
-    pts: m.frames.slice(0, cur + 1).map((fr) => [fr.t, fr.species.filter((s) => m.keyOf(s[0]) === p.key).reduce((t, s) => t + (s[3] || 0), 0)]) }));
+  const ptsOf = (key) => m.frames.slice(0, cur + 1).map((fr) => [fr.t, (fr.yields || []).find((y) => y[0] === key)?.[1] || 0]);
+  const series = molecules.map((p) => ({ ...p, hue: hueOf(p.id), pts: ptsOf(p.key) }));
+  const outcomes = view === 'scheme' && outcome === 'mix' && !isMixture ? mixtures.map((p) => ({ ...p, hue: hues.get(p.key) })) : series;
 
   // the scheme: which species matter (one cell per product: mirror twins share the first's), placed
   const relevant = [];
@@ -361,13 +383,23 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
     seenKey.add(m.keyOf(s[0]));
     relevant.push(s[0]);
   }
-  for (const e of edges) if (e.main) for (const id of [e.from, e.to]) if (id !== m.seed && !relevant.includes(id)) relevant.push(id);
+  // (a route's end gets a cell unless its product has one: a mirror twin the route reaches lands on its twin's)
+  for (const e of edges) {
+    if (!e.main) continue;
+    for (const id of [e.from, e.to]) {
+      if (id === m.seed || relevant.includes(id) || seenKey.has(m.keyOf(id))) continue;
+      seenKey.add(m.keyOf(id));
+      relevant.push(id);
+    }
+  }
   const routeEdges = edges.filter((e) => e.main);
   placeScheme(sc, m, relevant, routeEdges, f.t);
   const cells = new Set(relevant.filter((id) => sc.cell.has(id)));
-  const P = (id) => (id === m.seed ? [SEED_W / 2, TOP] : cells.has(id) ? cellXY(sc.cell.get(id)) : sc.pile.get(id) || null);
+  const shownBy = new Map([...cells].map((id) => [m.keyOf(id), id]));
+  const cellOf = (id) => (cells.has(id) ? id : shownBy.get(m.keyOf(id)) ?? null);
+  const P = (id) => (id === m.seed ? [SEED_W / 2, TOP] : cellOf(id) != null ? cellXY(sc.cell.get(cellOf(id))) : sc.pile.get(id) || null);
   const cardW = (id) => (id === m.seed ? SEED_W : CARD_W);
-  const isCard = (id) => id === m.seed || cells.has(id);
+  const isCard = (id) => id === m.seed || cellOf(id) != null;
   const groupFin = (id) => groups.get(m.keyOf(id))?.fin ?? amount.get(id)?.[3];
 
   // the frame: the scheme, its piles above, the outcome lane at the right
@@ -381,8 +413,9 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const sel = tl.selectivity;
   const laneX = box[2] + 70;
   const laneTop = sel ? 120 : 20;
-  const lane = series.map((p, k) => ({ ...p, x: laneX, y: laneTop + 60 + k * 148 }));
-  box = [box[0], Math.min(box[1], -30), laneX + 330, Math.max(box[3], laneTop + 60 + Math.max(1, lane.length) * 148 - 60)];
+  const lane = outcomes.map((p, k) => ({ ...p, x: laneX, y: laneTop + 82 + k * LANE_STEP }));
+  const laneMax = Math.max(1, ...lane.map((p) => p.fin || 0));
+  box = [box[0], Math.min(box[1], -30), laneX + 330, Math.max(box[3], laneTop + 50 + Math.max(1, lane.length) * LANE_STEP)];
   // room round the start for the reactor's events (all there is while its first MD runs)
   box = [Math.min(box[0], -40), Math.min(box[1], TOP - 230), Math.max(box[2], SEED_W + 300), Math.max(box[3], TOP + 230)];
   const bw = Math.max(760, box[2] - box[0]), bh = Math.max(440, box[3] - box[1]);
@@ -423,7 +456,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const near = hovered ? new Set([hovered, ...edges.filter((e) => e.from === hovered || e.to === hovered).flatMap((e) => [e.from, e.to])]) : null;
   const dim = (id) => near && !near.has(id);
   const dotIds = seen.filter((id) => !isCard(id) && P(id));
-  const cardIds = seen.filter((id) => isCard(id) && P(id));
+  const cardIds = seen.filter((id) => (id === m.seed || cells.has(id)) && P(id));
   // arrivals grow from where they came from: a dot from the species it was found from, a cell from its pile slot
   const origin = (id) => (isCard(id) ? sc.pile.get(id) : P(sc.anchor.get(id))) || P(id);
   const style = (id) => { const a = origin(id), c = P(id); return `--fx:${a[0] - c[0]}px;--fy:${a[1] - c[1]}px;transform:translate(${c[0]}px,${c[1]}px)`; };
@@ -436,7 +469,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const openEvent = (ev) => { hc.close(); setDialog(ev); };
   const lastTen = rx.events.reduce((n, e) => n + (e.t <= tNow + 0.5 && e.t > tNow - WINDOW_S ? 1 : 0), 0);
   const avoid = [...cardIds.map((id) => { const [x, y] = P(id), w = cardW(id); return [x, y + 10, w + 16, w * 0.75 + 46]; }),
-    ...lane.map((p) => [p.x + 150, p.y, 320, 130])];
+    ...lane.map((p) => [p.x + 155, p.y, 320, LANE_STEP])];
   const settleOf = (ev) => { const c = Math.min((sc.hop.get(ev.src ?? m.seed) ?? 0) + 1, MAX_COL); return [colX(c) + (PILE_W / 2) * PILE, -60]; };
   const onCatch = (id) => setCaught((c) => ({ ...c, [id]: performance.now() }));
   const isCaught = (id) => caught[id] && performance.now() - caught[id] < 1200;
@@ -445,14 +478,14 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
 
   const stage = html`<div class="ld-stage ld-b">
     <svg viewBox=${vb.join(' ')} preserveAspectRatio="xMidYMid meet" role="group" style="--s:1"
-      aria-label="The network as a reaction scheme: the start at the left, a column per step; species that hold material as structures, the rest as dots in each column's pile; the leading products at the right">
+      aria-label="The network as a reaction scheme: the start at the left, a column per step; species that hold material as structures, the rest as dots in each column's pile; at the right, what forms per molecule">
       <defs>${['fast', 'run', 'slow', 'none', 'h0', 'h1', 'h2'].flatMap((k) => [['s', 10], ['m', 15], ['l', 22]].map(([z, px]) => html`<marker id=${`ld-arr-${k}-${z}`} viewBox="0 0 10 10" refX="8" refY="5"
         markerWidth=${px} markerHeight=${px} markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z" class=${`ld-arrhead ${k}`} /></marker>`))}</defs>
       ${[...sc.piles.entries()].map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${colX(c) + 6} y="-22">${columnHead(c, k)}
         ${c === Math.min(...sc.piles.keys()) && html`<tspan x=${colX(c) + 6} dy="15" class="ld-colnote">(dots hold little or no material yet; hover for the structure)</tspan>`}</text>`)}
       <g class="ld-lane-links">${lane.map((p) => {
         const [x0, y0] = P(p.id) || [p.x, p.y], gx = p.x - 8, from = isCard(p.id) ? x0 + CARD_W / 2 + 4 : x0 + 4;
-        return html`<path key=${`lk${p.key}`} d=${`M${from},${y0} C${(from + gx) / 2},${y0} ${(from + gx) / 2},${p.y} ${gx},${p.y}`} class=${`ld-lane-link h${p.hue ?? 'x'}`} />`;
+        return html`<path key=${`lk${p.key}`} d=${`M${from},${y0} C${(from + gx) / 2},${y0} ${(from + gx) / 2},${p.y} ${gx},${p.y}`} class=${`ld-lane-link h${p.hue ?? 'x'} ${hover?.kind === 'm' && hover.id !== p.key ? 'dim' : ''}`} />`;
       })}</g>
       <g class="ld-steps">${[...shownEdges].sort((a, b) => a.main - b.main).map((e) => html`<g key=${e.id}
           class=${`ld-step ${e.main ? 'main' : ''} ${newStep.has(e.id) && !e.main ? 'new' : ''} ${moved.has(e.id) ? 'moved' : ''} ${e.speed || 'none'} ${e.below ? 'below' : ''} ${e.irc === -1 ? 'unchecked' : ''} ${(near && !(near.has(e.from) && near.has(e.to))) ? 'dim' : ''} ${hover?.id === e.id ? 'on' : ''}`}
@@ -482,44 +515,57 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
         const w = cardW(id), h = w * 0.75, hue = hueOf(id), img = imgOf(id), nm = nameOf(id) || short(tl.smiles[id], 16), fin = groupFin(id);
         return html`<g key=${`c${id}`} class=${`ld-card ${isCaught(id) ? 'caught' : ''} ${reref.has(id) ? 'reref' : ''} ${id === m.seed ? 'seed' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
           style=${style(id)} ...${hc.bind(`n:${id}`, id, nodeAnchor)} role="button"
-          aria-label=${`${id === m.seed ? 'The start' : label(id)}${fin > 1e-4 && id !== m.seed ? `, ${pct(fin)} of the start at the end` : ''}`}>
+          aria-label=${`${id === m.seed ? 'The start' : label(id)}${fin > 1e-4 && id !== m.seed ? `, ${amt(fin)} ${isMixture ? per : 'of the starting boxes end as this'}` : ''}`}>
           <g class="ld-grow">
             <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx="6" class="ld-card-bg" />
             ${img ? html`<image href=${img} x=${-w / 2 + 3} y=${-h / 2 + 3} width=${w - 6} height=${h - 6} preserveAspectRatio="xMidYMid meet" />`
               : html`<text y="5" class="ld-unknown">?</text>`}
             ${knownIds.has(id) && html`<text x=${w / 2 - 8} y=${-h / 2 + 13} class="ln-known" title="reused from an earlier run">↺</text>`}
             <text y=${h / 2 + 15} class="ld-name" style="font-size:12.5px">${short(id === m.seed ? nameOf(id) || 'start' : nm, 17)}</text>
-            ${id !== m.seed && fin > 1e-4 && html`<text y=${h / 2 + 30} class="ld-name ld-amt" style="font-size:12px">${pct(fin)}</text>`}
+            ${id !== m.seed && fin > 1e-4 && html`<text y=${h / 2 + 30} class="ld-name ld-amt" style="font-size:12px">${amt(fin)} ${isMixture ? 'of the feed' : 'of boxes'}</text>`}
           </g></g>`;
       })}</g>
       ${sel && html`<${LaneGauge} sel=${sel} f=${f} x=${laneX} y=${laneTop - 40} />`}
+      <text x=${laneX} y=${laneTop + 14} class="ld-lane-head">${outcomes === series ? `What forms, ${per}` : 'Outcomes as whole mixtures'}</text>
+      <text x=${laneX} y=${laneTop + 34} class="ld-lane-sub">${outcomes === series
+        ? (lane.length ? `at the end of the simulated time${cond.tauKnown ? ` (${fmtTime(cond.tau)})` : ''}` : 'nothing formed yet')
+        : 'share of the starting boxes that end as each'}</text>
       ${lane.map((p) => {
-        return html`<g class=${`ld-lane h${p.hue ?? 'x'}`} key=${`ln${p.key}`} ...${hc.bind(`n:${p.id}`, p.id, nodeAnchor)}>
-          <rect x=${p.x} y=${p.y - 58} width="310" height="116" rx="8" class="ld-lane-bg" />
-          <rect x=${p.x + 4} y=${p.y - 54} width="130" height="108" rx="6" class="ld-card-bg" />
-          ${imgOf(p.id) && html`<image href=${imgOf(p.id)} x=${p.x + 7} y=${p.y - 50} width="124" height="96" preserveAspectRatio="xMidYMid meet" />`}
-          <text x=${p.x + 146} y=${p.y - 20} class="ld-lane-pct">${pct(p.fin)}</text>
-          <text x=${p.x + 146} y=${p.y} class="ld-lane-sub">of the start, at the end</text>
-          <text x=${p.x + 146} y=${p.y + 20} class="ld-lane-sub">${short(label(p.id), 22)}</text>
-          <rect x=${p.x + 146} y=${p.y + 32} width="150" height="8" rx="4" class="ld-bar-bg" />
-          <rect x=${p.x + 146} y=${p.y + 32} width=${Math.max(2, 150 * Math.min(1, p.fin))} height="8" rx="4" class="ld-bar" />
+        const nm = p.mol ? molName(p.key) : label(p.id), img = p.mol ? molImg(p.key) : imgOf(p.id);
+        return html`<g class=${`ld-lane h${p.hue ?? 'x'}`} key=${`ln${p.key}`} ...${p.mol ? hc.bind(`m:${p.key}`, p.key, nodeAnchor) : hc.bind(`n:${p.id}`, p.id, nodeAnchor)}
+          aria-label=${p.mol ? `${nm}: ${amt(p.fin)} ${per} at the end` : `${nm}: ${amt(p.fin)} of the starting boxes end as this`}>
+          <rect x=${p.x} y=${p.y - 39} width="310" height="78" rx="8" class="ld-lane-bg" />
+          <rect x=${p.x + 4} y=${p.y - 35} width="96" height="70" rx="6" class="ld-card-bg" />
+          ${img && html`<image href=${img} x=${p.x + 6} y=${p.y - 33} width="92" height="66" preserveAspectRatio="xMidYMid meet" />`}
+          <text x=${p.x + 112} y=${p.y - 8} class="ld-lane-pct">${amt(p.fin)}</text>
+          <text x=${p.x + 112} y=${p.y + 13} class="ld-lane-name">${short(nm, 22)}</text>
+          ${p.mol && molOf[p.key]?.mirror && html`<text x=${p.x + 300} y=${p.y - 13} class="ld-lane-sub end">+ mirror image</text>`}
+          <rect x=${p.x + 112} y=${p.y + 24} width="186" height="7" rx="3.5" class="ld-bar-bg" />
+          <rect x=${p.x + 112} y=${p.y + 24} width=${Math.max(2, (186 * (p.fin || 0)) / laneMax)} height="7" rx="3.5" class="ld-bar" />
         </g>`;
       })}
     </svg>
     ${hovered && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
       <${NodeCard} s=${amount.get(hovered)} img=${imgOf(hovered, 320, 240)} name=${nameOf(hovered)} known=${knownIds.has(hovered)}
-        smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} made=${madeBy.get(hovered) || []} onEvent=${openEvent} /><//>`}
+        smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} made=${madeBy.get(hovered) || []} onEvent=${openEvent}
+        unit=${isMixture ? 'of the feed' : 'of boxes'} /><//>`}
+    ${hover?.kind === 'm' && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
+      <${MoleculeCard} k=${hover.id} y=${(f.yields || []).find((x) => x[0] === hover.id)} img=${molImg(hover.id, 320, 240)} name=${molName(hover.id)}
+        mirror=${molOf[hover.id]?.mirror} per=${per} holder=${(sid) => label(sid)} mixture=${isMixture} /><//>`}
     ${hoveredEdge && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop edge" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
       <${EdgeCard} e=${hoveredEdge} nm=${label} cond=${cond} /><//>`}
     ${dialog && html`<${EventDialog} apiJob=${apiJob} ev=${dialog} nameOf=${label} onClose=${() => setDialog(null)} />`}
   </div>`;
 
-  const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series}
-    startLeft=${startLeft} steady=${f.t - steadySince} imgOf=${imgOf} nameOf=${label} cond=${cond} pending=${!f.steered} basis=${f.basis}
+  const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series.slice(0, 3)}
+    left=${left} per=${per} steady=${f.t - steadySince} imgOf=${molImg} nameOf=${molName} cond=${cond} pending=${!f.steered} basis=${f.basis}
     live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:')}
     reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
       open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
-  const table = html`<${SpeciesTable} m=${m} f=${f} imgOf=${imgOf} label=${label} madeBy=${madeBy} hueOf=${hueOf} smiles=${tl.smiles} />`;
+  const table = html`<div class="ld-tables">${!isMixture && html`<h3 class="ld-table-h">What forms, ${per} <span class="muted small">at the end of the simulated time; a molecule counted in every state that holds it</span></h3>
+    <${MoleculeTable} f=${f} molImg=${molImg} molName=${molName} molOf=${molOf} label=${label} hueOf=${hueOf} />
+    <h3 class="ld-table-h">Outcomes as whole mixtures <span class="muted small">the box's states, as shares of the starting boxes</span></h3>`}
+    <${SpeciesTable} m=${m} f=${f} imgOf=${imgOf} label=${label} madeBy=${madeBy} hueOf=${hueOf} smiles=${tl.smiles} unit=${isMixture ? per : 'share of the starting boxes'} /></div>`;
   const mixture = String(jobId).startsWith('mix:');
   return html`<div class="ld-page ld-page-b">
     ${!mixture && html`<div class="ln-head"><h2>${example ? 'Live network · example' : job?.title?.replace(/^Reaction network expansion:\s*/, 'Network: ') || 'Live network'}</h2>
@@ -529,7 +575,12 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
       <div class="segmented small" role="tablist" aria-label="Show the network as">
         <button role="tab" aria-selected=${view === 'scheme'} class=${view === 'scheme' ? 'on' : ''} onClick=${() => setView('scheme')}>Scheme</button>
         <button role="tab" aria-selected=${view === 'table'} class=${view === 'table' ? 'on' : ''} onClick=${() => setView('table')}>Table</button></div>
-      <span class="small muted">${view === 'scheme' ? 'hover, focus or tap a structure or a route for details; tap again to let go' : `the ${f.species.length} species that matter most, by what they hold at the end`}</span>
+      ${view === 'scheme' && !isMixture && html`<span class="small muted">What forms:</span><div class="segmented small" role="tablist" aria-label="What forms, counted">
+        <button role="tab" aria-selected=${outcome === 'mol'} class=${outcome === 'mol' ? 'on' : ''} onClick=${() => setOutcome('mol')}
+          title="Each molecule, counted in every state of the box that holds it">Molecules</button>
+        <button role="tab" aria-selected=${outcome === 'mix'} class=${outcome === 'mix' ? 'on' : ''} onClick=${() => setOutcome('mix')}
+          title="The box's states: how many of the starting boxes end as each whole mixture">Whole mixtures</button></div>`}
+      <span class="small muted">${view === 'scheme' ? 'hover, focus or tap a structure or a route for details; tap again to let go' : isMixture ? `the ${f.species.length} molecules that matter most, by what there is at the end` : 'per molecule, and the box\'s states'}</span>
     </div>
     ${view === 'scheme' ? stage : table}
     ${view === 'scheme' && html`<${Key} cond=${cond} noFlux=${noFlux} anyBelow=${edges.some((e) => e.below && shownEdges.includes(e))}
@@ -563,18 +614,41 @@ function LaneGauge({ sel, f, x, y }) {
   </g>`;
 }
 
+// What forms, per molecule, as a table: each molecule, how much forms per starting box, the state that holds
+// most of it; then what is left of the start.
+function MoleculeTable({ f, molImg, molName, molOf, label, hueOf }) {
+  const rows = [...(f.yields || []).map(([k, a, sid]) => [k, a, sid, false]), ...(f.left || []).map(([k, a]) => [k, a, null, true])];
+  if (!rows.length) return html`<p class="small muted">Nothing formed yet.</p>`;
+  return html`<div class="ld-table-wrap"><table class="ld-table small">
+    <caption class="sr-only">What forms, per molecule</caption>
+    <thead><tr><th></th><th>molecule</th><th title="Per starting box, at the end of the simulated time">amount</th><th>most of it in</th></tr></thead>
+    <tbody>${rows.map(([k, a, sid, isLeft]) => html`<tr key=${k} class=${sid != null && hueOf(sid) != null ? `h${hueOf(sid)}` : ''}>
+      <td>${molImg(k, 120, 90) ? html`<img src=${molImg(k, 120, 90)} alt="" loading="lazy" />` : ''}</td>
+      <td><b>${molName(k)}</b>${isLeft ? html` <span class="muted">(left of the start)</span>` : ''}${molOf[k]?.mirror ? html` <span class="muted">(with its mirror image)</span>` : ''}
+        <div class="mono muted">${String(k).startsWith('#') ? '' : short(k, 40)}</div></td>
+      <td class="mono">${amtFine(a)}</td><td>${sid != null ? label(sid) : ''}</td></tr>`)}</tbody></table></div>`;
+}
+
+function MoleculeCard({ k, y, img, name, mirror, per, holder, mixture }) {
+  return html`${img && html`<img src=${img} alt=${k} />`}
+    <div class="ld-pop-name">${name}${mirror ? html` <span class="muted small">with its mirror image</span>` : ''}</div>
+    <div class="mono small muted ld-pop-smi">${String(k).startsWith('#') ? 'structure not perceived' : short(k, 48)}</div>
+    <div class="ld-pop-nums"><span><b>${amt(y?.[1])}</b>${per}, at the end</span></div>
+    ${!mixture && y?.[2] != null && html`<div class="small muted">Counted in every state of the box that holds it; most of it in <b>${holder(y[2])}</b></div>`}`;
+}
+
 // Every species the frame holds, as a table (keyboard and screen-reader friendly).
-function SpeciesTable({ m, f, imgOf, label, madeBy, hueOf, smiles }) {
+function SpeciesTable({ m, f, imgOf, label, madeBy, hueOf, smiles, unit }) {
   const rows = [...f.species].sort((a, b) => (b[0] === m.seed) - (a[0] === m.seed) || (b[3] || 0) - (a[3] || 0));
   return html`<div class="ld-table-wrap"><table class="ld-table small">
     <caption class="sr-only">Species of the run at this moment</caption>
-    <thead><tr><th></th><th>species</th><th title="Free energy relative to the start">G (kcal/mol)</th><th title="The most there was at once, as a share of the start">most at once</th>
-      <th title="At the end of the simulated time, as a share of the start">at the end</th><th>found at</th><th title="Reactor MD events verified to have made it">made in the MD</th></tr></thead>
+    <thead><tr><th></th><th>species</th><th title="Free energy relative to the start">G (kcal/mol)</th><th title=${`The most there was at once (${unit})`}>most at once</th>
+      <th title=${`At the end of the simulated time (${unit})`}>at the end</th><th>found at</th><th title="Reactor MD events verified to have made it">made in the MD</th></tr></thead>
     <tbody>${rows.map((s) => html`<tr key=${s[0]} class=${hueOf(s[0]) != null ? `h${hueOf(s[0])}` : ''}>
       <td>${imgOf(s[0], 120, 90) ? html`<img src=${imgOf(s[0], 120, 90)} alt="" loading="lazy" />` : ''}</td>
       <td><b>${s[0] === m.seed ? 'start' : label(s[0])}</b><div class="mono muted">${short(smiles[s[0]] || '', 40)}</div></td>
       <td class="mono">${s[1] != null ? `${s[1] > 0 ? '+' : ''}${s[1].toFixed(1)}` : '—'}</td>
-      <td class="mono">${s[0] === m.seed ? '' : pct(s[2] || 0)}</td><td class="mono">${pct(s[3] || 0)}</td>
+      <td class="mono">${s[0] === m.seed ? '' : amtFine(s[2] || 0)}</td><td class="mono">${amtFine(s[3] || 0)}</td>
       <td class="mono">${s[0] === m.seed ? '' : fmtClock(m.first.get(s[0]) || 0)}</td>
       <td class="mono">${(madeBy.get(s[0]) || []).length || ''}</td></tr>`)}</tbody></table></div>`;
 }
@@ -638,9 +712,10 @@ export function Closer({ jobId, job, activity, running }) {
 // ---------------------------------------------------------------- pieces
 function Spark({ series, w = 150, h = 34 }) {
   const t1 = Math.max(1, ...series.flatMap((s) => s.pts.map((p) => p[0])));
-  return html`<svg class="ld-spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} role="img" aria-label="Each leading product's amount over the run">
+  const v1 = Math.max(1, ...series.flatMap((s) => s.pts.map((p) => p[1])));
+  return html`<svg class="ld-spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} role="img" aria-label="Each leading molecule's amount over the run">
     <line x1="0" x2=${w} y1=${h - 1} y2=${h - 1} class="ld-spark-axis" />
-    ${series.map((s) => html`<polyline class=${`ld-spark-line h${s.hue ?? 'x'}`} points=${s.pts.map(([t, v]) => `${(w * t) / t1},${h - 2 - (h - 4) * Math.min(1, v)}`).join(' ')} />`)}
+    ${series.map((s) => html`<polyline class=${`ld-spark-line h${s.hue ?? 'x'}`} points=${s.pts.map(([t, v]) => `${(w * t) / t1},${h - 2 - ((h - 4) * v) / v1}`).join(' ')} />`)}
   </svg>`;
 }
 
@@ -651,7 +726,7 @@ function LiveClock({ t0 }) {
   return fmtClock(Math.max(0, Date.now() / 1000 - t0));
 }
 
-function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft, steady, imgOf, nameOf, cond, pending, steering, reactor, live0 = null, merged = false }) {
+function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = [], per, steady, imgOf, nameOf, cond, pending, steering, reactor, live0 = null, merged = false }) {
   const ph = running && atEnd ? phaseOf(q) : null;
   return html`<div class="ld-strip" role="status" aria-live="off">
     <div class="ld-s-time" title=${merged ? 'The mixture as merged so far' : 'Run time'}>
@@ -668,25 +743,27 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft
         title="The reactor's molecular dynamics that proposes the reactions: open it">
       <b>Reactor MD ›</b><span class="small muted">${reactor.running ? `${reactor.running} trajector${reactor.running === 1 ? 'y' : 'ies'} running · ` : ''}${reactor.recent
         ? `${reactor.recent} event${reactor.recent === 1 ? '' : 's'} in the last ${WINDOW_S} s` : `${reactor.events} events`}</span></button>`}
-    <div class="ld-s-products" title="What the start has turned into at the end of the simulated time, as a share of the start">
-      ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${nameOf(p.id)}>
-        ${imgOf(p.id, 120, 90) && html`<img src=${imgOf(p.id, 120, 90)} alt=${nameOf(p.id)} />`}<b>${pct(p.fin)}</b></span>`)}
-      ${startLeft != null && html`<span class="ld-s-prod start" title="The start, left at the end of the simulated time"><span class="ld-s-pname">start</span><b>${pct(startLeft)}</b></span>`}
+    <div class="ld-s-products" title=${`What forms at the end of the simulated time, ${per} (a molecule counted in every state of the box that holds it)`}>
+      <span class="small muted ld-s-per">${per}:</span>
+      ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${`${nameOf(p.key)}: ${amt(p.fin)} ${per}`}>
+        ${imgOf(p.key, 120, 90) && html`<img src=${imgOf(p.key, 120, 90)} alt=${nameOf(p.key)} />`}<b>${amt(p.fin)}</b></span>`)}
+      ${left.map((l) => html`<span class="ld-s-prod start" title=${`${l.name}, left of the start at the end of the simulated time`}>
+        <span class="ld-s-pname">${left.length > 1 ? `${short(l.name, 14)} ` : ''}left</span><b>${amt(l.fin)}</b></span>`)}
       ${products.length > 0 && html`<${Spark} series=${products} />`}
-      <span class=${`small ld-s-steady ${pending ? 'pending' : ''}`} title="How long the leading product and its amount (within 2 points) have held, in run time">
+      <span class=${`small ld-s-steady ${pending ? 'pending' : ''}`} title="How long the leading molecule and its amount (within 0.02) have held, in run time">
         ${pending ? 'energies wait for DFT' : merged ? '' : products.length ? html`answer held <b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}
         ${steering && html`<br /><span title="The level the live kinetics' energies are steered to (DFT single points)">energies: <b>${steering}</b></span>`}</span>
     </div>
   </div>`;
 }
 
-function NodeCard({ s, img, name, smiles, first, seed, known, made = [], onEvent }) {
+function NodeCard({ s, img, name, smiles, first, seed, known, made = [], onEvent, unit = 'of boxes' }) {
   return html`${img && html`<img src=${img} alt=${smiles || ''} />`}
     <div class="ld-pop-name">${name || (seed ? 'start' : '')}${known ? html` <span class="ln-known" title="reused from an earlier run">↺ reused</span>` : ''}</div>
     <div class="mono small muted ld-pop-smi">${short(smiles || 'structure not perceived', 48)}</div>
     <div class="ld-pop-nums">
       ${s?.[1] != null && html`<span><b>${s[1] > 0 ? '+' : ''}${s[1].toFixed(1)}</b>kcal/mol (G)</span>`}
-      ${!seed && html`<span><b>${pct(s?.[2] ?? 0)}</b>most at once</span><span><b>${pct(s?.[3] ?? 0)}</b>at the end</span>`}
+      ${!seed && html`<span><b>${amt(s?.[2] ?? 0)}</b>${unit}, most at once</span><span><b>${amt(s?.[3] ?? 0)}</b>${unit} at the end</span>`}
     </div>
     <div class="small muted">${seed ? 'the start' : `found at ${fmtClock(first)}`}${s ? ` · ${s[5] ? 'DFT energy' : 'g-xTB energy'}` : ' · holds no material yet'}</div>
     ${made.length > 0 && html`<div class="ld-made small"><span title="Each event's products, at its own MD frames, are this species' molecules (compared as the network compares species)">Made in the reactor's MD by ${made.length} event${made.length === 1 ? '' : 's'}:</span>
@@ -773,7 +850,12 @@ export function mixtureTimeline(mx, names) {
   const frame = { t: 9, species, steps, gone: [], counts: { species: mols.length, steps: (mx.reactions || []).length }, steered: true,
     basis: `free energy (${T} K, ${mx.settings?.standard_state || ''})` };
   const smiles = Object.fromEntries(mols.map((x) => [x.molecule, x.molecule.split('|')[0]]));
-  return { frames: [frame], smiles, names, explored, co, mixture: { feed: [...feed], tau, seeds: mx.seeds || [], generation: mx.generation },
+  // per molecule (here every species is one): mol per mol of feed, the feed's own molecules left
+  const fin = (x) => (x.final_concentration || 0) / fedTotal;
+  frame.yields = mols.filter((x) => !feed.has(x.molecule) && fin(x) >= 1e-9).sort((a, b) => fin(b) - fin(a)).slice(0, 16).map((x) => [x.molecule, fin(x), x.molecule]);
+  frame.left = mols.filter((x) => feed.has(x.molecule)).map((x) => [x.molecule, fin(x)]);
+  const molecules = Object.fromEntries(mols.map((x) => [x.molecule, { name: names?.[x.molecule] || null, species: x.molecule }]));
+  return { frames: [frame], smiles, names, explored, co, molecules, start: [...feed], mixture: { feed: [...feed], tau, seeds: mx.seeds || [], generation: mx.generation },
     command: tau != null ? `--time ${tau}` : '' };
 }
 
