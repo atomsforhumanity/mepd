@@ -509,7 +509,8 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-s-steady { line-height: 1.2; } .ld-s-steady b { color: var(--heading); font-size: 13px; }
 .ld-b .ld-dot circle:first-child { stroke-width: 1px; }
 @media (prefers-reduced-motion: reduce) { .ld-dot, .ld-card { transition: none; } }
-.ld-colhead { font: 600 11px var(--font-ui); fill: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+.ld-colhead { font: 600 12.5px var(--font-ui); fill: var(--muted); }
+.ld-colnote { font-weight: 400; font-size: 12px; }
 .ld-colhead.left { text-anchor: start; }
 .ld-step.new .ld-line { stroke: var(--ld-now); opacity: .9; animation: ld-fade 6s ease-out forwards; }
 @keyframes ld-fade { to { opacity: .15; } }
