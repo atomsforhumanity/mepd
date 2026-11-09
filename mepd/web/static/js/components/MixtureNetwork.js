@@ -14,6 +14,7 @@ import { html, useEffect, useMemo, useState } from '../lib.js';
 import { api } from '../api.js';
 import { openJob, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
+import { Popover, pointBox, useHoverCard } from './Popover.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_FEED = 92;
@@ -72,7 +73,9 @@ export function MixtureView({ jobId }) {
   const running = ['running', 'queued'].includes(job?.status);
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
-  const [hover, setHover] = useState(null);
+  // the reaction under the pointer (or focused, or pinned by a tap), its card beside it (Popover.js)
+  const hc = useHoverCard();
+  const hover = hc.cur?.data ?? null;
   useEffect(() => {
     let alive = true;
     const load = () => api.get(`/api/jobs/${jobId}/mixture`).then((x) => { if (alive) { setD(x); setError(null); } })
@@ -152,7 +155,7 @@ export function MixtureView({ jobId }) {
             const strong = share >= 0.01;
             const p = pos[r.id], col = band(barrier), on = hover === r.id;
             return html`<g class=${`mx-rx ${strong ? 'main' : 'minor'} ${on ? 'on' : ''}`}
-                onMouseEnter=${() => setHover(r.id)} onMouseLeave=${() => setHover((h) => (h === r.id ? null : h))}>
+                ...${hc.bind(`r:${r.id}`, r.id, (el) => { const c = el.querySelector('.mx-dot').getBoundingClientRect(); return pointBox(c.left + c.width / 2, c.top + c.height / 2, Math.max(8, c.width / 2)); })}>
               ${[...new Set(ins)].map((x) => pos[x] && html`<g><line x1=${pos[x][0]} y1=${pos[x][1]} x2=${p[0]} y2=${p[1]}
                 style=${`stroke:${col}`} class=${`mx-link ${both.has(x) ? 'shuttle' : ''}`} />
                 ${ins.filter((y) => y === x).length > 1 && html`<text x=${(pos[x][0] + p[0]) / 2} y=${(pos[x][1] + p[1]) / 2 - 6} class="mx-times">×${ins.filter((y) => y === x).length}</text>`}</g>`)}
@@ -179,8 +182,7 @@ export function MixtureView({ jobId }) {
         ${hov && (() => {
           const fwd = (hov.net_extent || 0) >= 0;
           const [a, b] = fwd ? [hov.reactants, hov.products] : [hov.products, hov.reactants];
-          const p = pos[hov.id];
-          return html`<div class="ln-edge-card" style=${`left:${(100 * p[0]) / W}%;top:${(100 * p[1]) / H}%`}>
+          return html`<${Popover} anchor=${hc.cur.anchor} className="ln-edge-card" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
             <div class="ln-ec-route"><b>${a.map(nameOf).join(' + ')}</b> <span class="muted">→</span> <b>${b.map(nameOf).join(' + ')}</b></div>
             <div class="ln-ec-nums">
               <span><b style=${`color:${band(fwd ? hov.barrier_kcal : hov.reverse_barrier_kcal)}`}>${(fwd ? hov.barrier_kcal : hov.reverse_barrier_kcal)?.toFixed(1)}</b>barrier</span>
@@ -189,7 +191,7 @@ export function MixtureView({ jobId }) {
             </div>
             <div class="small muted">free energy, kcal/mol, from the molecules apart${hov.source ? ` · found in ${hov.source}` : ''}</div>
             ${(hov.channels || 1) > 1 && html`<div class="small"><b>×${hov.channels}</b> ${hov.mirror_images ? 'mirror images: two saddles of equal energy, both counted' : 'channels, counted together'}</div>`}
-          </div>`;
+          <//>`;
         })()}
       </div>
       <div class="ln-legend small">

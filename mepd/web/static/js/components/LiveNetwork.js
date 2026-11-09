@@ -14,6 +14,7 @@ import { api } from '../api.js';
 import { openJob, set, update, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 import { MixtureView } from './MixtureNetwork.js';
+import { Popover, pointBox, useHoverCard } from './Popover.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_SEED = 88;   // card widths (px); height is 3/4 of it
@@ -117,8 +118,11 @@ function ExpansionNetwork({ jobId = null, example = null }) {
   const [i, setI] = useState(null);           // frame shown (null: follow the latest / the final)
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
-  const [hover, setHover] = useState(null);   // species id under the pointer: drawn large on top
-  const [hoverEdge, setHoverEdge] = useState(null);   // step id under the pointer: its details
+  // the card under the pointer (or focused, or pinned by a tap): a species ("n:<id>") or a step ("e:<id>"),
+  // placed beside it where it is fully visible (Popover.js)
+  const hc = useHoverCard();
+  const hover = hc.cur?.key?.startsWith('n:') ? hc.cur.data : null;
+  const hoverEdge = hc.cur?.key?.startsWith('e:') ? hc.cur.data : null;
   const job = useStore((s) => (jobId ? s.jobs[jobId] : null));
   const running = ['running', 'queued'].includes(job?.status);
   const url = example ? `/api/examples/${encodeURIComponent(example)}/timeline` : `/api/jobs/${jobId}/network-timeline`;
@@ -330,7 +334,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
           ${[...edges].sort((a, b) => a.main - b.main).map((e) => {
             const k = bandKey(e.barrier), on = hoverEdge === e.id;
             return html`<g class=${`ln-edge ${e.main ? 'main' : 'minor'} ${on ? 'on' : ''}`} key=${e.id}
-                onMouseEnter=${() => setHoverEdge(e.id)} onMouseLeave=${() => setHoverEdge((h) => (h === e.id ? null : h))}>
+                ...${hc.bind(`e:${e.id}`, e.id, (el, ev) => (ev ? pointBox(ev.clientX, ev.clientY) : pointBox(el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2, el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2)))}>
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-hit" />
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${on ? e.w + 2 : e.w}`}
                 class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''} ${e.irc === -1 || e.below ? 'unchecked' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
@@ -345,7 +349,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
             </g>`;
           })}
           ${nodes.map((x) => html`<g class="ln-node" key=${x.id} transform=${`translate(${x.at[0]},${x.at[1]})`}
-              onMouseEnter=${() => setHover(x.id)} onMouseLeave=${() => setHover((h) => (h === x.id ? null : h))}>
+              ...${hc.bind(`n:${x.id}`, x.id, (el) => el.querySelector('.ln-card').getBoundingClientRect())}>
             ${x.fresh && html`<rect x=${-x.w / 2 - 6} y=${-x.h / 2 - 6} width=${x.w + 12} height=${x.h + 12} rx="6" class="ln-fresh" />`}
             <rect x=${-x.w / 2} y=${-x.h / 2} width=${x.w} height=${x.h} rx="4" class=${`ln-card ${x.id === lay.seed ? 'seed' : x.pop ? 'pop' : ''} ${anyDft && !x.dft ? 'gxtb' : ''}`} />
             ${imgOf(x.id) ? html`<image href=${imgOf(x.id)} x=${-x.w / 2 + 2} y=${-x.h / 2 + 2} width=${x.w - 4} height=${x.h - 4} preserveAspectRatio="xMidYMid meet" />`
@@ -354,27 +358,14 @@ function ExpansionNetwork({ jobId = null, example = null }) {
             ${knownIds.has(x.id) && html`<text x=${x.w / 2 - 7} y=${-x.h / 2 + 11} class="ln-known">↺</text>`}
             <title>${drawable(tl.smiles[x.id]) ? tl.smiles[x.id] : names[x.id] || 'structure not perceived'} · ${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''} · peak ${(x.peak ?? 0).toPrecision(2)} · final ${(x.fin ?? 0).toPrecision(2)}${x.dft ? ' · DFT' : ' · g-xTB'}</title>
           </g>`)}
-          ${(() => {
-            const x = hover && nodes.find((y) => y.id === hover);
-            if (!x) return null;
-            const w = Math.max(x.w, 180), h = w * 0.75 + 34;
-            const cx = Math.min(W - w / 2 - 4, Math.max(w / 2 + 4, x.at[0])), cy = Math.min(H - h / 2 - 4, Math.max(h / 2 + 4, x.at[1]));
-            const nm = labelOf(x.id) || (x.id === lay.seed ? 'start' : '');
-            return html`<g class="ln-hover" transform=${`translate(${cx},${cy})`} pointer-events="none">
-              <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx="4" class="ln-card pop" />
-              ${imgOf(x.id) ? html`<image href=${imgOf(x.id)} x=${-w / 2 + 4} y=${-h / 2 + 4} width=${w - 8} height=${w * 0.75 - 8} preserveAspectRatio="xMidYMid meet" />` : html`<text x="0" y="0" class="ln-unknown">?</text>`}
-              <text x="0" y=${h / 2 - 12} class="ln-hover-text">${nm ? `${nm} · ` : ''}${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''}${x.id !== lay.seed ? ` · peak ${(x.peak || 0) < 0.005 ? '<1' : Math.round(100 * Math.min(1, x.peak))}%` : ''}</text>
-            </g>`;
-          })()}
-          ${nodes.filter((x) => labelled.has(x.id) && labelOf(x.id) && x.id !== hover).map((x) => html`<text x=${x.at[0]} y=${x.at[1] + x.h / 2 + 15} class=${`ln-label ${productOf[x.id] ? 'product' : ''}`}>${labelOf(x.id)}</text>`)}
+          ${nodes.filter((x) => labelled.has(x.id) && labelOf(x.id)).map((x) => html`<text x=${x.at[0]} y=${x.at[1] + x.h / 2 + 15} class=${`ln-label ${productOf[x.id] ? 'product' : ''}`}>${labelOf(x.id)}</text>`)}
         </svg>
         ${(() => {
           const e = hoverEdge && edges.find((x) => x.id === hoverEdge);
           if (!e) return null;
           const nm = (id) => labelOf(id) || (tl.smiles[id] ? short(tl.smiles[id]) : 'unidentified');
           const dG = e.barrier != null && e.back != null ? e.barrier - e.back : null;
-          const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2;
-          return html`<div class="ln-edge-card" style=${`left:${(100 * mx) / W}%;top:${(100 * my) / H}%`}>
+          return html`<${Popover} anchor=${hc.cur.anchor} className="ln-edge-card" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
             <div class="ln-ec-route"><b>${nm(e.from)}</b> <span class="muted">→</span> <b>${nm(e.to)}</b></div>
             ${e.below ? html`<div class="small muted">TS below its ends: not this reaction${e.irc === 1 ? '' : ', unchecked'}</div>` : html`<div class="ln-ec-nums">
               <span><b style=${`color:${band(e.barrier)}`}>${e.barrier?.toFixed(1) ?? '?'}</b>barrier</span>
@@ -385,7 +376,16 @@ function ExpansionNetwork({ jobId = null, example = null }) {
             ${e.barrier != null && e.barrier < 0 && html`<div class="small muted">Below zero: its TS lies under the energy recorded for ${nm(e.from)} (often a lower conformer found later).</div>`}
             ${!e.below && html`<div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC connects ✓' : e.irc === 0 ? ' · IRC does not connect' : ''}</div>`}
             ${e.irc === -1 && !e.below && html`<div class="small"><b>Unconfirmed:</b> the run ended before its IRC was checked, so it is left out of the final kinetics.</div>`}
-          </div>`;
+          <//>`;
+        })()}
+        ${(() => {
+          const x = hover && nodes.find((y) => y.id === hover);
+          if (!x) return null;
+          const nm = labelOf(x.id) || (x.id === lay.seed ? 'start' : '');
+          return html`<${Popover} anchor=${hc.cur.anchor} className="ln-node-card" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
+            ${imgOf(x.id) ? html`<img src=${imgOf(x.id, 320, 240)} alt=${tl.smiles[x.id] || nm} />` : html`<span class="ln-unknown-big">?</span>`}
+            <div class="ln-hover-text">${nm ? `${nm} · ` : ''}${x.G != null ? `${x.G.toFixed(1)} kcal/mol` : ''}${x.id !== lay.seed ? ` · peak ${(x.peak || 0) < 0.005 ? '<1' : Math.round(100 * Math.min(1, x.peak))}%` : ''}</div>
+          <//>`;
         })()}
       </div>
       <div class="ln-legend small" aria-label="How to read the network">
