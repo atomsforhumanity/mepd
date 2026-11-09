@@ -246,6 +246,15 @@ MAX_YIELDS = 16           # molecules per frame, by amount (from a billionth of 
 MIN_YIELD = 1e-9
 
 
+def _formula_of(smiles: str) -> Optional[str]:
+    from rdkit import Chem, rdBase
+    from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+
+    with rdBase.BlockLogs():
+        mol = Chem.MolFromSmiles(smiles)
+    return CalcMolFormula(mol) if mol is not None else None
+
+
 def _mirror_smiles(smiles: str) -> str:
     """The mirror image of a stereo SMILES (every tetrahedral centre inverted; double bonds keep E/Z)."""
     return smiles.replace("@@", "\0").replace("@", "@@").replace("\0", "@")
@@ -263,7 +272,7 @@ def molecule_yields(tl: dict, stereo: Optional[dict] = None, mirror_images: bool
     Each frame gets `yields` ([molecule, amount, the species holding most of it], the MAX_YIELDS largest
     from MIN_YIELD up)
     and `left` ([molecule, amount] for the start's molecules); the timeline `molecules` ({molecule: {name,
-    species, mirror (it stands for itself and its mirror image)}}) and `start` (the start's molecules, as
+    formula, species, mirror (it stands for itself and its mirror image)}}) and `start` (the start's molecules, as
     many times as the box holds each)."""
     from collections import Counter
 
@@ -311,6 +320,7 @@ def molecule_yields(tl: dict, stereo: Optional[dict] = None, mirror_images: bool
     for m in start:
         table.setdefault(m, seed)
     tl["molecules"] = {m: {"name": (tl.get("names") or {}).get(sid) if m.startswith("#") else common_name(m),
+                           "formula": None if m.startswith("#") else _formula_of(m),
                            "species": sid, **({"mirror": True} if m in chiral else {})} for m, sid in table.items()}
     tl["start"] = sorted(start.elements())
     return tl

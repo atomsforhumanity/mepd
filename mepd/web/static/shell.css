@@ -481,8 +481,16 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-lane.h2 .ld-lane-link, .ld-lane.h2 .ld-bar { stroke: var(--ld-h2); fill: var(--ld-h2); } .ld-lane.h2 .ld-lane-link { fill: none; }
 .ld-lane .ld-card-bg { stroke-width: 1.2px; }
 .ld-bar-bg { fill: var(--panel-2); }
+.ld-bar { fill: var(--edge-idle); }
 .ld-lane-pct { font: 600 26px var(--font-serif); fill: var(--heading); }
-.ld-lane-sub { font: 12px var(--font-ui); fill: var(--muted); }
+.ld-lane-sub { font: 13px var(--font-ui); fill: var(--muted); }
+.ld-lane-head { font: 600 18px var(--font-ui); fill: var(--heading); }
+.ld-lane-name { font: 600 16px var(--font-ui); fill: var(--heading); }
+.ld-lane-sub.end { text-anchor: end; }
+.ld-lane-link.dim { opacity: .15; }
+.ld-table-h { font: 600 15px var(--font-ui); margin: 14px 0 6px; color: var(--heading); }
+.ld-table-h .small { font-weight: 400; margin-left: 6px; }
+.ld-s-per { white-space: nowrap; }
 /* hover cards */
 .ld-pop { position: absolute; transform: translate(-50%, calc(-100% - 18px)); pointer-events: none; z-index: 4; width: 280px; padding: 10px 12px;
   border: 1px solid var(--border-strong); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); display: grid; gap: 6px; }
@@ -509,8 +517,8 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-s-steady { line-height: 1.2; } .ld-s-steady b { color: var(--heading); font-size: 13px; }
 .ld-b .ld-dot circle:first-child { stroke-width: 1px; }
 @media (prefers-reduced-motion: reduce) { .ld-dot, .ld-card { transition: none; } }
-.ld-colhead { font: 600 12.5px var(--font-ui); fill: var(--muted); }
-.ld-colnote { font-weight: 400; font-size: 12px; }
+.ld-colhead { font: 600 14px var(--font-ui); fill: var(--muted); }
+.ld-colnote { font-weight: 400; font-size: 13px; }
 .ld-colhead.left { text-anchor: start; }
 .ld-step.new .ld-line { stroke: var(--ld-now); opacity: .9; animation: ld-fade 6s ease-out forwards; }
 @keyframes ld-fade { to { opacity: .15; } }
@@ -570,6 +578,8 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-corr summary { cursor: pointer; padding: 4px 0; }
 .ld-corr .ln-feed { margin-top: 6px; }
 .ld-table-wrap { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); max-height: calc(100vh - 300px); overflow: auto; }
+.ld-tables { display: flex; flex-direction: column; gap: 4px; } .ld-tables .ld-table-wrap { flex-shrink: 0; }
+.ld-tables .ld-table-h:first-child { margin-top: 2px; }
 .ld-table { width: 100%; border-collapse: collapse; }
 .ld-table th { position: sticky; top: 0; background: var(--panel-2); text-align: left; font-weight: 600; color: var(--heading); padding: 6px 10px; }
 .ld-table td { padding: 4px 10px; border-top: 1px solid var(--border); vertical-align: middle; }
