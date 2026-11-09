@@ -51,12 +51,56 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Image: $IMAGE:$tag" >> "$GITHUB_STEP_SUMMARY"
 
+      # mepd follows axtb's and linus's main: each build resolves their current
+      # commits, so those stages rebuild exactly when main moves, and the image
+      # records what it holds (MEPD_AXTB_COMMIT, MEPD_LINUS_COMMIT). linus is
+      # private: read through the deploy key in LINUS_DEPLOY_KEY, else the image
+      # is built without it.
+      - name: Resolve axtb and linus main
+        id: deps
+        env:
+          LINUS_DEPLOY_KEY: ${{ secrets.LINUS_DEPLOY_KEY }}
+          LINUS_TOKEN: ${{ secrets.LINUS_TOKEN }}
+        run: |
+          axtb=$(git ls-remote https://github.com/atomsforhumanity/axtb.git refs/heads/main | cut -f1)
+          [ -n "$axtb" ] || { echo "::error::could not resolve axtb main"; exit 1; }
+          echo "axtb=$axtb" >> "$GITHUB_OUTPUT"
+          echo "axtb: $axtb" >> "$GITHUB_STEP_SUMMARY"
+          linus=""
+          if [ -n "$LINUS_DEPLOY_KEY" ]; then
+            key="$RUNNER_TEMP/linus_deploy_key"
+            printf '%s\n' "$LINUS_DEPLOY_KEY" > "$key"; chmod 600 "$key"
+            echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
+            linus=$(GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o HostKeyAlias=github.com -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes" \
+              git ls-remote ssh://git@ssh.github.com:443/atomsforhumanity/linus.git refs/heads/main | cut -f1)
+            [ -n "$linus" ] || { echo "::error::LINUS_DEPLOY_KEY is set but linus main could not be read"; exit 1; }
+            echo "linus_key=$key" >> "$GITHUB_OUTPUT"
+          elif [ -n "$LINUS_TOKEN" ]; then
+            auth="Authorization: Basic $(printf 'x-access-token:%s' "$LINUS_TOKEN" | base64 -w0)"
+            linus=$(git -c "http.extraHeader=$auth" ls-remote https://github.com/atomsforhumanity/linus.git refs/heads/main | cut -f1)
+            [ -n "$linus" ] || { echo "::error::LINUS_TOKEN is set but linus main could not be read"; exit 1; }
+            echo "linus_token=1" >> "$GITHUB_OUTPUT"
+          fi
+          echo "linus=$linus" >> "$GITHUB_OUTPUT"
+          echo "linus: ${linus:-not built (no LINUS_DEPLOY_KEY or LINUS_TOKEN)}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build (the image checks itself at the end)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}    # UMA weights; a build secret, never in a layer
           TAG: ${{ steps.tag.outputs.tag }}
+          AXTB_COMMIT: ${{ steps.deps.outputs.axtb }}
+          LINUS_COMMIT: ${{ steps.deps.outputs.linus }}
+          LINUS_KEY: ${{ steps.deps.outputs.linus_key }}
+          LINUS_TOKEN: ${{ steps.deps.outputs.linus_token && secrets.LINUS_TOKEN || '' }}
         run: |
+          linus_args=()
+          if [ -n "$LINUS_COMMIT" ] && [ -n "$LINUS_KEY" ]; then
+            linus_args=(--build-arg "LINUS_COMMIT=$LINUS_COMMIT" --secret "id=linus_deploy_key,src=$LINUS_KEY")
+          elif [ -n "$LINUS_COMMIT" ]; then
+            linus_args=(--build-arg "LINUS_COMMIT=$LINUS_COMMIT" --secret "id=linus_token,env=LINUS_TOKEN")
+          fi
           docker build --secret id=hf_token,env=HF_TOKEN \
+            --build-arg "AXTB_COMMIT=$AXTB_COMMIT" "${linus_args[@]}" \
             --label org.opencontainers.image.revision="$GITHUB_SHA" \
             --label org.opencontainers.image.version="$TAG" \
             -t "$IMAGE:$TAG" .
@@ -96,6 +140,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           docker logout ghcr.io || true
+          rm -f "$RUNNER_TEMP/linus_deploy_key" "$RUNNER_TEMP/known_hosts"
           # Only the tags: the layers stay in the build cache for the next build.
           docker image rm "$IMAGE:$TAG" "$IMAGE:main" 2>/dev/null || true
 

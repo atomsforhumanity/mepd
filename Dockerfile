@@ -21,6 +21,9 @@
 #   pybase    uv and its managed Pythons (3.12 for mepd, 3.11 for AiZynthFinder)
 #   axtb      the axtb wheel (g-xTB in process), built from source (Rust);
 #             empty with AXTB_COMMIT=
+#   linus     the linus wheel (DFT in process: the web's default steering
+#             level), built from source against the axtb above; empty
+#             without LINUS_COMMIT or the linus_deploy_key secret
 #   retro     retrosynthesis data (deploy/docker/retro-data.txt, from our mirror
 #             or Zenodo/figshare) and AiZynthFinder's env. Depends only on
 #             pybase, the manifest and mepd/retro/{data,aizynth,stock}.py.
@@ -46,10 +49,19 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.5
 # `--build-arg FAIRCHEM_MODELS=` builds without them.
 ARG FAIRCHEM_MODELS="uma-s-1p2p1"
 # axtb (github.com/atomsforhumanity/axtb, AFH's Rust g-xTB 2.0.1) for
-# [gxtb_engine_kwds] backend = "axtb", built from source at this commit (the one
-# mepd's tests and benchmarks ran). `--build-arg AXTB_COMMIT=` builds without it
-# (backend = "axtb" then says axtb isn't installed).
-ARG AXTB_COMMIT=59cc1a4c82c85e28743a1d4a5f3f5e3415090aaa
+# [gxtb_engine_kwds] backend = "axtb", built from source. mepd follows axtb's main:
+# CI passes main's current commit (git ls-remote), so this stage rebuilds exactly
+# when main moves and the image records the commit it holds (MEPD_AXTB_COMMIT).
+# `--build-arg AXTB_COMMIT=` builds without it (backend = "axtb" then says axtb
+# isn't installed).
+ARG AXTB_COMMIT=main
+# linus (github.com/atomsforhumanity/linus, private: AFH's in-process DFT), the
+# web's default steering level. Followed at main like axtb: CI passes main's
+# commit and read access as a build secret: a read-only deploy key
+# (`linus_deploy_key`) or a token that can read the repository (`linus_token`).
+# Without either, the image is built without linus (steering then defaults to
+# none, as before).
+ARG LINUS_COMMIT=
 
 FROM ${MICROMAMBA_IMAGE} AS micromamba
 FROM ${UV_IMAGE} AS uv
@@ -148,19 +160,71 @@ ARG AXTB_COMMIT
 ARG AXTB_REPO=https://github.com/atomsforhumanity/axtb.git
 ARG RUST_VERSION=1.99.1
 ARG MATURIN_VERSION=1.16.0
+# Rust compile jobs (empty: one per CPU); e.g. 6 on a shared machine.
+ARG CARGO_BUILD_JOBS=
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 # Only the wheel leaves this stage (the Rust toolchain and sources stay here).
 RUN --mount=type=cache,target=/root/.cargo/registry \
     set -e; mkdir -p /wheels; \
+    if [ -z "$CARGO_BUILD_JOBS" ]; then unset CARGO_BUILD_JOBS; fi; \
     if [ -z "$AXTB_COMMIT" ]; then echo "AXTB_COMMIT is empty: building without axtb" >&2; exit 0; fi; \
     git clone -q "$AXTB_REPO" /src/axtb; \
     git -C /src/axtb checkout -q "$AXTB_COMMIT"; \
     curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain "$RUST_VERSION"; \
     PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build --release \
-      -m /src/axtb/crates/axtb-py/Cargo.toml -i "$(uv python find 3.12)" -o /wheels; \
+      --auditwheel skip -m /src/axtb/crates/axtb-py/Cargo.toml -i "$(uv python find 3.12)" -o /wheels; \
+    git -C /src/axtb rev-parse HEAD > /wheels/COMMIT; \
     ls /wheels/axtb-*.whl
+# (--auditwheel skip: axtb declares manylinux_2_28 wheels, which this newer glibc
+# can't satisfy; the wheel only ever runs in this image, on the same glibc.)
+
+# --------------------------------------------------------------------- linus
+# On the axtb stage: its Rust toolchain, and its source tree, so linus's DFT-D4
+# (axtb-d4) is axtb's at the same commit as the image's axtb. LINUS_DIST=1: no
+# source-tree path is compiled in, so linus's internal (ORCA-measured) grid
+# presets are never found; the web's profile uses linus's own grid (linus:2).
+FROM axtb AS linus
+ARG LINUS_COMMIT
+ARG LINUS_REPO=ssh://git@ssh.github.com:443/atomsforhumanity/linus.git
+ARG MATURIN_VERSION=1.16.0
+ARG CARGO_BUILD_JOBS=
+# GitHub's published SSH host key (github.com and ssh.github.com:443 share it).
+ARG GITHUB_HOST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client patch cmake curl \
+ && rm -rf /var/lib/apt/lists/*
+# Until linus builds against axtb main itself (atomsforhumanity/linus#1): the two
+# D4 calls on axtb main's API. Applied only to a linus that still has the old ones.
+COPY deploy/docker/linus-d4-axtb-main.patch /tmp/linus-d4-axtb-main.patch
+RUN --mount=type=secret,id=linus_deploy_key \
+    --mount=type=secret,id=linus_token \
+    --mount=type=cache,target=/root/.cargo/registry \
+    set -e; mkdir -p /wheels; rm -f /wheels/*; \
+    if [ -z "$CARGO_BUILD_JOBS" ]; then unset CARGO_BUILD_JOBS; fi; \
+    if [ -z "$LINUS_COMMIT" ] || [ ! -d /src/axtb ] \
+       || { [ ! -s /run/secrets/linus_deploy_key ] && [ ! -s /run/secrets/linus_token ]; }; then \
+      echo "no LINUS_COMMIT, linus secret or axtb: building without linus" >&2; exit 0; fi; \
+    if [ -s /run/secrets/linus_deploy_key ]; then \
+      echo "github.com $GITHUB_HOST_KEY" > /tmp/known_hosts; \
+      GIT_SSH_COMMAND="ssh -i /run/secrets/linus_deploy_key -o IdentitiesOnly=yes -o HostKeyAlias=github.com -o UserKnownHostsFile=/tmp/known_hosts -o StrictHostKeyChecking=yes" \
+        git clone -q "$LINUS_REPO" /src/linus; \
+    else \
+      git -c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$(cat /run/secrets/linus_token)" | base64 -w0)" \
+        clone -q https://github.com/atomsforhumanity/linus.git /src/linus; \
+    fi; \
+    git -C /src/linus checkout -q "$LINUS_COMMIT"; \
+    if grep -q with_parallel /src/linus/crates/linus-disp/src/d4.rs; then \
+      patch -d /src/linus -p1 < /tmp/linus-d4-axtb-main.patch; fi; \
+    mkdir -p /src/linus/.cargo; \
+    printf "[patch.'https://github.com/atomsforhumanity/axtb.git']\naxtb-d4 = { path = '/src/axtb/crates/d4' }\n" \
+      > /src/linus/.cargo/config.toml; \
+    cd /src/linus/crates/linus-py; \
+    LINUS_DIST=1 PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build \
+      --release --strip --auditwheel skip -i "$(uv python find 3.12)" -o /wheels; \
+    git -C /src/linus rev-parse HEAD > /wheels/COMMIT; \
+    ls /wheels/afh_linus-*.whl
 
 # --------------------------------------------------------------------- retro
 FROM pybase AS retro
@@ -275,6 +339,7 @@ print(load(['zinc', 'paroutes-n1', 'paroutes-n5']).describe())"
 FROM ${UBUNTU_IMAGE} AS runtime
 ARG FAIRCHEM_MODELS
 ARG AXTB_COMMIT
+ARG LINUS_COMMIT
 # Links the image to its repository on GHCR (and its access to the repo's).
 LABEL org.opencontainers.image.source=https://github.com/atomsforhumanity/mepd \
       org.opencontainers.image.description="mepd web app with its chemistry programs, models and data" \
@@ -314,6 +379,10 @@ COPY --from=deps /opt/mepd/venv /opt/mepd/venv
 RUN --mount=type=bind,from=axtb,source=/wheels,target=/tmp/axtb \
     if ls /tmp/axtb/*.whl >/dev/null 2>&1; then \
       uv pip install --no-deps --no-cache --python /opt/mepd/venv/bin/python /tmp/axtb/*.whl; fi
+# linus likewise (numpy, qcdata, qccodec and pydantic, its dependencies, are there).
+RUN --mount=type=bind,from=linus,source=/wheels,target=/tmp/linus \
+    if ls /tmp/linus/*.whl >/dev/null 2>&1; then \
+      uv pip install --no-deps --no-cache --python /opt/mepd/venv/bin/python /tmp/linus/*.whl; fi
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
 COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
 
@@ -332,6 +401,7 @@ ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     PYTHONUNBUFFERED=1 \
     MEPD_FAIRCHEM_MODELS=${FAIRCHEM_MODELS} \
     MEPD_AXTB_COMMIT=${AXTB_COMMIT} \
+    MEPD_LINUS_COMMIT=${LINUS_COMMIT} \
     MEPD_MODE=demo MEPD_PORT=8765 MEPD_MAX_JOBS=4
 
 # mepd itself, into the venv above (its dependencies are all there already):

@@ -49,10 +49,13 @@ function Field({ name, prop, value, onChange, op }) {
   const id = `f-${name}`;
   const profiles = useStore((s) => s.profiles) || [];
   let control;
-  if (prop.choices_from === 'profiles') {   // one of the workspace's saved profiles, or none
+  if (prop.choices_from === 'profiles') {   // a built-in profile, one of the workspace's saved ones, or none
     control = html`<select id=${id} value=${value ?? ''} onChange=${(e) => onChange(e.target.value)}>
       <option value="">none</option>
-      ${profiles.map((o) => html`<option value=${o}>${o}</option>`)}
+      ${(prop.builtins || []).length ? html`<optgroup label="Built in">
+        ${prop.builtins.map((o) => html`<option value=${o}>${o}</option>`)}</optgroup>` : null}
+      ${profiles.length ? html`<optgroup label="Saved profiles">
+        ${profiles.map((o) => html`<option value=${o}>${o}</option>`)}</optgroup>` : null}
     </select>`;
     return html`
       <div class="field" title=${hint}>

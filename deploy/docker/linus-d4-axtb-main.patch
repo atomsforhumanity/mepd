@@ -1,0 +1,42 @@
+--- a/crates/linus-disp/src/d4.rs
++++ b/crates/linus-disp/src/d4.rs
+@@ -135,7 +135,7 @@
+         width2: 0.0,
+         width3: 0.0,
+     };
+-    let disp = D4Dispersion::new(model, damping, cutoff).with_parallel(true);
++    let disp = D4Dispersion::new(model, damping, cutoff);
+     let st = eeq.solve(xyz_bohr, charge)?;
+     let q = &st.q;
+     let cache = disp.update(xyz_bohr);
+@@ -146,11 +146,11 @@
+     let order = opts.order;
+     let mut gradient = Vec::new();
+     if order == Order::Energy {
+-        disp.three_body(&cache, &mut e_atom, None);
++        disp.three_body(&cache, &mut e_atom, None, true);
+     } else {
+         gradient = vec![[0.0; 3]; n];
+         disp.gradient(&cache, q, &mut gradient);
+-        disp.three_body(&cache, &mut e_atom, Some(&mut gradient));
++        disp.three_body(&cache, &mut e_atom, Some(&mut gradient), true);
+         eeq.add_charge_gradient(xyz_bohr, &st, &vat, &mut gradient);
+     }
+     let energy: f64 = e_atom.iter().sum();
+@@ -159,7 +159,7 @@
+         let n3 = 3 * n;
+         let mut h = vec![0.0; n3 * n3];
+         // fixed charges (two-body at q, ATM at q = 0, CN chain rule)
+-        disp.hessian(&cache, q, &mut h);
++        disp.hessian(&cache, q, &mut h, true);
+         // charge response
+         let qj = eeq.charge_jacobian(xyz_bohr, &st); // n x 3n
+         let mut dv = vec![0.0; n * n3]; // dV_i/dR (n x 3n) = P^T
+@@ -233,6 +233,6 @@
+     let cache = disp.update(xyz_bohr);
+     let e2 = disp.energy_total(&cache, &st.q);
+     let mut e3 = vec![0.0; n];
+-    disp.three_body(&cache, &mut e3, None);
++    disp.three_body(&cache, &mut e3, None, false);
+     Ok((st.q.clone(), cache.cn.clone(), e2, e3.iter().sum()))
+ }

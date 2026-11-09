@@ -28,6 +28,7 @@ from typing import Callable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mepd.atom_mapping_metrics import HELP as _MAPPING_HELP, LABELS as _MAPPING_LABELS, OFFERED as _OFFERED_METRICS
+from mepd.web import steering as _steering
 from mepd.web.workspace import Workspace, WorkspaceError, is_ts
 
 # "job": a follow-up on another job's output; "design": the Design tab's molecule
@@ -56,6 +57,8 @@ def P(default, title: str, help: str = "", *, cli: Optional[str] = None, kind: s
         extra["labels"] = kw.pop("labels")
     if "choices_from" in kw:   # "profiles": the form offers the workspace's saved profiles
         extra["choices_from"] = kw.pop("choices_from")
+    if "builtins" in kw:   # with choices_from: built-in choices offered before the saved ones
+        extra["builtins"] = kw.pop("builtins")
     if "qmmm_only" in kw:   # shown only when the selection is a QM/MM system
         extra["qmmm_only"] = kw.pop("qmmm_only")
     if "stage" in kw:   # the form groups an operation's fields by the stage of the job they set (network expansion)
@@ -602,10 +605,11 @@ class ExpandParams(Params):
                                               cli="--standard-state", requires="steer=flux|access", advanced=True,
                                               group="Kinetics", stage=STEER)
     steer_profile: str = P(
-        "", "Steer with the profile", "A saved profile of a higher level (e.g. DFT) whose single points on the "
-        "explorer's geometries steer the kinetics that decide what is expanded and sampled. Empty: the run's "
-        "own level.", kind="custom", requires="steer=access", advanced=True, group="Kinetics",
-        choices_from="profiles", stage=STEER)
+        _steering.default_steer_profile(), "Steer with the profile",
+        "A higher level (DFT) whose single points on the explorer's geometries steer the kinetics that decide "
+        "what is expanded and sampled: the built-in linus wB97X-D3BJ/def2-TZVP (the default where installed), or "
+        "a saved profile. None: the run's own level.", kind="custom", requires="steer=access", advanced=True,
+        group="Kinetics", choices_from="profiles", builtins=list(_steering.builtin_profiles()), stage=STEER)
     # ------------------------------------------------------------------- Run
     schedule: Literal["async", "rounds"] = P(
         "async", "Schedule", "How the work is ordered.", cli="--schedule", requires="steer=access", stage=RUN,
@@ -1151,7 +1155,11 @@ def _build_expand(ctx: JobContext, p: ExpandParams) -> list[str]:
         if p.steer_profile.strip():
             steer = ctx.job_dir / "inputs" / "steer.toml"
             steer.parent.mkdir(parents=True, exist_ok=True)
-            steer.write_text(ctx.ws.read_profile(p.steer_profile.strip()))
+            name = p.steer_profile.strip()
+            builtin = _steering.builtin_profiles()
+            if name == _steering.LINUS and name not in builtin:
+                raise WorkspaceError("linus is not installed here: choose another steering profile, or none.")
+            steer.write_text(builtin[name] if name in builtin else ctx.ws.read_profile(name))
             add += ["--steer-energies", str(steer)]
     # Reuse: earlier expansions' output folders at this level (`--known`, once the installed CLI has it)
     if p.reuse_known:
