@@ -61,23 +61,34 @@ _CONNECTOR: dict = {}   # the connector whose jobs the forked workers run
 _RANK = {"fast": 2, "ts": 2, "piece": 3}
 
 
+_HELD = threading.local()   # .slots: the workers the job running in this thread holds (`_run_job`)
+
+
 def _run_job(method: str, args):
     self = _CONNECTOR["self"]
     if method.startswith("own:"):    # a job kind the caller registered
-        return self._jobs[method[4:]][0](*args)
+        fn, slots, _ = self._jobs[method[4:]]
+        _HELD.slots = slots
+        try:
+            return fn(*args)
+        finally:
+            _HELD.slots = 1
     return getattr(self, method)(*args)
 
 
 class _CoreShare:
-    """An engine's `n_parallel` that follows the queue: the run's cores over the jobs running right now
-    (read from shared memory the parent updates), so a job left on its own late in a stage -- a deep path
-    search, say -- spreads its images over the cores the finished jobs left idle instead of using one."""
+    """An engine's `n_parallel` that follows the queue: the run's cores over the workers busy right now
+    (read from shared memory the parent updates), times the workers the job asking holds -- so a job left
+    on its own late in a stage (a deep path search, say) spreads its images over the cores the finished jobs
+    left idle instead of using one, and a job that holds all the workers (the reactor's proposals) minimizes
+    its products on all of them, not on one (sb-t24: 52 of 954 worker-hours idle in that phase)."""
 
     def __init__(self, total: int, running):
         self.total, self.running = int(total), running
 
     def __int__(self) -> int:
-        return max(1, self.total // max(1, int(self.running.value)))
+        held = getattr(_HELD, "slots", 1)
+        return max(1, self.total * held // max(1, int(self.running.value)))
 
     __index__ = __int__
 

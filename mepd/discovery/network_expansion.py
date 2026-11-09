@@ -2471,19 +2471,25 @@ def expand_network(
             opts = _optimize(eng, [StructureNode(structure=props[k].structure) for k in todo], maxiter, None,
                              fmax=loose_fmax)
             out = ["known"] * len(props)
-            checks = [0, sum(not isinstance(opt, Exception) for opt in opts)]   # Hessian checks: done, all
             for k, opt in zip(todo, opts):
-                record = None
-                if not isinstance(opt, Exception) and validate_minima is not None:
-                    from mepd.elementarystep import validate_minimum_with_rescue
+                out[k] = (opt, None)
+            minima = [k for k, opt in zip(todo, opts) if not isinstance(opt, Exception)]
+            if validate_minima is not None and minima:
+                from mepd.cli_common import _fork_map
+                from mepd.elementarystep import validate_minimum_with_rescue
 
-                    phase("hessian", done=checks[0], total=checks[1])
-                    checks[0] += 1
-                    opt, record = validate_minimum_with_rescue(
-                        opt, eng, frequency_cutoff=float(validate_minima.get("frequency_cutoff", -20.0)),
+                def check(k):
+                    return validate_minimum_with_rescue(
+                        out[k][0], eng, frequency_cutoff=float(validate_minima.get("frequency_cutoff", -20.0)),
                         rescue_displacement=float(validate_minima.get("rescue_displacement", 0.3)),
                         label=f"proposal {props[k].label}")
-                out[k] = (opt, record)
+
+                # as many at once as the minimizations: the workers this job holds (its engine's share)
+                phase("hessian", done=0, total=len(minima))
+                checked = _fork_map(check, minima, int(getattr(eng, "n_parallel", 1) or 1),
+                                    on_result=lambda n: phase("hessian", done=n, total=len(minima)))
+                for k, res in zip(minima, checked):
+                    out[k] = res
             phase("done")
             return (props, out) if meta is None else (props, out, meta)
 

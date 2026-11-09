@@ -1228,6 +1228,82 @@ def test_async_propose_jobs_report_their_phase_and_return_the_same(monkeypatch, 
     assert all(d["phase"] == "done" and list(d["began"]) == ["generate", "minimize", "done"] for d in phases.values())
 
 
+class _HessianGraphEngine(_GraphEngine):
+    """_GraphEngine with a Hessian (every product a minimum) and `n_parallel`; each Hessian leaves a file
+    in `pids_dir` named by the process it ran in."""
+
+    def __init__(self, n_parallel, pids_dir):
+        super().__init__()
+        self.n_parallel, self.pids_dir = n_parallel, pids_dir
+
+    def compute_hessian(self, node):
+        import os
+        import time
+
+        (self.pids_dir / f"{os.getpid()}_{time.monotonic_ns()}").touch()
+        return np.eye(3 * len(node.structure.symbols))
+
+
+def _two_hcn_reactor():
+    """A stand-in "reactor" for two HCN molecules: the H of one, of the other, and of both moved to its
+    molecule's other heavy atom (three products, two distinct)."""
+
+    def propose(structure, *, max_products, options):
+        sy, xyz0 = list(structure.symbols), np.asarray(structure.geometry, dtype=float)
+        heavy = [i for i, s in enumerate(sy) if s != "H"]
+        hs = [i for i, s in enumerate(sy) if s == "H"]
+
+        def nearest(i, among):
+            return min((j for j in among if j != i), key=lambda j: np.linalg.norm(xyz0[i] - xyz0[j]))
+
+        out = []
+        for moved in ([hs[0]], [hs[1]], hs):
+            xyz = xyz0.copy()
+            for h in moved:
+                near = nearest(h, heavy)
+                far = nearest(near, heavy)
+                axis = (xyz0[far] - xyz0[near]) / np.linalg.norm(xyz0[far] - xyz0[near])
+                xyz[h] = xyz0[far] + axis * np.linalg.norm(xyz0[h] - xyz0[near])
+            out.append(structure.model_copy(update={"geometry": xyz}))
+        return out
+
+    return propose
+
+
+def test_async_proposal_hessian_checks_run_on_the_jobs_workers_and_change_nothing(monkeypatch, tmp_path):
+    """A propose job holds `width` of the queue's workers: its products' Hessian checks run that many at a
+    time (its engine's n_parallel, as its minimizations do), in processes of their own, and give the same
+    species, energies, steps and outcomes as one at a time. (sb-t24: the phase after the reactor's MD ran on
+    one process while the job held all 32 workers.)"""
+    import os
+
+    from mepd.discovery import generators
+
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", _two_hcn_reactor(), kind="structures"))
+    kw = dict(steer="access", access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6},
+              schedule="async", generator="reactor", generator_options={"n_seeds": 1}, allow_zwitterions=True,
+              validate_minima={"frequency_cutoff": -20.0, "rescue_displacement": 0.3})
+
+    def run(n):
+        pids = tmp_path / f"pids_{n}"
+        pids.mkdir()
+        connect = _AsyncConnector()
+        connect.job_inputs = SimpleNamespace(engine=_HessianGraphEngine(n, pids))
+        res = expand_network(_node("C#N.C#N"), _HessianGraphEngine(1, tmp_path), connect=connect, **kw)
+        found = ([(sp.smiles, round(float(sp.node.energy), 10)) for sp in res.species],
+                 [(st.a, st.b, st.label) for st in res.steps],
+                 [(e.source, e.outcome, e.target) for e in res.edges])
+        return found, [fp.name.split("_")[0] for fp in pids.iterdir()]
+
+    serial, ran_in = run(1)
+    assert len(ran_in) > 1 and set(ran_in) == {str(os.getpid())}
+    assert any(outcome == "new_species" for _, outcome, _ in serial[2])
+    parallel, ran_in = run(4)
+    assert parallel == serial
+    assert len(ran_in) > 1 and str(os.getpid()) not in ran_in      # in processes of the job's own
+
+
 def test_async_a_failed_proposal_job_is_said_and_not_counted_as_an_expansion(monkeypatch):
     """A species whose proposals failed is listed under the round's proposals_failed, not its sources: the
     summary must not read it as expanded (07c1cd9's IndexError hid behind exactly that)."""

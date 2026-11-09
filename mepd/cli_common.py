@@ -843,11 +843,12 @@ def _unsafe_to_fork() -> Optional[str]:
     return None
 
 
-def _fork_map(fn, items: list, workers: int) -> list:
+def _fork_map(fn, items: list, workers: int, on_result=None) -> list:
     """`[fn(x) for x in items]`, across `workers` forked processes when
     workers > 1. `fn` (and everything it closes over -- structures, the
     engine, RunInputs) reaches the children through fork rather than
-    pickling; only each item and its return value are pickled.
+    pickling; only each item and its return value are pickled. `on_result(n)`,
+    if given, is called as results come back (in item order), n done so far.
 
     Falls back to running `items` serially -- rather than losing the run --
     when forking is known to be unsafe up front. When a child dies without
@@ -858,8 +859,16 @@ def _fork_map(fn, items: list, workers: int) -> list:
     hours where the pool needed one). Every caller's `fn` writes its own files
     or returns its own value, so re-running is wasted time, never a wrong
     answer."""
+    def serial():
+        out = []
+        for x in items:
+            out.append(fn(x))
+            if on_result is not None:
+                on_result(len(out))
+        return out
+
     if workers <= 1 or len(items) <= 1:
-        return [fn(x) for x in items]
+        return serial()
 
     unsafe = _unsafe_to_fork()
     if unsafe:
@@ -867,7 +876,7 @@ def _fork_map(fn, items: list, workers: int) -> list:
             f"Running {len(items)} item(s) serially instead of across "
             f"{min(workers, len(items))} worker process(es): {unsafe}."
         )
-        return [fn(x) for x in items]
+        return serial()
 
     import multiprocessing
     import os
@@ -890,6 +899,8 @@ def _fork_map(fn, items: list, workers: int) -> list:
                     futures = [(k, pool.submit(_fork_call, (key, items[k]))) for k in todo]
                     for k, fut in futures:
                         results[k] = fut.result()
+                        if on_result is not None:
+                            on_result(len(results))
                 return [results[k] for k in range(len(items))]
             except BrokenProcessPool:
                 for k, fut in futures:   # what finished before the pool broke stays done

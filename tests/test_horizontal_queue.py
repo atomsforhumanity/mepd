@@ -168,6 +168,25 @@ def test_core_share_follows_the_running_jobs_and_stays_a_number_where_it_is_writ
     assert json.dumps({"engine_parallel": int(share)}) == '{"engine_parallel": 8}'
 
 
+def test_a_job_holding_several_workers_gets_their_cores(tmp_path):
+    """The queue's engine share (`_CoreShare`) is the cores per busy worker times the workers the job asking
+    holds: a job that holds all of them (the reactor's proposals) minimizes on all the cores, not on one."""
+    import multiprocessing
+
+    from mepd.discovery import horizontal
+
+    running = multiprocessing.get_context("fork").RawValue("i", 4)
+    share = horizontal._CoreShare(32, running)
+    hc = _connector(tmp_path)
+    hc.workers = 4
+    hc.register("wide", lambda: int(share), slots=4)
+    hc.register("narrow", lambda: int(share))
+    horizontal._CONNECTOR["self"] = hc
+    assert horizontal._run_job("own:wide", ()) == 32
+    assert horizontal._run_job("own:narrow", ()) == 8
+    assert int(share) == 8                   # outside a job: one worker's share
+
+
 def test_a_wide_job_is_not_starved_by_narrow_ones_queued_behind_it(tmp_path):
     """A wide job that waited `wide_wait_s` starts next, on the workers free: narrow jobs queued after it
     no longer start in its place for as long as any are left."""
