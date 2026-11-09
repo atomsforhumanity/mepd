@@ -305,3 +305,35 @@ def test_a_barrierless_reaction_retried_in_a_solvent_gets_its_ends_there(tmp_pat
     # A re-adoption of the run keeps the retries.
     adopt_nanoreactor(ws, job, final=True)
     assert set(ws.snapshot()["reactions"][rec["id"]]["retries"]) == {"j2", "j3"}
+
+
+def test_the_reactor_tab_knows_an_expansions_runs_by_folder(tmp_path):
+    """A network expansion's reactor runs (output/reactor/run_kk) were picked by their place among the folders
+    sorted by name: run_100 sorts before run_11, so once a run had 100 trajectories the tab showed another
+    trajectory than the one picked. They are listed in the order they started and fetched by folder name."""
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    (tmp_path / "ws" / "profiles").mkdir(parents=True)
+    (tmp_path / "ws" / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
+    out = tmp_path / "out"
+    for k in (99, 100, 101, 11):
+        md = out / "reactor" / f"run_{k:02d}" / "md"
+        md.mkdir(parents=True)
+        (md / "schedule.json").write_text(json.dumps({"seed": k, "time_ps": 0.004, "dump_fs": 2.0}))
+        (md / "segment_000.xyz").write_text("".join(f"2\n\nH 0 0 0\nH {0.74 + 0.01 * i:.2f} 0 0\n" for i in range(3)))
+        (md / "done").write_text("")
+        (md.parent / "live_events.json").write_text(json.dumps({"time_ps": 0.004, "events": [
+            {"event": 0, "atoms": [0, 1], "reactant_frame": 0, "product_frame": 2, "label": f"in run {k}", "bond_changes": []}]}))
+    with TestClient(create_app(tmp_path / "ws", max_concurrent=1)) as c:
+        jobs = c.app.state.sessions.current.jobs
+        jobs.jobs["j_x"] = {"id": "j_x", "op": "graph-enumeration", "status": "done", "title": "x", "created": 0, "output_dir": str(out)}
+        runs = c.get("/api/jobs/j_x/reactor/runs").json()["runs"]
+        assert [r["name"] for r in runs] == ["run_11", "run_99", "run_100", "run_101"]
+        assert [r["seed"] for r in runs] == [11, 99, 100, 101]
+        for k in (99, 100, 101):
+            assert c.get(f"/api/jobs/j_x/reactor?name=run_{k}").json()["events"][0]["label"] == f"in run {k}"
+            assert c.get(f"/api/jobs/j_x/reactor/events/0?name=run_{k}").json()["label"] == f"in run {k}"
+        assert c.get("/api/jobs/j_x/reactor?run=2").json()["events"][0]["label"] == "in run 100"   # (by place: in start order)
+        assert c.get("/api/jobs/j_x/reactor?name=run_7").status_code == 404

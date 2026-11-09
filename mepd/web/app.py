@@ -2159,7 +2159,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         one's seed, events so far, whether it has ended, and when it last grew -- for the Reactor tab's picker."""
         job = J().get(jid)
         out = Path(job["output_dir"]) / "reactor"
-        runs = sorted(out.glob("run_*")) if job.get("op") == "graph-enumeration" else []
+        runs = _run_dirs(out) if job.get("op") == "graph-enumeration" else []
         items = []
         for k, d in enumerate(runs):
             md = d / "md"
@@ -2178,18 +2178,24 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return {"runs": items}
 
     @app.get("/api/jobs/{jid}/reactor")
-    def job_reactor(jid: str, start: int = 0, run: Optional[int] = None):
-        """A nanoreactor job's trajectory from raw frame `start` on, and its events (live view)."""
+    def job_reactor(jid: str, start: int = 0, run: Optional[int] = None, name: Optional[str] = None):
+        """A nanoreactor job's trajectory from raw frame `start` on, and its events (live view); one run of
+        a network expansion by its folder `name` (or its place `run`)."""
         from mepd.web.nanoreactor import reactor_view
 
         job = J().get(jid)
-        out = reactor_view(_reactor_out(job, run), start)
+        out = reactor_view(_reactor_out(job, run, name=name), start)
         if out.get("qm_atoms") is not None and out.get("frozen_atoms") is None and job.get("qmmm"):
             try:   # runs from before the schedule kept them: the system's
                 out["frozen_atoms"] = list(W().qmmm_region(job["qmmm"]).frozen_atoms)
             except Exception:
                 pass
         return out
+
+    def _run_dirs(base: Path) -> list:
+        """A job's reactor runs (run_kk) in the order they started: by number (run_100 after run_99, not
+        before run_11 as the names sort)."""
+        return sorted(base.glob("run_*"), key=lambda d: (int(d.name[4:]) if d.name[4:].isdigit() else 1 << 30, d.name))
 
     def _reactor_out(job: dict, run: Optional[int] = None, seed: Optional[str] = None, name: Optional[str] = None) -> Path:
         """Where a job's reactor MD is: a nanoreactor job's output, or one
@@ -2200,9 +2206,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         if job.get("op") in ("nanoreactor", "nanoreactor-more"):
             return out
         if job.get("op") == "network-mixture" and seed and "/" not in seed and not seed.startswith("."):
-            runs = sorted((out / "seeds" / seed / "run" / "reactor").glob("run_*"))
+            runs = _run_dirs(out / "seeds" / seed / "run" / "reactor")
         else:
-            runs = sorted((out / "reactor").glob("run_*")) if job.get("op") == "graph-enumeration" else []
+            runs = _run_dirs(out / "reactor") if job.get("op") == "graph-enumeration" else []
         if not runs:
             raise HTTPException(404, "this job has no reactor MD (yet)")
         if name is not None:   # a run by its folder name (an index shifts as runs are added: run_100 sorts before run_11)
