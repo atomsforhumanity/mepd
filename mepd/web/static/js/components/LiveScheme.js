@@ -1,27 +1,25 @@
-// Prototype designs for the live network views (dev only: add ?design=a, b or c to the page's
-// address, before the #). The default views are unchanged. All three share:
-// - a stable layout: a species is placed once, where it was found (next to the species it came
-//   from), from what was known when it appeared; nothing placed ever moves, so a replay and the
-//   live run look the same;
-// - a summary strip: time, what the explorer is doing, counts, the leading products with their
-//   amounts (as % of the start) and how long the answer has held;
-// - speed at the run's temperature in place of fixed barrier bands: each step's half-life
-//   (Eyring, from its free-energy barrier) against the time the kinetics simulate;
-// - colour with one job each: the three leading products keep a hue (blue, orange, aqua) wherever
-//   they show; a grey ramp says how fast a step is; magenta is what runs now.
-// A: Map (a calm node-link map with a side panel). B: Scheme (left to right by steps from the
-// start, the products in an outcome lane). C: Rings (growth rings around the start, with what was
-// just found).
+// The live network (#/network/<job>, #/network/example/<slug>) and a reacting mixture's network, drawn
+// as a reaction scheme that grows while the run works (mepd/web/live_network.py):
+// - left to right by steps from the start: the start, then a column per step; a species gets a cell
+//   with its structure once it matters (holds 2 % of the largest amount), lifting out of its column's
+//   pile of what was explored, above, where every species found lands first; routes read left to
+//   right, start to product (a species a route reaches through another moves right of it);
+// - on the right an outcome lane: the three leading products with their amounts (% of the start at
+//   the end of the simulated time), and a benchmark's measured selectivity;
+// - a strip on top: run time against the budget, what the explorer does now, counts, the leading
+//   products and how long the answer has held, the steering level, a door to the reactor's MD;
+// - steps coloured by speed at the run's temperature (half-life against the simulated time), routes in
+//   their product's colour; magenta is what runs now: searches marching between two species, arrivals,
+//   a step just found; the reactor's events as faint ghosts of their movies, caught by the species
+//   they verifiably made;
+// - nothing placed ever moves except to keep a route reading left to right, so a replay and the live
+//   run look the same. Hover, focus or tap for details (Popover.js); a table view lists every species.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
-import { depictUrl, steeringOf } from '../util.js';
+import { depictUrl } from '../util.js';
 import { Popover, pointBox, useHoverCard } from './Popover.js';
 import { EventPlayer } from './ReactorLive.js';
 import { api } from '../api.js';
-import { openJob } from '../store.js';
-
-export const designParam = () => {
-  try { return new URLSearchParams(location.search).get('design'); } catch { return null; }
-};
+import { openJob, update } from '../store.js';
 
 // ---------------------------------------------------------------- chemistry helpers
 const R_KCAL = 1.987204e-3, KB_H = 2.083661912e10;   // kcal/mol/K; Boltzmann/Planck, 1/(s K)
@@ -62,136 +60,86 @@ const drawable = (smi) => !!smi && !smi.startsWith('?') && !/unusual bonding/.te
 const short = (s, n = 26) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s || '');
 const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; } };
 
-// ---------------------------------------------------------------- stable placement
-// A spatial hash of what is placed, for "is this spot free".
-class Grid {
-  constructor(cell = 48) { this.cell = cell; this.m = new Map(); }
-  key(x, y) { return `${Math.floor(x / this.cell)},${Math.floor(y / this.cell)}`; }
-  add(x, y, r) { const k = this.key(x, y); if (!this.m.has(k)) this.m.set(k, []); this.m.get(k).push([x, y, r]); }
-  free(x, y, r) {
-    const cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell), reach = Math.ceil((r + 70) / this.cell);
-    for (let i = cx - reach; i <= cx + reach; i += 1) {
-      for (let j = cy - reach; j <= cy + reach; j += 1) {
-        for (const [px, py, pr] of this.m.get(`${i},${j}`) || []) if (Math.hypot(px - x, py - y) < r + pr) return false;
-      }
-    }
-    return true;
-  }
-}
+// ---------------------------------------------------------------- the scheme's places
+// The start at the left; a column per step from it (the last holds everything further); in a column,
+// cells three across for the species that matter, and above them the pile of every species found
+// there, one dot each, in the order found. Places are kept across polls (a ref) and only ever move
+// right, when a route would otherwise read backwards.
+const SUB_W = 136, SUBS = 3, COL_GAP = 104, COL_W = SUB_W * SUBS + COL_GAP, ROW_H = 122, PILE = 9, PILE_W = 30, MAX_COL = 5;
+const CARD_W = 104, SEED_W = 128, TOP = 72;
+const colX = (c) => (c === 0 ? 0 : 190 + (c - 1) * COL_W);   // the left edge of a column
 
-// Map: next to where it was found, continuing outward along the branch, in the nearest free spot.
-function placeMap(id, a, st) {
-  if (a == null) { st.grid.add(0, 0, 70); return [0, 0]; }
-  const [ax, ay] = st.pos.get(a);
-  const aa = st.anchor.get(a);
-  const n = st.kids.get(a) || 0;
-  st.kids.set(a, n + 1);
-  const base = aa == null ? n * 2.39996 : Math.atan2(ay - st.pos.get(aa)[1], ax - st.pos.get(aa)[0]);
-  const r = 22;
-  for (const d of aa == null ? [150, 190, 230, 270, 320, 380, 440] : [70, 95, 120, 150, 185, 225, 270]) {
-    for (let k = 0; k < 24; k += 1) {
-      const th = base + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 12);
-      const x = ax + d * Math.cos(th), y = ay + d * Math.sin(th);
-      if (st.grid.free(x, y, r)) { st.grid.add(x, y, r); return [x, y]; }
-    }
-  }
-  const x = ax + 300 * Math.cos(base), y = ay + 300 * Math.sin(base);
-  st.grid.add(x, y, r);
-  return [x, y];
-}
-
-// Rings: one band per step from the start; in a band, the free spot nearest the angle of the species
-// it came from, on the innermost track that has one (a crowded band fills outward like a seed head).
-const RING = (h) => (h <= 0 ? 0 : 175 + 200 * (h - 1));
-const TRACK = 13, SEP = 15;
-function placeRings(id, a, st) {
-  if (a == null) { st.angle.set(id, 0); return [0, 0]; }
-  const h = Math.min(st.hop.get(id), 5);
-  const n = st.kids.get(a) || 0;
-  st.kids.set(a, n + 1);
-  const target = st.anchor.get(a) == null ? n * 2.39996 : st.angle.get(a) + (n % 2 ? 1 : -1) * 0.04 * Math.ceil(n / 2);
-  const tryTrack = (j, reach) => {
-    const r = RING(h) + j * TRACK, sep = SEP / r, used = st.ring.get(`${h}:${j}`) || [];
-    for (let k = 0; k * sep * 0.5 <= reach; k += 1) {
-      const th = target + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * sep * 0.5;
-      if (used.every((o) => Math.abs(Math.atan2(Math.sin(th - o), Math.cos(th - o))) >= sep)) {
-        used.push(th);
-        st.ring.set(`${h}:${j}`, used);
-        return [r, th];
-      }
-    }
-    return null;
-  };
-  let got = null;
-  for (let j = 0; j < 14 && !got; j += 1) got = tryTrack(j, 0.5);
-  for (let j = 0; j < 30 && !got; j += 1) got = tryTrack(j, Math.PI);
-  const [r, th] = got || [RING(h), target];
-  st.angle.set(id, th);
-  return [r * Math.cos(th), r * Math.sin(th)];
-}
-
-// Scheme: a column per step from the start. A species gets a row (a structure) once it matters (holds
-// material, or a route runs through it), in the free row nearest the species it came from; until then it
-// is one dot in its column's pile of what was explored, above. Rows and pile slots never move.
-const SUB_W = 118, SUBS = 3, COL_W = SUB_W * SUBS + 90, ROW_H = 92, ROWS = 6, PILE = 9, PILE_W = 26, MAX_COL = 4;
-const schemeX0 = (c) => (c === 0 ? 0 : 150 + (c - 1) * COL_W);
-function useScheme(key, disc, order, relevantOrder) {
-  const ref = useRef(null);
-  if (!ref.current || ref.current.key !== key) ref.current = { key, row: new Map(), pile: new Map(), cells: new Map(), piles: new Map() };
-  const sc = ref.current;
-  const col = (id) => Math.min(disc.hop.get(id) ?? 1, MAX_COL);
-  const x0 = schemeX0;
-  for (const id of order) {
-    if (sc.pile.has(id) || !disc.pos.has(id) || disc.anchor.get(id) == null) continue;
-    const c = col(id), k = sc.piles.get(c) || 0;
-    sc.piles.set(c, k + 1);
-    sc.pile.set(id, [x0(c) + (k % PILE_W) * PILE, -40 - Math.floor(k / PILE_W) * PILE]);
-  }
-  for (const id of relevantOrder) {
-    if (sc.row.has(id) || !disc.pos.has(id)) continue;
-    if (disc.anchor.get(id) == null) { sc.row.set(id, [0, 60]); continue; }
-    const c = col(id);
-    let a = disc.anchor.get(id);
-    while (a != null && !sc.row.has(a)) a = disc.anchor.get(a);
-    const ty = a == null ? 0 : Math.max(0, Math.round((sc.row.get(a)[1] - 60) / ROW_H));
-    const used = sc.cells.get(c) || new Set();
-    // the free cell nearest the anchor's row: first sub-column first, then down the block
-    let best = null;
-    for (let r = 0; r < 400 && !best; r += 1) {
-      for (const dy of r ? [r, -r] : [0]) {
-        const y = ty + dy;
-        if (y < 0) continue;
-        for (let j = 0; j < SUBS; j += 1) if (!used.has(`${y}:${j}`) && (y < ROWS || j === 0 || true)) { best = [y, j]; break; }
-        if (best) break;
-      }
-    }
-    used.add(`${best[0]}:${best[1]}`);
-    sc.cells.set(c, used);
-    sc.row.set(id, [x0(c) + 60 + best[1] * SUB_W, 60 + best[0] * ROW_H]);
-  }
-  return sc;
-}
-
-const PLACE = { a: placeMap, b: placeMap, c: placeRings };
-
-// Positions kept across polls (a ref): only species not placed yet are placed, in the order they
-// were found, each from what was placed before it.
-function usePlacement(design, key, order, anchorOf) {
+function useScheme(key) {
   const ref = useRef(null);
   if (!ref.current || ref.current.key !== key) {
-    ref.current = { key, pos: new Map(), hop: new Map(), anchor: new Map(), kids: new Map(), angle: new Map(),
-      ring: new Map(), rows: new Map(), grid: new Grid() };
+    ref.current = { key, anchor: new Map(), hop: new Map(), pile: new Map(), piles: new Map(), cell: new Map(), used: new Map(), since: new Map() };
   }
-  const st = ref.current;
-  for (const id of order) {
-    if (st.pos.has(id)) continue;
-    const a = anchorOf(id, st);
-    st.anchor.set(id, a);
-    st.hop.set(id, a == null ? 0 : (st.hop.get(a) ?? 0) + 1);
-    st.pos.set(id, PLACE[design](id, a, st));
-  }
-  return st;
+  return ref.current;
 }
+
+// The free cell nearest a row: down the column's first sub-column first (so a route coming in from the
+// left never passes behind another cell of the column), then the next.
+function freeCell(sc, c, row) {
+  const used = sc.used.get(c) || new Set();
+  for (let reach = 6; reach < 400; reach += 6) {
+    for (let j = 0; j < SUBS; j += 1) {
+      for (let r = 0; r <= reach; r += 1) {
+        for (const y of r ? [row + r, row - r] : [row]) if (y >= 0 && !used.has(`${y}:${j}`)) return [y, j];
+      }
+    }
+  }
+  return [0, 0];
+}
+
+function take(sc, id, c, row) {
+  const old = sc.cell.get(id);
+  if (old) sc.used.get(old.c)?.delete(`${old.r}:${old.j}`);
+  const [r, j] = freeCell(sc, c, row);
+  if (!sc.used.has(c)) sc.used.set(c, new Set());
+  sc.used.get(c).add(`${r}:${j}`);
+  sc.cell.set(id, { c, r, j });
+}
+
+// One pass per frame: discovery anchors (the species each was found from), pile slots, cells for the
+// species that now matter, then routes made to read left to right.
+function placeScheme(sc, m, relevant, routeEdges, t) {
+  const anchorOf = anchorFor(m);
+  for (const id of m.order) {
+    if (sc.hop.has(id)) continue;
+    const a = anchorOf(id, sc);
+    sc.anchor.set(id, a);
+    sc.hop.set(id, a == null ? 0 : (sc.hop.get(a) ?? 0) + 1);
+    if (a != null) {
+      const c = Math.min(sc.hop.get(id), MAX_COL), k = sc.piles.get(c) || 0;
+      sc.piles.set(c, k + 1);
+      sc.pile.set(id, [colX(c) + 10 + (k % PILE_W) * PILE, -44 - Math.floor(k / PILE_W) * PILE]);
+    }
+  }
+  const parentOn = new Map(routeEdges.map((e) => [e.to, e.from]));
+  for (const id of relevant) {
+    if (sc.cell.has(id) || id === m.seed || !sc.hop.has(id)) continue;
+    const p = parentOn.get(id);
+    const c = p != null && (p === m.seed || sc.cell.has(p)) ? Math.min((p === m.seed ? 0 : sc.cell.get(p).c) + 1, MAX_COL)
+      : Math.max(1, Math.min(sc.hop.get(id), MAX_COL));
+    let a = p ?? sc.anchor.get(id);
+    while (a != null && a !== m.seed && !sc.cell.has(a)) a = sc.anchor.get(a);
+    take(sc, id, c, a != null && a !== m.seed ? sc.cell.get(a).r : 0);
+    sc.since.set(id, t);
+  }
+  // a route reads left to right: a species reached through another sits right of it
+  for (let pass = 0; pass < 4; pass += 1) {
+    let moved = false;
+    for (const e of routeEdges) {
+      const a = e.from === m.seed ? { c: 0, r: 0 } : sc.cell.get(e.from), b = sc.cell.get(e.to);
+      if (!a || !b || b.c > a.c || a.c >= MAX_COL) continue;
+      take(sc, e.to, a.c + 1, a.r);
+      moved = true;
+    }
+    if (!moved) break;
+  }
+}
+
+const cellXY = (cl) => [colX(cl.c) + cl.j * SUB_W + SUB_W / 2, TOP + cl.r * ROW_H];
 
 // The view's frame of reference: everything shown, padded; it only grows while a run is followed,
 // and eases there (no camera jumps).
@@ -237,28 +185,6 @@ function productHues(frames, seed, keyOf, upto) {
     }
   }
   return slot;
-}
-
-// Cards (structures) must not cover each other: each, by importance, at its species or the nearest
-// free spot outward from the start (a thin leader joins it to its species).
-function cardSpots(ids, P, size, origin) {
-  const placed = [], out = new Map();
-  for (const id of ids) {
-    const [x, y] = P(id), w = size(id), h = w * 0.75 + 22;
-    const base = Math.atan2(y - origin[1], x - origin[0]);
-    let spot = null;
-    for (let r = 0; r <= 420 && !spot; r += 22) {
-      for (let k = 0; k < (r ? 18 : 1); k += 1) {
-        const th = base + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (Math.PI / 9);
-        const cx = x + r * Math.cos(th), cy = y + r * Math.sin(th);
-        if (placed.every(([px, py, pw, ph]) => Math.abs(px - cx) > (pw + w) / 2 + 10 || Math.abs(py - cy) > (ph + h) / 2 + 6)) { spot = [cx, cy]; break; }
-      }
-    }
-    spot = spot || [x, y];
-    placed.push([spot[0], spot[1], w, h]);
-    out.set(id, spot);
-  }
-  return out;
 }
 
 // What the explorer runs now, as the network's species and pairs (job "what": "3→17 · ch_3_17_0",
@@ -308,19 +234,6 @@ export function expansionModel(tl, cur) {
   return { frames, f, seed, first, parent, nb, order, productOf, names, keyOf };
 }
 
-// The anchor a species is placed from: the species it was proposed from, else the first species a
-// step joins it to that is already placed (nearest the start), else the start.
-function anchorFor(m) {
-  return (id, st) => {
-    if (id === m.seed) return null;
-    const p = m.parent.get(id);
-    if (p != null && st.pos.has(p)) return p;
-    const placed = (m.nb.get(id) || []).filter((x) => st.pos.has(x));
-    if (placed.length) return placed.reduce((x, y) => ((st.hop.get(x) ?? 99) <= (st.hop.get(y) ?? 99) ? x : y));
-    return m.seed;
-  };
-}
-
 // Without per-step flux (runs on develop record none), the likely routes: from the start to each
 // species holding material, the path whose highest barrier is lowest.
 function likelyRoutes(steps, seed, holders) {
@@ -342,19 +255,33 @@ function likelyRoutes(steps, seed, holders) {
   return route;
 }
 
+// The anchor a species is placed from: the species it was proposed from, else the first species a step
+// joins it to that is already placed (nearest the start), else the start.
+function anchorFor(m) {
+  return (id, st) => {
+    if (id === m.seed) return null;
+    const p = m.parent.get(id);
+    if (p != null && st.hop.has(p)) return p;
+    const placed = (m.nb.get(id) || []).filter((x) => st.hop.has(x));
+    if (placed.length) return placed.reduce((x, y) => ((st.hop.get(x) ?? 99) <= (st.hop.get(y) ?? 99) ? x : y));
+    return m.seed;
+  };
+}
+
 // ---------------------------------------------------------------- the view
-export function DesignNetwork({ tl, cur, design, jobId, example, job, running, follow, controls, apiJob = jobId, eventClock = null, onEvents = null }) {
+const steeringOf = (job) => (job?.op === 'graph-enumeration' && (job.params?.steer ?? 'access') === 'access'
+  ? job.params?.steer_profile || 'none (the run\'s own level)' : null);
+
+export function LiveScheme({ tl, cur, jobId, example, job, running, follow, controls, apiJob = jobId, eventClock = null, onEvents = null, extra = null }) {
   const m = useMemo(() => expansionModel(tl, cur), [tl, cur]);
-  // the card under the pointer, focused, or pinned by a tap (Popover.js): a species or a step
   const hc = useHoverCard();
   const hover = hc.cur ? { kind: hc.cur.key[0], id: hc.cur.data } : null;
-  const key = `${jobId || example}|${design}`;
-  const st = usePlacement(design, key, m.order, anchorFor(m));
+  const [view, setView] = useState('scheme');
+  const sc = useScheme(`${jobId || example}`);
   const f = m.f;
-  const cond = conditionsOf(f.basis, tl.command ?? job?.command);
+  const cond = conditionsFrom(tl, f.basis, job);
   const hues = useMemo(() => productHues(m.frames, m.seed, m.keyOf, cur), [tl, cur]);
   const hueOf = (id) => (id === m.seed ? null : hues.get(m.keyOf(id)));
-  // the reactor's events (the overlay), the one opened in full, and species that just caught one
   const rx = useReactorEvents(apiJob, running);
   useEffect(() => { if (onEvents && rx.events.length) onEvents(rx.events); }, [rx.events.length]);
   const [dialog, setDialog] = useState(null);
@@ -363,31 +290,34 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
   const nowOf = eventClock || (() => (followLive && job?.started ? Date.now() / 1000 - job.started : f.t));
   const startSmiles = drawable(tl.smiles[m.seed]) ? tl.smiles[m.seed] : null;
   const imgOf = (id, w = 240, h = 180) => (drawable(tl.smiles[id]) ? `${depictUrl(tl.smiles[id], w, h, id === m.seed ? null : startSmiles)}&bond=${Math.round(w / 6)}`
-    : jobId && !jobId.startsWith("mix:") ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
+    : jobId && !String(jobId).startsWith('mix:') ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
   const nameOf = (id) => (id === m.seed ? m.names[id] || 'start' : m.productOf[id] || m.names[id] || '');
   const label = (id) => nameOf(id) || short(tl.smiles[id], 18) || `species ${id}`;
+  const knownIds = new Set(tl.known_ids || []);
 
-  // species now: every one found so far (dots), with amounts where the frame has them
+  // species now
   const amount = new Map(f.species.map((s) => [s[0], s]));
-  const seen = m.order.filter((id) => m.first.get(id) <= f.t + 1e-6 && st.pos.has(id));
+  const seen = m.order.filter((id) => m.first.get(id) <= f.t + 1e-6);
   const peakMax = Math.max(1e-30, ...f.species.filter((s) => s[0] !== m.seed).map((s) => s[2] || 0));
   const holders = f.species.filter((s) => s[0] !== m.seed && (s[2] || 0) >= 0.02 * peakMax).sort((a, b) => b[2] - a[2]);
   const fresh = (id) => id !== m.seed && cur > 0 && m.first.get(id) >= f.t - 12;
-  const act = running && cur === m.frames.length - 1 ? activityOf(tl.activity?.queue) : { pairs: [], species: [] };
+  const act = followLive ? activityOf(tl.activity?.queue) : { pairs: [], species: [] };
   const busy = new Set([...act.species, ...act.pairs.flatMap((x) => x.slice(0, 2))]);
 
-  // steps now
+  // steps now, each read the way material goes
   const noFlux = !!f.legacy;
   const fluxMax = Math.max(1e-30, ...f.steps.map((s) => Math.abs(s[7] || 0)));
   const route = noFlux ? likelyRoutes(f.steps, m.seed, holders.slice(0, 6).map((s) => s[0])) : null;
-  const edges = f.steps.filter((s) => st.pos.has(s[1]) && st.pos.has(s[2]) && s[1] !== s[2]).map((s) => {
+  const known = new Set(seen);
+  const edges = f.steps.filter((s) => known.has(s[1]) && known.has(s[2]) && s[1] !== s[2]).map((s) => {
     const [id, a, b, dGf, dGr, src, irc, flux, below] = s;
-    const fwd = noFlux ? (route.has(id) ? route.get(id) : (st.hop.get(a) ?? 9) <= (st.hop.get(b) ?? 9)) : (flux || 0) >= 0;
+    const fwd = noFlux ? (route.has(id) ? route.get(id) : (sc.hop.get(a) ?? 9) <= (sc.hop.get(b) ?? 9)) : (flux || 0) >= 0;
     const [from, to] = fwd ? [a, b] : [b, a];
     const barrier = fwd ? dGf : dGr, back = fwd ? dGr : dGf;
     const main = noFlux ? route.has(id) : Math.abs(flux || 0) >= 0.05 * fluxMax;
-    const w = noFlux ? (main ? 3 : 1.2) : Math.min(10, Math.max(1.2, 10 * Math.sqrt(Math.abs(flux || 0) / fluxMax)));
-    return { id, from, to, barrier, back, src, irc, flux, below: !!below, main, w, speed: below ? null : speedOf(barrier, cond), hue: main ? hueOf(to) : null, co: tl.co?.[id] };
+    const w = noFlux ? (main ? 3 : 1.4) : Math.min(10, Math.max(1.4, 10 * Math.sqrt(Math.abs(flux || 0) / fluxMax)));
+    return { id, from, to, barrier, back, src, irc, flux, below: !!below, main, w, speed: below ? null : speedOf(barrier, cond),
+      hue: main ? hueOf(to) : null, co: tl.co?.[id] };
   });
   const outOf = {};
   for (const e of edges) outOf[e.from] = (outOf[e.from] || 0) + Math.abs(e.flux || 0);
@@ -421,176 +351,158 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
   const series = products.map((p) => ({ ...p, hue: hues.get(p.key),
     pts: m.frames.slice(0, cur + 1).map((fr) => [fr.t, fr.species.filter((s) => m.keyOf(s[0]) === p.key).reduce((t, s) => t + (s[3] || 0), 0)]) }));
 
-  // where things are drawn: A and C at their placed spot; B by its scheme (a row once it matters)
-  const relevantOrder = useMemo(() => {
-    if (design !== 'b') return [];
-    const out = [], seenR = new Set();   // (one row per product: mirror twins share the first's)
-    for (const fr of m.frames) {
-      const pk = Math.max(1e-30, ...fr.species.filter((s) => s[0] !== m.seed).map((s) => s[2] || 0));
-      for (const s of fr.species) if (!seenR.has(m.keyOf(s[0])) && (s[0] === m.seed || (s[2] || 0) >= 0.02 * pk)) { seenR.add(m.keyOf(s[0])); out.push([s[0], fr.t]); }
-    }
-    return out;
-  }, [tl, design]);
-  const relevantNow = new Set(relevantOrder.filter(([, t]) => t <= f.t + 1e-6).map(([id]) => id));
-  const sc = useScheme(key, st, m.order, relevantOrder.map(([id]) => id));
-  const P = design === 'b' ? (id) => (relevantNow.has(id) ? sc.row.get(id) : sc.pile.get(id)) || st.pos.get(id) : (id) => st.pos.get(id);
-  // one card per product (mirror twins and a benchmark's named product are one): its most held species
-  const byKey = new Map();
-  for (const s of holders) if (!byKey.has(m.keyOf(s[0]))) byKey.set(m.keyOf(s[0]), s[0]);
+  // the scheme: which species matter (one cell per product: mirror twins share the first's), placed
+  const relevant = [];
+  const seenKey = new Set();
+  for (const s of [...f.species].sort((a, b) => (m.first.get(a[0]) ?? 0) - (m.first.get(b[0]) ?? 0))) {
+    if (s[0] === m.seed || (s[2] || 0) < 0.02 * peakMax || seenKey.has(m.keyOf(s[0]))) continue;
+    seenKey.add(m.keyOf(s[0]));
+    relevant.push(s[0]);
+  }
+  for (const e of edges) if (e.main) for (const id of [e.from, e.to]) if (id !== m.seed && !relevant.includes(id)) relevant.push(id);
+  const routeEdges = edges.filter((e) => e.main);
+  placeScheme(sc, m, relevant, routeEdges, f.t);
+  const cells = new Set(relevant.filter((id) => sc.cell.has(id)));
+  const P = (id) => (id === m.seed ? [SEED_W / 2, TOP] : cells.has(id) ? cellXY(sc.cell.get(id)) : sc.pile.get(id) || null);
+  const cardW = (id) => (id === m.seed ? SEED_W : CARD_W);
+  const isCard = (id) => id === m.seed || cells.has(id);
   const groupFin = (id) => groups.get(m.keyOf(id))?.fin ?? amount.get(id)?.[3];
-  const cardIds = design === 'b' ? new Set([...relevantNow].filter((id) => sc.row.has(id)))
-    : new Set([m.seed, ...[...byKey.values()].slice(0, 6)]);
-  const cardW = design === 'b' ? (id) => (id === m.seed ? 120 : 92)
-    : (id) => (id === m.seed ? 112 : Math.max(80, Math.min(136, 136 * Math.sqrt((amount.get(id)?.[2] || 0) / peakMax))));
-  const order = [...cardIds].filter((id) => seen.includes(id)).sort((a, b) => (b === m.seed) - (a === m.seed) || (amount.get(b)?.[2] || 0) - (amount.get(a)?.[2] || 0));
-  // marks and text keep their size on screen as the view zooms out (the stage is about 1250 x 620 px)
-  let b0 = [Infinity, Infinity, -Infinity, -Infinity];
-  for (const id of seen) { const [x, y] = P(id); b0 = [Math.min(b0[0], x), Math.min(b0[1], y), Math.max(b0[2], x), Math.max(b0[3], y)]; }
-  const scale = design === 'b' ? 1 : Math.max(1, (b0[2] - b0[0] + 300) / 1250, (b0[3] - b0[1] + 260) / 620);
-  const spot = design === 'b' ? new Map(order.map((id) => [id, P(id)])) : cardSpots(order, P, (id) => cardW(id) * scale, P(m.seed));
-  const C = (id) => spot.get(id) || P(id);   // where its mark is: its card, else its dot
 
-  let box = [Infinity, Infinity, -Infinity, -Infinity];
+  // the frame: the scheme, its piles above, the outcome lane at the right
+  let box = [-20, -60, SEED_W + 40, TOP + 140];
   for (const id of seen) {
-    const [x, y] = C(id), r = cardIds.has(id) ? (cardW(id) * scale) / 2 + 22 * scale : 14 * scale;
-    box = [Math.min(box[0], x - r), Math.min(box[1], y - r), Math.max(box[2], x + r), Math.max(box[3], y + r + (cardIds.has(id) ? 18 : 0))];
+    const p = P(id);
+    if (!p) continue;
+    const r = isCard(id) ? cardW(id) / 2 + 20 : 8;
+    box = [Math.min(box[0], p[0] - r), Math.min(box[1], p[1] - r - 18), Math.max(box[2], p[0] + r), Math.max(box[3], p[1] + r + (isCard(id) ? 34 : 0))];
   }
-  if (design === 'b') box = [box[0] - 40, box[1] - 20, box[2] + 360, box[3] + 10];
-  else {   // room around the start for the reactor's events
-    const [sx, sy] = C(m.seed), r = 240 * scale;
-    box = [Math.min(box[0], sx - r), Math.min(box[1], sy - r), Math.max(box[2], sx + r), Math.max(box[3], sy + r)];
-  }
-  // at least 700 x 460, the content in the middle
-  const bw = Math.max(700, box[2] - box[0]), bh = Math.max(460, box[3] - box[1]);
-  const vb = useViewBox([(box[0] + box[2]) / 2 - bw / 2, (box[1] + box[3]) / 2 - bh / 2, bw, bh], follow);
+  const sel = tl.selectivity;
+  const laneX = box[2] + 70;
+  const laneTop = sel ? 120 : 20;
+  const lane = series.map((p, k) => ({ ...p, x: laneX, y: laneTop + 60 + k * 148 }));
+  box = [box[0], Math.min(box[1], -30), laneX + 330, Math.max(box[3], laneTop + 60 + Math.max(1, lane.length) * 148 - 60)];
+  const bw = Math.max(760, box[2] - box[0]), bh = Math.max(440, box[3] - box[1]);
+  const vb = useViewBox([box[0], box[1], bw, bh], follow);
 
-  const ends = (id, toward, gap) => {
-    const [x0, y0] = C(id), [x1, y1] = C(toward);
-    if (design === 'b' && cardIds.has(id)) {   // leave a card by its side
-      const w = (cardW(id) * scale) / 2 + gap;
-      return [x0 + (x1 >= x0 ? w : -w), y0];
-    }
-    const r = cardIds.has(id) ? cardW(id) * scale * 0.42 : 6 * scale;
-    const d = Math.max(1e-6, Math.hypot(x1 - x0, y1 - y0)), k = Math.min(0.45, (r + gap) / d);
-    return [x0 + (x1 - x0) * k, y0 + (y1 - y0) * k];
+  const side = (id, right) => {
+    const [x, y] = P(id);
+    return [x + (right ? 1 : -1) * (isCard(id) ? cardW(id) / 2 + 4 : 6), y];
   };
   const pathOf = (e) => {
-    const p = ends(e.from, e.to, 3 * scale), q = ends(e.to, e.from, 8 * scale);
-    if (design === 'b') {
-      const dx = Math.max(30, Math.abs(q[0] - p[0]) / 2), sgn = q[0] >= p[0] ? 1 : -1;
-      if (Math.abs(q[0] - p[0]) < 10) return `M${p[0]},${p[1]} C${p[0] + 60},${p[1]} ${q[0] + 60},${q[1]} ${q[0]},${q[1]}`;
-      return `M${p[0]},${p[1]} C${p[0] + sgn * dx},${p[1]} ${q[0] - sgn * dx},${q[1]} ${q[0]},${q[1]}`;
+    const p = side(e.from, true), q = side(e.to, false);
+    if (q[0] < p[0] + 12) {   // (the last column, or a step shown on hover that goes back): around, not through
+      const r = side(e.to, true), dx = 46;
+      return `M${p[0]},${p[1]} C${p[0] + dx},${p[1]} ${r[0] + dx},${r[1]} ${r[0] + 6},${r[1]}`;
     }
-    if (design === 'c') {
-      const mx = (p[0] + q[0]) / 2, my = (p[1] + q[1]) / 2, nx = -(q[1] - p[1]) * 0.12, ny = (q[0] - p[0]) * 0.12;
-      return `M${p[0]},${p[1]} Q${mx + nx},${my + ny} ${q[0]},${q[1]}`;
-    }
-    return `M${p[0]},${p[1]} L${q[0]},${q[1]}`;
+    const dx = Math.max(30, (q[0] - p[0]) / 2);
+    return `M${p[0]},${p[1]} C${p[0] + dx},${p[1]} ${q[0] - dx},${q[1]} ${q[0]},${q[1]}`;
   };
-  // "found from": only beyond the first step (the start's own are implied by where they sit)
-  const branch = (id) => {
-    const a = st.anchor.get(id);
-    if (a == null || a === m.seed || design === 'b') return null;
-    const [x0, y0] = P(a), [x1, y1] = P(id);
-    return `M${x0},${y0} L${x1},${y1}`;
-  };
-  const leader = (id) => { const [x, y] = P(id), [cx, cy] = C(id); return Math.hypot(cx - x, cy - y) > 2 ? `M${x},${y} L${cx},${cy}` : null; };
-  // progressive disclosure: the routes to the products always; a species' own steps on hover; a step
-  // just found for a moment
-  // (a few at a time: a finished run's last frame, rebuilt from its summary, would flash them all)
+  // progressive disclosure: the routes to the products always; a species' own steps on hover or focus;
+  // a step just found, for a moment (a few at a time: a run's last frame, rebuilt from its summary,
+  // would flash them all)
   let newStep = new Set(cur > 0 ? f.steps.map((x) => x[0]).filter((id) => !m.frames[cur - 1].steps.some((y) => y[0] === id)) : []);
   if (newStep.size > 12) newStep = new Set();
-  const shownEdges = edges.filter((e) => e.main || hover?.id === e.id || (hover?.kind === 'n' && (e.from === hover.id || e.to === hover.id))
-    || (newStep.has(e.id) && !e.below))
-    .filter((e) => design !== 'b' || (cardIds.has(e.from) && cardIds.has(e.to)) || hover?.id === e.id);
+  const shownEdges = edges.filter((e) => P(e.from) && P(e.to) && (e.main || hover?.id === e.id || (hover?.kind === 'n' && (e.from === hover.id || e.to === hover.id))
+    || (newStep.has(e.id) && !e.below && isCard(e.from) && isCard(e.to))));
+
+  // corrections since the last frame: flashed on what they moved
+  const prevT = cur > 0 ? m.frames[cur - 1].t : -1;
+  const moved = new Set(), reref = new Set();
+  for (const ev of tl.events || []) {
+    if (!(ev[0] > prevT + 1e-6 && ev[0] <= f.t + 1e-6)) continue;
+    if (ev[1] === 'barrier_moved') for (const id of ev[2]) moved.add(id);
+    if (ev[1] === 'species_rereferenced') for (const id of ev[2]) reref.add(id);
+  }
 
   const hovered = hover?.kind === 'n' ? hover.id : null;
   const hoveredEdge = hover?.kind === 'e' ? edges.find((e) => e.id === hover.id) : null;
   const near = hovered ? new Set([hovered, ...edges.filter((e) => e.from === hovered || e.to === hovered).flatMap((e) => [e.from, e.to])]) : null;
   const dim = (id) => near && !near.has(id);
-  const dotIds = seen.filter((id) => !cardIds.has(id));
-  const piles = design === 'b' ? [...sc.piles.entries()] : [];
-  const lane = design === 'b' ? series.map((p, k) => ({ ...p, x: box[2] - 330, y: box[1] + 60 + k * 150 })) : [];
-  // arrivals grow from where they came from: the species they were found from, or (B) their pile slot
-  const origin = (id) => (design === 'b' && cardIds.has(id) ? sc.pile.get(id) : null) || P(st.anchor.get(id)) || C(id);
-  const style = (id) => { const a = origin(id), c = C(id); return `--fx:${a[0] - c[0]}px;--fy:${a[1] - c[1]}px;transform:translate(${c[0]}px,${c[1]}px)`; };
-  const since = new Map(relevantOrder);
-  const freshCard = (id) => (design === 'b' ? cur > 0 && id !== m.seed && (since.get(id) ?? -1) >= f.t - 12 : fresh(id));
+  const dotIds = seen.filter((id) => !isCard(id) && P(id));
+  const cardIds = seen.filter((id) => isCard(id) && P(id));
+  // arrivals grow from where they came from: a dot from the species it was found from, a cell from its pile slot
+  const origin = (id) => (isCard(id) ? sc.pile.get(id) : P(sc.anchor.get(id))) || P(id);
+  const style = (id) => { const a = origin(id), c = P(id); return `--fx:${a[0] - c[0]}px;--fy:${a[1] - c[1]}px;transform:translate(${c[0]}px,${c[1]}px)`; };
+  const freshCard = (id) => cur > 0 && id !== m.seed && (sc.since.get(id) ?? -1) >= f.t - 12;
 
+  // the reactor's events
   const tNow = nowOf();
   const madeBy = new Map();
   for (const e of rx.events) if (e.prod != null && e.t <= tNow + 0.5) { if (!madeBy.has(e.prod)) madeBy.set(e.prod, []); madeBy.get(e.prod).push(e); }
   const openEvent = (ev) => { hc.close(); setDialog(ev); };
   const lastTen = rx.events.reduce((n, e) => n + (e.t <= tNow + 0.5 && e.t > tNow - WINDOW_S ? 1 : 0), 0);
-  const seenSet = new Set(seen);
-  const avoid = order.map((id) => { const [x, y] = C(id), w = cardW(id) * scale; return [x, y + 8 * scale, w + 16 * scale, w * 0.75 + 40 * scale]; });
-  const settleOf = (ev, at) => {
-    if (design === 'b') { const c = Math.min((st.hop.get(ev.src ?? m.seed) ?? 0) + 1, MAX_COL); return [schemeX0(c) + (PILE_W / 2) * PILE, -70]; }
-    const o = C(m.seed), d = Math.max(1, Math.hypot(at[0] - o[0], at[1] - o[1]));
-    return [at[0] + ((at[0] - o[0]) / d) * 60 * scale, at[1] + ((at[1] - o[1]) / d) * 60 * scale];
-  };
+  const avoid = [...cardIds.map((id) => { const [x, y] = P(id), w = cardW(id); return [x, y + 10, w + 16, w * 0.75 + 46]; }),
+    ...lane.map((p) => [p.x + 150, p.y, 320, 130])];
+  const settleOf = (ev) => { const c = Math.min((sc.hop.get(ev.src ?? m.seed) ?? 0) + 1, MAX_COL); return [colX(c) + (PILE_W / 2) * PILE, -60]; };
   const onCatch = (id) => setCaught((c) => ({ ...c, [id]: performance.now() }));
   const isCaught = (id) => caught[id] && performance.now() - caught[id] < 1200;
-  const stage = html`<div class=${`ld-stage ld-${design}`}>
-    <svg viewBox=${vb.join(' ')} preserveAspectRatio="xMidYMid meet" role="img" style=${`--s:${scale}`}
-      aria-label="The network: each species placed where it was found; the start, the products and what holds material as structures; steps as lines, darker the faster at the run's temperature">
-      <defs>${['fast', 'run', 'slow', 'none', 'h0', 'h1', 'h2'].flatMap((k) => [['s', 9], ['m', 14], ['l', 22]].map(([z, px]) => html`<marker id=${`ld-arr-${k}-${z}`} viewBox="0 0 10 10" refX="8" refY="5"
-        markerWidth=${px * scale} markerHeight=${px * scale} markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z" class=${`ld-arrhead ${k}`} /></marker>`))}</defs>
-      ${design === 'c' && [1, 2, 3, 4, 5].filter((h) => [...st.hop.values()].some((x) => Math.min(x, 5) === h)).map((h) => html`<g class="ld-ring" key=${`r${h}`}>
-        <circle r=${RING(h) - 14} /><text y=${-(RING(h) + TRACK * Math.max(0, ...[...st.ring.keys()].filter((k) => k.startsWith(`${h}:`)).map((k) => +k.split(':')[1])) + 16)}>${h === 1 ? '1 step from the start' : `${h}${h === 5 ? '+' : ''} steps from the start`}</text></g>`)}
-      ${piles.map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${c === 0 ? 0 : 150 + (c - 1) * COL_W} y="-18">${c === 0 ? 'start' : `${c}${c === MAX_COL ? '+' : ''} step${c === 1 ? '' : 's'} · ${k} found`}</text>`)}
-      <g class="ld-branches">${seen.map((id) => { const d = branch(id); return d && html`<path key=${`b${id}`} d=${d} class=${`ld-branch ${dim(id) ? 'dim' : ''}`} />`; })}</g>
-      <g class="ld-steps">${[...shownEdges].sort((a, b) => a.main - b.main).map((e) => html`<g key=${e.id} class=${`ld-step ${e.main ? 'main' : ''} ${newStep.has(e.id) && !e.main ? 'new' : ''} ${e.speed || 'none'} ${e.below ? 'below' : ''} ${e.irc === -1 ? 'unchecked' : ''} ${(near && !(near.has(e.from) && near.has(e.to))) ? 'dim' : ''} ${hover?.id === e.id ? 'on' : ''}`}
-          ...${hc.bind(`e:${e.id}`, e.id, (el, ev) => { const r = el.getBoundingClientRect(); return ev ? pointBox(ev.clientX, ev.clientY) : pointBox(r.left + r.width / 2, r.top + r.height / 2); })}>
+  const nodeAnchor = (el) => (el.querySelector('.ld-card-bg, circle') || el).getBoundingClientRect();
+  const lineArrow = (e) => `url(#ld-arr-${e.hue != null ? `h${e.hue}` : e.speed || 'none'}-${e.w < 2.5 ? 's' : e.w < 6 ? 'm' : 'l'})`;
+
+  const stage = html`<div class="ld-stage ld-b">
+    <svg viewBox=${vb.join(' ')} preserveAspectRatio="xMidYMid meet" role="group" style="--s:1"
+      aria-label="The network as a reaction scheme: the start at the left, a column per step; species that hold material as structures, the rest as dots in each column's pile; the leading products at the right">
+      <defs>${['fast', 'run', 'slow', 'none', 'h0', 'h1', 'h2'].flatMap((k) => [['s', 10], ['m', 15], ['l', 22]].map(([z, px]) => html`<marker id=${`ld-arr-${k}-${z}`} viewBox="0 0 10 10" refX="8" refY="5"
+        markerWidth=${px} markerHeight=${px} markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z" class=${`ld-arrhead ${k}`} /></marker>`))}</defs>
+      ${[...sc.piles.entries()].map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${colX(c) + 6} y="-22">${`${c}${c === MAX_COL ? '+' : ''} step${c === 1 ? '' : 's'} · ${k} found`}</text>`)}
+      <g class="ld-lane-links">${lane.map((p) => {
+        const [x0, y0] = P(p.id) || [p.x, p.y], gx = p.x - 8, from = isCard(p.id) ? x0 + CARD_W / 2 + 4 : x0 + 4;
+        return html`<path key=${`lk${p.key}`} d=${`M${from},${y0} C${(from + gx) / 2},${y0} ${(from + gx) / 2},${p.y} ${gx},${p.y}`} class=${`ld-lane-link h${p.hue ?? 'x'}`} />`;
+      })}</g>
+      <g class="ld-steps">${[...shownEdges].sort((a, b) => a.main - b.main).map((e) => html`<g key=${e.id}
+          class=${`ld-step ${e.main ? 'main' : ''} ${newStep.has(e.id) && !e.main ? 'new' : ''} ${moved.has(e.id) ? 'moved' : ''} ${e.speed || 'none'} ${e.below ? 'below' : ''} ${e.irc === -1 ? 'unchecked' : ''} ${(near && !(near.has(e.from) && near.has(e.to))) ? 'dim' : ''} ${hover?.id === e.id ? 'on' : ''}`}
+          ...${hc.bind(`e:${e.id}`, e.id, (el, ev) => { const r = el.getBoundingClientRect(); return ev ? pointBox(ev.clientX, ev.clientY) : pointBox(r.left + r.width / 2, r.top + r.height / 2); })}
+          aria-label=${`Step ${label(e.from)} to ${label(e.to)}${e.barrier != null ? `, barrier ${e.barrier.toFixed(1)} kcal/mol` : ''}`}>
         <path d=${pathOf(e)} class="ld-hit" />
-        <path d=${pathOf(e)} class="ld-line" style=${`stroke-width:${e.w * scale}px${e.hue != null ? `;stroke:var(--ld-h${e.hue})` : ''}`}
-          marker-end=${e.main || hover?.id === e.id ? `url(#ld-arr-${e.hue != null ? `h${e.hue}` : e.speed || 'none'}-${e.w < 2.5 ? 's' : e.w < 6 ? 'm' : 'l'})` : null} />
-        ${e.main && !noFlux && html`<path d=${pathOf(e)} class="ld-flow" style=${`stroke-width:${Math.max(2, e.w * 0.55) * scale}px`} />`}
+        <path d=${pathOf(e)} class="ld-line" style=${`stroke-width:${e.w}px${e.hue != null ? `;stroke:var(--ld-h${e.hue})` : ''}`}
+          marker-end=${e.main || hover?.id === e.id ? lineArrow(e) : null} />
+        ${e.main && !noFlux && html`<path d=${pathOf(e)} class="ld-flow" style=${`stroke-width:${Math.max(2, e.w * 0.55)}px`} />`}
         ${e.co?.with?.length > 0 && (e.main || hover?.id === e.id) && (() => {
-          const [x0, y0] = C(e.from), [x1, y1] = C(e.to);
-          return html`<text x=${x0 + (x1 - x0) * 0.5} y=${y0 + (y1 - y0) * 0.5 - 8 * scale} class="ld-co" style=${`font-size:${12 * scale}px`}>+ ${e.co.with.map(label).join(' + ')}</text>`;
+          const p = side(e.from, true), q = side(e.to, false);
+          return html`<text x=${(p[0] + q[0]) / 2} y=${(p[1] + q[1]) / 2 - 9} class="ld-co" style="font-size:12px">+ ${e.co.with.map(label).join(' + ')}</text>`;
         })()}
       </g>`)}</g>
       <g class="ld-activity">${act.pairs.filter(([a, b]) => P(a) && P(b) && a !== b).map(([a, b, kind], k) => html`<path key=${`p${a}-${b}-${k}`}
-        d=${`M${C(a)[0]},${C(a)[1]} L${C(b)[0]},${C(b)[1]}`} class=${`ld-probe ${kind}`} />`)}</g>
-      <g class="ld-leaders">${order.map((id) => { const d = leader(id); return d && html`<path key=${`l${id}`} d=${d} class="ld-leader" />`; })}</g>
+        d=${`M${P(a)[0]},${P(a)[1]} L${P(b)[0]},${P(b)[1]}`} class=${`ld-probe ${kind}`} />`)}</g>
       <g class="ld-nodes">${dotIds.map((id) => {
         const s = amount.get(id), hue = hueOf(id);
         return html`<g key=${`n${id}`} class=${`ld-dot ${isCaught(id) ? 'caught' : ''} ${s?.[4] ? 'pop' : ''} ${hue != null && s?.[3] > 1e-3 ? `h${hue}` : ''} ${fresh(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
-          style=${style(id)} ...${hc.bind(`n:${id}`, id, (el) => el.querySelector('circle, .ld-card-bg').getBoundingClientRect())}>
-          <g class="ld-grow"><circle r=${(design === 'b' ? 3 : s?.[4] ? 6.5 : 4.5) * scale} /><circle r=${(design === 'b' ? 5 : 12) * scale} class="ld-hit" /></g></g>`;
+          style=${style(id)} ...${hc.bind(`n:${id}`, id, nodeAnchor)} tabindex="-1">
+          <g class="ld-grow"><circle r="3" /><circle r="5" class="ld-hit" /></g></g>`;
       })}</g>
       ${rx.events.length > 0 && html`<${ReactorOverlay} apiJob=${apiJob} events=${rx.events} now=${nowOf} live=${followLive || !!eventClock}
-        posOf=${(id) => (seenSet.has(id) ? C(id) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
-        avoid=${avoid} settleOf=${(ev, at) => settleOf(ev, at)} scale=${scale} onOpen=${openEvent} onCatch=${onCatch} />`}
-      <g class="ld-cards">${[...order].reverse().map((id) => {
-        const w = cardW(id) * scale, h = w * 0.75, hue = hueOf(id), img = imgOf(id), s = amount.get(id), nm = nameOf(id);
-        return html`<g key=${`c${id}`} class=${`ld-card ${isCaught(id) ? 'caught' : ''} ${id === m.seed ? 'seed' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
-          style=${style(id)} ...${hc.bind(`n:${id}`, id, (el) => el.querySelector('circle, .ld-card-bg').getBoundingClientRect())}>
+        posOf=${(id) => (known.has(id) ? P(id) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
+        avoid=${avoid} settleOf=${settleOf} scale=${1} onOpen=${openEvent} onCatch=${onCatch} />`}
+      <g class="ld-cards">${cardIds.map((id) => {
+        const w = cardW(id), h = w * 0.75, hue = hueOf(id), img = imgOf(id), nm = nameOf(id) || short(tl.smiles[id], 16), fin = groupFin(id);
+        return html`<g key=${`c${id}`} class=${`ld-card ${isCaught(id) ? 'caught' : ''} ${reref.has(id) ? 'reref' : ''} ${id === m.seed ? 'seed' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
+          style=${style(id)} ...${hc.bind(`n:${id}`, id, nodeAnchor)} role="button"
+          aria-label=${`${id === m.seed ? 'The start' : label(id)}${fin > 1e-4 && id !== m.seed ? `, ${pct(fin)} of the start at the end` : ''}`}>
           <g class="ld-grow">
-            <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx=${6 * scale} class="ld-card-bg" />
-            ${img ? html`<image href=${img} x=${-w / 2 + 3 * scale} y=${-h / 2 + 3 * scale} width=${w - 6 * scale} height=${h - 6 * scale} preserveAspectRatio="xMidYMid meet" />`
-              : html`<text y=${5 * scale} class="ld-unknown">?</text>`}
-            ${(nm || (id !== m.seed && groupFin(id) > 1e-4)) && html`<text y=${h / 2 + 15 * scale} class="ld-name" style=${`font-size:${12.5 * scale}px`}>${nm ? short(nm, design === 'b' ? 13 : 24) : ''}${id !== m.seed && groupFin(id) > 1e-4 ? html`<tspan class="ld-amt">${nm ? ' · ' : ''}${pct(groupFin(id))}</tspan>` : ''}</text>`}
+            <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx="6" class="ld-card-bg" />
+            ${img ? html`<image href=${img} x=${-w / 2 + 3} y=${-h / 2 + 3} width=${w - 6} height=${h - 6} preserveAspectRatio="xMidYMid meet" />`
+              : html`<text y="5" class="ld-unknown">?</text>`}
+            ${knownIds.has(id) && html`<text x=${w / 2 - 8} y=${-h / 2 + 13} class="ln-known" title="reused from an earlier run">↺</text>`}
+            <text y=${h / 2 + 15} class="ld-name" style="font-size:12.5px">${short(id === m.seed ? nameOf(id) || 'start' : nm, 17)}</text>
+            ${id !== m.seed && fin > 1e-4 && html`<text y=${h / 2 + 30} class="ld-name ld-amt" style="font-size:12px">${pct(fin)}</text>`}
           </g></g>`;
       })}</g>
+      ${sel && html`<${LaneGauge} sel=${sel} f=${f} x=${laneX} y=${laneTop - 40} />`}
       ${lane.map((p) => {
-        const [x0, y0] = C(p.id) || [p.x, p.y], gx = p.x - 10;
-        return html`<g class=${`ld-lane h${p.hue ?? 'x'}`} key=${`ln${p.key}`}>
-          <path d=${`M${x0 + cardW(p.id) / 2},${y0} C${(x0 + gx) / 2 + 40},${y0} ${(x0 + gx) / 2},${p.y} ${gx},${p.y}`} class="ld-lane-link" />
-          <rect x=${p.x} y=${p.y - 56} width="300" height="112" rx="8" class="ld-lane-bg" />
-          <rect x=${p.x + 4} y=${p.y - 52} width="128" height="104" rx="6" class="ld-card-bg" />
-          ${imgOf(p.id) && html`<image href=${imgOf(p.id)} x=${p.x + 6} y=${p.y - 48} width="124" height="96" preserveAspectRatio="xMidYMid meet" />`}
-          <text x=${p.x + 144} y=${p.y - 18} class="ld-lane-pct">${pct(p.fin)}</text>
-          <text x=${p.x + 144} y=${p.y + 2} class="ld-lane-sub">of the start, at the end</text>
-          <text x=${p.x + 144} y=${p.y + 22} class="ld-lane-sub">${short(label(p.id), 22)}</text>
-          <rect x=${p.x + 144} y=${p.y + 34} width="142" height="8" rx="4" class="ld-bar-bg" />
-          <rect x=${p.x + 144} y=${p.y + 34} width=${Math.max(2, 142 * Math.min(1, p.fin))} height="8" rx="4" class="ld-bar" />
+        return html`<g class=${`ld-lane h${p.hue ?? 'x'}`} key=${`ln${p.key}`} ...${hc.bind(`n:${p.id}`, p.id, nodeAnchor)}>
+          <rect x=${p.x} y=${p.y - 58} width="310" height="116" rx="8" class="ld-lane-bg" />
+          <rect x=${p.x + 4} y=${p.y - 54} width="130" height="108" rx="6" class="ld-card-bg" />
+          ${imgOf(p.id) && html`<image href=${imgOf(p.id)} x=${p.x + 7} y=${p.y - 50} width="124" height="96" preserveAspectRatio="xMidYMid meet" />`}
+          <text x=${p.x + 146} y=${p.y - 20} class="ld-lane-pct">${pct(p.fin)}</text>
+          <text x=${p.x + 146} y=${p.y} class="ld-lane-sub">of the start, at the end</text>
+          <text x=${p.x + 146} y=${p.y + 20} class="ld-lane-sub">${short(label(p.id), 22)}</text>
+          <rect x=${p.x + 146} y=${p.y + 32} width="150" height="8" rx="4" class="ld-bar-bg" />
+          <rect x=${p.x + 146} y=${p.y + 32} width=${Math.max(2, 150 * Math.min(1, p.fin))} height="8" rx="4" class="ld-bar" />
         </g>`;
       })}
     </svg>
     ${hovered && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
-      <${NodeCard} s=${amount.get(hovered)} img=${imgOf(hovered, 320, 240)} name=${nameOf(hovered)}
+      <${NodeCard} s=${amount.get(hovered)} img=${imgOf(hovered, 320, 240)} name=${nameOf(hovered)} known=${knownIds.has(hovered)}
         smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} made=${madeBy.get(hovered) || []} onEvent=${openEvent} /><//>`}
     ${hoveredEdge && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop edge" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
       <${EdgeCard} e=${hoveredEdge} nm=${label} cond=${cond} /><//>`}
@@ -598,31 +510,130 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
   </div>`;
 
   const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series}
-    startLeft=${startLeft} steady=${f.t - steadySince} imgOf=${imgOf} nameOf=${label} cond=${cond} pending=${!f.steered} basis=${f.basis} sel=${tl.selectivity}
-    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
+    startLeft=${startLeft} steady=${f.t - steadySince} imgOf=${imgOf} nameOf=${label} cond=${cond} pending=${!f.steered} basis=${f.basis}
+    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:')}
+    reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
       open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
-  const keyEl = html`<${Key} cond=${cond} noFlux=${noFlux} design=${design} anyBelow=${edges.some((e) => e.below)} running=${running} />`;
-  if (design === 'a') {
-    return html`<div class="ld-page ld-page-a">${strip}<div class="ld-row">
-      <div class="ld-col">${stage}${keyEl}${controls}</div>
-      <aside class="ld-side"><${SidePanel} products=${series} imgOf=${imgOf} nameOf=${label} startLeft=${startLeft} q=${running ? tl.activity?.queue : null}
-        recent=${seen.filter(fresh).slice(-6).reverse()} smiles=${tl.smiles} /></aside></div></div>`;
+  const table = html`<${SpeciesTable} m=${m} f=${f} imgOf=${imgOf} label=${label} madeBy=${madeBy} hueOf=${hueOf} smiles=${tl.smiles} />`;
+  const mixture = String(jobId).startsWith('mix:');
+  return html`<div class="ld-page ld-page-b">
+    ${!mixture && html`<div class="ln-head"><h2>${example ? 'Live network · example' : job?.title?.replace(/^Reaction network expansion:\s*/, 'Network: ') || 'Live network'}</h2>
+      ${running && html`<span class="ln-live" title="Updating as the explorer works">● live</span>`}</div>`}
+    ${strip}
+    <div class="ld-viewbar">
+      <div class="segmented small" role="tablist" aria-label="Show the network as">
+        <button role="tab" aria-selected=${view === 'scheme'} class=${view === 'scheme' ? 'on' : ''} onClick=${() => setView('scheme')}>Scheme</button>
+        <button role="tab" aria-selected=${view === 'table'} class=${view === 'table' ? 'on' : ''} onClick=${() => setView('table')}>Table</button></div>
+      <span class="small muted">${view === 'scheme' ? 'hover, focus or tap a structure or a route for details; tap again to let go' : `the ${f.species.length} species that matter most, by what they hold at the end`}</span>
+    </div>
+    ${view === 'scheme' ? stage : table}
+    ${view === 'scheme' && html`<${Key} cond=${cond} noFlux=${noFlux} anyBelow=${edges.some((e) => e.below && shownEdges.includes(e))}
+      anyUnchecked=${shownEdges.some((e) => e.irc === -1)} known=${knownIds.size} running=${running} anyEvents=${rx.events.length > 0} />`}
+    ${controls}
+    ${extra}
+    <div class="ld-details">
+      ${jobId && !String(jobId).startsWith('mix:') && html`<${Closer} jobId=${jobId} job=${job} activity=${tl.activity} running=${running} />`}
+      <${Corrections} events=${tl.events || []} t=${f.t} smiles=${tl.smiles} names=${m.names} />
+    </div>
+  </div>`;
+}
+
+// A benchmark's selectivity in the outcome lane: the run's ratio, and the measured one (validation only).
+function LaneGauge({ sel, f, x, y }) {
+  const point = [...sel.series].reverse().find((r) => r[0] <= f.t + 1e-6);
+  const ref = sel.reference;
+  const share = (r) => (r == null ? null : r / (1 + r));
+  const p = point ? share(point[1]) : null;
+  const lo = ref?.range ? share(ref.range[0]) : ref?.value ? share(ref.value) : null;
+  const hi = ref?.range ? share(ref.range[1]) : lo;
+  const pair = sel.products?.length === 2 ? sel.products : null;
+  const W = 300;
+  return html`<g class="ld-gauge" transform=${`translate(${x},${y})`}>
+    <text class="ld-lane-sub" y="-30">${pair ? `${pair[0]} : ${pair[1]}` : 'selectivity'}${point?.[2] ? ' · answer stable' : ''}</text>
+    <text class="ld-lane-pct" y="-4">${p != null ? `${Math.round(p * 100)} : ${100 - Math.round(p * 100)}` : '— : —'}</text>
+    <rect y="8" width=${W} height="12" rx="4" class="ld-gauge-b" />
+    <rect y="8" width=${p != null ? W * p : 0} height="12" rx="4" class="ld-gauge-a" />
+    ${lo != null && html`<rect x=${W * lo - 1} y="2" width=${Math.max(3, W * (hi - lo))} height="24" class="ld-gauge-ref"><title>${ref?.citation_text || ref?.citation || 'experiment'}</title></rect>`}
+    ${lo != null && html`<text class="ld-lane-sub" y="42">▮ measured ${Math.round(share(ref.value) * 100)} : ${100 - Math.round(share(ref.value) * 100)} · validation only</text>`}
+  </g>`;
+}
+
+// Every species the frame holds, as a table (keyboard and screen-reader friendly).
+function SpeciesTable({ m, f, imgOf, label, madeBy, hueOf, smiles }) {
+  const rows = [...f.species].sort((a, b) => (b[0] === m.seed) - (a[0] === m.seed) || (b[3] || 0) - (a[3] || 0));
+  return html`<div class="ld-table-wrap"><table class="ld-table small">
+    <caption class="sr-only">Species of the run at this moment</caption>
+    <thead><tr><th></th><th>species</th><th title="Free energy relative to the start">G (kcal/mol)</th><th title="The most there was at once, as a share of the start">most at once</th>
+      <th title="At the end of the simulated time, as a share of the start">at the end</th><th>found at</th><th title="Reactor MD events verified to have made it">made in the MD</th></tr></thead>
+    <tbody>${rows.map((s) => html`<tr key=${s[0]} class=${hueOf(s[0]) != null ? `h${hueOf(s[0])}` : ''}>
+      <td>${imgOf(s[0], 120, 90) ? html`<img src=${imgOf(s[0], 120, 90)} alt="" loading="lazy" />` : ''}</td>
+      <td><b>${s[0] === m.seed ? 'start' : label(s[0])}</b><div class="mono muted">${short(smiles[s[0]] || '', 40)}</div></td>
+      <td class="mono">${s[1] != null ? `${s[1] > 0 ? '+' : ''}${s[1].toFixed(1)}` : '—'}</td>
+      <td class="mono">${s[0] === m.seed ? '' : pct(s[2] || 0)}</td><td class="mono">${pct(s[3] || 0)}</td>
+      <td class="mono">${s[0] === m.seed ? '' : fmtClock(m.first.get(s[0]) || 0)}</td>
+      <td class="mono">${(madeBy.get(s[0]) || []).length || ''}</td></tr>`)}</tbody></table></div>`;
+}
+
+const sign = (x) => (x > 0 ? `+${x.toFixed(1)}` : x.toFixed(1));
+function eventText(ev, smiles, names = {}) {
+  const [, kind, ids, d] = ev;
+  if (kind === 'barrier_moved') {
+    const delta = d.to != null && d.from != null ? d.to - d.from : null;
+    const why = /gxtb/.test(d.why || '') ? 'steering pending' : d.src === 'dft' ? 'DFT back' : d.src === 'borrowed' ? 'borrowed' : '';
+    return [delta != null && delta < 0 ? 'good' : 'warn', `Barrier ${delta != null ? sign(delta) : ''}${d.to != null ? ` → ${d.to.toFixed(1)} kcal/mol` : ''}${why ? ` · ${why}` : ''}`];
   }
-  if (design === 'c') {
-    const recent = seen.filter((id) => id !== m.seed).slice(-7).reverse();
-    return html`<div class="ld-page ld-page-c">${strip}${stage}
-      <div class="ld-ticker"><span class="ld-ticker-h">Just found</span>${recent.map((id) => html`<span class=${`ld-tick ${fresh(id) ? 'fresh' : ''}`} key=${id}
-        ...${hc.bind(`n:${id}`, id)}>
-        ${imgOf(id, 120, 90) ? html`<img src=${imgOf(id, 120, 90)} alt=${tl.smiles[id] || ''} />` : html`<i class="ld-tick-q">?</i>`}<span class="mono">${fmtClock(m.first.get(id))}</span></span>`)}</div>
-      ${keyEl}${controls}</div>`;
-  }
-  return html`<div class="ld-page ld-page-b">${strip}${stage}${keyEl}${controls}</div>`;
+  if (kind === 'species_rereferenced') return ['good', `Lower conformer${names[ids[0]] || smiles[ids[0]] ? `: ${names[ids[0]] || short(smiles[ids[0]], 22)}` : ''}${d.to != null && d.from != null ? ` ${sign(d.to - d.from)} kcal/mol` : ''}`];
+  if (kind === 'step_replaced') return ['info', `Step replaced by ${d.by?.length || 1} better`];
+  if (kind === 'step_closed') return ['muted', 'Step closed: out of reach'];
+  if (kind === 'step_reopened') return ['info', 'Step reopened'];
+  return ['muted', kind];
+}
+
+// The corrections so far, quietly: newest first (moves under 0.05 kcal/mol left out).
+function Corrections({ events, t, smiles, names }) {
+  const sizable = (e) => !(['barrier_moved', 'species_rereferenced'].includes(e[1]) && e[3].to != null && e[3].from != null && Math.abs(e[3].to - e[3].from) < 0.05);
+  const feed = events.filter((e) => e[0] <= t + 1e-6 && sizable(e));
+  if (!feed.length) return null;
+  return html`<details class="ld-corr"><summary class="small"><b>Corrections</b> <span class="muted">${feed.length} so far: barriers that moved, lower conformers, steps replaced</span></summary>
+    <ul class="ln-feed">${feed.slice(-12).reverse().map((e) => { const [cls, txt] = eventText(e, smiles, names); return html`<li class=${cls}><span class="mono">${fmtClock(e[0])}</span> ${txt}</li>`; })}</ul></details>`;
+}
+
+// What the explorer does now, and the ways in for a closer look: the reactor's MD and what it made so
+// far, the path searches, results, log.
+const WORK = { propose: 'proposing', fast: 'quick paths', channels: 'channels', irc: 'IRCs', piece: 'path pieces', ts: 'TS searches', rotamer: 'rotamers', steer: 'DFT single points' };
+const strip_ = (s) => String(s || '').replace(/ \(unusual bonding #\w+\)/g, '');
+export function Closer({ jobId, job, activity, running }) {
+  const q = activity?.queue;
+  const sims = activity?.sims || [];
+  const reactor = ['md', 'nanoreactor', 'reactor', 'collide'].includes(job?.params?.generator);
+  const openSim = (stream) => { update((s) => { s.networkFocus = { jobId, stream }; }); openJob(jobId, 'live'); };
+  const done = q?.finished ? Object.entries(q.finished).filter(([, v]) => v.done || v.failed) : [];
+  return html`<section class="ln-closer">
+    <span class="section-title">Look closer</span>
+    <div class="ln-doors">
+      ${reactor && html`<button class="btn small" onClick=${() => openJob(jobId, 'reactor')} title="The molecular dynamics that proposes the reactions">Reactor MD</button>`}
+      <button class="btn small" onClick=${() => openJob(jobId, 'live')} title="Each proposed reaction and its path search, live">Path searches</button>
+      <button class="btn small" onClick=${() => openJob(jobId, 'result')} disabled=${job?.status === 'queued'}>Results</button>
+      <button class="btn small" onClick=${() => openJob(jobId, 'log')}>Log</button>
+    </div>
+    ${done.length > 0 && html`<div class="ln-done small muted">${running ? 'Done so far: ' : 'Work done: '}${done.map(([k, v]) => html`<span title=${v.failed ? `${v.failed} failed` : ''}><b>${v.done}</b> ${WORK[k] || k}</span>`)}</div>`}
+    ${activity?.reactor?.distinct > 0 && html`<span class="small muted">The reactor found ${activity.reactor.distinct} kind${activity.reactor.distinct === 1 ? '' : 's'} of product in ${activity.reactor.events} reaction events
+        (${activity.reactor.runs} MD runs); the run optimizes and connects them next</span>
+      <div class="ln-reactor">${activity.reactor.products.slice(0, 6).map((p) => html`<div class="ln-rp" title=${`${p.products} · seen ${p.count}×`}>
+        <img src=${`/api/jobs/${jobId}/reactor-product/${encodeURIComponent(p.run)}/${p.event}`} alt=${p.products} loading="lazy" />
+        <span>${strip_(p.products)}${p.unusual ? html` <i title="No Lewis structure fits it: drawn from its geometry">unusual bonding</i>` : ''}</span><b>${p.count}×</b></div>`)}</div>`}
+    ${sims.length > 0 && html`<div class="ln-sims">${sims.slice(0, 5).map((s) => html`<button class="ln-sim" onClick=${() => openSim(s.stream)} title=${`${s.label}${s.caption ? ` · ${s.caption}` : ''}: open it`}>
+      ${drawable(s.from) ? html`<img src=${depictUrl(s.from, 120, 90, drawable(s.to) ? s.to : null)} alt=${s.from} />` : html`<span class="ln-sim-txt">${strip_(s.from || '?')}</span>`}
+      <span class="ln-sim-arrow">→</span>
+      ${drawable(s.to) ? html`<img src=${depictUrl(s.to, 120, 90, drawable(s.from) ? s.from : null)} alt=${s.to} />` : html`<span class="ln-sim-txt">${strip_(s.to || '?')}</span>`}
+      <span class="small muted">${(s.label || '').replace(/ from species.*/, '')}</span></button>`)}</div>`}
+  </section>`;
 }
 
 // ---------------------------------------------------------------- pieces
 function Spark({ series, w = 150, h = 34 }) {
   const t1 = Math.max(1, ...series.flatMap((s) => s.pts.map((p) => p[0])));
-  return html`<svg class="ld-spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} aria-label="Each leading product's amount over the run">
+  return html`<svg class="ld-spark" width=${w} height=${h} viewBox=${`0 0 ${w} ${h}`} role="img" aria-label="Each leading product's amount over the run">
     <line x1="0" x2=${w} y1=${h - 1} y2=${h - 1} class="ld-spark-axis" />
     ${series.map((s) => html`<polyline class=${`ld-spark-line h${s.hue ?? 'x'}`} points=${s.pts.map(([t, v]) => `${(w * t) / t1},${h - 2 - (h - 4) * Math.min(1, v)}`).join(' ')} />`)}
   </svg>`;
@@ -635,17 +646,17 @@ function LiveClock({ t0 }) {
   return fmtClock(Math.max(0, Date.now() / 1000 - t0));
 }
 
-function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft, steady, imgOf, nameOf, cond, pending, basis, sel, steering, reactor, live0 = null }) {
-  const ph = running ? phaseOf(q) : null;
-  return html`<div class="ld-strip" role="status">
-    <div class="ld-s-time" title="Run time">
+function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft, steady, imgOf, nameOf, cond, pending, steering, reactor, live0 = null, merged = false }) {
+  const ph = running && atEnd ? phaseOf(q) : null;
+  return html`<div class="ld-strip" role="status" aria-live="off">
+    <div class="ld-s-time" title=${merged ? 'The mixture as merged so far' : 'Run time'}>
       <span class=${`ld-s-dot ${running ? 'live' : ''}`}></span>
-      <b class="mono">${live0 != null ? html`<${LiveClock} t0=${live0} />` : fmtClock(t)}</b>
+      ${!merged && html`<b class="mono">${live0 != null ? html`<${LiveClock} t0=${live0} />` : fmtClock(t)}</b>`}
       ${cond.budget && html`<span class="ld-s-budget" title=${`of a ${fmtClock(cond.budget)} time budget`}><i style=${`width:${Math.min(100, (100 * t) / cond.budget)}%`}></i></span>`}
     </div>
     <div class="ld-s-phase">
-      <b>${ph ? ph.text : running ? (atEnd ? 'Starting' : 'Replaying the run so far') : atEnd ? 'Finished' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)}`}</b>
-      <span class="small muted">${ph ? ph.detail : ''}${ph ? '' : `${cond.T ? `${Math.round(cond.T)} K` : ''}${cond.tauKnown ? ` · ${fmtTime(cond.tau)} simulated` : ''}`}</span>
+      <b>${merged ? (running ? 'Seeds running; merged so far' : 'Merged network') : ph ? ph.text : running ? (atEnd ? 'Starting' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)} so far`) : atEnd ? 'Finished' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)}`}</b>
+      <span class="small muted">${ph ? ph.detail : `${cond.T ? `${Math.round(cond.T)} K` : ''}${cond.tauKnown ? ` · ${fmtTime(cond.tau)} simulated` : ''}`}</span>
     </div>
     <div class="ld-s-counts"><span><b>${counts.species}</b> species</span><span><b>${counts.steps ?? nSteps}</b> steps</span></div>
     ${reactor && html`<button class=${`ld-s-reactor ${reactor.running ? 'on' : ''}`} onClick=${reactor.open}
@@ -654,42 +665,26 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft
         ? `${reactor.recent} event${reactor.recent === 1 ? '' : 's'} in the last ${WINDOW_S} s` : `${reactor.events} events`}</span></button>`}
     <div class="ld-s-products" title="What the start has turned into at the end of the simulated time, as a share of the start">
       ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${nameOf(p.id)}>
-        ${imgOf(p.id, 120, 90) && html`<img src=${imgOf(p.id, 120, 90)} alt="" />`}<b>${pct(p.fin)}</b></span>`)}
+        ${imgOf(p.id, 120, 90) && html`<img src=${imgOf(p.id, 120, 90)} alt=${nameOf(p.id)} />`}<b>${pct(p.fin)}</b></span>`)}
       ${startLeft != null && html`<span class="ld-s-prod start" title="The start, left at the end of the simulated time"><span class="ld-s-pname">start</span><b>${pct(startLeft)}</b></span>`}
       ${products.length > 0 && html`<${Spark} series=${products} />`}
       <span class=${`small ld-s-steady ${pending ? 'pending' : ''}`} title="How long the leading product and its amount (within 2 points) have held, in run time">
-        ${pending ? 'energies wait for DFT' : products.length ? html`answer held<br /><b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}
-        ${steering && html`<br /><span title="The level the live kinetics' energies are steered to (DFT single points)">energies: ${steering}</span>`}</span>
+        ${pending ? 'energies wait for DFT' : merged ? '' : products.length ? html`answer held <b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}
+        ${steering && html`<br /><span title="The level the live kinetics' energies are steered to (DFT single points)">energies: <b>${steering}</b></span>`}</span>
     </div>
   </div>`;
 }
 
-function SidePanel({ products, imgOf, nameOf, startLeft, q, recent, smiles }) {
-  return html`<section><span class="section-title">What forms</span>
-      <span class="small muted">at the end of the simulated time, as a share of the start</span>
-      ${products.map((p) => html`<div class=${`ld-bar-row h${p.hue ?? 'x'}`}>
-        ${imgOf(p.id, 120, 90) && html`<img src=${imgOf(p.id, 120, 90)} alt="" />`}
-        <div><span>${short(nameOf(p.id) || smiles[p.id], 28)}</span><i><b style=${`width:${Math.max(1, 100 * Math.min(1, p.fin))}%`}></b></i></div>
-        <b>${pct(p.fin)}</b></div>`)}
-      ${startLeft != null && html`<div class="ld-bar-row start"><div><span>start left</span><i><b style=${`width:${Math.max(1, 100 * Math.min(1, startLeft))}%`}></b></i></div><b>${pct(startLeft)}</b></div>`}
-    </section>
-    ${q && html`<section><span class="section-title">Now</span>
-      ${(q.running || []).slice(0, 5).map((r) => html`<div class="small ld-now"><i class="ld-now-dot"></i>${(PHASE[r.kind] || r.kind)} <span class="mono muted">${r.what.split(' · ')[0]}</span></div>`)}
-      ${(q.running || []).length > 5 && html`<span class="small muted">and ${(q.running || []).length - 5} more</span>`}</section>`}
-    ${recent.length > 0 && html`<section><span class="section-title">Just found</span>
-      <div class="ld-recent">${recent.map((id) => html`<img src=${imgOf(id, 120, 90)} alt=${smiles[id] || ''} title=${smiles[id] || ''} />`)}</div></section>`}`;
-}
-
-function NodeCard({ s, img, name, smiles, first, seed, made = [], onEvent }) {
+function NodeCard({ s, img, name, smiles, first, seed, known, made = [], onEvent }) {
   return html`${img && html`<img src=${img} alt=${smiles || ''} />`}
-    <div class="ld-pop-name">${name || (seed ? 'start' : '')}</div>
+    <div class="ld-pop-name">${name || (seed ? 'start' : '')}${known ? html` <span class="ln-known" title="reused from an earlier run">↺ reused</span>` : ''}</div>
     <div class="mono small muted ld-pop-smi">${short(smiles || 'structure not perceived', 48)}</div>
     <div class="ld-pop-nums">
       ${s?.[1] != null && html`<span><b>${s[1] > 0 ? '+' : ''}${s[1].toFixed(1)}</b>kcal/mol (G)</span>`}
       ${!seed && html`<span><b>${pct(s?.[2] ?? 0)}</b>most at once</span><span><b>${pct(s?.[3] ?? 0)}</b>at the end</span>`}
     </div>
     <div class="small muted">${seed ? 'the start' : `found at ${fmtClock(first)}`}${s ? ` · ${s[5] ? 'DFT energy' : 'g-xTB energy'}` : ' · holds no material yet'}</div>
-    ${made.length > 0 && html`<div class="ld-made small"><span>Made in the reactor's MD by ${made.length} event${made.length === 1 ? '' : 's'}:</span>
+    ${made.length > 0 && html`<div class="ld-made small"><span title="Each event's products, at its own MD frames, are this species' molecules (compared as the network compares species)">Made in the reactor's MD by ${made.length} event${made.length === 1 ? '' : 's'}:</span>
       ${made.slice(-4).reverse().map((ev) => html`<button class="btn small" onClick=${() => onEvent(ev)} title=${ev.label}>▶ ${fmtClock(ev.t)}</button>`)}</div>`}`;
 }
 
@@ -706,21 +701,33 @@ function EdgeCard({ e, nm, cond }) {
       ${e.share != null && html`<span><b>${pct(e.share)}</b>of what leaves</span>`}
     </div>
     <div class="small">${hl != null ? html`Half-life at ${Math.round(cond.T)} K: <b>${fmtTime(hl)}</b>${cond.tauKnown ? ` (the kinetics simulate ${fmtTime(cond.tau)})` : ''}` : ''}</div>
-    <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC joins these two ✓' : e.irc === -1 ? ' · no IRC check yet' : ''}</div>`}`;
+    <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC joins these two ✓' : e.irc === -1 ? '' : ''}</div>
+    ${e.irc === -1 && html`<div class="small"><b>Unconfirmed:</b> no IRC check yet (a run that ends first leaves it out of its final kinetics).</div>`}`}`;
 }
 
-function Key({ cond, noFlux, anyBelow, running }) {
+function Key({ cond, noFlux, anyBelow, anyUnchecked, known, running, anyEvents }) {
   const T = cond.T ? `${Math.round(cond.T)} K` : 'the run temperature';
-  return html`<div class="ld-key small">
-    <span class="ld-k"><svg width="78" height="12"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl fast" /><line x1="28" y1="6" x2="50" y2="6" class="ld-kl run" /><line x1="54" y1="6" x2="76" y2="6" class="ld-kl slow" /></svg>
+  return html`<div class="ld-key small" aria-label="How to read the network">
+    <span class="ld-k"><svg width="78" height="12" aria-hidden="true"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl fast" /><line x1="28" y1="6" x2="50" y2="6" class="ld-kl run" /><line x1="54" y1="6" x2="76" y2="6" class="ld-kl slow" /></svg>
       how fast at ${T}: half-life under ${fmtTime(cond.tau / 100)} · under ${fmtTime(cond.tau)}${cond.tauKnown ? ' (the simulated time)' : ''} · longer</span>
-    <span class="ld-k"><svg width="34" height="12"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl main h0" /><path d="M24,1 L32,6 L24,11 z" class="ld-arrhead h0" /></svg>
+    <span class="ld-k"><svg width="34" height="12" aria-hidden="true"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl main h0" /><path d="M24,1 L32,6 L24,11 z" class="ld-arrhead h0" /></svg>
       ${noFlux ? 'likely route to a product (lowest barriers; flows not recorded)' : 'material flows; thicker = more'}, in the product's colour</span>
-    <span class="ld-k"><svg width="16" height="12"><circle cx="8" cy="6" r="4" class="ld-kdot" /></svg>a species found (hover for its structure)</span>
-    <span class="ld-k"><svg width="30" height="12"><line x1="2" y1="6" x2="28" y2="6" class="ld-branch" /></svg>found from</span>
-    ${anyBelow && html`<span class="ld-k"><svg width="30" height="12"><line x1="2" y1="6" x2="28" y2="6" class="ld-kl below" /></svg>TS below its ends: no barrier</span>`}
-    ${running && html`<span class="ld-k"><svg width="30" height="12"><line x1="2" y1="6" x2="28" y2="6" class="ld-probe" /></svg>searched now</span>`}
+    <span class="ld-k"><svg width="16" height="12" aria-hidden="true"><circle cx="8" cy="6" r="3" class="ld-kdot" /></svg>a species found, in its column's pile</span>
+    ${anyBelow && html`<span class="ld-k"><svg width="30" height="12" aria-hidden="true"><line x1="2" y1="6" x2="28" y2="6" class="ld-kl below" /></svg>TS below its ends: no barrier</span>`}
+    ${anyUnchecked && html`<span class="ld-k"><svg width="30" height="12" aria-hidden="true"><line x1="2" y1="6" x2="28" y2="6" class="ld-kl below" /></svg>unconfirmed: no IRC yet</span>`}
+    ${known > 0 && html`<span class="ld-k"><b class="ln-known-k">↺</b>reused from an earlier run (${known})</span>`}
+    ${running && html`<span class="ld-k"><svg width="30" height="12" aria-hidden="true"><line x1="2" y1="6" x2="28" y2="6" class="ld-probe" /></svg>searched now</span>`}
+    ${anyEvents && html`<span class="ld-k"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="ld-ghost-bg" /></svg>a reaction event in the reactor's MD (click for its movie)</span>`}
   </div>`;
+}
+
+// The run's temperature, simulated time and budget: from the timeline (the server reads the job's
+// command line), else from the job's command and the kinetics' basis.
+function conditionsFrom(tl, basis, job) {
+  const c = tl.conditions || {};
+  const parsed = conditionsOf(basis, tl.command ?? job?.command);
+  const tau = c.time_s ?? (parsed.tauKnown ? parsed.tau : null);
+  return { T: c.T ?? parsed.T, tau: tau ?? 1, tauKnown: tau != null, budget: c.budget_s ?? parsed.budget };
 }
 
 // ---------------------------------------------------------------- a reacting mixture, the same way
@@ -764,19 +771,15 @@ export function mixtureTimeline(mx, names) {
     command: tau != null ? `--time ${tau}` : '' };
 }
 
-export function MixtureDesign({ mixture, names, design, jobId, job, running }) {
+export function MixtureScheme({ mixture, names, jobId, job, running, extra = null }) {
   const tl = useMemo(() => mixtureTimeline(mixture, names), [JSON.stringify(mixture)]);
   // A finished mixture has no timeline: its reactor events replay at their own pace, over and over
   // (the strip and the dialog say when each happened); a running one shows them as they come.
   const t0 = useRef(performance.now());
   const rxEnd = useRef(1);
   const eventClock = running ? null : () => ((performance.now() - t0.current) / 1000) % rxEnd.current;
-  const seeds = tl.mixture.seeds;
-  const done = seeds.filter((x) => String(x.status || '').startsWith('done')).length;
-  const controls = html`<div class="ld-seeds small muted">${seeds.length} seed run${seeds.length === 1 ? '' : 's'} (${done} done) · generation ${tl.mixture.generation ?? 0}:
-    each seed is one combination of molecules explored on its own; its steps join this network. Amounts as a share of the feed (${(mixture.feed || []).map((f) => `${f.name || names[f.molecule] || f.molecule} ${f.concentration} ${mixture.settings?.standard_state === '1atm' ? 'atm' : 'M'}`).join(', ')}).</div>`;
-  return html`<${DesignNetwork} tl=${tl} cur=${0} design=${design} jobId=${`mix:${jobId}`} apiJob=${jobId} job=${job} running=${running} follow=${true}
-    controls=${controls} eventClock=${eventClock} onEvents=${(evs) => { rxEnd.current = Math.max(1, ...evs.map((e) => e.t)) + 6; }} />`;
+  return html`<${LiveScheme} tl=${tl} cur=${0} jobId=${`mix:${jobId}`} apiJob=${jobId} job=${job} running=${running} follow=${true}
+    controls=${null} extra=${extra} eventClock=${eventClock} onEvents=${(evs) => { rxEnd.current = Math.max(1, ...evs.map((e) => e.t)) + 6; }} />`;
 }
 
 // ---------------------------------------------------------------- the reactor's events, overlaid
@@ -883,7 +886,7 @@ function useGhostFrames(apiJob, ev) {
   useEffect(() => {
     if (EVENT_CACHE.has(key)) { setD(EVENT_CACHE.get(key)); return undefined; }
     let alive = true;
-    api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?name=${encodeURIComponent(ev.run)}${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`)
+    api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?name=${encodeURIComponent(ev.run)}&frames=40${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`)
       .then((x) => {
         const g = ghostFrames(x);
         EVENT_CACHE.set(key, g);
