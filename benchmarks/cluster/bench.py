@@ -234,6 +234,21 @@ def local(run: str, threads: int) -> None:
             print(f"local {run}: {t['id']} exit {rc} in {secs:.0f} s", flush=True)
 
 
+def image_components(reg: str, name: str, tag: str) -> dict:
+    """The axtb and linus commits the image was built from, read from its config's labels (afh.axtb, afh.linus,
+    written at build time, mepd-orca-uma-axtb:2026-11-09-main on); "no label" for images built before."""
+    man = subprocess.run(["afh", "ssh", f"curl -s -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' "
+                          f"http://{reg}/v2/{name}/manifests/{tag}"], capture_output=True, text=True).stdout
+    try:
+        cfg = json.loads(man)["config"]["digest"]
+        blob = subprocess.run(["afh", "ssh", f"curl -s http://{reg}/v2/{name}/blobs/{cfg}"], capture_output=True,
+                              text=True).stdout
+        labels = (json.loads(blob).get("config") or {}).get("Labels") or {}
+    except (ValueError, KeyError, TypeError):
+        labels = {}
+    return {k: labels.get(f"afh.{k}", "no label") for k in ("axtb", "linus")}
+
+
 def record_digest(run: str, after_submit: bool) -> str:
     """The registry digest of the run's image tag, into manifest.json (BRIEF: provenance at run time)."""
     import datetime as dt
@@ -247,6 +262,7 @@ def record_digest(run: str, after_submit: bool) -> str:
     if not digest:
         raise SystemExit(f"no digest for {m['image']}")
     m.update(image_digest=digest, digest_read_at=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+             image_components=image_components(reg, name, tag),
              **({"digest_read_after_submit": True} if after_submit else {}))
     (AFH_DIR / run / "manifest.json").write_text(json.dumps(m, indent=1))
     print(f"{run}: {m['image']} = {digest}")
