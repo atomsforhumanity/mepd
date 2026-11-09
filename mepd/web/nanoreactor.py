@@ -546,11 +546,13 @@ def reactor_view(out: Path, start: int = 0) -> dict:
             "forces": sched.get("forces"), "pulls": sched.get("pulls") or []}
 
 
-def event_view(out: Path, k: int, pad_fs: float = 60.0) -> dict:
+def event_view(out: Path, k: int, pad_fs: float = 60.0, max_frames: Optional[int] = None) -> dict:
     """One event at full time resolution, cut to its atoms: frames from a
     little before its reactant frame to a little after its product frame,
     centred on the subsystem, its bond changes in local atom indices, and
-    the optimized ends of its reaction (if refined)."""
+    the optimized ends of its reaction (if refined). `max_frames`: at most
+    that many frames, evenly spaced, its reactant and product frames kept
+    (a small preview)."""
     import numpy as np
 
     out = Path(out)
@@ -564,7 +566,12 @@ def event_view(out: Path, k: int, pad_fs: float = 60.0) -> dict:
     a, b = max(0, ev["reactant_frame"] - pad), min(len(frames) - 1, ev["product_frame"] + pad)
     atoms = list(ev["atoms"])
     local = {x: i for i, x in enumerate(atoms)}
-    cut = frames[a:b + 1][:, atoms]
+    keep = list(range(a, b + 1))
+    if max_frames and len(keep) > max_frames:
+        keep = sorted(set(np.linspace(a, b, max_frames).round().astype(int).tolist()) | {ev["reactant_frame"], ev["product_frame"]})
+    at = {f: i for i, f in enumerate(keep)}
+    near = lambda f: min(range(len(keep)), key=lambda i: abs(keep[i] - f))   # noqa: E731
+    cut = frames[keep][:, atoms]
     cut = cut - cut.mean(axis=1, keepdims=True)   # each frame on its own centre: no drift across the view
     network = _json(out / "network.json") or {}
     rx = next((r for r in network.get("reactions") or [] if r["id"] == ev.get("reaction")), None)
@@ -575,8 +582,9 @@ def event_view(out: Path, k: int, pad_fs: float = 60.0) -> dict:
             ends[side] = text
     return {"event": k, "label": ev.get("label"), "symbols": [symbols[x] for x in atoms], "first_frame": a,
             "dump_fs": dump_fs, "frames": np.round(cut, 2).reshape(len(cut), -1).tolist(),
-            "reactant_frame": ev["reactant_frame"] - a, "product_frame": ev["product_frame"] - a,
-            "changes": [{"frame": c["frame"] - a, "atoms": [local[c["atoms"][0]], local[c["atoms"][1]]],
+            "reactant_frame": at.get(ev["reactant_frame"], near(ev["reactant_frame"])),
+            "product_frame": at.get(ev["product_frame"], near(ev["product_frame"])),
+            "changes": [{"frame": at.get(c["frame"], near(c["frame"])), "atoms": [local[c["atoms"][0]], local[c["atoms"][1]]],
                          "formed": c["formed"]} for c in ev.get("bond_changes") or []
                         if c["atoms"][0] in local and c["atoms"][1] in local],   # runs from before that was filtered
             "reaction": ev.get("reaction"), "optimized": ends}

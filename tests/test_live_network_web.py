@@ -210,3 +210,63 @@ def test_reactor_events_arrive_once_each_and_name_only_verified_species(tmp_path
                              "xyz": _xyz(FORMALDEHYDE_H2)}) + "\n")
     later = ln.reactor_events(job_dir, job, 4)
     assert later["events"] == [] and later["prods"] == {0: "1"}
+
+
+def test_a_running_timeline_sends_the_new_frames_with_the_runs_conditions(tmp_path):
+    """While a run is followed, a poll asks only for the frames it lacks (`since`); the timeline says how many
+    are recorded and the run's temperature, simulated time and time budget (from its command line)."""
+    for t in (0.0, 30.0, 60.0):
+        assert ln.record(tmp_path, _kin(t))
+    (tmp_path / "job.json").write_text(json.dumps({"argv": ["discovery", "expand", "seed.xyz", "--temperature", "353.15",
+                                                            "--time", "3600", "--time-budget", "1800"]}))
+    full = ln.from_job(tmp_path, running=True)
+    assert full["recorded"] == 3 and len(full["frames"]) == 3
+    assert full["conditions"] == {"T": 353.15, "time_s": 3600.0, "budget_s": 1800.0}
+    tail = ln.from_job(tmp_path, running=True, since=2)
+    assert tail["since"] == 2 and [f["t"] for f in tail["frames"]] == [60.0] and tail["recorded"] == 3
+    assert ln.from_job(tmp_path, running=True, since=9)["frames"] == []             # (asked past the end)
+    assert len(ln.from_job(tmp_path, running=False, since=2)["frames"]) == 3       # a finished run: all of it
+
+
+def test_a_finished_runs_last_moment_is_when_it_ended(tmp_path):
+    """A finished run's network as it stood at the end is timed when the run ended, not when it is looked at."""
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "events.jsonl").write_text(json.dumps({"event": "species", "index": 1, "smiles": "CO", "parent": 0}) + "\n")
+    tl = ln.from_job(tmp_path, running=False, t0=1000.0, t_end=1090.0)
+    assert tl["frames"][-1]["t"] == 90.0
+
+
+def test_a_species_an_irc_end_made_is_drawn_while_the_run_is_on(tmp_path):
+    """The run reports no species event for an IRC end and writes output/species only at its end: until then
+    the species' geometry is its step's IRC end that is not the step's other species."""
+    out = tmp_path / "output"
+    (out / "ts").mkdir(parents=True)
+    (tmp_path / "inputs").mkdir()
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out)}))
+    methanol = "6\n\nC 0 0 0\nO 1.42 0 0\nH -0.36 1.03 0\nH -0.36 -0.51 0.89\nH -0.36 -0.51 -0.89\nH 1.75 0.9 0"
+    split = "6\n\nC 0 0 0\nO 1.21 0 0\nH -0.55 0.94 0\nH -0.55 -0.94 0\nH 4.0 0 0\nH 4.74 0 0"
+    (tmp_path / "inputs" / "seed.xyz").write_text(methanol + "\n")
+    (out / "ts" / "fast_0_3_irc.xyz").write_text(methanol + "\n" + split + "\n")
+    (tmp_path / "live").mkdir()
+    (tmp_path / "live" / "events.jsonl").write_text(json.dumps({"event": "step", "a": 0, "b": 3, "label": "fast_0_3"}) + "\n")
+    xyz = ln.species_xyz(tmp_path, "3")
+    assert xyz is not None and "H 4.74 0 0" in xyz
+    assert ln.species_xyz(tmp_path, "4") is None
+
+
+def test_an_event_movie_can_be_a_short_preview(tmp_path):
+    """The live views' ghost of a reactor event asks for a few frames: evenly spaced, the event's reactant and
+    product frames kept and its bond changes on the nearest kept frame."""
+    from mepd.web.nanoreactor import event_view
+
+    (tmp_path / "md").mkdir()
+    (tmp_path / "md" / "segment_000.xyz").write_text("".join(f"2\n\nH 0 0 0\nH {0.74 + 0.01 * k:.2f} 0 0\n" for k in range(125)))
+    (tmp_path / "md" / "schedule.json").write_text(json.dumps({"dump_fs": 2.0}))
+    (tmp_path / "live_events.json").write_text(json.dumps({"events": [{"event": 0, "atoms": [0, 1], "reactant_frame": 50,
+        "product_frame": 70, "label": "[H][H] -> 2 [H]", "bond_changes": [{"frame": 61, "atoms": [0, 1], "formed": False}]}]}))
+    full = event_view(tmp_path, 0)
+    short = event_view(tmp_path, 0, max_frames=10)
+    assert len(full["frames"]) == 81 and len(short["frames"]) <= 12
+    assert full["frames"][full["reactant_frame"]] == short["frames"][short["reactant_frame"]]
+    assert full["frames"][full["product_frame"]] == short["frames"][short["product_frame"]]
+    assert 0 <= short["changes"][0]["frame"] < len(short["frames"])

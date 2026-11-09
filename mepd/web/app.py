@@ -2226,12 +2226,15 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return complex_live(Path(job["output_dir"]), (job.get("params") or {}).get("method", ""), sum(counts))
 
     @app.get("/api/jobs/{jid}/reactor/events/{k}")
-    def job_reactor_event(jid: str, k: int, run: Optional[int] = None, seed: Optional[str] = None, name: Optional[str] = None):
-        """One reaction event of a nanoreactor job, at full time resolution, cut to its atoms."""
+    def job_reactor_event(jid: str, k: int, run: Optional[int] = None, seed: Optional[str] = None, name: Optional[str] = None,
+                          frames: Optional[int] = None):
+        """One reaction event of a nanoreactor job, at full time resolution, cut to its atoms (`frames`: at
+        most that many, evenly, its reactant and product frames kept)."""
         from mepd.web.nanoreactor import event_view
 
         try:
-            return event_view(_reactor_out(J().get(jid), run, seed, name), k)
+            return event_view(_reactor_out(J().get(jid), run, seed, name), k,
+                              max_frames=max(8, min(int(frames), 400)) if frames else None)
         except KeyError:
             raise HTTPException(404, f"no event {k} (yet)") from None
 
@@ -2996,15 +2999,16 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles)}
 
     @app.get("/api/jobs/{jid}/network-timeline")
-    def network_timeline(jid: str):
-        """A network expansion as the live network view plays it (mepd/web/live_network.py)."""
+    def network_timeline(jid: str, since: Optional[int] = None):
+        """A network expansion as the live network view plays it (mepd/web/live_network.py); while it
+        runs, `since` asks only for the frames from that one on."""
         from mepd.web import live_network
 
         job = J().get(jid)
         if job is None:
             raise HTTPException(404, "no such calculation")
         return live_network.from_job(J().job_dir(jid), running=job.get("status") in ("running", "queued"),
-                                     t0=job.get("started"))
+                                     t0=job.get("started"), t_end=job.get("finished"), since=since)
 
     @app.get("/api/examples/{slug}/timeline")
     def example_timeline(slug: str):
