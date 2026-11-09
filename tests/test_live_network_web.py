@@ -151,3 +151,38 @@ def test_a_step_the_run_had_no_time_to_check_is_drawn_unconfirmed():
     f = ln.compact_legacy(kin, steps)
     irc = {s[0]: s[6] for s in f["steps"]}
     assert irc == {"ok01": None, "u02": -1}
+
+
+def test_reactor_events_arrive_once_each_with_their_species(tmp_path):
+    """The live views' reactor overlay: each MD event once, timed by the segment that holds its product
+    frame, from the species whose propose job ran then, and what it became once that species exists."""
+    import os
+
+    job_dir, out = tmp_path / "job", tmp_path / "job" / "output"
+    run = out / "reactor" / "run_00"
+    (run / "md").mkdir(parents=True)
+    (job_dir / "live").mkdir(parents=True)
+    (job_dir / "inputs").mkdir()
+    (job_dir / "inputs" / "seed.xyz").write_text("2\n\nC 0 0 0\nO 1.4 0 0\n")
+    (run / "md" / "segment_000.xyz").write_text("2\n\nC 0 0 0\nO 1.4 0 0\n")
+    (run / "md" / "segment_001.xyz").write_text("2\n\nC 0 0 0\nO 1.2 0 0\n")
+    t0 = 1000.0
+    os.utime(run / "md" / "segment_000.xyz", (t0 + 2, t0 + 2))
+    os.utime(run / "md" / "segment_001.xyz", (t0 + 5, t0 + 5))
+    (out / "network_aware.jsonl").write_text(json.dumps({"t": t0 + 9, "event": "job", "kind": "propose", "what": "species 0",
+                                                         "run_s": 9.0, "wait_s": 0.0, "ok": True}) + "\n")
+    (job_dir / "live" / "kinetics.json").write_text(json.dumps({"data": {"species": [{"index": 0, "smiles": "CO"}]}}))
+    ev = {"event": 0, "reactant_frame": 120, "product_frame": 130, "atoms": [0, 1], "label": "CO -> C=O + [H][H]",
+          "bond_changes": [{"frame": 125, "atoms": [0, 1], "formed": True}]}
+    (run / "live_events.json").write_text(json.dumps({"events": [ev]}))
+    job = {"op": "graph-enumeration", "output_dir": str(out), "started": t0}
+    got = ln.reactor_events(job_dir, job, 0)
+    assert got["n"] == 1 and got["runs"] == 1
+    e = got["events"][0]
+    assert (e["t"], e["src"], e["prod"], e["run"], e["k"]) == (5.0, "0", None, "0", 0)   # segment_001 holds frame 130
+    assert ln.reactor_events(job_dir, job, 1)["events"] == []                            # nothing new: nothing twice
+    # the species it became turns up: the next poll says so (prods) for the event the client has
+    (job_dir / "live" / "kinetics.json").write_text(json.dumps({"data": {"species": [
+        {"index": 0, "smiles": "CO"}, {"index": 1, "smiles": "[H][H].C=O"}]}}))
+    later = ln.reactor_events(job_dir, job, 1)
+    assert later["events"] == [] and later["prods"] == {0: "1"}

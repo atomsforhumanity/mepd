@@ -546,3 +546,35 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-seeds { max-width: 980px; }
 .ld-lane-bg { fill: var(--panel); stroke: var(--border-strong); stroke-width: 1.2px; }
 .ld-lane .ld-card-bg { stroke: none; }
+/* prototype hover cards: placed by Popover.js */
+.popover.ld-pop { position: fixed; transform: none; pointer-events: auto; }
+.ld-made { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.ld-made span { width: 100%; color: var(--muted); }
+/* the reactor's events, overlaid (LiveDesigns.js ReactorOverlay) */
+.ld-ghost { cursor: pointer; transition: transform 1.1s var(--ease), opacity .9s ease; opacity: .58; }
+.ld-ghost:hover, .ld-ghost:focus-visible { opacity: .95; outline: none; }
+.ld-ghost-in { animation: ld-ghost-in .5s ease-out backwards; }
+@keyframes ld-ghost-in { from { opacity: 0; transform: scale(.6); } }
+.ld-ghost.catch .ld-ghost-in { transform: scale(.45); opacity: .0; transition: transform 1.1s var(--ease), opacity 1.6s ease 0.4s; }
+.ld-ghost.settle .ld-ghost-in { transform: scale(.35); opacity: 0; transition: transform 1.1s var(--ease), opacity 1.3s ease; }
+.ld-ghost-bg { fill: var(--panel); fill-opacity: .6; stroke: var(--ld-now); stroke-width: 1px; stroke-dasharray: 3 4; stroke-opacity: .45; }
+.ld-gb { stroke: var(--muted); stroke-width: 1.6px; stroke-linecap: round; }
+.ld-gb.f { stroke: var(--ld-now); stroke-width: 2.4px; }
+.ld-gb.b { stroke: var(--ld-now); stroke-width: 1.4px; stroke-dasharray: 2 2.5; }
+.ld-ga { stroke: none; }
+.ld-ga.el-C { fill: var(--text); } .ld-ga.el-H { fill: var(--edge-idle); } .ld-ga.el-O { fill: #d0453c; } .ld-ga.el-N { fill: #3868d8; }
+.ld-ga.el-S { fill: #c9a227; } .ld-ga.el-x { fill: var(--ld-now); }
+.ld-dot.caught circle:first-child, .ld-card.caught .ld-card-bg { animation: ld-catch 1.1s ease-out; }
+@keyframes ld-catch { 0% { stroke: var(--ld-now); stroke-width: 7px; } 100% { stroke-width: inherit; } }
+.ld-s-reactor { display: grid; gap: 1px; text-align: left; padding: 4px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--panel); cursor: pointer; color: var(--heading); }
+.ld-s-reactor.on { border-color: var(--ld-now); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ld-now) 18%, transparent); }
+.ld-s-reactor:hover { background: var(--panel-2); }
+.ld-dialog-back { position: fixed; inset: 0; z-index: 80; background: rgba(10, 20, 30, .35); display: grid; place-items: center; }
+.ld-dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 14px; display: grid; gap: 8px; }
+.ld-dialog-head { display: flex; align-items: center; gap: 8px; }
+.ld-dialog-head .spacer { flex: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .ld-ghost, .ld-ghost-in, .ld-ghost.catch .ld-ghost-in, .ld-ghost.settle .ld-ghost-in { animation: none; transition: none; }
+  .ld-dot.caught circle:first-child, .ld-card.caught .ld-card-bg { animation: none; }
+}

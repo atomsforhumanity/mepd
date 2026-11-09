@@ -2191,14 +2191,18 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 pass
         return out
 
-    def _reactor_out(job: dict, run: Optional[int] = None) -> Path:
+    def _reactor_out(job: dict, run: Optional[int] = None, seed: Optional[str] = None) -> Path:
         """Where a job's reactor MD is: a nanoreactor job's output, or one
         run (the newest unless `run` is given) of a network expansion with the
-        nanoreactor generator (output/reactor/run_kk, one per species)."""
+        nanoreactor generator (output/reactor/run_kk, one per species), or of a
+        reacting mixture's seed (output/seeds/<seed>/run/reactor/run_kk)."""
         out = Path(job["output_dir"])
         if job.get("op") in ("nanoreactor", "nanoreactor-more"):
             return out
-        runs = sorted((out / "reactor").glob("run_*")) if job.get("op") == "graph-enumeration" else []
+        if job.get("op") == "network-mixture" and seed and "/" not in seed and not seed.startswith("."):
+            runs = sorted((out / "seeds" / seed / "run" / "reactor").glob("run_*"))
+        else:
+            runs = sorted((out / "reactor").glob("run_*")) if job.get("op") == "graph-enumeration" else []
         if not runs:
             raise HTTPException(404, "this job has no reactor MD (yet)")
         if run is not None:
@@ -2217,14 +2221,23 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return complex_live(Path(job["output_dir"]), (job.get("params") or {}).get("method", ""), sum(counts))
 
     @app.get("/api/jobs/{jid}/reactor/events/{k}")
-    def job_reactor_event(jid: str, k: int, run: Optional[int] = None):
+    def job_reactor_event(jid: str, k: int, run: Optional[int] = None, seed: Optional[str] = None):
         """One reaction event of a nanoreactor job, at full time resolution, cut to its atoms."""
         from mepd.web.nanoreactor import event_view
 
         try:
-            return event_view(_reactor_out(J().get(jid), run), k)
+            return event_view(_reactor_out(J().get(jid), run, seed), k)
         except KeyError:
             raise HTTPException(404, f"no event {k} (yet)") from None
+
+    @app.get("/api/jobs/{jid}/reactor-events")
+    def job_reactor_events(jid: str, since: int = 0):
+        """A network expansion's (or reacting mixture's) reactor events as they happen, those after the
+        first `since` this server numbered: when, from which species, what each became (live_network.py)."""
+        from mepd.web import live_network
+
+        job = J().get(jid)
+        return live_network.reactor_events(J().job_dir(jid), job, since)
 
     @app.get("/api/jobs/{jid}/live/{stream}")
     def get_live_stream(jid: str, stream: str):
