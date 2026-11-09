@@ -94,6 +94,9 @@ _COMMON_NAMES = {
     "[I-]": "iodide", "[Cl]": "Cl atom", "[Br]": "Br atom", "ClCl": "Cl2", "BrBr": "Br2",
     "O=P(O)(O)O": "phosphoric acid", "ClCCl": "dichloromethane", "ClC(Cl)Cl": "chloroform", "CCl": "chloromethane",
     "C1CCOC1": "THF", "c1ccccc1": "benzene", "Cc1ccccc1": "toluene", "c1ccncc1": "pyridine", "Oc1ccccc1": "phenol",
+    # the benchmarks' dienes and dienophiles
+    "C=CC(=C)C": "isoprene", "C=CC(=O)OC": "methyl acrylate", "c1ccoc1": "furan", "O=C1C=CC(=O)N1": "maleimide",
+    "C1=CCC=C1": "cyclopentadiene", "N=C=O": "isocyanic acid",
 }
 
 
