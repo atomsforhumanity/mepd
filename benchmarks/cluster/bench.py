@@ -234,6 +234,51 @@ def local(run: str, threads: int) -> None:
             print(f"local {run}: {t['id']} exit {rc} in {secs:.0f} s", flush=True)
 
 
+POD_CAP = 8   # all of jan's pods together (32 threads each: 256 threads), coordinator 2026-11-09
+
+
+def jan_pods() -> dict:
+    """{run: pods} committed on the cluster now by every one of jan's runs, whichever agent or script made them:
+    for each unfinished Job (label afh/user=jan) min(parallelism, its shards not yet done), and each Running or
+    Pending pod of jan's that belongs to no Job (afh debug) as one."""
+    jobs = json.loads(subprocess.run(["afh", "ssh", "kubectl -n jobs get jobs -l afh/user=jan -o json"],
+                                     capture_output=True, text=True, check=True).stdout)["items"]
+    out = {}
+    for j in jobs:
+        st, sp = j.get("status") or {}, j["spec"]
+        if any(c.get("type") in ("Complete", "Failed") and c.get("status") == "True" for c in st.get("conditions") or []):
+            continue
+        rem = int(sp.get("completions") or 0) - int(st.get("succeeded") or 0) - int(st.get("failed") or 0)
+        n = max(min(int(sp.get("parallelism") or 0), rem), int(st.get("active") or 0))
+        if n > 0:
+            out[(j["metadata"].get("labels") or {}).get("afh/run") or j["metadata"]["name"]] = n
+    pods = subprocess.run(["afh", "ssh", "kubectl -n jobs get pods -l afh/user=jan --no-headers "
+                           "-o custom-columns=P:.status.phase,J:.metadata.labels.job-name"],
+                          capture_output=True, text=True, check=True).stdout.split("\n")
+    loose = sum(1 for line in pods if line.split()[:1] and line.split()[0] in ("Running", "Pending")
+                and line.split()[1:2] == ["<none>"])
+    if loose:
+        out["(pods outside a Job)"] = loose
+    return out
+
+
+def pod_guard(run: str, pods_for_run: int, cap: int = POD_CAP) -> tuple[bool, str]:
+    """Whether `run` may have `pods_for_run` pods now: every other committed pod of jan's plus these <= cap."""
+    live = jan_pods()
+    others = sum(v for k, v in live.items() if k != run)
+    ok = others + pods_for_run <= cap
+    return ok, (f"pod guard: jan has {others} pods committed outside {run} ({live}); {run} wants {pods_for_run}; "
+                f"{others + pods_for_run} {'<=' if ok else '>'} {cap}: {'go' if ok else 'wait'}")
+
+
+def _run_pods(run: str) -> int:
+    """The pods a submit of `run` would start: min(parallelism in run.yaml, its tasks)."""
+    y = (AFH_DIR / run / "run.yaml").read_text()
+    par = next((int(l.split(":", 1)[1]) for l in y.splitlines() if l.startswith("parallelism:")), POD_CAP)
+    n = sum(1 for l in (AFH_DIR / run / "tasks.jsonl").read_text().splitlines() if l.strip())
+    return min(par, n)
+
+
 def image_components(reg: str, name: str, tag: str) -> dict:
     """The axtb and linus commits the image was built from, read from its config's labels (afh.axtb, afh.linus,
     written at build time, mepd-orca-uma-axtb:2026-11-09-main on); "no label" for images built before."""
@@ -496,6 +541,13 @@ def main(argv: list) -> int:
         sp.add_argument("run")
         if name == "submit":
             sp.add_argument("--force", action="store_true", help="afh submit --force (e.g. memory above afh's estimate)")
+            sp.add_argument("--dry-run", action="store_true", help="only the pod guard's decision (exit 0 go, 75 wait)")
+            sp.add_argument("--wait", action="store_true", help="wait (60 s steps) until the pod guard says go")
+            sp.add_argument("--pod-cap", type=int, default=POD_CAP, help="jan's pods in all (default 8 = 256 threads)")
+    pg = sub.add_parser("podguard", help="exit 0 if RUN may have PODS pods now, 75 if not (jan's live pods)")
+    pg.add_argument("run")
+    pg.add_argument("pods", type=int)
+    pg.add_argument("--pod-cap", type=int, default=POD_CAP)
     s = sub.add_parser("score")
     s.add_argument("run", nargs="+")
     s.add_argument("--rescore", action="store_true")
@@ -522,9 +574,26 @@ def main(argv: list) -> int:
         build(a.run, a.commit, groups, a.replicates, a.budget, a.threads, a.parallelism, a.memory, a.control,
               image=a.image, interleave=a.interleave, first_replicate=a.first_replicate)
     elif a.cmd == "submit":
+        import time
+
+        want = _run_pods(a.run)
+        while True:
+            ok, msg = pod_guard(a.run, want, a.pod_cap)
+            print(msg)
+            if ok or a.dry_run or not a.wait:
+                break
+            time.sleep(60)
+        if a.dry_run:
+            return 0 if ok else 75
+        if not ok:
+            return 75
         record_digest(a.run, after_submit=False)
         afh("push", str(AFH_DIR / a.run), a.run)
         afh("submit", a.run, *(["--force"] if a.force else []))
+    elif a.cmd == "podguard":
+        ok, msg = pod_guard(a.run, a.pods, a.pod_cap)
+        print(msg)
+        return 0 if ok else 75
     elif a.cmd == "digest":       # for runs submitted before digests were recorded
         record_digest(a.run, after_submit=True)
     elif a.cmd == "pull":
