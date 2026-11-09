@@ -381,8 +381,10 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const laneTop = sel ? 120 : 20;
   const lane = series.map((p, k) => ({ ...p, x: laneX, y: laneTop + 60 + k * 148 }));
   box = [box[0], Math.min(box[1], -30), laneX + 330, Math.max(box[3], laneTop + 60 + Math.max(1, lane.length) * 148 - 60)];
+  // room round the start for the reactor's events (all there is while its first MD runs)
+  box = [Math.min(box[0], -40), Math.min(box[1], TOP - 230), Math.max(box[2], SEED_W + 300), Math.max(box[3], TOP + 230)];
   const bw = Math.max(760, box[2] - box[0]), bh = Math.max(440, box[3] - box[1]);
-  const vb = useViewBox([box[0], box[1], bw, bh], follow);
+  const vb = useViewBox([(box[0] + box[2]) / 2 - bw / 2, (box[1] + box[3]) / 2 - bh / 2, bw, bh], follow);
 
   const side = (id, right) => {
     const [x, y] = P(id);
