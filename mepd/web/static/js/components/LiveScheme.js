@@ -1,6 +1,6 @@
 // The live network (#/network/<job>, #/network/example/<slug>) and a reacting mixture's network, drawn
 // as a reaction scheme that grows while the run works (mepd/web/live_network.py):
-// - left to right by steps from the start: the start, then a column per step; a species gets a cell
+// - left to right by reactions from the start: the start, then a column per reaction; a species gets a cell
 //   with its structure once it matters (holds 2 % of the largest amount), lifting out of its column's
 //   pile of what was explored, above, where every species found lands first; routes read left to
 //   right, start to product (a species a route reaches through another moves right of it);
@@ -68,6 +68,8 @@ const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce
 const SUB_W = 136, SUBS = 3, COL_GAP = 104, COL_W = SUB_W * SUBS + COL_GAP, ROW_H = 122, PILE = 9, PILE_W = 30, MAX_COL = 5;
 const CARD_W = 104, SEED_W = 128, TOP = 72;
 const colX = (c) => (c === 0 ? 0 : 190 + (c - 1) * COL_W);   // the left edge of a column
+// A column's head in plain words: how many species were found that many reactions from the start.
+const columnHead = (c, k) => `${k} species ${c === 1 ? 'one reaction' : `${c}${c === MAX_COL ? ' or more' : ''} reactions`} from the start`;
 
 function useScheme(key) {
   const ref = useRef(null);
@@ -446,7 +448,8 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
       aria-label="The network as a reaction scheme: the start at the left, a column per step; species that hold material as structures, the rest as dots in each column's pile; the leading products at the right">
       <defs>${['fast', 'run', 'slow', 'none', 'h0', 'h1', 'h2'].flatMap((k) => [['s', 10], ['m', 15], ['l', 22]].map(([z, px]) => html`<marker id=${`ld-arr-${k}-${z}`} viewBox="0 0 10 10" refX="8" refY="5"
         markerWidth=${px} markerHeight=${px} markerUnits="userSpaceOnUse" orient="auto"><path d="M0,1 L9,5 L0,9 z" class=${`ld-arrhead ${k}`} /></marker>`))}</defs>
-      ${[...sc.piles.entries()].map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${colX(c) + 6} y="-22">${`${c}${c === MAX_COL ? '+' : ''} step${c === 1 ? '' : 's'} · ${k} found`}</text>`)}
+      ${[...sc.piles.entries()].map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${colX(c) + 6} y="-22">${columnHead(c, k)}
+        ${c === Math.min(...sc.piles.keys()) && html`<tspan x=${colX(c) + 6} dy="15" class="ld-colnote">(dots hold little or no material yet; hover for the structure)</tspan>`}</text>`)}
       <g class="ld-lane-links">${lane.map((p) => {
         const [x0, y0] = P(p.id) || [p.x, p.y], gx = p.x - 8, from = isCard(p.id) ? x0 + CARD_W / 2 + 4 : x0 + 4;
         return html`<path key=${`lk${p.key}`} d=${`M${from},${y0} C${(from + gx) / 2},${y0} ${(from + gx) / 2},${p.y} ${gx},${p.y}`} class=${`ld-lane-link h${p.hue ?? 'x'}`} />`;
@@ -714,7 +717,8 @@ function Key({ cond, noFlux, anyBelow, anyUnchecked, known, running, anyEvents }
       how fast at ${T}: half-life under ${fmtTime(cond.tau / 100)} · under ${fmtTime(cond.tau)}${cond.tauKnown ? ' (the simulated time)' : ''} · longer</span>
     <span class="ld-k"><svg width="34" height="12" aria-hidden="true"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl main h0" /><path d="M24,1 L32,6 L24,11 z" class="ld-arrhead h0" /></svg>
       ${noFlux ? 'likely route to a product (lowest barriers; flows not recorded)' : 'material flows; thicker = more'}, in the product's colour</span>
-    <span class="ld-k"><svg width="16" height="12" aria-hidden="true"><circle cx="8" cy="6" r="3" class="ld-kdot" /></svg>a species found, in its column's pile</span>
+    <span class="ld-k"><svg width="16" height="12" aria-hidden="true"><circle cx="8" cy="6" r="3" class="ld-kdot" /></svg>a species found that holds little or no material yet (hover for the structure);
+      each column holds the species found one, 2, … reactions from the start</span>
     ${anyBelow && html`<span class="ld-k"><svg width="30" height="12" aria-hidden="true"><line x1="2" y1="6" x2="28" y2="6" class="ld-kl below" /></svg>TS below its ends: no barrier</span>`}
     ${anyUnchecked && html`<span class="ld-k"><svg width="30" height="12" aria-hidden="true"><line x1="2" y1="6" x2="28" y2="6" class="ld-kl below" /></svg>unconfirmed: no IRC yet</span>`}
     ${known > 0 && html`<span class="ld-k"><b class="ln-known-k">↺</b>reused from an earlier run (${known})</span>`}
