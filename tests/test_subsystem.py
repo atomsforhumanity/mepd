@@ -191,8 +191,8 @@ def test_a_ts_next_to_a_spectator_is_searched_on_the_reacting_molecule_alone(tmp
     assert all(np.allclose(f.coords[3:5], ts.coords[3:5]) for f in mepd.read_frames(st.files["irc"]))
 
 
-# What the explorer gave on develop 6863884 (before the cut) for seeds whose every molecule reacts, to the last
-# digit: each species' energy, and each step's TS energy (Hartree) and free-energy barriers (kcal/mol, both ways).
+# What the explorer gave on develop 6863884 (before the cut) for seeds whose every molecule reacts (exact on
+# the machine that recorded them): each species' energy, and each step's TS energy (Hartree) and free-energy barriers (kcal/mol, both ways).
 BEFORE = {
     "HCOOH": ([-189.79135496848835, -189.7996495501047],
               [(-189.6618711929768, 90.90132971348241, 74.7977931340884)]),
@@ -219,4 +219,8 @@ def test_when_every_molecule_reacts_the_explorer_gives_what_it_gave_before(name,
     with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
         species, steps, n, seen = pool.submit(_fresh, name, str(tmp_path)).result()
     assert set(seen["find_ts"]) == {n} and set(seen["irc"]) == {n}       # all of it, as before
-    assert (species, steps) == BEFORE[name]                                # to the last digit
+    # the same to within floating point: another CPU and BLAS (the image's) move the last digits (~1e-10 Eh)
+    want_species, want_steps = BEFORE[name]
+    assert len(steps) == len(want_steps)
+    assert species == pytest.approx(want_species, rel=0, abs=1e-7)                      # Hartree
+    assert [x for s in steps for x in s] == pytest.approx([x for s in want_steps for x in s], rel=0, abs=1e-4)
