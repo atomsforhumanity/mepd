@@ -131,7 +131,7 @@ def test_known_hessians_are_not_computed_again(tmp_path, monkeypatch):
 
     calls = []
 
-    def correction(self, structure, ts, ends=None):
+    def correction(self, structure, ts, ends=None, energy=None):
         calls.append(ts)
         return 1.0 if ts else 0.5
 
