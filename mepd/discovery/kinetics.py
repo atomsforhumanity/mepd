@@ -84,12 +84,22 @@ def raw_barriers(steps: Sequence[Step], energies: Sequence[float]) -> list[tuple
              (s.ts_energy - energies[s.b]) * HARTREE_TO_KCAL_PER_MOL) for s in steps]
 
 
-def negative_barrier_warning(label: str, a: int, b: int, forward: float, reverse: float) -> Optional[str]:
-    """The warning for a step whose TS lies below one of its ends, or None."""
+def negative_barrier_warning(label: str, a: int, b: int, forward: float, reverse: float,
+                             verified: bool = True) -> Optional[str]:
+    """The warning for a step whose TS lies below one of its ends, or None. `verified` False: no IRC has
+    checked the step (files["verified"] False), so its ends are only the pair its TS search started between."""
     bad = [(k, v) for k, v in ((a, forward), (b, reverse)) if v < NEGATIVE_BARRIER_TOL]
     if not bad:
         return None
     where = ", ".join(f"{-v:.1f} kcal/mol below species {k}" for k, v in bad)
+    if not verified:
+        # sb-t24 (60 runs): 280 of the 281 steps with a TS below an end had no IRC; IRCs of them (g-xTB, as run)
+        # went elsewhere every time -- a rotation of another species or of an end, or a step between others --
+        # with the species' and TSs' energies all on one level (recomputed: 0.0 kcal/mol apart)
+        return (f"Negative barrier for unverified step {label or f'{a} -> {b}'}: its TS is {where}, so it is no TS "
+                "between these two species but the saddle of some other motion the TS optimization reached "
+                "instead (no IRC has checked it). It takes no part in the final kinetics; if the kinetics need "
+                "the step, its IRC files it under the species it connects, or drops it.")
     return (f"Negative barrier for step {label or f'{a} -> {b}'}: its TS is {where}. That cannot happen with one "
             "level of theory, minimized endpoints and a dense enough path, so something is wrong: an endpoint not "
             "minimized at this level (e.g. a lower conformer found later), energies from different levels, or a "
@@ -100,7 +110,8 @@ def negative_barrier_warning(label: str, a: int, b: int, forward: float, reverse
 def negative_barrier_warnings(steps: Sequence[Step], energies: Sequence[float]) -> list[str]:
     out = []
     for s, (f, r) in zip(steps, raw_barriers(steps, energies)):
-        w = negative_barrier_warning(getattr(s, "label", ""), s.a, s.b, f, r)
+        w = negative_barrier_warning(getattr(s, "label", ""), s.a, s.b, f, r,
+                                     (getattr(s, "files", None) or {}).get("verified") is not False)
         if w:
             out.append(w)
     return out

@@ -17,6 +17,19 @@ def test_kinetics_reports_the_raw_barrier_and_warns():
     assert negative_barrier_warnings([Step(0, 1, -0.9, "ok", {})], energies) == []
 
 
+def test_an_unverified_step_below_an_end_is_said_to_be_another_motions_saddle():
+    # No IRC has checked it: its ends are only the pair its TS search started between, and a TS below one of them
+    # is the saddle of another motion -- not a sign of mixed levels or unminimized ends, as for a checked step.
+    energies = [-1.0, -1.0 - 10 * HARTREE]
+    unchecked = Step(0, 1, -1.0 - 2 * HARTREE, "fast_0_1", {"verified": False})
+    (w,) = negative_barrier_warnings([unchecked], energies)
+    assert w.startswith("Negative barrier for unverified step fast_0_1") and "2.0 kcal/mol below species 0" in w
+    assert "other motion" in w and "different levels" not in w
+    (w,) = negative_barrier_warnings([Step(0, 1, unchecked.ts_energy, "s", {"verified": True})], energies)
+    assert "different levels" in w
+    assert negative_barrier_warnings([Step(0, 1, -0.9, "ok", {"verified": False})], energies) == []
+
+
 def test_results_flag_negative_barriers_loudly():
     result = {"headline": "x", "barrier_kcal": -3.0, "warnings": ["some other warning"], "groups": [
         {"kind": "ts", "entries": [{"id": "ts", "label": "ts", "note": "A ⇌ B", "barrier_kcal": -3.0, "frames": []},

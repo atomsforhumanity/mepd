@@ -1581,7 +1581,8 @@ def expand_network(
             live._progress.append_live_event({
                 "event": "step", "a": a, "b": b, "label": found.get("label", ""), "ts_energy": ts_e,
                 "barrier_kcal": [fwd, rev],
-                "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev)})
+                "warning": negative_barrier_warning(found.get("label", ""), a, b, fwd, rev,
+                                                    result.steps[-1].files.get("verified") is not False)})
 
     def _same_ts(st, ts_e: float, ts_structure) -> bool:
         """Whether step `st`'s TS is this one (`ts_e`, Hartree; its Structure): the same energy (0.1 kcal/mol)

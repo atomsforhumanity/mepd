@@ -982,7 +982,8 @@ def expand(
         "steps": [{"a": st.a, "b": st.b, "ts_energy": st.ts_energy, "barrier_kcal": list(raw),
                    "kinetics_barrier_kcal": list(bar) if bar is not None else None, "label": st.label,
                    "files": st.files,
-                   "warning": negative_barrier_warning(st.label, st.a, st.b, *raw)}
+                   "warning": negative_barrier_warning(st.label, st.a, st.b, *raw,
+                                                       verified=st.files.get("verified") is not False)}
                   for st, bar, raw in zip(result.steps, result.kinetics.barriers_kcal if result.kinetics else [],
                                           raw_barriers(result.steps, [float(s.node.energy) for s in result.species]))],
         "connections": [list(p) for p in pairs],
