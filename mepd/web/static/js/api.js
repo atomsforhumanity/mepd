@@ -121,6 +121,7 @@ function applyState(data) {
     s.validateMinima = data.validate_minima ?? true;
     s.levels = data.levels || {};
     s.pathSummaries = data.path_summaries || {};
+    s.builtinProfiles = data.builtin_profiles || {};   // mepd's own (e.g. linus steering): name -> TOML, read-only
     s.cpus = data.cpus;
     s.auth = !!data.auth;
     s.demo = data.demo || null;

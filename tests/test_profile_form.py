@@ -257,8 +257,8 @@ def test_gxtb_backend_is_a_choice_and_not_a_level(monkeypatch):
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name == "axtb" else real(name, *a))
     assert any("not installed" in i for i in pf.form(ax)["issues"])
     assert not any("axtb" in i for i in pf.form(BASE)["issues"])
-    gfn2 = pf.apply(ax, "gxtb_engine_kwds.add_gxtb_flag", "false")["text"]
-    assert any("g-xTB only" in i for i in pf.form(gfn2)["issues"])
+    gfn2 = pf.apply(ax, "gxtb_engine_kwds.add_gxtb_flag", "false")["text"]   # GFN2-xTB: axtb computes it too
+    assert not any("g-xTB only" in i for i in pf.form(gfn2)["issues"])
 
 
 def test_gxtb_optimizers_are_choices_defaulting_to_the_engines_and_not_a_level():
@@ -284,3 +284,13 @@ def test_gxtb_optimizers_are_choices_defaulting_to_the_engines_and_not_a_level()
     ax = pf.apply(pf.apply(BASE, "gxtb_engine_kwds.backend", "axtb")["text"], "gxtb_engine_kwds.minimizer", "xtb")["text"]
     assert any("g-xTB program" in i for i in pf.form(ax)["issues"])
     assert "qcopt" in fields["ts_inputs.exact_hessian"]["help"]
+
+
+def test_the_xtb_engine_has_a_backend_choice_and_gfn1_needs_the_program():
+    text = 'engine_name = "xtb"\n'
+    form = pf.form(text)
+    field = next(f for g in form["groups"] for f in g["fields"] if f["path"] == "xtb_engine_kwds.backend")
+    assert field["key"] and [o["value"] for o in field["options"]] == ["", "axtb", "xtb"]
+    gfn1 = 'engine_name = "xtb"\n[xtb_engine_kwds]\nmethod = "gfn1"\nbackend = "axtb"\n'
+    assert any("GFN1" in i for i in pf.form(gfn1)["issues"])
+    assert not any("GFN1" in i for i in pf.form(text)["issues"])

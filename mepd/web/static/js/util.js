@@ -379,3 +379,10 @@ export function variantScope(workspace, id) {
   }
   return { chain, keep: new Set(chain), mine, replaced, replacedReactions };
 }
+
+// What a network expansion's kinetics steer with (its "Steer with the profile"): a built-in or saved profile,
+// or none (the run's own level). Null for other jobs and other steering modes.
+export function steeringOf(job) {
+  if (job?.op !== 'graph-enumeration' || (job.params?.steer ?? 'access') !== 'access') return null;
+  return job.params?.steer_profile || 'none (the run\'s own level)';
+}

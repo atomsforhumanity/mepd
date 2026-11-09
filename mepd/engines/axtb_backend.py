@@ -133,19 +133,19 @@ def _remember(cache: dict, key, calc, limit: int = 16) -> None:
 
 
 def _calculator(numbers: tuple, positions: np.ndarray, charge: int, uhf: int | None, threads: int,
-                conventions: str | None, settings: dict):
+                conventions: str | None, settings: dict, method: str = METHOD):
     """This thread's axtb Calculator for one molecule and settings (made once, then reused: g-xTB
     starts every SCF from the program's own guess, so a reused one gives the same numbers as a new
     one). A forked child makes its own."""
     cache = _thread_cache()
-    key = (numbers, charge, uhf, threads, conventions, tuple(sorted(settings.items())))
+    key = (method, numbers, charge, uhf, threads, conventions, tuple(sorted(settings.items())))
     calc = cache.get(key)
     if calc is None:
         axtb = _import()
         kwds = dict(settings)
         if conventions:
             kwds["conventions"] = conventions
-        calc = axtb.Calculator(METHOD, list(numbers), positions, charge=float(charge), uhf=uhf,
+        calc = axtb.Calculator(method, list(numbers), positions, charge=float(charge), uhf=uhf,
                                threads=int(threads), **kwds)
         _remember(cache, key, calc)
     return calc
@@ -202,7 +202,7 @@ def _warn_rungs(res: dict, what: str) -> dict | None:
 
 
 def point(node, *, threads: int = 1, conventions: str | None = None, settings: dict | None = None,
-          molden: bool = False, solvation: dict | None = None) -> dict:
+          molden: bool = False, solvation: dict | None = None, method: str = METHOD) -> dict:
     """Energy (Eh) and gradient (Eh/bohr, (N, 3)) of `node`. An SCF that does not converge is
     retried with the program's ladder (FALLBACKS), unless the settings fix an electronic
     temperature; each retry is logged. With `molden`, the result's "molden" is the orbitals' file.
@@ -225,7 +225,7 @@ def point(node, *, threads: int = 1, conventions: str | None = None, settings: d
     errors = []
     for k, st in enumerate(ladder):
         try:
-            calc = _calculator(numbers, positions, charge, uhf, threads, conventions, st)
+            calc = _calculator(numbers, positions, charge, uhf, threads, conventions, st, method)
             res = calc.singlepoint(positions, gradient=True, molden=True if molden else None)
         except Exception as exc:          # axtb raises on SCF failure (it never returns an unconverged result)
             errors.append(f"{st or 'defaults'}: {exc}")
@@ -236,8 +236,8 @@ def point(node, *, threads: int = 1, conventions: str | None = None, settings: d
             import logging
 
             logging.getLogger(__name__).warning(
-                "axtb g-xTB SCF did not converge; converged with etemp %s K, %s iterations", st["etemp"],
-                st["max_iter"])
+                "axtb %s SCF did not converge; converged with etemp %s K, %s iterations", _label(method),
+                st["etemp"], st["max_iter"])
         rungs = _warn_rungs(res, "g-xTB in solvent") if solvation else None
         _log("--grad", t0, c0, True, {"retries": k} if k else ({"rungs": rungs} if rungs else None))
         out = {"energy": float(res["energy"]), "gradient": np.asarray(res["gradient"], dtype=float)}
@@ -248,11 +248,11 @@ def point(node, *, threads: int = 1, conventions: str | None = None, settings: d
             out["molden"] = res.get("molden")
         return out
     _log("--grad", t0, c0, False)
-    raise ElectronicStructureError(msg="axtb g-xTB calculation failed: " + " | ".join(errors))
+    raise ElectronicStructureError(msg=f"axtb {_label(method)} calculation failed: " + " | ".join(errors))
 
 
 def hessian(node, *, threads: int = 1, conventions: str | None = None, settings: dict | None = None,
-            solvation: dict | None = None) -> dict:
+            solvation: dict | None = None, method: str = METHOD) -> dict:
     """axtb's analytic g-xTB Hessian of `node` ("hessian", (3N, 3N) Eh/bohr^2, not projected), with
     the energy and gradient. No SCF retry ladder, as for the program's --hess. With `solvation`
     (see `point`): the composite's, H_gxtb + H_GFN2+model - H_GFN2, every part analytic.
@@ -268,11 +268,11 @@ def hessian(node, *, threads: int = 1, conventions: str | None = None, settings:
     numbers, positions, charge, uhf = _molecule(node)
     t0, c0 = time.time(), time.thread_time()
     try:
-        calc = _calculator(numbers, positions, charge, uhf, threads, conventions, settings)
+        calc = _calculator(numbers, positions, charge, uhf, threads, conventions, settings, method)
         res = calc.hessian(positions, vibrations=False)
     except Exception as exc:
         _log("--hess", t0, c0, False)
-        raise ElectronicStructureError(msg=f"axtb g-xTB Hessian failed: {exc}") from exc
+        raise ElectronicStructureError(msg=f"axtb {_label(method)} Hessian failed: {exc}") from exc
     if solvation:
         _warn_rungs({"parts": res.get("hessian_parts")}, "g-xTB in solvent, Hessian")
     _log("--hess", t0, c0, True)
@@ -326,6 +326,78 @@ def solvation_pair(node, *, solvent: str, model: str = "alpb", ladder=({},), thr
                 np.asarray(r_sol["gradient"], dtype=float) - np.asarray(r_gas["gradient"], dtype=float), k)
     _log("--gfn2-pair", t0, c0, False)
     raise ElectronicStructureError(msg="axtb GFN2-xTB solvation pair failed: " + " | ".join(errors))
+
+
+# ------------------------------------------------------------ GFN2-xTB as an engine
+#: axtb's conventions for GFN2-xTB computed in place of the xtb program (engine_name = "xtb", or "gxtb" with
+#: add_gxtb_flag = false), unless told otherwise: xtb 6.7.1's. They reproduce the g-xTB build of xtb 6.7.1 (axtb's
+#: validation matrix: 0 failing checks) and the 6.7.1 release's energies, charges and dipoles; the release's
+#: gradient leaves out the H0/S term of atom pairs that share a Cartesian coordinate (xtb PR #1208), which axtb, the
+#: g-xTB build and xtb 6.8.0 include.
+GFN2_CONVENTIONS = "xtb-6.7.1"
+
+
+def _label(method: str) -> str:
+    return {"gfn2": "GFN2-xTB", "gfnff": "GFN-FF"}.get(str(method).lower(), "g-xTB")
+
+
+def gfn2_point(numbers, positions, *, charge: int = 0, uhf: int | None = None, etemp: float | None = None,
+               rungs=(1000.0, 3000.0), threads: int = 1, conventions: str | None = None,
+               settings: dict | None = None) -> dict:
+    """GFN2-xTB energy (Eh), gradient (Eh/bohr, (N, 3)) and charges at `positions` (bohr), as the xtb program
+    runs it for mepd's xtb engine: at `etemp` (K; None: the method's 300 K), and an SCF that does not converge
+    retried with 1000 iterations at `etemp`, then at each of `rungs` above it. "etemp" in the result: the
+    temperature it converged at when a retry raised it (else None), for the engine to hold from then on."""
+    from mepd.errors import ElectronicStructureError
+
+    positions = np.ascontiguousarray(positions, dtype=float).reshape(-1, 3)
+    # Each SCF from GFN2's own start, as the program runs it: reproducible call for call (axtb's default starts
+    # from the previous geometry's wavefunction, which moves results by ~1e-9 Eh); settings may say "previous".
+    base = {"guess": "fresh", **dict(settings or {})}
+    if etemp:
+        base["etemp"] = float(etemp)
+    ladder = [base] + ([{**base, "max_iter": 1000}] if etemp else []) + \
+        [{**base, "etemp": float(t), "max_iter": 1000} for t in rungs if t > float(etemp or 0.0)]
+    t0, c0 = time.time(), time.thread_time()
+    errors = []
+    for k, st in enumerate(ladder):
+        try:
+            calc = _calculator(tuple(numbers), positions, int(charge), uhf, threads, conventions or GFN2_CONVENTIONS,
+                               st, "gfn2")
+            res = calc.singlepoint(positions, gradient=True)
+        except Exception as exc:
+            errors.append(f"{st or 'defaults'}: {exc}")
+            if not _scf_failure(exc):
+                break
+            continue
+        _log("--gfn2", t0, c0, True, {"retries": k} if k else None)
+        raised = st.get("etemp") if k and st.get("etemp", 0.0) > float(etemp or 0.0) else None
+        return {"energy": float(res["energy"]), "gradient": np.asarray(res["gradient"], dtype=float).reshape(-1, 3),
+                "charges": np.asarray(res.get("charges"), dtype=float) if res.get("charges") is not None else None,
+                "etemp": raised}
+    _log("--gfn2", t0, c0, False)
+    raise ElectronicStructureError(msg="axtb GFN2-xTB calculation failed: " + " | ".join(errors))
+
+
+def gfn2_hessian(numbers, positions, *, charge: int = 0, uhf: int | None = None, etemp: float | None = None,
+                 threads: int = 1, conventions: str | None = None, settings: dict | None = None) -> np.ndarray:
+    """axtb's analytic GFN2-xTB Hessian ((3N, 3N) Eh/bohr^2, not projected) at `positions` (bohr)."""
+    from mepd.errors import ElectronicStructureError
+
+    positions = np.ascontiguousarray(positions, dtype=float).reshape(-1, 3)
+    st = {"guess": "fresh", **dict(settings or {})}
+    if etemp:
+        st["etemp"] = float(etemp)
+    t0, c0 = time.time(), time.thread_time()
+    try:
+        calc = _calculator(tuple(numbers), positions, int(charge), uhf, threads, conventions or GFN2_CONVENTIONS,
+                           st, "gfn2")
+        res = calc.hessian(positions, vibrations=False)
+    except Exception as exc:
+        _log("--gfn2-hess", t0, c0, False)
+        raise ElectronicStructureError(msg=f"axtb GFN2-xTB Hessian failed: {exc}") from exc
+    _log("--gfn2-hess", t0, c0, True)
+    return np.asarray(res["hessian"], dtype=float)
 
 
 # ------------------------------------------------------------ GFN-FF

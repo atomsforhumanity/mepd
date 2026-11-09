@@ -6,7 +6,7 @@
 // explain.json entry; nothing here is computed anew.
 import { html, useState } from '../lib.js';
 import { openJob, set, state, useStore } from '../store.js';
-import { copy, edgeStatus, fmtDuration, isTs } from '../util.js';
+import { copy, edgeStatus, fmtDuration, isTs, steeringOf } from '../util.js';
 import { useExplain } from './Why.js';
 
 const fmtVal = (v) => (v === true ? 'on' : v === false ? 'off' : v == null || v === '' ? '—' : Array.isArray(v) ? v.join(', ') || '—' : String(v));
@@ -61,6 +61,7 @@ export function MethodPane({ jobId, rec = null }) {
     <div class="m-chips">
       <span class="chip-k" title="Level of theory this ran at">${job.level?.label || '—'}</span>
       <span class="chip-k" title="Compute profile">profile ${job.profile || job.level?.profile || 'default'}</span>
+      ${steeringOf(job) && html`<span class="chip-k" title="The level whose single points steer the expansion's kinetics">steering: ${steeringOf(job)}</span>`}
       ${took && html`<span class="chip-k" title="Wall time">${took}</span>`}
     </div>
     ${ex?.does && html`<p class="m-does">${ex.does.split(/(?<=\.)\s/)[0]}</p>`}

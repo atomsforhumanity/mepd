@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field, ValidationError
 from mepd.reaction_smiles import ReactionSmilesError, is_reaction_smiles, reaction_structures
 
 from mepd.web import chem
+from mepd.web import steering as _steering
 from mepd.web.jobs import Broadcaster, JobManager, _reduce_chain_payload
 from mepd.web.sessions import Sessions
 from mepd.web.operations import OPERATIONS
@@ -724,6 +725,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             "validate_minima": W().validate_minima,
             "levels": W().levels(),
             "path_summaries": W().path_summaries(),
+            # mepd's own read-only profiles (the linus steering level where installed): name -> TOML
+            "builtin_profiles": _steering.builtin_profiles(),
             "max_concurrent": J().max_concurrent,
             "auth": bool(auth_token) or demo is not None,
             "demo": {**demo.public(), "builtin_profiles": builtin_profiles(), "open": not demo_password}

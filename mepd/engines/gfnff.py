@@ -138,16 +138,20 @@ def memory_gb(natoms: int, backend: Optional[str] = None) -> float:
 
 
 def default_backend(method: str = "gfnff") -> str:
-    """Where GFN-FF runs unless told: axtb when installed ($MEPD_GFNFF_BACKEND
-    overrides), else the xtb program. Other methods run xtb."""
-    if str(method).lower() != "gfnff":
+    """Where a method runs unless told: GFN-FF and GFN2-xTB in axtb when installed
+    ($MEPD_GFNFF_BACKEND / $MEPD_XTB_BACKEND override), else the xtb program. GFN1-xTB
+    runs xtb (axtb has no GFN1)."""
+    method = str(method).lower()
+    if method not in ("gfnff", "gfn2"):
         return "xtb"
-    forced = os.getenv("MEPD_GFNFF_BACKEND", "").strip().lower()
+    forced = os.getenv("MEPD_GFNFF_BACKEND" if method == "gfnff" else "MEPD_XTB_BACKEND", "").strip().lower()
     if forced in ("xtb", "axtb"):
         return forced
     from mepd.engines import axtb_backend
 
-    return "axtb" if axtb_backend.supports("gfnff") else "xtb"
+    if method == "gfnff":
+        return "axtb" if axtb_backend.supports("gfnff") else "xtb"
+    return "axtb" if axtb_backend.version() is not None else "xtb"
 
 
 def available_gb() -> Optional[float]:
@@ -202,11 +206,13 @@ class GFNFFEngine(Engine):
         if self.backend not in ("xtb", "axtb"):
             raise ValueError(f"GFN-FF backend must be \"axtb\" or \"xtb\", not {self.backend!r}")
         if self.backend == "axtb":
-            if self.method != "gfnff":
-                raise ValueError(f"backend = \"axtb\" runs GFN-FF here; {self._label} runs the xtb program")
+            if self.method == "gfn1":
+                raise ValueError("axtb has no GFN1-xTB: backend = \"xtb\" runs it with the xtb program")
             from mepd.engines import axtb_backend
 
             axtb_backend._import()
+            if self.method == "gfn2":
+                return      # GFN2-xTB in process; the xtb program only for point charges (XTBEngine)
             if not axtb_backend.supports("gfnff"):
                 raise ValueError("this axtb build has no GFN-FF (axtb >= 0.1.0 has); use backend = \"xtb\"")
             self._refs: dict = {}
@@ -463,8 +469,13 @@ _Z = {"H": 1, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "P": 15, "S": 16, "Cl": 
 
 @dataclass
 class XTBEngine(GFNFFEngine):
-    """GFN2-xTB (or GFN1) through the xtb program, as a QM level
-    (engine_name = "xtb"). It takes point charges, so it can be the QM level
+    """GFN2-xTB (or GFN1) as a QM level (engine_name = "xtb"). `backend`:
+    "axtb" computes GFN2-xTB in this process (axtb.Calculator("gfn2"), xtb
+    6.7.1's conventions unless `axtb_conventions` says otherwise: no program
+    start per call, analytic Hessians), "xtb" runs the xtb program; None (the
+    default): axtb where installed, the program for GFN1 (axtb has none).
+    Calculations with point charges always run the program: axtb has no
+    electrostatic embedding. It takes point charges, so it can be the QM level
     of electrostatically embedded QM/MM (e.g. in TIP3P water): seconds or
     less per gradient where DFT takes many.
 
@@ -512,6 +523,8 @@ class XTBEngine(GFNFFEngine):
         the element of each (its hardness damps the interaction; H if not
         given)."""
         pcs = list(point_charges or [])
+        if self.backend == "axtb" and not pcs:
+            return self._axtb_gfn2(symbols, coords_bohr, charge, multiplicity)
         els = list(elements) if elements is not None else ["H"] * len(pcs)
         pc = [(float(q), tuple(float(v) for v in xyz), _Z.get(str(el), 1)) for (q, xyz), el in zip(pcs, els)]
         with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
@@ -527,6 +540,40 @@ class XTBEngine(GFNFFEngine):
             self._local.charges = np.loadtxt(fp).reshape(-1) if fp.exists() else None
             pcg = np.loadtxt(Path(tmp) / "pcgrad").reshape(-1, 3) if pc else None
         return e, g, pcg
+
+    def _etemp(self) -> Optional[float]:
+        t = max(float(self.electronic_temperature or 0.0), float(self._scc_floor or 0.0))
+        return t or None
+
+    def _axtb_gfn2(self, symbols, coords_bohr, charge: int, multiplicity: int):
+        from mepd.engines import axtb_backend
+
+        res = axtb_backend.gfn2_point(self._numbers(symbols), coords_bohr, charge=int(charge),
+                                      uhf=int(multiplicity) - 1, etemp=self._etemp(), conventions=self.axtb_conventions,
+                                      settings={"guess": "previous"} if self.reuse_scc_guess else None)
+        if res["etemp"]:
+            log.warning("%s SCC did not converge; converged at an electronic temperature of %.0f K", self._label,
+                        res["etemp"])
+            self._raise_scc_floor(res["etemp"])
+        self._local.charges = res["charges"]
+        return res["energy"], res["gradient"], None
+
+    def hessian(self, symbols, coords_bohr, charge: int = 0, reference_xyz: Optional[str] = None,
+                multiplicity: int = 1) -> NDArray:
+        """axtb's analytic GFN2-xTB Hessian ((3N, 3N) Eh/bohr^2; backend "axtb")."""
+        from mepd.engines import axtb_backend
+
+        if self.backend != "axtb":
+            raise ValueError("an analytic GFN2-xTB Hessian needs backend = \"axtb\"")
+        return axtb_backend.gfn2_hessian(self._numbers(symbols), coords_bohr, charge=int(charge),
+                                         uhf=int(multiplicity) - 1, etemp=self._etemp(),
+                                         threads=max(1, int(self.n_parallel or 1)), conventions=self.axtb_conventions)
+
+    def compute_hessian(self, node, step_size: float | None = None) -> NDArray:
+        if self.backend == "axtb":
+            return self.hessian(list(node.symbols), np.asarray(node.coords), int(node.structure.charge),
+                                multiplicity=int(node.structure.multiplicity))
+        return super().compute_hessian(node, step_size)
 
     def energy_gradients(self, jobs: list[tuple]) -> list[tuple[float, np.ndarray]]:
         def one(j):

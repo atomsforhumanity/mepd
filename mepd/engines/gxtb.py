@@ -458,11 +458,13 @@ class GXTBCalculator(Engine):
     # "xtb": run the g-xTB program for every calculation. "axtb": g-xTB 2.0.1 from axtb, AFH's Rust
     # reimplementation, in this process (mepd.engines.axtb_backend): the program's energies, no
     # process start per call, analytic Hessians. It takes only --etemp/--acc/--iterations in
-    # extra_args (SCF accuracy 0.01 unless --acc is given: axtb_backend.ACCURACY), g-xTB only
-    # (add_gxtb_flag), no minimizer = "xtb", and timeout_s does not apply.
-    # None (the default): "axtb", unless the settings need the program -- GFN-xTB (add_gxtb_flag
-    # false), minimizer = "xtb", an extra_args option axtb does not take, an explicit `executable`,
-    # or no axtb installed -- then "xtb". A profile that names a backend keeps it.
+    # extra_args (SCF accuracy 0.01 unless --acc is given: axtb_backend.ACCURACY), no minimizer =
+    # "xtb", and timeout_s does not apply. With add_gxtb_flag false (GFN2-xTB, as the program runs
+    # it without --gxtb) it computes GFN2-xTB, in xtb 6.7.1's conventions unless axtb_conventions
+    # names others (axtb_backend.GFN2_CONVENTIONS).
+    # None (the default): "axtb", unless the settings need the program -- minimizer = "xtb", an
+    # extra_args option axtb does not take, an explicit `executable`, or no axtb installed -- then
+    # "xtb". A profile that names a backend keeps it.
     backend: str | None = None
     # axtb's conventions: None/"axtb" (its default) or "gxtb" (reproduces the program to ~1e-12 Eh).
     axtb_conventions: str | None = None
@@ -483,8 +485,9 @@ class GXTBCalculator(Engine):
         if self.backend == "axtb":
             from mepd.engines import axtb_backend
 
-            if not self.add_gxtb_flag:
-                raise ValueError("backend = \"axtb\" computes g-xTB only (add_gxtb_flag = true).")
+            if not self.add_gxtb_flag and self.axtb_solvation:
+                raise ValueError("axtb_solvation is g-xTB's solvation composite; with add_gxtb_flag = false "
+                                 "(GFN2-xTB) a profile's [solvation] table uses the xtb program instead.")
             if (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb":
                 raise ValueError("minimizer = \"xtb\" runs the g-xTB program's own optimizer; with backend = "
                                  "\"axtb\" use qcopt, sella, geometric or lbfgs.")
@@ -520,8 +523,7 @@ class GXTBCalculator(Engine):
 
     def _default_backend(self) -> str:
         """axtb when it computes what these settings ask for, else the g-xTB program."""
-        if (not self.add_gxtb_flag or self.executable is not None
-                or (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb"):
+        if self.executable is not None or (self.minimizer or self.DEFAULT_MINIMIZER) == "xtb":
             return "xtb"
         from mepd.engines import axtb_backend
 
@@ -602,6 +604,12 @@ class GXTBCalculator(Engine):
         return node_list
 
     def _axtb_kwds(self) -> dict:
+        if not self.add_gxtb_flag:      # GFN2-xTB, as the program runs without --gxtb
+            from mepd.engines.axtb_backend import GFN2_CONVENTIONS
+
+            return {"threads": max(1, int(self.n_threads)), "conventions": self.axtb_conventions or GFN2_CONVENTIONS,
+                    "settings": {"guess": "fresh", **getattr(self, "_axtb_settings", {})}, "solvation": None,
+                    "method": "gfn2"}
         return {"threads": max(1, int(self.n_threads)), "conventions": self.axtb_conventions,
                 "settings": getattr(self, "_axtb_settings", {}), "solvation": self.axtb_solvation}
 
@@ -621,7 +629,8 @@ class GXTBCalculator(Engine):
             with tempfile.TemporaryDirectory(prefix="axtb-") as tmp:
                 fp = Path(tmp) / "molden.input"
                 fp.write_text(out["molden"])
-                save_run_orbitals(fp, node.structure.to_xyz(), "axtb", "g-xTB")   # axtb's Molden conventions
+                save_run_orbitals(fp, node.structure.to_xyz(), "axtb",
+                                  "g-xTB" if self.add_gxtb_flag else "GFN2-xTB")   # axtb's Molden conventions
         res = FakeQCIOResults.model_validate({"energy": out["energy"], "gradient": out["gradient"]})
         return FakeQCIOOutput.model_validate({"results": res})
 

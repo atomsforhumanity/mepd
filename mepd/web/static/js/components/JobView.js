@@ -3,7 +3,7 @@
 import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
 import { familyOf, goBack, historyDepth, openJob, pageJobId, prefs, select, set, state, toast, update, useStore } from '../store.js';
-import { JobPill, STATUS_LABEL, copy, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, reactionOfEdge, safeName, structureName, subsetXyz, tsFrameIndex } from '../util.js';
+import { JobPill, STATUS_LABEL, copy, steeringOf, downloadText, entryToXyz, fmtDuration, fmtKcal, jobElapsed, reactionOfEdge, safeName, structureName, subsetXyz, tsFrameIndex } from '../util.js';
 import { EnergyPlot } from './EnergyPlot.js';
 import { ParamForm, clampToSchema, defaultsFor, rememberValues, rememberedValues } from './ParamForm.js';
 import { JobControls, useTick } from './Jobs.js';
@@ -1094,6 +1094,7 @@ export function JobView({ jobId: openedId }) {
               : job.external ? ' · existing output, read in place' : run.started && html` · ${fmtDuration(jobElapsed(run))}`}
             ${source && html` · from <a href="#" onClick=${(e) => { e.preventDefault(); openJob(source.id); }}>${source.title}</a>`}
             ${job.profile && html` · profile <b>${job.profile}</b>`}
+            ${steeringOf(job) && html` · steering <b>${steeringOf(job)}</b>`}
             ${targets.length > 0 && html` · ${targets.map((t, i) => html`${i ? (job.op === 'ts' || job.op === 'channels' ? ' → ' : ', ') : ''}<a href="#"
               onClick=${(e) => { e.preventDefault(); select({ structures: [t.id] }); set({ view: { tab: 'graph', jobId } }); }}>${t.label}</a>`)}`}
           </div>`}

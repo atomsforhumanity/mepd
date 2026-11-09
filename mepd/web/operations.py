@@ -608,7 +608,7 @@ class ExpandParams(Params):
         _steering.default_steer_profile(), "Steer with the profile",
         "A higher level (DFT) whose single points on the explorer's geometries steer the kinetics that decide "
         "what is expanded and sampled: the built-in linus wB97X-D3BJ/def2-TZVP (the default where installed), or "
-        "a saved profile. None: the run's own level.", kind="custom", requires="steer=access", advanced=True,
+        "a saved profile. None: the run's own level.", kind="custom", requires="steer=access",
         group="Kinetics", choices_from="profiles", builtins=list(_steering.builtin_profiles()), stage=STEER)
     # ------------------------------------------------------------------- Run
     schedule: Literal["async", "rounds"] = P(

@@ -81,3 +81,20 @@ def test_linus_gives_a_water_energy_at_the_builtin_level():
     xyz = "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n"
     e = steering.builtin_profile_engine().compute_energies([StructureNode(structure=Structure.from_xyz(xyz))])[0]
     assert -76.5 < e < -76.3
+
+
+def test_steering_is_in_the_main_form_and_its_profile_on_the_profiles_page(tmp_path, monkeypatch):
+    """Not under Advanced: shown whenever the expansion steers by access. The built-in profile is listed for the
+    Profiles page (read-only, Save as... copies it) through /api/state."""
+    prop = OPERATIONS["graph-enumeration"].params_model.model_json_schema()["properties"]["steer_profile"]
+    assert not prop["advanced"] and prop["requires"] == "steer=access"
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    monkeypatch.setattr(steering, "linus_available", lambda: True)
+    with TestClient(create_app(tmp_path / "ws")) as c:
+        assert c.get("/api/state").json()["builtin_profiles"] == {steering.LINUS: steering.LINUS_TOML}
+    monkeypatch.setattr(steering, "linus_available", lambda: False)
+    with TestClient(create_app(tmp_path / "ws2")) as c:
+        assert c.get("/api/state").json()["builtin_profiles"] == {}

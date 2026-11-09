@@ -68,7 +68,7 @@ TERACHEM_DEFAULTS = {"method": "b3lyp", "basis": "6-31gs", "command": None, "tim
 PSI4_DEFAULTS = {"method": "b3lyp", "basis": "def2-svp", "threads": 4, "memory": "4 GB"}
 MLIP_DEFAULTS = {"device": "", "checkpoint": None, "family": "", "geometry_optimizer": "LBFGS"}
 MLIP_PACKAGES = {"aimnet2": "aimnet", "orb": "orb_models", "ani": "torchani", "mace": "mace", "fairchem": "fairchem"}
-PROGRAMS = ["xtb", "terachem", "psi4", "pyscf", "orca", "crest"]
+PROGRAMS = ["xtb", "terachem", "psi4", "pyscf", "orca", "crest", "linus"]   # linus: AFH's in-process DFT (qccodec)
 INTERPOLATIONS = [
     ("geodesic", "Geodesic", "Geodesic interpolation in internal coordinates: curved paths that keep bonds sensible."),
     ("idpp", "IDPP", "Image-dependent pair potential: interatomic distances interpolated, images relaxed together "
@@ -172,6 +172,8 @@ MINIMUMS = {"nimages": 3, "max_steps": 1, "nnodes": 3, "n_candidates": 1, "n_thr
 
 OPTIONS = {
     "xtb_engine_kwds.method": [("gfn2", "GFN2-xTB"), ("gfn1", "GFN1-xTB")],
+    "xtb_engine_kwds.backend": [("", "automatic: axtb for GFN2-xTB, the xtb program for GFN1"),
+                                ("axtb", "axtb, in process (GFN2-xTB)"), ("xtb", "the xtb program")],
     "path_min_inputs.tangent": [("geodesic", "geodesic"), ("linear", "linear")],
     "path_min_inputs.pseudo_irc_hessian": [("auto", "auto"), ("engine", "the engine's"), ("gradients", "from gradients")],
     "path_min_inputs.fallback": [("GSM", "GSM"), ("NEB", "NEB"), ("none", "none")],
@@ -280,7 +282,7 @@ HELP = {
     "min_nebk": "Smallest spring constant.",
     "max_nebk": "Largest spring constant (empty: same as the smallest).",
     "min_image": "Images (empty: the chain length).",
-    "backend": "What computes g-xTB 2.0.1: axtb, AFH's Rust version of it, inside mepd (no program start per call, analytic Hessians), or the g-xTB program (one run per call). Both give the same energies (to 1e-10 Eh), so this is not a different level of theory. Automatic (the default): axtb, except for GFN-xTB (add_gxtb_flag off), the program's own minimizer, extra arguments axtb doesn't take, or a program path you set, which run the program.",
+    "backend": "What computes g-xTB 2.0.1 (or GFN2-xTB, with add_gxtb_flag off): axtb, AFH's Rust version of it, inside mepd (no program start per call, analytic Hessians), or the program (one run per call). Both give the same energies (g-xTB to 1e-10 Eh; GFN2-xTB in xtb 6.7.1's conventions), so this is not a different level of theory. Automatic (the default): axtb, except for the program's own minimizer, extra arguments axtb doesn't take, or a program path you set, which run the program.",
     "n_threads": "Threads per g-xTB call. Keep 1 and parallelize across calls instead.",
     "n_parallel": "g-xTB calls at once (0: all cores).",
     "hessian_acc": "SCC accuracy for numerical Hessians (smaller = tighter).",
@@ -701,8 +703,6 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
             if importlib.util.find_spec("axtb") is None:
                 issues.append('g-xTB backend "axtb" needs the axtb package, which is not installed here; '
                               'pick the g-xTB program.')
-            if gx.get("add_gxtb_flag", True) is False:
-                issues.append('axtb computes g-xTB only: with add_gxtb_flag = false (GFN2-xTB), pick the g-xTB program.')
             if str(gx.get("minimizer") or "") == "xtb":
                 issues.append('Minimizer "g-xTB program\'s own" needs the g-xTB program: pick another minimizer, or '
                               'the g-xTB program as the backend.')
@@ -719,8 +719,23 @@ def form(text: str, allowed_engines: Optional[Iterable[str]] = None) -> dict:
                        "note": "Program keywords (e.g. TeraChem settings) go in [program_kwds.keywords] on the TOML tab.",
                        "fields": fields})
     elif engine == "xtb":
+        xk = _table(data, "xtb_engine_kwds")
+        if str(xk.get("backend") or "") == "axtb":
+            import importlib.util
+
+            if importlib.util.find_spec("axtb") is None:
+                issues.append('xTB backend "axtb" needs the axtb package, which is not installed here; pick the xtb '
+                              'program.')
+            if str(xk.get("method") or "gfn2").lower() == "gfn1":
+                issues.append('axtb has no GFN1-xTB: pick GFN2-xTB, or the xtb program as the backend.')
         groups.append({"id": "engine", "title": "xTB", "fields": [
             _field(data, "xtb_engine_kwds.method", "gfn2", key=True),
+            _field(data, "xtb_engine_kwds.backend", None, key=True, label="Backend",
+                   help="What computes GFN2-xTB: axtb, AFH's Rust version of it, inside mepd (no program start per "
+                        "call, analytic Hessians; xtb 6.7.1's conventions), or the xtb program. Automatic (the "
+                        "default): axtb where it is installed, the program for GFN1-xTB (axtb has none). With point "
+                        "charges (electrostatically embedded QM/MM) the program runs either way: axtb has no "
+                        "embedding."),
             _field(data, "xtb_engine_kwds.n_parallel", 4, help="xtb runs at once (one core each).")]})
     elif engine == "psi4":
         from mepd.engines.psi4 import INSTALL, psi4_python

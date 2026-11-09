@@ -20,7 +20,6 @@ def test_unset_backend_takes_the_xtb_options_axtb_takes():
 
 
 @pytest.mark.parametrize("kw", [
-    {"add_gxtb_flag": False},                 # GFN-xTB: axtb computes g-xTB only
     {"minimizer": "xtb"},                     # the program's own optimizer
     {"extra_args": "--gfn 2"},                # an option axtb would not apply
     {"executable": "/opt/gxtb/bin/gxtb"},     # a program named explicitly
@@ -31,8 +30,15 @@ def test_unset_backend_falls_back_to_the_program(kw):
 
 def test_a_named_backend_is_kept():
     assert GXTBCalculator(backend="xtb").backend == "xtb"
-    with pytest.raises(ValueError):
-        GXTBCalculator(backend="axtb", add_gxtb_flag=False)
+    assert GXTBCalculator(backend="xtb", add_gxtb_flag=False).backend == "xtb"
+
+
+def test_gfn2_xtb_runs_in_axtb_unless_the_program_is_asked_for():
+    """add_gxtb_flag false (GFN2-xTB, as the program runs without --gxtb): axtb's GFN2 in xtb 6.7.1's conventions."""
+    eng = GXTBCalculator(add_gxtb_flag=False)
+    assert eng.backend == "axtb"
+    kw = eng._axtb_kwds()
+    assert kw["method"] == "gfn2" and kw["conventions"] == axtb_backend.GFN2_CONVENTIONS and kw["settings"]["guess"] == "fresh"
 
 
 def test_unset_backend_without_axtb_is_the_program(monkeypatch):

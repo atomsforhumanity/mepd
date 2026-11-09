@@ -147,7 +147,7 @@ def _water_cluster(n: int = 4) -> Structure:
 def test_gfnff_runs_in_axtb_by_default_and_keeps_the_reference_topology(monkeypatch):
     from mepd.engines.gfnff import GFNFFEngine, default_backend
 
-    assert default_backend() == "axtb" and default_backend("gfn2") == "xtb"
+    assert default_backend() == "axtb" and default_backend("gfn2") == "axtb" and default_backend("gfn1") == "xtb"
     monkeypatch.setenv("MEPD_GFNFF_BACKEND", "xtb")
     assert default_backend() == "xtb"
     monkeypatch.delenv("MEPD_GFNFF_BACKEND")
@@ -160,8 +160,9 @@ def test_gfnff_runs_in_axtb_by_default_and_keeps_the_reference_topology(monkeypa
     # The same geometry with the topology of another one is another number: the topology is kept.
     calc = axtb.Calculator("gfnff", [8, 1, 1] * 16, x, conventions="xtb-6.7.1")
     assert abs(calc.singlepoint(x)["energy"] - e1) < 1e-6
-    with pytest.raises(ValueError, match="GFN-FF"):
-        GFNFFEngine(method="gfn2", backend="axtb")
+    assert GFNFFEngine(method="gfn2", backend="axtb").backend == "axtb"     # GFN2-xTB runs in axtb too
+    with pytest.raises(ValueError, match="GFN1"):
+        GFNFFEngine(method="gfn1", backend="axtb")
 
 
 def test_a_topology_is_set_up_once_per_concurrent_caller(monkeypatch):
