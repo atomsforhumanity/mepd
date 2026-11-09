@@ -15,6 +15,7 @@ import { api } from '../api.js';
 import { openJob, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 import { Popover, pointBox, useHoverCard } from './Popover.js';
+import { MixtureDesign, designParam } from './LiveDesigns.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_FEED = 92;
@@ -113,6 +114,9 @@ export function MixtureView({ jobId }) {
   if (!d) return html`<p class="boot">Loading the mixture…</p>`;
   // The feed's own names (as given to the mixture), else everyday names, else the SMILES.
   const names = { ...(d.names || {}), ...Object.fromEntries(((m && m.feed) || []).filter((f) => f.name && f.name !== f.molecule).map((f) => [f.molecule, f.name])) };
+  if (m && (m.molecules || []).length && ['a', 'b', 'c'].includes(designParam())) {   // prototype designs (dev): LiveDesigns.js
+    return html`<${MixtureDesign} mixture=${m} names=${names} design=${designParam()} jobId=${jobId} job=${job} running=${running} />`;
+  }
   const nameOf = (k) => names[k] || k.split('|')[0];   // "A|B": forms counted as one species
   const unit = m?.settings?.standard_state === '1atm' ? 'atm' : 'M';
   const seeds = m?.seeds || d.seeds || [];
