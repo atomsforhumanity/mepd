@@ -226,16 +226,17 @@ function Transport({ p, children }) {
 // ------------------------------------------------------------ one event
 // An event at full time resolution with only its molecules, looping: bonds
 // that form dashed green, bonds that break dashed red.
-export function EventPlayer({ jobId, event, height = null, onData, run = null, seed = null }) {
+export function EventPlayer({ jobId, event, height = null, onData, run = null, seed = null, runName = null }) {
   const host = useRef(null);
   const stage = useStage(host);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   useEffect(() => {
     setData(null); setErr(null); stage.refit();
-    api.get(`/api/jobs/${jobId}/reactor/events/${event}${run != null ? `?run=${run}` : ''}${seed ? `${run != null ? '&' : '?'}seed=${encodeURIComponent(seed)}` : ''}`).then((x) => { setData(x); onData?.(x); })
+    const q = [run != null ? `run=${run}` : '', seed ? `seed=${encodeURIComponent(seed)}` : '', runName ? `name=${encodeURIComponent(runName)}` : ''].filter(Boolean).join('&');
+    api.get(`/api/jobs/${jobId}/reactor/events/${event}${q ? `?${q}` : ''}`).then((x) => { setData(x); onData?.(x); })
       .catch((e) => setErr(String(e.message || e)));
-  }, [jobId, event, run, seed]);
+  }, [jobId, event, run, seed, runName]);
   const p = usePlayer(data ? data.frames.length : 0);
   useEffect(() => {
     if (!data) return;

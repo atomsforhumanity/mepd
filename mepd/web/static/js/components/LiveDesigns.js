@@ -883,7 +883,7 @@ function useGhostFrames(apiJob, ev) {
   useEffect(() => {
     if (EVENT_CACHE.has(key)) { setD(EVENT_CACHE.get(key)); return undefined; }
     let alive = true;
-    api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?run=${ev.run}${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`)
+    api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?name=${encodeURIComponent(ev.run)}${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`)
       .then((x) => {
         const g = ghostFrames(x);
         EVENT_CACHE.set(key, g);
@@ -1006,6 +1006,6 @@ export function EventDialog({ apiJob, ev, nameOf, onClose }) {
         <button class="btn small" onClick=${onClose} aria-label="Close">✕</button></div>
       <div class="small muted">A reaction event in the reactor's MD at ${fmtClock(ev.t)} run time${ev.seed ? ` (seed ${ev.seed})` : ''}, ${ev.atoms} atoms
         · from ${nameOf(ev.src ?? '0')}${ev.prod != null ? ` · became ${nameOf(ev.prod)} (found and minimized)` : ' · not (yet) matched to a species'}</div>
-      <${EventPlayer} jobId=${apiJob} event=${ev.k} run=${+ev.run} seed=${ev.seed} height=${360} />
+      <${EventPlayer} jobId=${apiJob} event=${ev.k} runName=${ev.run} seed=${ev.seed} height=${360} />
     </div></div>`;
 }

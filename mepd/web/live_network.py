@@ -931,13 +931,12 @@ def _runs_of(job: dict) -> list:
     """(run id, run folder, the folder the event movie route takes it from) for each reactor run of a
     network expansion (output/reactor/run_kk) or a reacting mixture's seeds (output/seeds/<s>/run/reactor/run_kk)."""
     out = Path(job.get("output_dir") or "")
+    # (by folder name: an index into the sorted folders shifts when run_100 sorts in before run_11, or a run
+    # shows up out of order)
     if job.get("op") == "network-mixture":
-        res = []
-        for sd in sorted((out / "seeds").glob("*")):
-            for k, d in enumerate(sorted((sd / "run" / "reactor").glob("run_*"))):
-                res.append((f"{sd.name}/{k}", d, sd.name))
-        return res
-    return [(str(k), d, None) for k, d in enumerate(sorted((out / "reactor").glob("run_*")))]
+        return [(f"{sd.name}/{d.name}", d, sd.name) for sd in sorted((out / "seeds").glob("*"))
+                for d in sorted((sd / "run" / "reactor").glob("run_*"))]
+    return [(d.name, d, None) for d in sorted((out / "reactor").glob("run_*"))]
 
 
 def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000, budget_s: float = 1.0) -> dict:
@@ -986,7 +985,7 @@ def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000, 
                     st["src"][rid] = seeds_mol[seed][0]
             else:
                 states = states if states is not None else _species_states(job_dir)
-                st["src"][rid] = _source_of(run, states) or _source_by_time(job_dir, Path(job["output_dir"]), run, int(rid))
+                st["src"][rid] = _source_of(run, states) or _source_by_time(job_dir, Path(job["output_dir"]), run, int(run.name[4:]))
         for ev in evs[n0:]:
             seg = run / "md" / f"segment_{int(ev.get('product_frame', 0)) // SEGMENT_FRAMES:03d}.xyz"
             try:
@@ -995,7 +994,7 @@ def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000, 
                 t = m
             label = ev.get("label") or ""
             fresh.append({"_raw": {"atoms": ev.get("atoms"), "product_frame": ev.get("product_frame"), "label": label, "run": run},
-                          "t": round(t - t0, 1) if t0 else 0.0, "run": rid.split("/")[-1], "seed": seed, "rid": rid,
+                          "t": round(t - t0, 1) if t0 else 0.0, "run": run.name, "seed": seed, "rid": rid,
                           "k": ev.get("event"), "label": label, "atoms": len(ev.get("atoms") or []),
                           "src": st["src"].get(rid), "prod": None,
                           "changes": [[c["atoms"][0], c["atoms"][1], 1 if c.get("formed") else 0] for c in ev.get("bond_changes") or []][:8]})
