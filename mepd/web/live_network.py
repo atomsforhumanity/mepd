@@ -113,7 +113,9 @@ def compact_legacy(kin: dict, known_steps: list) -> Optional[dict]:
         fwd, rev = (st["dG"][0], st["dG"][1]) if a < b else (st["dG"][1], st["dG"][0])
         key = (min(a, b), max(a, b))
         low = min(x for x in (fwd, rev) if x is not None) if (fwd, rev) != (None, None) else None
-        rank = (bool(st.get("unchecked")), low is None, low or 0)
+        # A TS below one of its ends (ts_below_ends) is no barrier of that pair: after the real ones, else
+        # the lowest (most negative) of them fill the frame's step cap and push every real route out.
+        rank = (bool(st.get("unchecked")), low is None, ts_below_ends((fwd, rev)), low or 0)
         if key not in best or rank < best[key][0]:
             best[key] = (rank, {"id": st["label"], "from": key[0], "to": key[1], "dG_fwd": fwd, "dG_rev": rev,
                                 "state": "open", "energy_source": "gxtb",
@@ -624,6 +626,29 @@ def activity(job_dir: Path) -> dict:
     return out
 
 
+def _explored(frames: list, lines: list) -> list:
+    """Every species the run found (a frame holds only the most populated): [id, the frame time it first
+    counted, the species it was found from (its live event; None for one an IRC end made)]. Species are
+    only ever appended, so species k counts from the first frame with more than k."""
+    parents = {}
+    for line in lines:
+        if '"species"' not in line[:40]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "species":
+            parents.setdefault(str(ev.get("index")), ev.get("parent"))
+    out, k = [], 0
+    for f in frames:
+        while k < (f.get("counts") or {}).get("species", 0):
+            p = parents.get(str(k))
+            out.append([str(k), f["t"], None if p is None else str(p)])
+            k += 1
+    return out
+
+
 def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None) -> dict:
     """A job's timeline: its recorded frames, and while it runs the network as
     events.jsonl has it now (so it grows from the first species on)."""
@@ -681,6 +706,7 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
             if ev.get("event") == "species" and ev.get("known"):
                 known.add(str(ev.get("index")))
     tl["known_ids"] = sorted(known)
+    tl["explored"] = _explored(frames, lines)
     tl["activity"] = activity(job_dir)
     return tl
 

@@ -15,6 +15,7 @@ import { openJob, set, update, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 import { MixtureView } from './MixtureNetwork.js';
 import { Popover, pointBox, useHoverCard } from './Popover.js';
+import { DesignNetwork, designParam } from './LiveDesigns.js';
 
 const W = 1250, H = 820, CX = W / 2, CY = H / 2 - 20, M = 72;
 const BOX_MIN = 46, BOX_MAX = 112, BOX_SEED = 88;   // card widths (px); height is 3/4 of it
@@ -164,6 +165,18 @@ function ExpansionNetwork({ jobId = null, example = null }) {
     </div>`;
   }
   const f = tl.frames[cur];
+  const design = designParam();
+  if (['a', 'b', 'c'].includes(design)) {   // prototype designs (dev): LiveDesigns.js
+    const controls = html`<div class="ln-controls">
+      <button class="btn primary" onClick=${() => { if (!playing && cur >= n - 1) setI(0); setPlaying(!playing); }}>${playing ? 'Pause' : 'Replay'}</button>
+      <input type="range" min="0" max=${n - 1} value=${cur} onInput=${(e) => { setPlaying(false); setI(+e.target.value); }} aria-label="Exploration time" />
+      <span class="mono small">${fmtMin(f.t)} / ${fmtMin(tl.frames[n - 1].t)}</span>
+      <div class="segmented">${[1, 4].map((s) => html`<button class=${speed === s ? 'on' : ''} onClick=${() => setSpeed(s)}>${s}×</button>`)}</div>
+      ${running && i != null && html`<button class="btn small" onClick=${() => { setPlaying(false); setI(null); }}>Back to live</button>`}
+    </div>`;
+    return html`<${DesignNetwork} tl=${tl} cur=${cur} design=${design} jobId=${jobId} example=${example} job=${job}
+      running=${running} follow=${i == null || playing} controls=${controls} />`;
+  }
   const prev = cur > 0 ? tl.frames[cur - 1] : null;
   const prevIds = new Set(prev ? prev.species.map((s) => s[0]) : []);
   const tPrev = prev ? prev.t : -1;

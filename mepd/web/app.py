@@ -1549,13 +1549,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return out
 
     @app.get("/api/depict")
-    def depict(smiles: str, w: int = 220, h: int = 160, start: Optional[str] = None):
+    def depict(smiles: str, w: int = 220, h: int = 160, start: Optional[str] = None, bond: Optional[float] = None):
         """`start`: a network expansion's start state; a species of several molecules is drawn by those
         that differ from it (chem.depict_changed_svg)."""
         if demo is not None and max(len(smiles), len(start or "")) > demo.max_smiles_length:
             raise HTTPException(400, "SMILES too long")
         w, h = min(max(w, 40), 800), min(max(h, 40), 800)
-        svg = chem.depict_changed_svg(smiles, start, w, h) if start else chem.depict_svg(smiles, w, h)
+        bond = min(max(bond, 4.0), 60.0) if bond else None   # a fixed bond length (px): one scale side by side
+        svg = chem.depict_changed_svg(smiles, start, w, h, bond) if start else chem.depict_svg(smiles, w, h, bond)
         if svg is None:
             raise HTTPException(404, "cannot depict")
         return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "max-age=86400"})

@@ -223,9 +223,11 @@ def formula(structure: Structure) -> str:
 
 
 @lru_cache(maxsize=512)
-def depict_svg(smiles: str, width: int = 220, height: int = 160) -> Optional[str]:
+def depict_svg(smiles: str, width: int = 220, height: int = 160, bond: Optional[float] = None) -> Optional[str]:
     """2D depiction of a SMILES (transparent background, theme-neutral
-    colours so it reads on light and dark cards)."""
+    colours so it reads on light and dark cards). `bond`: a fixed bond length in pixels, so molecules
+    drawn side by side share one scale (water stays small next to a larger molecule); larger ones still
+    shrink to fit."""
     try:
         from rdkit import Chem
         from rdkit.Chem.Draw import rdMolDraw2D
@@ -242,6 +244,8 @@ def depict_svg(smiles: str, width: int = 220, height: int = 160) -> Optional[str
         opts.clearBackground = False
         opts.bondLineWidth = 2
         opts.padding = 0.12
+        if bond:
+            opts.fixedBondLength = float(bond)
         rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
@@ -309,7 +313,8 @@ def changed_svg(mols: list, counts: list[int], unchanged: list[tuple[str, int]],
 
 
 @lru_cache(maxsize=512)
-def depict_changed_svg(smiles: str, start: str, width: int = 220, height: int = 160) -> Optional[str]:
+def depict_changed_svg(smiles: str, start: str, width: int = 220, height: int = 160,
+                       bond: Optional[float] = None) -> Optional[str]:
     """A species of several molecules drawn by what differs from the run's start state `start` (the
     multiset difference of their molecules): each changed molecule once, with its count when repeated, and
     a muted line for the unchanged rest. A single molecule, the start itself, or a species that keeps
@@ -322,7 +327,7 @@ def depict_changed_svg(smiles: str, start: str, width: int = 220, height: int = 
         have, had = Counter(_molecules(smiles)), Counter(_molecules(start))
         changed, same = have - had, have & had
         if sum(have.values()) < 2 or not changed:
-            return depict_svg(smiles, width, height)
+            return depict_svg(smiles, width, height, bond)
         mols = []
         for m in changed:
             mol = Chem.MolFromSmiles(m)
