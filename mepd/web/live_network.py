@@ -387,7 +387,8 @@ def _summary_steps(job_dir: Path) -> Optional[list]:
              "left_out": (st.get("files") or {}).get("left_out_of_final_kinetics")} for st in steps if st.get("label")]
 
 
-def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[list] = None) -> Optional[dict]:
+def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[list] = None,
+             t_end: Optional[float] = None) -> Optional[dict]:
     """The network as events.jsonl has it now, on top of the last kinetics
     refresh: species and steps found since then show at once (no amounts yet)."""
     import time
@@ -423,7 +424,7 @@ def _growing(job_dir: Path, lines: list, t0: Optional[float], steps: Optional[li
         return None
     f["growing"] = True
     f["steered"] = "single points" in (kin.get("basis") or "")
-    f["t"] = _r(time.time() - t0, 1) if t0 else 0.0
+    f["t"] = _r((t_end or time.time()) - t0, 1) if t0 else 0.0   # (a finished run: when it ended, not now)
     return _fill_smiles(f, _perceived(job_dir, lines))
 
 
@@ -437,9 +438,10 @@ def record_selectivity(job_dir: Path, data: dict) -> None:
         fh.write(json.dumps({**head, "entry": entries[-1]}, separators=(",", ":")) + "\n")
 
 
-def species_xyz(job_dir: Path, sid: str) -> Optional[str]:
+def species_xyz(job_dir: Path, sid: str, irc: bool = True) -> Optional[str]:
     """A species' geometry: its final one (output/species), else as the run first
-    reported it (live/events.jsonl), the seed's from the job's input."""
+    reported it (live/events.jsonl), the seed's from the job's input, else (one an IRC end made,
+    while the run is on) that IRC end."""
     job_dir = Path(job_dir)
     try:
         out = Path(json.loads((job_dir / "job.json").read_text()).get("output_dir") or job_dir / "output")
@@ -450,13 +452,50 @@ def species_xyz(job_dir: Path, sid: str) -> Optional[str]:
         return fp.read_text()
     if str(sid) == "0" and (job_dir / "inputs" / "seed.xyz").exists():
         return (job_dir / "inputs" / "seed.xyz").read_text()
-    for line in _events(job_dir):
+    lines = _events(job_dir)
+    for line in lines:
         if '"species"' in line[:40] and f'"index": {sid},' in line:
             try:
                 return json.loads(line).get("xyz")
             except ValueError:
                 return None
+    return _irc_end_xyz(job_dir, out, str(sid), lines) if irc else None
+
+
+def _irc_end_xyz(job_dir: Path, out: Path, sid: str, lines: list) -> Optional[str]:
+    """A species an IRC end made (the run reports no species event for it, and writes output/species only
+    when it ends): the end of one of its steps' IRCs that is not the step's other species."""
+    from mepd.web.step_check import _frames
+
+    for line in lines:
+        if '"step"' not in line[:30]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        a, b = str(ev.get("a")), str(ev.get("b"))
+        if ev.get("event") != "step" or sid not in (a, b) or a == b:
+            continue
+        fp = out / "ts" / f"{ev.get('label')}_irc.xyz"
+        try:
+            frames = _frames(fp.read_text())
+        except OSError:
+            continue
+        other = species_xyz(job_dir, b if sid == a else a, irc=False)
+        if len(frames) < 2 or not other:
+            continue
+        key = _xyz_key(other)
+        pick = [x for x in (frames[0], frames[-1]) if _xyz_key(x) != key]
+        if len(pick) == 1 and key is not None:
+            return pick[0]
     return None
+
+
+def _xyz_key(xyz: str) -> Optional[tuple]:
+    sy, xyz_ = _xyz_rows(xyz)
+    mols = _molecules(sy, xyz_) if sy else None
+    return _key(mols) if mols else None
 
 
 def species_formula(job_dir: Path, sid: str) -> Optional[str]:
@@ -649,9 +688,34 @@ def _explored(frames: list, lines: list) -> list:
     return out
 
 
-def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None) -> dict:
+def conditions_of(job_dir: Path, basis: str = "") -> dict:
+    """The run's temperature (K), simulated time (s) and time budget (s), from its command line (the
+    temperature, without one, from the kinetics' basis "free energy (1500 K, 1atm)")."""
+    import re
+
+    try:
+        argv = [str(x) for x in json.loads((Path(job_dir) / "job.json").read_text()).get("argv") or []]
+    except (OSError, ValueError):
+        argv = []
+
+    def opt(name):
+        try:
+            return float(argv[argv.index(name) + 1])
+        except (ValueError, IndexError):
+            return None
+    t = opt("--temperature")
+    if t is None:
+        m = re.search(r"([\d.]+)\s*K\b", basis or "")
+        t = float(m.group(1)) if m else None
+    return {"T": t, "time_s": opt("--time"), "budget_s": opt("--time-budget")}
+
+
+def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None, t_end: Optional[float] = None,
+             since: Optional[int] = None) -> dict:
     """A job's timeline: its recorded frames, and while it runs the network as
-    events.jsonl has it now (so it grows from the first species on)."""
+    events.jsonl has it now (so it grows from the first species on). `t_end`: when a finished run
+    ended. `since` (while it runs): only the frames from that one on (`recorded`: how many frames are
+    recorded; the last one after them, if any, is the network as it stands, replaced on every poll)."""
     live = Path(job_dir) / "live"
     fp = live / FRAMES
     frames, t_start = [], None
@@ -672,14 +736,17 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
         for f in frames:
             f["steps"] = [x for x in f["steps"] if real.get(x[0]) == {x[1], x[2]}]
             f["gone"] = [x for x in f.get("gone") or [] if real.get(x[0]) == {x[1], x[2]}]
-        g = _growing(job_dir, lines, t0, steps=final_steps) if lines else None
+        g = _growing(job_dir, lines, t0, steps=final_steps, t_end=t_end) if lines else None
+        recorded = len(frames)
         if g is not None:
             g.pop("growing", None)
             g["t"] = max(g["t"], frames[-1]["t"] if frames else 0.0)
             g["steered"] = frames[-1]["steered"] if frames else g["steered"]
             frames.append(g)
-    elif running or not frames:
-        g = _growing(job_dir, lines, t0) if lines else None
+    else:
+        recorded = len(frames)
+    if final_steps is None and (running or not frames):
+        g = _growing(job_dir, lines, t0, t_end=None if running else t_end) if lines else None
         if g is not None and (not frames or g["counts"]["species"] > frames[-1]["counts"]["species"]
                               or g["counts"]["steps"] > frames[-1]["counts"]["steps"]):
             frames.append(g)
@@ -708,6 +775,11 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
     tl["known_ids"] = sorted(known)
     tl["explored"] = _explored(frames, lines)
     tl["activity"] = activity(job_dir)
+    tl["conditions"] = conditions_of(job_dir, frames[-1].get("basis", "") if frames else "")
+    tl["recorded"] = recorded
+    if since is not None and running:
+        tl["since"] = since = max(0, min(int(since), recorded))
+        tl["frames"] = tl["frames"][since:]
     return tl
 
 
