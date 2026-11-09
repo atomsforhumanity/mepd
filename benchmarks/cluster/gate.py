@@ -19,7 +19,12 @@ marked); a system run on one side only fails ("not run"). Per system, all three 
    both sides have >= 15 replicates, when only p < 0.05 fails;
 3. speed: median settle time of the candidate <= the base's + max(20 % of it, 2 x the same-seed rerun spread
    of the settle time (the base's controls, per system; else the largest), 60 s) (coordinator, 2026-11-05;
-   a replicate that never settled counts as +inf; both +inf passes, base finite and candidate +inf fails).
+   a replicate that never settled counts as +inf; base +inf passes). Two-stage (coordinator 2026-11-09, from
+   the sb-n85 same-commit rerun: isoprene's 5-run median moved 355 s > its tolerance between identical runs):
+   a median over that fails only if a one-sided Mann-Whitney test on the runs' settle times (never settled =
+   +inf) also says the candidate is slower, p < 0.05; otherwise it is inconclusive (needs replicates) until
+   both sides have >= 15 replicates, when only p < 0.05 fails. Without per-run settle times (an aggregate
+   alone) the median rule decides as before.
 The verdicts follow these rules as the brief states them; a failure that is a single replicate (recall) or
 within the larger interquartile range of the two sides (settle) is marked so, for a human to judge.
 
@@ -37,7 +42,8 @@ FLOOR_KCAL = 0.5
 SETTLE_GROWTH_FRAC = 0.2     # settle may grow by max(20 %, 2 x the same-seed rerun spread, 60 s) (coordinator)
 SETTLE_FLOOR_S = 60.0
 RECALL_P = 0.05              # one-sided Fisher exact test on connected counts
-STAGE2_N = 15                # replicates per side from which a non-significant recall drop passes
+STAGE2_N = 15                # replicates per side from which a non-significant recall drop / settle rise passes
+SETTLE_P = 0.05              # one-sided Mann-Whitney test on the settle times (candidate slower)
 
 
 def _required(system: str) -> list | None:
@@ -68,6 +74,21 @@ def _load(spec: str) -> tuple[dict, dict]:
     per = {g["system"]: g for g in agg.values() if isinstance(g, dict) and g.get("config") == config}
     if not per:
         raise SystemExit(f"{spec}: no configuration {config!r} in results/{run}/aggregate.json")
+    # the runs' settle times per system (for the settle check's rank test), as scored and on the partial basis
+    by_id = {}
+    for r in agg.get("runs", [run]):
+        for fp in sorted((RESULTS / r).glob("*/score.json")):
+            o = json.loads(fp.read_text())
+            if o.get("config") == config and not o.get("control_of"):
+                by_id[o["id"]] = o
+    for o in by_id.values():
+        g = per.get(o["system"])
+        if g is None:
+            continue
+        st = o.get("settle") or {}
+        for key, field in (("settle_values", "settle_s"), ("settle_values_partial", "settle_s_partial_basis")):
+            v = st.get(field) if o.get("ok") else None
+            g.setdefault(key, []).append(math.inf if v is None else float(v))
     return per, {"run": run, "config": config, "commit": agg.get("commit"),
                  "control_settle_spread_s": agg.get("control_settle_spread_s") or {}}
 
@@ -123,13 +144,24 @@ def compare(base: dict, cand: dict, rerun_spread: dict | None = None) -> dict:
         cs = math.inf if cs is None else cs
         rs = rerun_spread.get(system, max(rerun_spread.values()) if rerun_spread else 0.0)
         s_tol = max(SETTLE_GROWTH_FRAC * bs if math.isfinite(bs) else 0.0, 2.0 * rs, SETTLE_FLOOR_S)
-        ok_s = cs <= bs + s_tol if math.isfinite(bs) else True
-        checks["settle"] = {"pass": ok_s, "base_median_s": bs, "cand_median_s": cs, "tolerance_s": s_tol,
-                            "rerun_spread_s": rs}
-        if not ok_s:
-            why.append(f"settle median {_fmt(cs, '.0f')} s > base {_fmt(bs, '.0f')} s + {s_tol:.0f} s")
-        hard = not checks["accuracy"]["pass"] or not checks["settle"]["pass"] or checks["recall"]["status"] == "fail"
-        status = "fail" if hard else ("inconclusive" if checks["recall"]["status"] == "inconclusive" else "pass")
+        over = (cs > bs + s_tol) if math.isfinite(bs) else False
+        s_status, p_s = ("pass" if not over else "fail"), None
+        bv, cv = b.get("settle_values"), c.get("settle_values")
+        if over and bv and cv:
+            from scipy.stats import mannwhitneyu
+
+            p_s = float(mannwhitneyu(cv, bv, alternative="greater").pvalue)
+            s_status = "fail" if p_s < SETTLE_P else ("pass" if min(len(bv), len(cv)) >= STAGE2_N else "inconclusive")
+        checks["settle"] = {"pass": s_status == "pass", "status": s_status, "base_median_s": bs, "cand_median_s": cs,
+                            "tolerance_s": s_tol, "rerun_spread_s": rs, "mann_whitney_p_slower": p_s}
+        if over:
+            why.append(f"settle median {_fmt(cs, '.0f')} s > base {_fmt(bs, '.0f')} s + {s_tol:.0f} s"
+                       + ("" if p_s is None else f" (Mann-Whitney p {p_s:.3f}: "
+                          + {"fail": "slower", "inconclusive": "not significant: inconclusive, needs replicates",
+                             "pass": "not significant at >= 15 a side: passes"}[s_status] + ")"))
+        hard = not checks["accuracy"]["pass"] or s_status == "fail" or checks["recall"]["status"] == "fail"
+        unsure = checks["recall"]["status"] == "inconclusive" or s_status == "inconclusive"
+        status = "fail" if hard else ("inconclusive" if unsure else "pass")
         out[system] = {"pass": status == "pass", "status": status,
                        "held_out": bool(b.get("held_out") or c.get("held_out")), "why": why,
                        "checks": checks, "n": [b["n"], c["n"]]}
@@ -154,6 +186,7 @@ def main(argv: list) -> int:
         for side in (base, cand):
             for g in side.values():
                 g["settle_s"] = g["settle_s_partial_basis"]
+                g["settle_values"] = g.get("settle_values_partial")
     verdict = compare(base, cand, spread)
     print(f"gate: base {bi['run']}:{bi['config']} ({(bi['commit'] or '')[:7]}) vs candidate "
           f"{ci['run']}:{ci['config']} ({(ci['commit'] or '')[:7]})")

@@ -59,3 +59,33 @@ def test_a_configuration_steering_level_replaces_the_common_one():
     argv = bench.with_config(["--steer-energies", "{RUN_DIR}/inputs/orca_steer.toml", "--x", "1"],
                              ["--max-species", "400", "--steer-energies", "{RUN_DIR}/inputs/linus.toml"])
     assert argv == ["--steer-energies", "{RUN_DIR}/inputs/linus.toml", "--x", "1", "--max-species", "400"]
+
+
+def _settled(n, med, values):
+    e = entry(n, {"x": n}, n)
+    e["settle_s"]["median"] = med
+    e["settle_values"] = list(values)
+    return e
+
+
+def test_a_settle_median_over_tolerance_without_a_rank_shift_is_inconclusive():
+    base = _settled(5, 1000.0, [600, 800, 1000, 1500, 1700])
+    cand = _settled(5, 1450.0, [500, 900, 1450, 1600, 1650])      # same spread, the median just lands higher
+    v = gate.compare({"s": base}, {"s": cand})["s"]
+    assert v["checks"]["settle"]["status"] == "inconclusive" and v["status"] == "inconclusive"
+
+
+def test_a_settle_rise_the_rank_test_sees_fails():
+    base = _settled(5, 100.0, [90, 95, 100, 105, 110])
+    cand = _settled(5, 400.0, [380, 390, 400, 410, float("inf")])
+    v = gate.compare({"s": base}, {"s": cand})["s"]
+    assert v["checks"]["settle"]["status"] == "fail" and v["status"] == "fail"
+
+
+def test_with_15_a_side_a_non_significant_settle_rise_passes():
+    vals = [100.0 * k for k in range(1, 16)]
+    base = _settled(15, 800.0, vals)
+    cand = _settled(15, 1100.0, vals[3:] + [1600.0, 1700.0, 1800.0])
+    v = gate.compare({"s": base}, {"s": cand})["s"]
+    assert v["checks"]["settle"]["status"] in ("pass", "fail")
+    assert v["checks"]["settle"]["status"] == ("fail" if v["checks"]["settle"]["mann_whitney_p_slower"] < 0.05 else "pass")
