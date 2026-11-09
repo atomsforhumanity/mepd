@@ -2,6 +2,8 @@
 right after each reaction event of its hot piston MD is a product (whole, in
 the input's atom order); on a QM/MM system it runs on the capped QM region."""
 from __future__ import annotations
+import tempfile
+from pathlib import Path
 
 import shutil
 
@@ -63,6 +65,7 @@ def test_web_offers_it_only_for_qmmm_and_builds_real_flags():
     p = ExpandParams(generator="nanoreactor", reactor_temperature=3200, reactor_time_ps=5)
 
     class Ctx:   # just enough of a JobContext for the argv
+        job_dir = Path(tempfile.mkdtemp(prefix="mepd-test-job-"))   # a job's inputs (e.g. the steering profile)
         structures = [{}]
 
         def snapshot_structure(self, rec, name):

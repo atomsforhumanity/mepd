@@ -1,6 +1,8 @@
 """The expansion's and the mixture's Nanoreactor card: one MD choice whose forces (piston, collide) are switched
 on and off, sent as `--generator nanoreactor --generator-option forces=...`; the older Reactor MD and Collision MD
 cards open as it; the Reactor view gets the forces and the pulls."""
+import tempfile
+from pathlib import Path
 import json
 
 import pytest
@@ -11,6 +13,7 @@ from mepd.web.workspace import WorkspaceError
 
 
 class Ctx:
+    job_dir = Path(tempfile.mkdtemp(prefix="mepd-test-job-"))   # a job's inputs (e.g. the steering profile)
     output_dir = "/out"
     structures = [{"id": "s_a"}]
     jobs = {}
