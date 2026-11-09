@@ -75,6 +75,35 @@ def version() -> str | None:
     return str(axtb.__version__)
 
 
+_FEATURES: dict = {}
+
+
+def supports(feature: str) -> bool:
+    """Whether the installed axtb can do `feature`: "composite" (g-xTB in implicit solvent,
+    `solvation_correction`; also taken as the sign of the 0.1.0 release mepd was checked with, for
+    the GFN2 solvation pair) or "gfnff" (GFN-FF with xtb 6.7.1's conventions). Older builds (the
+    image's former pin 59cc1a4 had neither) make mepd use the xtb program for those. Probed once,
+    on H2."""
+    if feature not in ("composite", "gfnff"):
+        raise ValueError(f"unknown axtb feature {feature!r}")
+    if feature not in _FEATURES:
+        ok = False
+        if version() is not None:
+            import axtb
+
+            h2 = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.4]])
+            try:
+                if feature == "composite":
+                    axtb.Calculator(METHOD, [1, 1], h2, alpb="water", solvation_correction="gfn2")
+                else:
+                    axtb.Calculator("gfnff", [1, 1], h2, conventions=GFNFF_CONVENTIONS, topology_positions=h2)
+                ok = True
+            except Exception:          # an unknown keyword, method or conventions: an older build
+                ok = False
+        _FEATURES[feature] = ok
+    return _FEATURES[feature]
+
+
 def _import():
     try:
         import axtb

@@ -151,9 +151,11 @@ def _xtb_executable(explicit: Optional[str] = None) -> str:
 
 
 def axtb_available() -> bool:
+    """axtb with what mepd's in-process solvation needs (the 0.1.0 release: older builds lack the
+    composite; the xtb program is used then)."""
     from mepd.engines import axtb_backend
 
-    return axtb_backend.version() is not None
+    return axtb_backend.supports("composite")
 
 
 @dataclass
@@ -373,7 +375,7 @@ def _axtb_composite_capable(engine: Engine) -> bool:
     from mepd.engines.gxtb import GXTBCalculator
 
     return isinstance(engine, GXTBCalculator) and engine.backend == "axtb" and engine.add_gxtb_flag \
-        and not engine.axtb_solvation
+        and not engine.axtb_solvation and axtb_available()
 
 
 def _native_capable(engine: Engine) -> bool:

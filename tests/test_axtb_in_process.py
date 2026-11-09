@@ -17,6 +17,12 @@ from mepd.nodes.node import StructureNode  # noqa: E402
 
 needs_xtb = pytest.mark.skipif(not (shutil.which("xtb") or os.getenv("XTB_EXECUTABLE")), reason="needs xtb")
 
+from mepd.engines import axtb_backend  # noqa: E402
+
+# Older axtb builds (the image's former pin) have neither; mepd then falls back to the xtb program.
+pytestmark = pytest.mark.skipif(not (axtb_backend.supports("composite") and axtb_backend.supports("gfnff")),
+                                reason="this axtb has no solvation composite or GFN-FF (axtb >= 0.1.0)")
+
 
 def _node(structure) -> StructureNode:
     return StructureNode(structure=structure, has_molecular_graph=False)
@@ -212,6 +218,19 @@ def test_qmmm_profile_key_picks_the_gfnff_backend():
 
     eng = QMMMEngine(base=GXTBCalculator(backend="axtb"), region=region)
     assert eng._low.engine.backend == "axtb"
+
+
+@needs_xtb
+def test_an_axtb_without_the_features_falls_back_to_the_programs(monkeypatch):
+    from mepd.engines.gfnff import default_backend
+    from mepd.solvation import SolvatedEngine, solvate_engine
+
+    monkeypatch.setattr(axtb_backend, "_FEATURES", {"composite": False, "gfnff": False})
+    assert default_backend() == "xtb"
+    eng = solvate_engine(GXTBCalculator(backend="axtb"), {"solvent": "water"})
+    assert isinstance(eng, SolvatedEngine)
+    with pytest.raises(ValueError, match="composite"):
+        GXTBCalculator(backend="axtb", axtb_solvation={"solvent": "water"})
 
 
 # ------------------------------------------------------------------ mepd#42: QM-region Hessians

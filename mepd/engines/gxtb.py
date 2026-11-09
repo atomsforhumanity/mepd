@@ -495,6 +495,9 @@ class GXTBCalculator(Engine):
             if self.backend != "axtb":
                 raise ValueError("axtb_solvation is g-xTB in solvent through axtb (backend = \"axtb\"); with the "
                                  "program, a profile's [solvation] table wraps the engine instead.")
+            if not axtb_backend.supports("composite"):
+                raise ValueError("this axtb build has no g-xTB solvation composite (axtb >= 0.1.0 has); a profile's "
+                                 "[solvation] table then uses the xtb program for the GFN2-xTB correction")
             sv = dict(self.axtb_solvation)
             self.axtb_solvation = {"solvent": str(sv["solvent"]), "model": str(sv.get("model", "alpb")).lower()}
             axtb_backend.solvation_settings(self.axtb_solvation["solvent"], self.axtb_solvation["model"])

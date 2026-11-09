@@ -147,7 +147,7 @@ def default_backend(method: str = "gfnff") -> str:
         return forced
     from mepd.engines import axtb_backend
 
-    return "axtb" if axtb_backend.version() is not None else "xtb"
+    return "axtb" if axtb_backend.supports("gfnff") else "xtb"
 
 
 def available_gb() -> Optional[float]:
@@ -207,6 +207,8 @@ class GFNFFEngine(Engine):
             from mepd.engines import axtb_backend
 
             axtb_backend._import()
+            if not axtb_backend.supports("gfnff"):
+                raise ValueError("this axtb build has no GFN-FF (axtb >= 0.1.0 has); use backend = \"xtb\"")
             self._refs: dict = {}
             return      # the xtb program only if something asks for it (xtb dynamics): xtb_program()
         self.xtb_program()
