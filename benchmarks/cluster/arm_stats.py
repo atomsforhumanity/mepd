@@ -2,7 +2,7 @@
 wall time of the runs that converged, wall time of the runs that stopped at max_species (time to the cap), median
 CPU hours; with --occ (team28/scripts/occupancy.py's output for these runs) the seed propose job's duration and
 post-MD phase (median and range). With --seed-species OTHER_RESULT:CONFIG: per replicate, whether the seed's
-products (expand.log: the "species k SMILES dE" lines right after the seed's last "reactor:" line) are the same
+products (expand.log: the "species k SMILES dE" lines right after the first "reactor: ... distinct product(s)" line, the seed's) are the same
 SMILES with the same dE (0.1 kcal/mol) in both arms.
 
     python benchmarks/cluster/arm_stats.py RESULT:CONFIG [--occ OCC.json] [--seed-species RESULT:CONFIG]
@@ -22,7 +22,7 @@ def seed_products(o: dict) -> list | None:
     if not log.is_file():
         return None
     lines = log.read_text(errors="replace").splitlines()
-    last = max((i for i, x in enumerate(lines) if x.startswith("reactor:") and "distinct product(s) from" in x), default=None)
+    last = next((i for i, x in enumerate(lines) if x.startswith("reactor:") and "distinct product(s) from" in x), None)
     if last is None:
         return None
     out = []
