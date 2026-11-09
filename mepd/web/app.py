@@ -2191,7 +2191,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 pass
         return out
 
-    def _reactor_out(job: dict, run: Optional[int] = None, seed: Optional[str] = None) -> Path:
+    def _reactor_out(job: dict, run: Optional[int] = None, seed: Optional[str] = None, name: Optional[str] = None) -> Path:
         """Where a job's reactor MD is: a nanoreactor job's output, or one
         run (the newest unless `run` is given) of a network expansion with the
         nanoreactor generator (output/reactor/run_kk, one per species), or of a
@@ -2205,6 +2205,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             runs = sorted((out / "reactor").glob("run_*")) if job.get("op") == "graph-enumeration" else []
         if not runs:
             raise HTTPException(404, "this job has no reactor MD (yet)")
+        if name is not None:   # a run by its folder name (an index shifts as runs are added: run_100 sorts before run_11)
+            hit = next((d for d in runs if d.name == name), None)
+            if hit is None:
+                raise HTTPException(404, f"no reactor run {name!r}")
+            return hit
         if run is not None:
             return runs[max(0, min(int(run), len(runs) - 1))]
         return max(runs, key=lambda d: max((f.stat().st_mtime for f in (d / "md").glob("*")), default=0.0))
@@ -2221,12 +2226,12 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return complex_live(Path(job["output_dir"]), (job.get("params") or {}).get("method", ""), sum(counts))
 
     @app.get("/api/jobs/{jid}/reactor/events/{k}")
-    def job_reactor_event(jid: str, k: int, run: Optional[int] = None, seed: Optional[str] = None):
+    def job_reactor_event(jid: str, k: int, run: Optional[int] = None, seed: Optional[str] = None, name: Optional[str] = None):
         """One reaction event of a nanoreactor job, at full time resolution, cut to its atoms."""
         from mepd.web.nanoreactor import event_view
 
         try:
-            return event_view(_reactor_out(J().get(jid), run, seed), k)
+            return event_view(_reactor_out(J().get(jid), run, seed, name), k)
         except KeyError:
             raise HTTPException(404, f"no event {k} (yet)") from None
 

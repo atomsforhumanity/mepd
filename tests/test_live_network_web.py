@@ -191,16 +191,22 @@ def test_reactor_events_arrive_once_each_and_name_only_verified_species(tmp_path
     got = ln.reactor_events(job_dir, job, 0)
     assert got["n"] == 2 and got["runs"] == 1
     e = got["events"][0]
-    assert (e["t"], e["src"], e["prod"], e["run"], e["k"]) == (5.0, "0", None, "0", 0)   # segment_001 holds frame 130
-    assert ln.reactor_events(job_dir, job, 2)["events"] == []                            # nothing new: nothing twice
+    assert (e["t"], e["src"], e["prod"], e["run"], e["k"]) == (5.0, "0", None, "run_00", 0)   # segment_001 holds frame 130
+    assert ln.reactor_events(job_dir, job, 2)["events"] == []                                # nothing new: nothing twice
+    # runs are known by folder: run_100 sorting in before run_11 (or a run turning up late) moves nothing
+    for name in ("run_11", "run_100"):
+        (out / "reactor" / name / "md").mkdir(parents=True)
+        (out / "reactor" / name / "live_events.json").write_text(json.dumps({"events": [dict(exchange, event=0)]}))
+    more = ln.reactor_events(job_dir, job, 2)["events"]
+    assert sorted(x["run"] for x in more) == ["run_100", "run_11"] and ln.reactor_events(job_dir, job, 4)["events"] == []
     # a species of formaldehyde + H2 and H2 again (it changed more than the event made): not that one
     (job_dir / "live" / "events.jsonl").write_text("\n".join(json.dumps(x) for x in [
         {"event": "species", "index": 2, "parent": 0, "smiles": "C=O.[H][H].[H][H]",
          "xyz": _xyz(FORMALDEHYDE_H2[:4] + ["H 4.0 0 0", "H 4.74 0 0", "H 8.0 0 0", "H 8.74 0 0"])}]) + "\n")
-    assert ln.reactor_events(job_dir, job, 2)["prods"] == {}
+    assert ln.reactor_events(job_dir, job, 4)["prods"] == {}
     # the species it made turns up: the next poll names it, for the event the client already has; never the exchange
     with open(job_dir / "live" / "events.jsonl", "a") as fh:
         fh.write(json.dumps({"event": "species", "index": 1, "parent": 0, "smiles": "C=O.[H][H]",
                              "xyz": _xyz(FORMALDEHYDE_H2)}) + "\n")
-    later = ln.reactor_events(job_dir, job, 2)
+    later = ln.reactor_events(job_dir, job, 4)
     assert later["events"] == [] and later["prods"] == {0: "1"}
