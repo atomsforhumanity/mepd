@@ -90,6 +90,24 @@ print(f'{e[0]:.8f}')" 2>&1)"; then
   else
     ok axtb "not in this image (built with AXTB_COMMIT=): backend = \"axtb\" unavailable"
   fi
+  # linus (the default steering level), unless built without it: one energy
+  # through the web's built-in steering profile, in process as a run uses it.
+  if [ -n "${MEPD_LINUS_COMMIT:-}" ]; then
+    if out="$(python -c "
+from qcdata import Structure
+from mepd.web.steering import builtin_profile_engine
+from mepd.nodes.node import StructureNode
+xyz = '3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n'
+e = builtin_profile_engine().compute_energies([StructureNode(structure=Structure.from_xyz(xyz))])[0]
+assert -76.5 < e < -76.3, e
+print(f'{e:.8f}')" 2>&1)"; then
+      ok linus "${MEPD_LINUS_COMMIT:0:7}, water $(tail -1 <<<"$out") Eh at wB97X-D3BJ/def2-TZVP"
+    else
+      fail linus "$(tail -1 <<<"$out")"
+    fi
+  else
+    ok linus "not in this image (built without LINUS_COMMIT): no linus steering"
+  fi
   # Installed is not enough: AiZynthFinder's own env must import (it broke on
   # a NumPy 1/2 mismatch once while `aizynthcli` was still there).
   local az="$MEPD_RETRO_DATA/aizynth-env/bin/python" err

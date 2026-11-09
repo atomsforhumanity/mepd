@@ -20,6 +20,7 @@ run on the CPU. The same image serves both.
 | mepd + every `web` extra (FastAPI, ASE/Sella, tblite, fairchem-core, AIMNet2, TorchANI, OpenMM, Vina, PDBFixer, onnxruntime, rdchiral, transformers, SLAPMapper, PyTorch with CUDA) | `uv sync --locked` from `uv.lock` | `/opt/mepd/venv` | on `PATH` |
 | g-xTB 2.0.1 (also runs GFN1/GFN2-xTB) | GitHub release, SHA-256 checked | `/opt/gxtb` | `GXTB_EXECUTABLE` |
 | axtb (g-xTB 2.0.1 in process, `backend = "axtb"`) | built from source, `atomsforhumanity/axtb` at `AXTB_COMMIT` (Rust, maturin) | `/opt/mepd/venv` | `import axtb` |
+| linus (DFT in process: the default steering level of network expansions) | built from source, `atomsforhumanity/linus` (private) at `LINUS_COMMIT`, its DFT-D4 from the axtb above (Rust, maturin) | `/opt/mepd/venv` | a water energy through the built-in steering profile |
 | xtb 6.7.1, CREST 3.0.2, Packmol 20.15.3 | conda-forge (micromamba) | `/opt/tools` | on `PATH` |
 | Psi4 1.11 | conda-forge (micromamba), own Python | `/opt/psi4` | `MEPD_PSI4_PYTHON` |
 | molecularGSM (ASE backend), MKL | built from source; MKL from conda-forge | `/opt/gsm` | `GSM_EXECUTABLE` |
@@ -51,10 +52,18 @@ docker build --secret id=hf_token,env=HF_TOKEN -t mepd .        # everything, UM
 docker build --build-arg FAIRCHEM_MODELS= -t mepd .             # no UMA, so no token needed
 docker build --build-arg PREFETCH_MODELS=0 ...                  # also skip AIMNet2/ANI/ReactionT5 weights
 docker build --build-arg AXTB_COMMIT= ...                       # without axtb (no Rust build)
+docker build --build-arg LINUS_COMMIT=$(git ls-remote ssh://git@ssh.github.com:443/atomsforhumanity/linus.git refs/heads/main | cut -f1) \
+  --secret id=linus_deploy_key,src=$HOME/.ssh/<a key that can read linus> ...   # with linus
 ```
 
-- **axtb (`AXTB_COMMIT`, default the commit mepd's tests ran)** is cloned from GitHub and built with
-  Rust in its own stage, which keeps only the wheel. `AXTB_COMMIT=` leaves it out.
+- **axtb (`AXTB_COMMIT`, default `main`)** is cloned from GitHub and built with Rust in its own stage,
+  which keeps only the wheel. mepd follows axtb's main: CI passes main's current commit, so the stage
+  rebuilds when main moves and `MEPD_AXTB_COMMIT` records it. `AXTB_COMMIT=` leaves it out.
+- **linus (`LINUS_COMMIT`, empty by default)** is private: it is cloned with the build secret
+  `linus_deploy_key` and built on the axtb stage, its DFT-D4 crate patched to that axtb tree (and its two D4
+  calls ported, `deploy/docker/linus-d4-axtb-main.patch`, until atomsforhumanity/linus#1 is merged). Built with
+  `LINUS_DIST=1`, so linus's internal ORCA-measured grid presets are not in the image; the built-in steering
+  profile uses linus's own grid (`linus:2`). Without `LINUS_COMMIT` or the secret the image has no linus.
 
 - **The gated FAIR-Chem models (`FAIRCHEM_MODELS`, default `uma-s-1p2p1`).**
   - **Token:** `HF_TOKEN` must belong to a Hugging Face account that has been granted access to
