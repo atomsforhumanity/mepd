@@ -39,7 +39,7 @@ KCAL = 627.509474
 AUTO_MAX = 96                    # n_collisions 0: every move up to this many
 
 OPTIONS = {"n_collisions": 0, "temperature": 1000.0, "pull_fs": 300.0, "relax_fs": 300.0, "k": 100.0,
-           "min_hops": 2, "seed": 0, "parallel": 0, "md_method": "gfn2", "workdir": ""}
+           "min_hops": 2, "seed": 0, "parallel": 0, "md_method": "gfn2", "workdir": "", "anchors": ""}
 
 def _bonds(symbols, xyz_A, scale: float = 1.3) -> frozenset:
     from rdkit import Chem
@@ -145,20 +145,26 @@ def _turn_partner(symbols, xyz_A, atom, rng) -> np.ndarray:
 
 
 def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, relax_fs, k_kcal, seed, push=None,
-             md_method: str = "gfn2", md_server: Optional[str] = None, workdir: str = ""):
+             md_method: str = "gfn2", md_server: Optional[str] = None, workdir: str = "", anchors=()):
     """One collision: pull `pair` together, and drag the bond `push` apart
     until it lets go; between two molecules, push the whole molecules together
     along the pair's direction, from a random orientation of the partner. The quenched end geometry (Angstrom),
-    or the error if the dynamics failed."""
+    or the error if the dynamics failed. `anchors` are held at their starting distances to each other in the
+    MD and the quench (the old nanoreactor's restraint), and neither turned nor pushed with their molecule."""
     from mepd.discovery.free_energy import molecules
-    from mepd.discovery.langevin import MAX_PULL, LangevinMD, pull_pairs
-    from mepd.discovery.nanoreactor import _masses
+    from mepd.discovery.langevin import MAX_PULL, LangevinMD, held_distances, pull_pairs
+    from mepd.discovery.nanoreactor import _ANCHOR_FORCE, _masses
 
     pulls = [tuple(pair)]
     mols = molecules(symbols, np.asarray(xyz_A), scale=1.3)
     A, B = (next(m for m in mols if a in m) for a in pair)
     if A is not B:
-        xyz_A = _turn_partner(symbols, xyz_A, pair[1], np.random.default_rng(seed + 7919))
+        held = {int(a) for a in anchors}
+        turn = pair[1] if not held & set(B) else pair[0] if not held & set(A) else None
+        if turn is not None:
+            xyz_A = _turn_partner(symbols, xyz_A, turn, np.random.default_rng(seed + 7919))
+        if held:
+            A, B = ([a for a in m if a not in held] for m in (A, B))
         pulls = [(*pair, A, B)]
     masses = _masses(symbols)
     pos = np.asarray(xyz_A, dtype=float) / BOHR
@@ -194,7 +200,7 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
     frames = [pos * BOHR]
     try:
         md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature,
-                        wall=wall, seed=seed, bias=bias,
+                        wall=wall, seed=seed, bias=bias, restraint=held_distances(anchors, pos, _ANCHOR_FORCE),
                         method=md_method, server=md_server)
         md.start()
         n_pull, n_all = int(pull_fs / md.dt), int((pull_fs + relax_fs) / md.dt)
@@ -216,16 +222,23 @@ def _collide(symbols, xyz_A, charge, multiplicity, pair, temperature, pull_fs, r
 
 def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0, temperature: float = 1000.0,
                      pull_fs: float = 300.0, relax_fs: float = 300.0, k: float = 100.0, min_hops: int = 2,
-                     seed: int = 0, parallel: int = 0, md_method: str = "gfn2", workdir: str = "") -> list:
+                     seed: int = 0, parallel: int = 0, md_method: str = "gfn2", workdir: str = "",
+                     anchors="") -> list:
     """Product structures (input atom order) from `n_collisions` pulls of
     pairs Collide could pick (all of them when there are fewer; a random
-    sample otherwise), `parallel` at a time (default: all CPUs)."""
+    sample otherwise), `parallel` at a time (default: all CPUs). `anchors`
+    (a QM/MM model's link H and the atoms they cap: the explorer sets them)
+    are held at their distances to each other and never pulled or pushed."""
     import os
+
+    from mepd.discovery.nanoreactor_generator import parse_anchors
 
     symbols = [str(s) for s in structure.symbols]
     xyz = np.asarray(structure.geometry, dtype=float) / ANGSTROM_TO_BOHR
     start = _bonds(symbols, xyz)
-    moves = collision_moves(symbols, xyz, min_hops)
+    held = parse_anchors(anchors)
+    moves = [mv for mv in collision_moves(symbols, xyz, min_hops)
+             if not set(held) & {mv[0], mv[1], *(mv[2] or ())}]
     if not moves:
         print("collide: no pair to pull (one or two atoms).", flush=True)
         return []
@@ -242,7 +255,7 @@ def collide_products(structure, *, max_products: int = 20, n_collisions: int = 0
 
     server = _md_server(md_method, min(width, len(jobs)))
     args = [(symbols, xyz, int(structure.charge), int(structure.multiplicity), (mv[0], mv[1]), float(temperature),
-             float(pull_fs), float(relax_fs), float(k), s, mv[2], str(md_method), server, str(workdir or ""))
+             float(pull_fs), float(relax_fs), float(k), s, mv[2], str(md_method), server, str(workdir or ""), held)
             for mv, s in jobs]
     ends = _run_in_processes(args, min(width, len(args)))
     from mepd.discovery.nanoreactor_generator import stereo_key
@@ -292,7 +305,7 @@ def _run_in_processes(args: list, width: int) -> list:
 
     def run(idx):
         payload = [[a[0], np.asarray(a[1]).tolist(), *a[2:4], list(a[4]), *a[5:10],
-                    list(a[10]) if a[10] is not None else None, *a[11:14]]
+                    list(a[10]) if a[10] is not None else None, *a[11:15]]
                    for a in (args[i] for i in idx)]
         r = subprocess.run([sys.executable, "-c", "from mepd.discovery.collide_generator import _worker; _worker()"],
                            input=json.dumps(payload), capture_output=True, text=True,
@@ -319,8 +332,8 @@ def _worker() -> None:
     jobs = json.loads(sys.stdin.read())
     ends = []
     for j in jobs:
-        sym, xyz, q, m, pair, T, pf, rf, k, seed, push, method, server, workdir = j
+        sym, xyz, q, m, pair, T, pf, rf, k, seed, push, method, server, workdir, anchors = j
         e = _collide(sym, np.asarray(xyz), q, m, tuple(pair), T, pf, rf, k, seed, tuple(push) if push else None,
-                     method, server, workdir)
+                     method, server, workdir, anchors)
         ends.append(e if e is None or isinstance(e, str) else np.asarray(e).tolist())
     print(json.dumps(ends))

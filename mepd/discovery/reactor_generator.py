@@ -40,12 +40,12 @@ TRAJ_FS = 2.0                    # frame spacing read by the event detection (th
 OPTIONS = {"temperature": 2200.0, "time_ps": 5.0, "compress": 0.7, "period_ps": 1.0, "duty": 0.75,
            "pull_fs": 300.0, "gap_fs": 200.0, "k": 100.0, "intra_hops": 2, "n_seeds": 0, "seed": 0,
            "unseen": 0.05, "max_batches": 4, "parallel": 0, "workdir": "", "cutoff_kcal": None,
-           "md_method": "gfn2", "forces": "piston,collide"}
+           "md_method": "gfn2", "forces": "piston,collide", "anchors": ""}
 FORCES = ("piston", "collide")   # the MD's forces besides the method's and the wall's (nanoreactor forces=...)
 LIVE_FRAMES = 125                # frames per segment file a live viewer reads (250 fs)
 
 
-def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
+def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2, anchors=()) -> Optional[tuple]:
     """The Reactor's Collide pick (mepd/web/sandbox.py runs this one too), with `rng`: two
     heavy atoms of two different molecules, any two with no species preferred,
     with the two molecules' atoms, (i, j, A, B): the whole molecules are pushed
@@ -56,7 +56,9 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
     (3 bonds, a heavy atom first, heavy pairs preferred), any such pair, two
     hydrogens too: a person drags whatever looks promising, an unattended run must not
     leave out the four-centre eliminations and H2 losses of a small molecule
-    (formic acid: the Reactor's rule leaves one pair, an H shift)."""
+    (formic acid: the Reactor's rule leaves one pair, an H shift). `anchors`
+    (a QM/MM model's link H and the atoms they cap) are never picked, nor
+    pushed with their molecule."""
     from mepd.discovery.collide_generator import _bonds, _hops
 
     n = len(symbols)
@@ -68,6 +70,9 @@ def collision_pair(symbols, xyz_A, rng, intra_hops: int = 2) -> Optional[tuple]:
             m = [b for b in range(n) if np.isfinite(hops[a, b])]
             seen.update(m)
             mols.append(m)
+    held = {int(a) for a in anchors}
+    if held:
+        mols = [f for f in ([a for a in m if a not in held] for m in mols) if f]
     heavy = lambda i: symbols[i] != "H"
     pool = [(a, b) for m in mols for a in m for b in m if b < a and hops[a, b] >= max(2, int(intra_hops))]
     pick_intra = (lambda: tuple(int(x) for x in pool[rng.integers(len(pool))])) if pool else (lambda: None)
@@ -92,12 +97,15 @@ def forces_of(forces) -> list:
 
 def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, compress, period_ps, duty, pull_fs,
                 gap_fs, k, intra_hops, seed, workdir: str = "", md_method: str = "gfn2",
-                md_server: Optional[str] = None, forces: str = "piston,collide") -> np.ndarray:
+                md_server: Optional[str] = None, forces: str = "piston,collide", anchors=()) -> np.ndarray:
     """One Reactor run: frames (Angstrom) every TRAJ_FS fs. With `workdir`, it is also written as it runs into
     a new <workdir>/run_kk laid out like a nanoreactor job (md/segment_kkk.xyz every LIVE_FRAMES frames,
     md/schedule.json with the forces and each pull, live_events.json): the web UI's Reactor view shows it live.
-    `forces`: "piston" swings the wall, "collide" pulls a random pair together every so often (both: the Reactor)."""
-    from mepd.discovery.langevin import LangevinMD, pull_pairs
+    `forces`: "piston" swings the wall, "collide" pulls a random pair together every so often (both: the Reactor).
+    `anchors`: atoms held at their starting distances to each other all along (the old nanoreactor's restraint), never
+    pulled."""
+    from mepd.discovery.langevin import LangevinMD, held_distances, pull_pairs
+    from mepd.discovery.nanoreactor import _ANCHOR_FORCE
     from mepd.discovery.nanoreactor import _masses
     from mepd.discovery.nanoreactor import auto_radius
     from mepd.web.sandbox import piston_radius
@@ -112,7 +120,7 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
     k_au = float(k) / KCAL * BOHR * BOHR
     pair, masses = [None], _masses(symbols)
     md = LangevinMD(symbols, pos, charge, multiplicity, temperature=temperature, wall=wide, seed=seed,
-                    method=md_method, server=md_server,
+                    method=md_method, server=md_server, restraint=held_distances(anchors, pos, _ANCHOR_FORCE),
                     bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
     rng = md.rng
     md.start()
@@ -128,7 +136,7 @@ def _trajectory(symbols, xyz_A, charge, multiplicity, *, temperature, time_ps, c
             pair[0] = None
             next_pull = t_fs + (float(rng.exponential(gap_fs)) if gap_fs > 0 else 0.0)
         elif pair[0] is None and t_fs >= next_pull:
-            pair[0] = collision_pair(symbols, md.pos * BOHR, rng, intra_hops)
+            pair[0] = collision_pair(symbols, md.pos * BOHR, rng, intra_hops, anchors)
             pull_end = t_fs + float(pull_fs)
             if pair[0] is None:             # nothing to pull: the piston alone
                 next_pull = float("inf")
@@ -208,14 +216,15 @@ class _LiveRun:
 
 
 def _quench(symbols, xyz_A, charge, multiplicity, md_method: str = "gfn2",
-            md_server: Optional[str] = None) -> tuple[np.ndarray, Optional[float]]:
+            md_server: Optional[str] = None, restraint=None) -> tuple[np.ndarray, Optional[float]]:
     """`xyz_A` relaxed as collide's quench (200 steepest-descent steps on the MD's method, no new chemistry),
-    Angstrom, and its energy (kcal/mol); the snapshot itself and None if the SCF fails."""
+    Angstrom, and its energy (kcal/mol); the snapshot itself and None if the SCF fails. `restraint` (the
+    anchors' of the MD) is held in it, as in the MD."""
     from mepd.discovery.langevin import LangevinMD
 
     try:
         md = LangevinMD(symbols, np.asarray(xyz_A, dtype=float) / BOHR, charge, multiplicity, temperature=300.0,
-                        method=md_method, server=md_server)
+                        method=md_method, server=md_server, restraint=restraint)
         md.relax(200)
         return md.pos * BOHR, md.forces(md.pos, biased=False)[0] * KCAL
     except Exception:
@@ -242,7 +251,11 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
                           charge=int(charge), multiplicity=int(multiplicity))
     seed = prev = stereo_key(structure)
     method, server = options.get("md_method", "gfn2"), options.get("md_server")
-    _, e_seed = _quench(symbols, xyz_A, int(charge), int(multiplicity), method, server)
+    from mepd.discovery.langevin import held_distances
+    from mepd.discovery.nanoreactor import _ANCHOR_FORCE
+
+    held = held_distances(options.get("anchors") or (), np.asarray(xyz_A, dtype=float) / BOHR, _ANCHOR_FORCE)
+    _, e_seed = _quench(symbols, xyz_A, int(charge), int(multiplicity), method, server, held)
     bonded0 = {a for p in hist.initial for a in p}
     states, seen, keys, torn = [], {seed}, [], 0
     for ev in sorted(events, key=lambda e: (e.product_frame, e.start)):
@@ -251,7 +264,7 @@ def _states(symbols, xyz_A, charge, multiplicity, max_products, options) -> dict
         if bonded0 - {a for p in hist.bonds_at(ev.product_frame) for a in p}:
             torn += 1
             continue
-        x, e = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity), method, server)
+        x, e = _quench(symbols, frames[ev.product_frame], int(charge), int(multiplicity), method, server, held)
         key = stereo_key(structure.model_copy(update={"geometry": x * ANGSTROM_TO_BOHR}))
         if key is None or key == prev:
             continue
@@ -268,7 +281,7 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
                      gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2, n_seeds: int = 0, seed: int = 0,
                      unseen: float = 0.05, max_batches: int = 4, parallel: int = 0, workdir: str = "",
                      cutoff_kcal: Optional[float] = None, md_method: str = "gfn2",
-                     forces: str = "piston,collide") -> list:
+                     forces: str = "piston,collide", anchors="") -> list:
     """Product structures (input atom order) of batches of `n_seeds` Reactor
     runs of `structure` (default: one per process), `parallel` at a time
     (default: all CPUs), until converged (the module's docstring). With
@@ -277,11 +290,12 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     proposed but doesn't count toward convergence: no step to it can be
     within the cutoff, as a barrier is at least the reaction energy.
     (All batches, then the products pooled: `reactor_batch` hands each batch's
-    over as it ends.)"""
+    over as it ends.) `anchors`: atoms held at their starting distances to each other in the MD and the
+    quenches (a QM/MM model's link H and the atoms they cap: the explorer sets them), never pulled."""
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
     options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
-                          md_method, _md_server(md_method, min(width, n)), forces)
+                          md_method, _md_server(md_method, min(width, n)), forces, anchors)
     runs, errors = [], []
     for batch in range(max(1, int(max_batches))):
         got, bad = _run_batch(structure, batch, n, width, max_products, seed, options)
@@ -312,7 +326,7 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
                   pull_fs: float = 300.0, gap_fs: float = 200.0, k: float = 100.0, intra_hops: int = 2,
                   n_seeds: int = 0, seed: int = 0, unseen: float = 0.05, max_batches: int = 4, parallel: int = 0,
                   workdir: str = "", cutoff_kcal: Optional[float] = None, md_method: str = "gfn2",
-                  forces: str = "piston,collide") -> tuple:
+                  forces: str = "piston,collide", anchors="") -> tuple:
     """The next batch of `reactor_products` for a caller that takes each batch's products the moment it
     ends (the explorer's async queue: they are optimized and connected while the next batch runs).
     `state` is what the previous batches left (None: the first); returns (this batch's products not
@@ -325,7 +339,7 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
     options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
-                          md_method, _md_server(md_method, min(width, n)), forces)
+                          md_method, _md_server(md_method, min(width, n)), forces, anchors)
     batch = int(st["batch"])
     runs, errors = _run_batch(structure, batch, n, width, max_products, seed, options)
     first = Counter(st["first"]) + _first(runs, cutoff_kcal)
@@ -352,11 +366,13 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
 
 
 def _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
-                md_method, md_server, forces="piston,collide") -> dict:
+                md_method, md_server, forces="piston,collide", anchors="") -> dict:
+    from mepd.discovery.nanoreactor_generator import parse_anchors
+
     return dict(temperature=float(temperature), time_ps=float(time_ps), compress=float(compress),
                 period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
                 k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""), md_method=str(md_method),
-                md_server=md_server, forces=",".join(forces_of(forces)))
+                md_server=md_server, forces=",".join(forces_of(forces)), anchors=parse_anchors(anchors))
 
 
 def _run_batch(structure, batch: int, n: int, width: int, max_products, seed, options) -> tuple:

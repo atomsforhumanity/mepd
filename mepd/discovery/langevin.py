@@ -55,6 +55,29 @@ def pull_pairs(x: np.ndarray, pairs, k: float, masses=None) -> np.ndarray:
     return g
 
 
+def held_distances(atoms, ref_bohr, k: float):
+    """The restraint holding `atoms` at their distances to each other in
+    `ref_bohr` (e.g. a QM/MM model's anchors): xtb's $constrain on an atom
+    list, E = k (r - r0)^2 over every pair, `k` in Eh/bohr^2 as xtb's force
+    constant. x -> (energy, gradient); None for fewer than two atoms."""
+    atoms = sorted({int(a) for a in atoms})
+    if len(atoms) < 2:
+        return None
+    i, j = (np.asarray(atoms)[p] for p in np.triu_indices(len(atoms), 1))
+    ref = np.asarray(ref_bohr, dtype=float)
+    r0 = np.linalg.norm(ref[i] - ref[j], axis=1)
+
+    def restraint(x):
+        d = x[i] - x[j]
+        r = np.linalg.norm(d, axis=1)
+        f = (2.0 * k * (r - r0) / np.maximum(r, 1e-12))[:, None] * d
+        g = np.zeros_like(x)
+        np.add.at(g, i, f)
+        np.add.at(g, j, -f)
+        return float(k * np.sum((r - r0) ** 2)), g
+    return restraint
+
+
 _UMA: dict = {}
 
 
@@ -89,12 +112,13 @@ class LangevinMD:
     break without SCF failures). "uma": mepd's FAIRChemEngine (UMA_MODEL,
     the omol head), in this process or, with `server` (an address from
     `uma_server`), on a model server that batches the steps of every
-    trajectory that asks at once."""
+    trajectory that asks at once. `restraint`: x -> (energy, gradient) held in
+    every step and in `relax` (unlike `bias`), e.g. `held_distances`."""
 
     def __init__(self, symbols, pos_bohr, charge: int, multiplicity: int, *, temperature: float,
                  wall: Optional[float] = None, seed: int = 0, dt: float = 0.5, friction: float = 0.02,
                  bias: Optional[Callable[[np.ndarray], np.ndarray]] = None, method: str = "gfn2",
-                 server: Optional[str] = None):
+                 server: Optional[str] = None, restraint: Optional[Callable] = None):
         from rdkit import Chem
 
         from mepd.discovery.nanoreactor import _masses
@@ -121,6 +145,7 @@ class LangevinMD:
         self._calcs = {}          # one axtb Calculator per smearing, made when first needed
         self.wall, self.wall_force = wall, 20.0 / KCAL * BOHR      # 20 kcal/mol/A, in Eh/bohr
         self.T, self.dt, self.friction, self.bias = float(temperature), dt, friction, bias
+        self.restraint = restraint
         self.rng = np.random.default_rng(seed)
         self.vel = self.energy = self.grad = None
         self.failures = 0
@@ -161,6 +186,9 @@ class LangevinMD:
         if self.wall is not None:
             ew, gw = _wall(x, self.wall / BOHR, self.wall_force)
             e, g = e + ew, g + gw
+        if self.restraint is not None:
+            er, gr = self.restraint(x)
+            e, g = e + er, g + gr
         if biased and self.bias is not None:
             g = g + self.bias(x)
         return e, g

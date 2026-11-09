@@ -2753,7 +2753,8 @@ def expand_network(
                                                                    f"{what}; not used as products")
                     elif gen is not None:
                         gen.check()
-                        if gen.name == "nanoreactor" and "anchors" not in opts and view.region.links:
+                        if gen.name in ("nanoreactor", "reactor", "collide") and "anchors" not in opts \
+                                and view.region.links:
                             opts["anchors"] = ",".join(str(a) for a in nanoreactor_anchors(view.region))
                         items = gen.propose(model, max_products=max_products, options=opts)
                     elif products_file is not None:
