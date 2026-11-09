@@ -753,3 +753,312 @@ if __name__ == "__main__":
     a = ap.parse_args()
     path = pack_replay(a.snapshots, a.slug, a.title, a.tag, a.selectivity, a.blurb)
     print(f"{path} {path.stat().st_size / 1e6:.2f} MB")
+
+
+# ---------------------------------------------------------------------------------------------------
+# Reactor events as they happen (the live views' overlay): each reaction event the reactor's MD finds
+# (<output>/reactor/run_kk/live_events.json, rewritten after each MD segment), with when it happened,
+# the species whose MD it was, and the species it became once that is found. Served incrementally:
+# events are numbered in the order this server first saw them; a client asks for those after its last
+# (`since`) and starts again when the server's `epoch` changes (a restart renumbers them).
+
+import time as _time
+
+EPOCH = f"{_time.time():.0f}"
+SEGMENT_FRAMES = 125   # frames per segment file the reactor writes (reactor_generator.LIVE_FRAMES)
+_REACTOR: dict = {}
+
+
+def _canon_multiset(smiles: str) -> Optional[tuple]:
+    """A state as its sorted canonical molecules (None if one does not parse)."""
+    from mepd.web.chem import _canonical
+
+    out = []
+    for m in str(smiles).split("|")[0].split("."):
+        m = m.strip()
+        if not m:
+            continue
+        c = _CANON.get(m)
+        if c is None:
+            c = _CANON[m] = _canonical(m) or ""
+        if not c:
+            return None
+        out.append(c)
+    return tuple(sorted(out))
+
+
+_CANON: dict = {}
+
+
+def _side(text: str) -> list:
+    """One side of a reactor event's label ("2 [H] + C=O"), molecule by molecule, canonical."""
+    out = []
+    for part in text.split(" + "):
+        part = part.strip()
+        n, _, smi = part.partition(" ")
+        k = int(n) if n.isdigit() and smi else 1
+        out += [_canon_multiset(smi if n.isdigit() and smi else part)] * k
+    return out
+
+
+def _first_frame(run: Path):
+    """(symbols, coordinates) of a run's first MD frame, or None."""
+    fp = run / "md" / "segment_000.xyz"
+    try:
+        with open(fp) as fh:
+            n = int(fh.readline())
+            fh.readline()
+            rows = [fh.readline().split() for _ in range(n)]
+        return [r[0] for r in rows], [[float(v) for v in r[1:4]] for r in rows]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _xyz_rows(text: str):
+    lines = [x.split() for x in str(text).splitlines()[2:] if x.strip()]
+    return [r[0] for r in lines], [[float(v) for v in r[1:4]] for r in lines]
+
+
+def _centred(xyz):
+    n = max(1, len(xyz))
+    c = [sum(p[i] for p in xyz) / n for i in range(3)]
+    return [[p[0] - c[0], p[1] - c[1], p[2] - c[2]] for p in xyz]
+
+
+def _species_states(job_dir: Path) -> dict:
+    """What the run has found so far: species id -> (smiles, symbols, centred xyz, parent)."""
+    job_dir = Path(job_dir)
+    out = {}
+    seed = job_dir / "inputs" / "seed.xyz"
+    if seed.exists():
+        sy, xyz = _xyz_rows(seed.read_text())
+        out["0"] = ["", sy, _centred(xyz), None]
+    for line in _events(job_dir):
+        if '"species"' not in line[:40]:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("event") == "species" and ev.get("xyz"):
+            sy, xyz = _xyz_rows(ev["xyz"])
+            out[str(ev.get("index"))] = [ev.get("smiles") or "", sy, _centred(xyz), None if ev.get("parent") is None else str(ev["parent"])]
+    try:   # every species' SMILES, also those without an event (made by an IRC end)
+        raw = json.loads((job_dir / "live" / "kinetics.json").read_text())
+        for s in (raw.get("data", raw).get("species") or []):
+            sid = str(s.get("id", s.get("index")))
+            if sid in out:
+                out[sid][0] = out[sid][0] or s.get("smiles") or ""
+            else:
+                out[sid] = [s.get("smiles") or "", None, None, None]
+    except (OSError, ValueError, AttributeError):
+        pass
+    perceived = {}
+    try:
+        perceived = json.loads((job_dir / "live" / PERCEIVED).read_text())
+    except (OSError, ValueError):
+        pass
+    for sid, v in out.items():
+        v[0] = v[0] or perceived.get(sid, "")
+    return out
+
+
+def _source_of(run: Path, states: dict) -> Optional[str]:
+    """The species whose MD this run is: its first frame is that species' geometry, centred."""
+    got = _first_frame(run)
+    if got is None:
+        return None
+    sy, xyz = got
+    best, best_d = None, 0.05
+    for sid, (_, ssy, sxyz, _) in states.items():
+        if ssy != sy or sxyz is None:
+            continue
+        d = max(abs(a - b) for p, q in zip(xyz, sxyz) for a, b in zip(p, q))
+        if d < best_d:
+            best, best_d = sid, d
+    return best
+
+
+def _source_by_time(job_dir: Path, out: Path, run: Path, index: int) -> Optional[str]:
+    """The species whose propose job started this run: the one running when its first MD segment was
+    written (network_aware.jsonl's job lines, once that job ended), else, while it runs, the propose job
+    the explorer runs now (live/queue.json; with several, live/propose_<k>.json's runs_from)."""
+    import re
+
+    try:
+        t = (run / "md" / "segment_000.xyz").stat().st_mtime
+    except OSError:
+        t = _time.time()
+    best = None
+    fp = out / "network_aware.jsonl"
+    if fp.exists():
+        for line in fp.read_text().splitlines():
+            if '"propose"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            m = re.match(r"species (\d+)", str(e.get("what") or ""))
+            if e.get("kind") == "propose" and m and e["t"] - (e.get("run_s") or 0) - 1 <= t <= e["t"] + 1:
+                start = e["t"] - (e.get("run_s") or 0)
+                if best is None or start > best[0]:
+                    best = (start, m.group(1))
+    if best:
+        return best[1]
+    live = Path(job_dir) / "live"
+    try:
+        q = json.loads((live / "queue.json").read_text())
+        running = [re.match(r"species (\d+)", str(r.get("what") or "")) for r in (q.get("data", q).get("running") or [])
+                   if r.get("kind") == "propose"]
+        running = [m.group(1) for m in running if m]
+    except (OSError, ValueError, AttributeError):
+        running = []
+    if len(running) == 1:
+        return running[0]
+    froms = []
+    for k in running:
+        try:
+            d = json.loads((live / f"propose_{k}.json").read_text())
+            froms.append((int(d.get("data", d).get("runs_from")), k))
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    froms = [x for x in froms if x[0] <= index]
+    return max(froms)[1] if froms else (running[0] if running else None)
+
+
+def _runs_of(job: dict) -> list:
+    """(run id, run folder, the folder the event movie route takes it from) for each reactor run of a
+    network expansion (output/reactor/run_kk) or a reacting mixture's seeds (output/seeds/<s>/run/reactor/run_kk)."""
+    out = Path(job.get("output_dir") or "")
+    if job.get("op") == "network-mixture":
+        res = []
+        for sd in sorted((out / "seeds").glob("*")):
+            for k, d in enumerate(sorted((sd / "run" / "reactor").glob("run_*"))):
+                res.append((f"{sd.name}/{k}", d, sd.name))
+        return res
+    return [(str(k), d, None) for k, d in enumerate(sorted((out / "reactor").glob("run_*")))]
+
+
+def reactor_events(job_dir: Path, job: dict, since: int = 0, limit: int = 4000) -> dict:
+    """The reactor events of a job after the first `since` this server has numbered (see above).
+    Each: {i, t (s from the job's start, when its MD segment was written), run, seed, k, label, atoms
+    (count), src (species id or the mixture molecule it started from), prod (the species or molecule it
+    became, once there is one), changes (bonds formed and broken)}."""
+    job_dir = Path(job_dir)
+    key = str(job_dir)
+    st = _REACTOR.setdefault(key, {"seen": {}, "events": [], "src": {}, "state": {}, "prod_pending": []})
+    t0 = float(job.get("started") or 0.0)
+    mixture = job.get("op") == "network-mixture"
+    states = None
+    seeds_mol = {}
+    if mixture:
+        try:
+            mx = json.loads((Path(job["output_dir"]) / "mixture.json").read_text())
+            seeds_mol = {s["name"]: s.get("molecules") or [] for s in mx.get("seeds") or []}
+            mols = {_canon_multiset(m["molecule"]): m["molecule"] for m in mx.get("molecules") or []}
+        except (OSError, ValueError, KeyError):
+            mols = {}
+    fresh = []
+    for rid, run, seed in _runs_of(job):
+        fp = run / "live_events.json"
+        try:
+            m = fp.stat().st_mtime
+        except OSError:
+            continue
+        seen = st["seen"].get(rid)
+        if seen is not None and seen[0] == m:
+            continue
+        try:
+            evs = json.loads(fp.read_text()).get("events") or []
+        except (OSError, ValueError):
+            continue
+        n0 = seen[1] if seen else 0
+        st["seen"][rid] = (m, len(evs))
+        if rid not in st["src"]:
+            if mixture:
+                if seeds_mol.get(seed):
+                    st["src"][rid] = seeds_mol[seed][0]
+            else:
+                states = states if states is not None else _species_states(job_dir)
+                st["src"][rid] = _source_of(run, states) or _source_by_time(job_dir, Path(job["output_dir"]), run, int(rid))
+        for ev in evs[n0:]:
+            seg = run / "md" / f"segment_{int(ev.get('product_frame', 0)) // SEGMENT_FRAMES:03d}.xyz"
+            try:
+                t = seg.stat().st_mtime
+            except OSError:
+                t = m
+            label = ev.get("label") or ""
+            fresh.append({"t": round(t - t0, 1) if t0 else 0.0, "run": rid.split("/")[-1], "seed": seed, "rid": rid,
+                          "k": ev.get("event"), "label": label, "atoms": len(ev.get("atoms") or []),
+                          "src": st["src"].get(rid), "prod": None,
+                          "changes": [[c["atoms"][0], c["atoms"][1], 1 if c.get("formed") else 0] for c in ev.get("bond_changes") or []][:8]})
+    if mixture:   # a seed's molecules are known once mixture.json lists it
+        for e in st["events"] + fresh:
+            if e["src"] is None and seeds_mol.get(e["seed"]):
+                e["src"] = seeds_mol[e["seed"]][0]
+                st["src"][e["rid"]] = e["src"]
+                if e.get("i") is not None:
+                    st.setdefault("src_late", set()).add(e["i"])
+    if fresh:
+        fresh.sort(key=lambda e: e["t"])
+        for e in fresh:
+            e["i"] = len(st["events"])
+            st["events"].append(e)
+            st["prod_pending"].append(e["i"])
+    # what each event became: the state after it (the run's start, less its reactants, plus its products)
+    # once that is a species of the run (or, in a mixture, a product that is one of its molecules)
+    if st["prod_pending"]:
+        if mixture:
+            for i in list(st["prod_pending"]):
+                e = st["events"][i]
+                sides = e["label"].split(" -> ")
+                prods = [p.strip() for p in sides[1].split(" + ")] if len(sides) == 2 else []
+                reac = set(p.strip() for p in sides[0].split(" + ")) if sides else set()
+                for p in prods:
+                    c = _canon_multiset(p)
+                    if c and c in mols and p not in reac:
+                        e["prod"] = mols[c]
+                        break
+                if e["prod"] is not None:
+                    st["prod_pending"].remove(i)
+        else:
+            states = states if states is not None else _species_states(job_dir)
+            by_state = {}
+            for sid, (smi, _, _, _) in states.items():
+                c = _canon_multiset(smi) if smi else None
+                if c and c not in by_state:
+                    by_state[c] = sid
+            after_of = st.setdefault("after", {})
+            for i in list(st["prod_pending"]):
+                e = st["events"][i]
+                if i not in after_of:   # the state after it, worked out once, in the run's own order
+                    rs = st["state"].get(e["rid"])
+                    if rs is None and e["src"] is not None and states.get(e["src"], [""])[0]:
+                        rs = list(_canon_multiset(states[e["src"]][0]) or [])
+                    sides = e["label"].split(" -> ")
+                    reac = _side(sides[0]) if len(sides) == 2 else [None]
+                    prods = _side(sides[1]) if len(sides) == 2 else [None]
+                    after = None
+                    if rs is not None and not any(x is None or len(x) != 1 for x in reac + prods):
+                        left = list(rs)
+                        if all(x[0] in left and not left.remove(x[0]) for x in reac):
+                            after = tuple(sorted(left + [x[0] for x in prods]))
+                            st["state"][e["rid"]] = list(after)
+                    after_of[i] = after
+                after = after_of[i]
+                if after is None:
+                    st["prod_pending"].remove(i)
+                    continue
+                hit = by_state.get(after)
+                if hit is not None and hit != e["src"]:
+                    e["prod"] = hit
+                    st["prod_pending"].remove(i)
+            st["prod_pending"] = st["prod_pending"][-3000:]
+    evs = st["events"]
+    since = max(0, int(since))
+    # (products matched since: the client updates those it has)
+    return {"epoch": EPOCH, "n": len(evs), "events": evs[since:since + limit],
+            "prods": {e["i"]: e["prod"] for e in evs[max(0, since - 400):since] if e["prod"] is not None},
+            "srcs": {i: evs[i]["src"] for i in sorted(st.get("src_late") or ()) if i < since},
+            "runs": len(st["seen"]), "running": sum(1 for _, run, _ in _runs_of(job) if not (run / "md" / "done").exists())}

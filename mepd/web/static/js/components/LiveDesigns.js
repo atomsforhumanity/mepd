@@ -13,7 +13,11 @@
 // start, the products in an outcome lane). C: Rings (growth rings around the start, with what was
 // just found).
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
-import { depictUrl } from '../util.js';
+import { depictUrl, steeringOf } from '../util.js';
+import { Popover, pointBox, useHoverCard } from './Popover.js';
+import { EventPlayer } from './ReactorLive.js';
+import { api } from '../api.js';
+import { openJob } from '../store.js';
 
 export const designParam = () => {
   try { return new URLSearchParams(location.search).get('design'); } catch { return null; }
@@ -130,12 +134,13 @@ function placeRings(id, a, st) {
 // material, or a route runs through it), in the free row nearest the species it came from; until then it
 // is one dot in its column's pile of what was explored, above. Rows and pile slots never move.
 const SUB_W = 118, SUBS = 3, COL_W = SUB_W * SUBS + 90, ROW_H = 92, ROWS = 6, PILE = 9, PILE_W = 26, MAX_COL = 4;
+const schemeX0 = (c) => (c === 0 ? 0 : 150 + (c - 1) * COL_W);
 function useScheme(key, disc, order, relevantOrder) {
   const ref = useRef(null);
   if (!ref.current || ref.current.key !== key) ref.current = { key, row: new Map(), pile: new Map(), cells: new Map(), piles: new Map() };
   const sc = ref.current;
   const col = (id) => Math.min(disc.hop.get(id) ?? 1, MAX_COL);
-  const x0 = (c) => (c === 0 ? 0 : 150 + (c - 1) * COL_W);
+  const x0 = schemeX0;
   for (const id of order) {
     if (sc.pile.has(id) || !disc.pos.has(id) || disc.anchor.get(id) == null) continue;
     const c = col(id), k = sc.piles.get(c) || 0;
@@ -338,15 +343,24 @@ function likelyRoutes(steps, seed, holders) {
 }
 
 // ---------------------------------------------------------------- the view
-export function DesignNetwork({ tl, cur, design, jobId, example, job, running, follow, controls }) {
+export function DesignNetwork({ tl, cur, design, jobId, example, job, running, follow, controls, apiJob = jobId, eventClock = null, onEvents = null }) {
   const m = useMemo(() => expansionModel(tl, cur), [tl, cur]);
-  const [hover, setHover] = useState(null);   // {kind: 'n'|'e', id}
+  // the card under the pointer, focused, or pinned by a tap (Popover.js): a species or a step
+  const hc = useHoverCard();
+  const hover = hc.cur ? { kind: hc.cur.key[0], id: hc.cur.data } : null;
   const key = `${jobId || example}|${design}`;
   const st = usePlacement(design, key, m.order, anchorFor(m));
   const f = m.f;
   const cond = conditionsOf(f.basis, tl.command ?? job?.command);
   const hues = useMemo(() => productHues(m.frames, m.seed, m.keyOf, cur), [tl, cur]);
   const hueOf = (id) => (id === m.seed ? null : hues.get(m.keyOf(id)));
+  // the reactor's events (the overlay), the one opened in full, and species that just caught one
+  const rx = useReactorEvents(apiJob, running);
+  useEffect(() => { if (onEvents && rx.events.length) onEvents(rx.events); }, [rx.events.length]);
+  const [dialog, setDialog] = useState(null);
+  const [caught, setCaught] = useState({});
+  const followLive = running && cur === m.frames.length - 1;
+  const nowOf = eventClock || (() => (followLive && job?.started ? Date.now() / 1000 - job.started : f.t));
   const startSmiles = drawable(tl.smiles[m.seed]) ? tl.smiles[m.seed] : null;
   const imgOf = (id, w = 240, h = 180) => (drawable(tl.smiles[id]) ? `${depictUrl(tl.smiles[id], w, h, id === m.seed ? null : startSmiles)}&bond=${Math.round(w / 6)}`
     : jobId && !jobId.startsWith("mix:") ? `/api/jobs/${jobId}/species-graph/${encodeURIComponent(id)}` : null);
@@ -442,7 +456,13 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
     box = [Math.min(box[0], x - r), Math.min(box[1], y - r), Math.max(box[2], x + r), Math.max(box[3], y + r + (cardIds.has(id) ? 18 : 0))];
   }
   if (design === 'b') box = [box[0] - 40, box[1] - 20, box[2] + 360, box[3] + 10];
-  const vb = useViewBox([box[0], box[1], Math.max(700, box[2] - box[0]), Math.max(460, box[3] - box[1])], follow);
+  else {   // room around the start for the reactor's events
+    const [sx, sy] = C(m.seed), r = 240 * scale;
+    box = [Math.min(box[0], sx - r), Math.min(box[1], sy - r), Math.max(box[2], sx + r), Math.max(box[3], sy + r)];
+  }
+  // at least 700 x 460, the content in the middle
+  const bw = Math.max(700, box[2] - box[0]), bh = Math.max(460, box[3] - box[1]);
+  const vb = useViewBox([(box[0] + box[2]) / 2 - bw / 2, (box[1] + box[3]) / 2 - bh / 2, bw, bh], follow);
 
   const ends = (id, toward, gap) => {
     const [x0, y0] = C(id), [x1, y1] = C(toward);
@@ -497,6 +517,20 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
   const since = new Map(relevantOrder);
   const freshCard = (id) => (design === 'b' ? cur > 0 && id !== m.seed && (since.get(id) ?? -1) >= f.t - 12 : fresh(id));
 
+  const tNow = nowOf();
+  const madeBy = new Map();
+  for (const e of rx.events) if (e.prod != null && e.t <= tNow + 0.5) { if (!madeBy.has(e.prod)) madeBy.set(e.prod, []); madeBy.get(e.prod).push(e); }
+  const openEvent = (ev) => { hc.close(); setDialog(ev); };
+  const lastTen = rx.events.reduce((n, e) => n + (e.t <= tNow + 0.5 && e.t > tNow - WINDOW_S ? 1 : 0), 0);
+  const seenSet = new Set(seen);
+  const avoid = order.map((id) => { const [x, y] = C(id), w = cardW(id) * scale; return [x, y + 8 * scale, w + 16 * scale, w * 0.75 + 40 * scale]; });
+  const settleOf = (ev, at) => {
+    if (design === 'b') { const c = Math.min((st.hop.get(ev.src ?? m.seed) ?? 0) + 1, MAX_COL); return [schemeX0(c) + (PILE_W / 2) * PILE, -70]; }
+    const o = C(m.seed), d = Math.max(1, Math.hypot(at[0] - o[0], at[1] - o[1]));
+    return [at[0] + ((at[0] - o[0]) / d) * 60 * scale, at[1] + ((at[1] - o[1]) / d) * 60 * scale];
+  };
+  const onCatch = (id) => setCaught((c) => ({ ...c, [id]: performance.now() }));
+  const isCaught = (id) => caught[id] && performance.now() - caught[id] < 1200;
   const stage = html`<div class=${`ld-stage ld-${design}`}>
     <svg viewBox=${vb.join(' ')} preserveAspectRatio="xMidYMid meet" role="img" style=${`--s:${scale}`}
       aria-label="The network: each species placed where it was found; the start, the products and what holds material as structures; steps as lines, darker the faster at the run's temperature">
@@ -507,7 +541,7 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
       ${piles.map(([c, k]) => html`<text class="ld-colhead left" key=${`h${c}`} x=${c === 0 ? 0 : 150 + (c - 1) * COL_W} y="-18">${c === 0 ? 'start' : `${c}${c === MAX_COL ? '+' : ''} step${c === 1 ? '' : 's'} · ${k} found`}</text>`)}
       <g class="ld-branches">${seen.map((id) => { const d = branch(id); return d && html`<path key=${`b${id}`} d=${d} class=${`ld-branch ${dim(id) ? 'dim' : ''}`} />`; })}</g>
       <g class="ld-steps">${[...shownEdges].sort((a, b) => a.main - b.main).map((e) => html`<g key=${e.id} class=${`ld-step ${e.main ? 'main' : ''} ${newStep.has(e.id) && !e.main ? 'new' : ''} ${e.speed || 'none'} ${e.below ? 'below' : ''} ${e.irc === -1 ? 'unchecked' : ''} ${(near && !(near.has(e.from) && near.has(e.to))) ? 'dim' : ''} ${hover?.id === e.id ? 'on' : ''}`}
-          onMouseEnter=${() => setHover({ kind: 'e', id: e.id })} onMouseLeave=${() => setHover(null)}>
+          ...${hc.bind(`e:${e.id}`, e.id, (el, ev) => { const r = el.getBoundingClientRect(); return ev ? pointBox(ev.clientX, ev.clientY) : pointBox(r.left + r.width / 2, r.top + r.height / 2); })}>
         <path d=${pathOf(e)} class="ld-hit" />
         <path d=${pathOf(e)} class="ld-line" style=${`stroke-width:${e.w * scale}px${e.hue != null ? `;stroke:var(--ld-h${e.hue})` : ''}`}
           marker-end=${e.main || hover?.id === e.id ? `url(#ld-arr-${e.hue != null ? `h${e.hue}` : e.speed || 'none'}-${e.w < 2.5 ? 's' : e.w < 6 ? 'm' : 'l'})` : null} />
@@ -522,14 +556,17 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
       <g class="ld-leaders">${order.map((id) => { const d = leader(id); return d && html`<path key=${`l${id}`} d=${d} class="ld-leader" />`; })}</g>
       <g class="ld-nodes">${dotIds.map((id) => {
         const s = amount.get(id), hue = hueOf(id);
-        return html`<g key=${`n${id}`} class=${`ld-dot ${s?.[4] ? 'pop' : ''} ${hue != null && s?.[3] > 1e-3 ? `h${hue}` : ''} ${fresh(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
-          style=${style(id)} onMouseEnter=${() => setHover({ kind: 'n', id })} onMouseLeave=${() => setHover(null)}>
+        return html`<g key=${`n${id}`} class=${`ld-dot ${isCaught(id) ? 'caught' : ''} ${s?.[4] ? 'pop' : ''} ${hue != null && s?.[3] > 1e-3 ? `h${hue}` : ''} ${fresh(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
+          style=${style(id)} ...${hc.bind(`n:${id}`, id, (el) => el.querySelector('circle, .ld-card-bg').getBoundingClientRect())}>
           <g class="ld-grow"><circle r=${(design === 'b' ? 3 : s?.[4] ? 6.5 : 4.5) * scale} /><circle r=${(design === 'b' ? 5 : 12) * scale} class="ld-hit" /></g></g>`;
       })}</g>
+      ${rx.events.length > 0 && html`<${ReactorOverlay} apiJob=${apiJob} events=${rx.events} now=${nowOf} live=${followLive || !!eventClock}
+        posOf=${(id) => (seenSet.has(id) ? C(id) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
+        avoid=${avoid} settleOf=${(ev, at) => settleOf(ev, at)} scale=${scale} onOpen=${openEvent} onCatch=${onCatch} />`}
       <g class="ld-cards">${[...order].reverse().map((id) => {
         const w = cardW(id) * scale, h = w * 0.75, hue = hueOf(id), img = imgOf(id), s = amount.get(id), nm = nameOf(id);
-        return html`<g key=${`c${id}`} class=${`ld-card ${id === m.seed ? 'seed' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
-          style=${style(id)} onMouseEnter=${() => setHover({ kind: 'n', id })} onMouseLeave=${() => setHover(null)}>
+        return html`<g key=${`c${id}`} class=${`ld-card ${isCaught(id) ? 'caught' : ''} ${id === m.seed ? 'seed' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
+          style=${style(id)} ...${hc.bind(`n:${id}`, id, (el) => el.querySelector('circle, .ld-card-bg').getBoundingClientRect())}>
           <g class="ld-grow">
             <rect x=${-w / 2} y=${-h / 2} width=${w} height=${h} rx=${6 * scale} class="ld-card-bg" />
             ${img ? html`<image href=${img} x=${-w / 2 + 3 * scale} y=${-h / 2 + 3 * scale} width=${w - 6 * scale} height=${h - 6 * scale} preserveAspectRatio="xMidYMid meet" />`
@@ -552,14 +589,18 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
         </g>`;
       })}
     </svg>
-    ${hovered && html`<${NodeCard} at=${C(hovered)} vb=${vb} s=${amount.get(hovered)} img=${imgOf(hovered, 320, 240)} name=${nameOf(hovered)}
-      smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} />`}
-    ${hoveredEdge && html`<${EdgeCard} e=${hoveredEdge} at=${[(C(hoveredEdge.from)[0] + C(hoveredEdge.to)[0]) / 2, (C(hoveredEdge.from)[1] + C(hoveredEdge.to)[1]) / 2]} vb=${vb}
-      nm=${label} cond=${cond} />`}
+    ${hovered && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
+      <${NodeCard} s=${amount.get(hovered)} img=${imgOf(hovered, 320, 240)} name=${nameOf(hovered)}
+        smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} made=${madeBy.get(hovered) || []} onEvent=${openEvent} /><//>`}
+    ${hoveredEdge && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop edge" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
+      <${EdgeCard} e=${hoveredEdge} nm=${label} cond=${cond} /><//>`}
+    ${dialog && html`<${EventDialog} apiJob=${apiJob} ev=${dialog} nameOf=${label} onClose=${() => setDialog(null)} />`}
   </div>`;
 
   const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series}
-    startLeft=${startLeft} steady=${f.t - steadySince} imgOf=${imgOf} nameOf=${label} cond=${cond} pending=${!f.steered} basis=${f.basis} sel=${tl.selectivity} />`;
+    startLeft=${startLeft} steady=${f.t - steadySince} imgOf=${imgOf} nameOf=${label} cond=${cond} pending=${!f.steered} basis=${f.basis} sel=${tl.selectivity}
+    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
+      open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
   const keyEl = html`<${Key} cond=${cond} noFlux=${noFlux} design=${design} anyBelow=${edges.some((e) => e.below)} running=${running} />`;
   if (design === 'a') {
     return html`<div class="ld-page ld-page-a">${strip}<div class="ld-row">
@@ -571,7 +612,7 @@ export function DesignNetwork({ tl, cur, design, jobId, example, job, running, f
     const recent = seen.filter((id) => id !== m.seed).slice(-7).reverse();
     return html`<div class="ld-page ld-page-c">${strip}${stage}
       <div class="ld-ticker"><span class="ld-ticker-h">Just found</span>${recent.map((id) => html`<span class=${`ld-tick ${fresh(id) ? 'fresh' : ''}`} key=${id}
-        onMouseEnter=${() => setHover({ kind: 'n', id })} onMouseLeave=${() => setHover(null)}>
+        ...${hc.bind(`n:${id}`, id)}>
         ${imgOf(id, 120, 90) ? html`<img src=${imgOf(id, 120, 90)} alt=${tl.smiles[id] || ''} />` : html`<i class="ld-tick-q">?</i>`}<span class="mono">${fmtClock(m.first.get(id))}</span></span>`)}</div>
       ${keyEl}${controls}</div>`;
   }
@@ -587,12 +628,19 @@ function Spark({ series, w = 150, h = 34 }) {
   </svg>`;
 }
 
-function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft, steady, imgOf, nameOf, cond, pending, basis, sel }) {
+// Run time that ticks while the run is followed live (frames come only with each kinetics refresh).
+function LiveClock({ t0 }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const id = setInterval(() => tick((x) => x + 1), 1000); return () => clearInterval(id); }, []);
+  return fmtClock(Math.max(0, Date.now() / 1000 - t0));
+}
+
+function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft, steady, imgOf, nameOf, cond, pending, basis, sel, steering, reactor, live0 = null }) {
   const ph = running ? phaseOf(q) : null;
   return html`<div class="ld-strip" role="status">
     <div class="ld-s-time" title="Run time">
       <span class=${`ld-s-dot ${running ? 'live' : ''}`}></span>
-      <b class="mono">${fmtClock(t)}</b>
+      <b class="mono">${live0 != null ? html`<${LiveClock} t0=${live0} />` : fmtClock(t)}</b>
       ${cond.budget && html`<span class="ld-s-budget" title=${`of a ${fmtClock(cond.budget)} time budget`}><i style=${`width:${Math.min(100, (100 * t) / cond.budget)}%`}></i></span>`}
     </div>
     <div class="ld-s-phase">
@@ -600,13 +648,18 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, startLeft
       <span class="small muted">${ph ? ph.detail : ''}${ph ? '' : `${cond.T ? `${Math.round(cond.T)} K` : ''}${cond.tauKnown ? ` · ${fmtTime(cond.tau)} simulated` : ''}`}</span>
     </div>
     <div class="ld-s-counts"><span><b>${counts.species}</b> species</span><span><b>${counts.steps ?? nSteps}</b> steps</span></div>
+    ${reactor && html`<button class=${`ld-s-reactor ${reactor.running ? 'on' : ''}`} onClick=${reactor.open}
+        title="The reactor's molecular dynamics that proposes the reactions: open it">
+      <b>Reactor MD ›</b><span class="small muted">${reactor.running ? `${reactor.running} trajector${reactor.running === 1 ? 'y' : 'ies'} running · ` : ''}${reactor.recent
+        ? `${reactor.recent} event${reactor.recent === 1 ? '' : 's'} in the last ${WINDOW_S} s` : `${reactor.events} events`}</span></button>`}
     <div class="ld-s-products" title="What the start has turned into at the end of the simulated time, as a share of the start">
       ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${nameOf(p.id)}>
         ${imgOf(p.id, 120, 90) && html`<img src=${imgOf(p.id, 120, 90)} alt="" />`}<b>${pct(p.fin)}</b></span>`)}
       ${startLeft != null && html`<span class="ld-s-prod start" title="The start, left at the end of the simulated time"><span class="ld-s-pname">start</span><b>${pct(startLeft)}</b></span>`}
       ${products.length > 0 && html`<${Spark} series=${products} />`}
       <span class=${`small ld-s-steady ${pending ? 'pending' : ''}`} title="How long the leading product and its amount (within 2 points) have held, in run time">
-        ${pending ? 'energies wait for DFT' : products.length ? html`answer held<br /><b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}</span>
+        ${pending ? 'energies wait for DFT' : products.length ? html`answer held<br /><b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}
+        ${steering && html`<br /><span title="The level the live kinetics' energies are steered to (DFT single points)">energies: ${steering}</span>`}</span>
     </div>
   </div>`;
 }
@@ -627,12 +680,8 @@ function SidePanel({ products, imgOf, nameOf, startLeft, q, recent, smiles }) {
       <div class="ld-recent">${recent.map((id) => html`<img src=${imgOf(id, 120, 90)} alt=${smiles[id] || ''} title=${smiles[id] || ''} />`)}</div></section>`}`;
 }
 
-function at(vb, p) { return [`${(100 * (p[0] - vb[0])) / vb[2]}%`, `${(100 * (p[1] - vb[1])) / vb[3]}%`]; }
-
-function NodeCard({ at: p, vb, s, img, name, smiles, first, seed }) {
-  const [l, t] = at(vb, p);
-  return html`<div class="ld-pop" style=${`left:${l};top:${t}`}>
-    ${img && html`<img src=${img} alt=${smiles || ''} />`}
+function NodeCard({ s, img, name, smiles, first, seed, made = [], onEvent }) {
+  return html`${img && html`<img src=${img} alt=${smiles || ''} />`}
     <div class="ld-pop-name">${name || (seed ? 'start' : '')}</div>
     <div class="mono small muted ld-pop-smi">${short(smiles || 'structure not perceived', 48)}</div>
     <div class="ld-pop-nums">
@@ -640,15 +689,14 @@ function NodeCard({ at: p, vb, s, img, name, smiles, first, seed }) {
       ${!seed && html`<span><b>${pct(s?.[2] ?? 0)}</b>most at once</span><span><b>${pct(s?.[3] ?? 0)}</b>at the end</span>`}
     </div>
     <div class="small muted">${seed ? 'the start' : `found at ${fmtClock(first)}`}${s ? ` · ${s[5] ? 'DFT energy' : 'g-xTB energy'}` : ' · holds no material yet'}</div>
-  </div>`;
+    ${made.length > 0 && html`<div class="ld-made small"><span>Made in the reactor's MD by ${made.length} event${made.length === 1 ? '' : 's'}:</span>
+      ${made.slice(-4).reverse().map((ev) => html`<button class="btn small" onClick=${() => onEvent(ev)} title=${ev.label}>▶ ${fmtClock(ev.t)}</button>`)}</div>`}`;
 }
 
-function EdgeCard({ e, at: p, vb, nm, cond }) {
-  const [l, t] = at(vb, p);
+function EdgeCard({ e, nm, cond }) {
   const dG = e.barrier != null && e.back != null ? e.barrier - e.back : null;
   const hl = halfLife(e.barrier, cond.T);
-  return html`<div class="ld-pop edge" style=${`left:${l};top:${t}`}>
-    <div class="ld-pop-name">${nm(e.from)}${e.co?.with?.length ? ` + ${e.co.with.map(nm).join(' + ')}` : ''} <span class="muted">→</span> ${nm(e.to)}${e.co?.also?.length ? ` + ${e.co.also.map(nm).join(' + ')}` : ''}</div>
+  return html`<div class="ld-pop-name">${nm(e.from)}${e.co?.with?.length ? ` + ${e.co.with.map(nm).join(' + ')}` : ''} <span class="muted">→</span> ${nm(e.to)}${e.co?.also?.length ? ` + ${e.co.also.map(nm).join(' + ')}` : ''}</div>
     ${e.co?.channels > 1 && html`<div class="small"><b>×${e.co.channels}</b> ${e.co.mirror ? 'mirror images, both counted' : 'channels, counted together'}</div>`}
     ${e.below ? html`<div class="small muted">TS below its ends: not this reaction${e.irc === 1 ? '' : ', unchecked'}. No barrier is drawn.</div>` : html`
     <div class="ld-pop-nums">
@@ -658,8 +706,7 @@ function EdgeCard({ e, at: p, vb, nm, cond }) {
       ${e.share != null && html`<span><b>${pct(e.share)}</b>of what leaves</span>`}
     </div>
     <div class="small">${hl != null ? html`Half-life at ${Math.round(cond.T)} K: <b>${fmtTime(hl)}</b>${cond.tauKnown ? ` (the kinetics simulate ${fmtTime(cond.tau)})` : ''}` : ''}</div>
-    <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC joins these two ✓' : e.irc === -1 ? ' · no IRC check yet' : ''}</div>`}
-  </div>`;
+    <div class="small muted">kcal/mol · ${e.src === 'd' ? 'DFT energies' : e.src === 'b' ? 'borrowed from a twin step' : 'g-xTB energies'}${e.irc === 1 ? ' · IRC joins these two ✓' : e.irc === -1 ? ' · no IRC check yet' : ''}</div>`}`;
 }
 
 function Key({ cond, noFlux, anyBelow, running }) {
@@ -719,9 +766,246 @@ export function mixtureTimeline(mx, names) {
 
 export function MixtureDesign({ mixture, names, design, jobId, job, running }) {
   const tl = useMemo(() => mixtureTimeline(mixture, names), [JSON.stringify(mixture)]);
+  // A finished mixture has no timeline: its reactor events replay at their own pace, over and over
+  // (the strip and the dialog say when each happened); a running one shows them as they come.
+  const t0 = useRef(performance.now());
+  const rxEnd = useRef(1);
+  const eventClock = running ? null : () => ((performance.now() - t0.current) / 1000) % rxEnd.current;
   const seeds = tl.mixture.seeds;
   const done = seeds.filter((x) => String(x.status || '').startsWith('done')).length;
   const controls = html`<div class="ld-seeds small muted">${seeds.length} seed run${seeds.length === 1 ? '' : 's'} (${done} done) · generation ${tl.mixture.generation ?? 0}:
     each seed is one combination of molecules explored on its own; its steps join this network. Amounts as a share of the feed (${(mixture.feed || []).map((f) => `${f.name || names[f.molecule] || f.molecule} ${f.concentration} ${mixture.settings?.standard_state === '1atm' ? 'atm' : 'M'}`).join(', ')}).</div>`;
-  return html`<${DesignNetwork} tl=${tl} cur=${0} design=${design} jobId=${`mix:${jobId}`} job=${job} running=${running} follow=${true} controls=${controls} />`;
+  return html`<${DesignNetwork} tl=${tl} cur=${0} design=${design} jobId=${`mix:${jobId}`} apiJob=${jobId} job=${job} running=${running} follow=${true}
+    controls=${controls} eventClock=${eventClock} onEvents=${(evs) => { rxEnd.current = Math.max(1, ...evs.map((e) => e.t)) + 6; }} />`;
+}
+
+// ---------------------------------------------------------------- the reactor's events, overlaid
+// While a propose job's MD runs, the reactor finds reaction events (its live_events.json, per MD
+// segment). Each shows faintly as a ghost of its subsystem's movie (the atoms that react, the few
+// frames around the bond change, projected flat) at the species whose MD it was: it fades in, plays
+// once, and drifts to the species it became when that is found (which pulses as it catches it), else
+// settles away and fades. At most GHOSTS at once; the rest are counted. Click one for the full movie
+// (the Reactor view's event player). Reduced motion: the latest one, still.
+const GHOSTS = 3, LIFE_MS = 5200, WINDOW_S = 10;
+
+export function useReactorEvents(apiJob, live) {
+  const [st, setSt] = useState({ events: [], epoch: null, running: 0, runs: 0 });
+  const ref = useRef(st);
+  ref.current = st;
+  useEffect(() => {
+    if (!apiJob) return undefined;
+    let alive = true, timer = null;
+    const load = async () => {
+      const cur = ref.current;
+      try {
+        const d = await api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor-events?since=${cur.events.length}`);
+        if (!alive) return;
+        if (cur.epoch && d.epoch !== cur.epoch) {   // the server restarted: its numbering too
+          ref.current = { events: [], epoch: d.epoch, running: d.running, runs: d.runs };
+          setSt(ref.current);
+          timer = setTimeout(load, 50);
+          return;
+        }
+        let events = cur.events;
+        const prods = Object.entries(d.prods || {}).filter(([i, pr]) => events[i] && events[i].prod !== pr);
+        const srcs = Object.entries(d.srcs || {}).filter(([i, sr]) => events[i] && events[i].src !== sr);
+        if (d.events.length || prods.length || srcs.length) {
+          events = [...events];
+          for (const [i, pr] of prods) events[i] = { ...events[i], prod: pr };
+          for (const [i, sr] of srcs) events[i] = { ...events[i], src: sr };
+          events.push(...d.events);
+        }
+        ref.current = { events, epoch: d.epoch, running: d.running, runs: d.runs };
+        setSt(ref.current);
+        if (d.events.length >= 4000) timer = setTimeout(load, 50);   // catching up
+        else if (live) timer = setTimeout(load, 2000);
+      } catch {
+        if (alive && live) timer = setTimeout(load, 4000);
+      }
+    };
+    load();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [apiJob, live]);
+  return st;
+}
+
+const COV = { H: 0.31, C: 0.76, N: 0.71, O: 0.66, F: 0.57, P: 1.07, S: 1.05, Cl: 1.02, Br: 1.2, B: 0.84, Si: 1.11 };
+// An event's movie, small: ~14 frames from just before its reactant frame to just after its product
+// frame, flattened onto the plane its atoms spread most in, fitted to a unit circle; bonds per frame.
+function ghostFrames(x) {
+  const n = x.symbols.length, F = x.frames;
+  const a = Math.max(0, x.reactant_frame - 6), b = Math.min(F.length - 1, x.product_frame + 6);
+  const idx = [];
+  for (let k = 0; k < 14; k += 1) idx.push(Math.round(a + ((b - a) * k) / 13));
+  const ref = F[Math.max(0, Math.min(F.length - 1, x.reactant_frame))];
+  const c = [0, 1, 2].map((d) => { let t = 0; for (let i = 0; i < n; i += 1) t += ref[3 * i + d]; return t / n; });
+  const cov = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (let i = 0; i < n; i += 1) for (let p = 0; p < 3; p += 1) for (let q = 0; q < 3; q += 1) cov[p][q] += (ref[3 * i + p] - c[p]) * (ref[3 * i + q] - c[q]);
+  const top = (M, skip) => {   // power iteration, deflated against `skip`
+    let v = [1, 0.7, 0.3];
+    for (let it = 0; it < 40; it += 1) {
+      let w = [0, 1, 2].map((p) => M[p][0] * v[0] + M[p][1] * v[1] + M[p][2] * v[2]);
+      if (skip) { const d = w[0] * skip[0] + w[1] * skip[1] + w[2] * skip[2]; w = w.map((u, k) => u - d * skip[k]); }
+      const l = Math.hypot(...w) || 1;
+      v = w.map((u) => u / l);
+    }
+    return v;
+  };
+  const e1 = top(cov), e2 = top(cov, e1);
+  const changes = new Map((x.changes || []).map((ch) => [`${Math.min(...ch.atoms)}-${Math.max(...ch.atoms)}`, ch.formed]));
+  let ext = 0.5;
+  const frames = idx.map((k) => {
+    const f = F[k], pts = [];
+    for (let i = 0; i < n; i += 1) {
+      const d = [f[3 * i] - c[0], f[3 * i + 1] - c[1], f[3 * i + 2] - c[2]];
+      const pnt = [d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2], d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2]];
+      ext = Math.max(ext, Math.abs(pnt[0]), Math.abs(pnt[1]));
+      pts.push(pnt);
+    }
+    const bonds = [];
+    for (let i = 0; i < n; i += 1) {
+      for (let j = i + 1; j < n; j += 1) {
+        const dd = Math.hypot(f[3 * i] - f[3 * j], f[3 * i + 1] - f[3 * j + 1], f[3 * i + 2] - f[3 * j + 2]);
+        const key = `${i}-${j}`;
+        if (dd < 1.15 * ((COV[x.symbols[i]] ?? 0.8) + (COV[x.symbols[j]] ?? 0.8))) bonds.push([i, j, changes.has(key) ? (changes.get(key) ? 'f' : 'b') : '']);
+      }
+    }
+    return { pts, bonds };
+  });
+  for (const fr of frames) fr.pts = fr.pts.map(([u, v]) => [u / ext, v / ext]);
+  return { sym: x.symbols, frames };
+}
+
+const EVENT_CACHE = new Map();
+function useGhostFrames(apiJob, ev) {
+  const key = `${apiJob}|${ev.seed || ''}|${ev.run}|${ev.k}`;
+  const [d, setD] = useState(EVENT_CACHE.get(key) || null);
+  useEffect(() => {
+    if (EVENT_CACHE.has(key)) { setD(EVENT_CACHE.get(key)); return undefined; }
+    let alive = true;
+    api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?run=${ev.run}${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`)
+      .then((x) => {
+        const g = ghostFrames(x);
+        EVENT_CACHE.set(key, g);
+        if (EVENT_CACHE.size > 60) EVENT_CACHE.delete(EVENT_CACHE.keys().next().value);
+        if (alive) setD(g);
+      }).catch(() => {});
+    return () => { alive = false; };
+  }, [key]);
+  return d;
+}
+
+// One ghost's drawing: a flat ball-and-stick of frame k (bonds that form or break in the event marked).
+function GhostDrawing({ g, k, r }) {
+  const fr = g.frames[Math.min(k, g.frames.length - 1)];
+  return html`<g class="ld-gmol">
+    ${fr.bonds.map(([i, j, kind]) => html`<line x1=${fr.pts[i][0] * r} y1=${fr.pts[i][1] * r} x2=${fr.pts[j][0] * r} y2=${fr.pts[j][1] * r} class=${`ld-gb ${kind}`} />`)}
+    ${fr.pts.map(([u, v], i) => html`<circle cx=${u * r} cy=${v * r} r=${(g.sym[i] === 'H' ? 0.055 : 0.09) * r} class=${`ld-ga el-${COV[g.sym[i]] != null ? g.sym[i] : 'x'}`} />`)}
+  </g>`;
+}
+
+function Ghost({ apiJob, gh, scale, still, onOpen }) {
+  const g = useGhostFrames(apiJob, gh.ev);
+  const [k, setK] = useState(still ? 13 : 0);
+  useEffect(() => {
+    if (still || !g) return undefined;
+    const id = setInterval(() => setK((x) => (x >= 13 ? 13 : x + 1)), 140);
+    return () => clearInterval(id);
+  }, [!!g, still]);
+  if (!g) return null;
+  const r = 30 * scale;
+  return html`<g class=${`ld-ghost ${gh.phase} ${still ? 'still' : ''}`} style=${`transform:translate(${gh.at[0]}px,${gh.at[1]}px)`}
+      onClick=${() => onOpen(gh.ev)} role="button" tabindex="0" aria-label=${`Reactor event: ${gh.ev.label}. Open its movie`}
+      onKeyDown=${(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(gh.ev); } }}>
+    <g class="ld-ghost-in"><circle r=${r * 1.25} class="ld-ghost-bg" /><${GhostDrawing} g=${g} k=${k} r=${r} /></g>
+    <title>${gh.ev.label} (reactor event; click for its movie)</title>
+  </g>`;
+}
+
+// Where a ghost appears: beside the species it started from, clear of the cards (products holding
+// material) and of the other ghosts.
+function ghostSpot(src, avoid, scale, k) {
+  const r = 42 * scale;
+  for (const d of [70, 100, 135, 175].map((x) => x * scale)) {
+    for (let j = 0; j < 12; j += 1) {
+      const th = -Math.PI / 3 + ((j + k * 5) % 12) * (Math.PI / 6);
+      const x = src[0] + d * Math.cos(th), y = src[1] + d * Math.sin(th);
+      if (avoid.every(([ax, ay, aw, ah]) => x + r < ax - aw / 2 || x - r > ax + aw / 2 || y + r < ay - ah / 2 || y - r > ay + ah / 2)) return [x, y];
+    }
+  }
+  return [src[0] + 80 * scale, src[1] - 80 * scale];
+}
+
+export function ReactorOverlay({ apiJob, events, now, live, posOf, seenAt, avoid, settleOf, scale, onOpen, onCatch }) {
+  const still = reduced();
+  const [ghosts, setGhosts] = useState([]);
+  const shown = useRef(new Set());
+  const st = useRef({});
+  st.current = { events, now, live, posOf, seenAt, avoid, settleOf, scale, onCatch };
+  useEffect(() => {
+    if (still) return undefined;
+    const tick = () => {
+      const { events: evs, now: nowF, posOf: pos, seenAt: seen, avoid: av, settleOf: settle, scale: sc, onCatch: caught } = st.current;
+      const t = nowF(), wall = performance.now();
+      setGhosts((gs) => {
+        let out = gs.filter((x) => wall - x.born < LIFE_MS);
+        out = out.map((x) => {
+          const age = wall - x.born;
+          if (age > 2600 && x.phase === 'play') {
+            const target = x.ev.prod != null && pos(x.ev.prod) && seen(x.ev.prod, t) ? pos(x.ev.prod) : null;
+            if (target) caught?.(x.ev.prod);
+            return { ...x, phase: target ? 'catch' : 'settle', at: target || settle(x.ev, x.at) || [x.at[0], x.at[1] - 40 * sc] };
+          }
+          return x;
+        });
+        if (out.length < GHOSTS) {
+          const recent = [];
+          for (let i = evs.length - 1; i >= 0 && recent.length < 400; i -= 1) {
+            const e = evs[i];
+            if (e.t > t + 0.5) continue;
+            if (e.t < t - WINDOW_S) { if (st.current.live) break; continue; }
+            if (!shown.current.has(e.i) && pos(e.src ?? '0')) recent.push(e);
+          }
+          // the newest first, those whose product is found before the rest
+          recent.sort((a, b) => (b.prod != null) - (a.prod != null) || b.t - a.t);
+          for (const e of recent.slice(0, GHOSTS - out.length)) {
+            shown.current.add(e.i);
+            const src = pos(e.src ?? '0');
+            const at = ghostSpot(src, [...av, ...out.map((x) => [x.at[0], x.at[1], 84 * sc, 84 * sc])], sc, e.i);
+            out.push({ ev: e, born: wall + 120 * out.length, phase: 'play', at, from: at });
+          }
+        }
+        return out.length === gs.length && out.every((x, i) => x === gs[i]) ? gs : out;
+      });
+    };
+    tick();
+    const id = setInterval(tick, 400);
+    return () => clearInterval(id);
+  }, [still]);
+  if (still) {   // reduced motion: the latest event, still, beside its species
+    const t = now();
+    const e = [...events].reverse().find((x) => x.t <= t + 0.5 && posOf(x.src ?? '0'));
+    if (!e) return null;
+    const at = ghostSpot(posOf(e.src ?? '0'), avoid, scale, 0);
+    return html`<g class="ld-ghosts"><${Ghost} key=${e.i} apiJob=${apiJob} gh=${{ ev: e, at, phase: 'play' }} scale=${scale} still=${true} onOpen=${onOpen} /></g>`;
+  }
+  return html`<g class="ld-ghosts">${ghosts.map((gh) => html`<${Ghost} key=${gh.ev.i} apiJob=${apiJob} gh=${gh} scale=${scale} onOpen=${onOpen} />`)}</g>`;
+}
+
+// The full movie of one event: the Reactor view's event player, in a dialog over the page.
+export function EventDialog({ apiJob, ev, nameOf, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); } };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
+  return html`<div class="ld-dialog-back" onClick=${onClose}>
+    <div class="ld-dialog" role="dialog" aria-label="Reactor event" onClick=${(e) => e.stopPropagation()}>
+      <div class="ld-dialog-head"><b>${ev.label}</b><span class="spacer"></span>
+        <button class="btn small" onClick=${() => { onClose(); openJob(apiJob, 'reactor'); }}>Reactor MD ›</button>
+        <button class="btn small" onClick=${onClose} aria-label="Close">✕</button></div>
+      <div class="small muted">A reaction event in the reactor's MD at ${fmtClock(ev.t)} run time${ev.seed ? ` (seed ${ev.seed})` : ''}, ${ev.atoms} atoms
+        · from ${nameOf(ev.src ?? '0')}${ev.prod != null ? ` · became ${nameOf(ev.prod)} (found and minimized)` : ' · not (yet) matched to a species'}</div>
+      <${EventPlayer} jobId=${apiJob} event=${ev.k} run=${+ev.run} seed=${ev.seed} height=${360} />
+    </div></div>`;
 }
