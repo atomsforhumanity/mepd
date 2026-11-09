@@ -1055,7 +1055,8 @@ class RunInputs:
                 from mepd.engines.qmmm import QMMMEngine
 
                 eng = QMMMEngine(base=eng, region=region, base_dir=self.qmmm.get("base_dir"),
-                                 restraints=self._qmmm_restraints(region))
+                                 restraints=self._qmmm_restraints(region),
+                                 gfnff_backend=self.qmmm.get("gfnff_backend"))
             if self.restraints and region.mm == "terachem":
                 raise InputsError("restraints are not available with TeraChem's own QM/MM (mm = \"terachem\")")
             environment = str(self.qmmm_environment or "relaxed").lower().replace("-", "_")

@@ -20,6 +20,16 @@ returns the gas-phase energy. `SolvationCorrection` therefore checks that
 the model changes the energy of the first structure it sees, and refuses
 to go on if it does not.
 
+Where it runs (mepd#40): with axtb installed, g-xTB on the axtb backend
+computes the whole composite in one in-process call, with analytic
+Hessians (`GXTBCalculator.axtb_solvation`, no SolvatedEngine), and the
+correction for other engines runs its GFN2-xTB pair in axtb too. Both
+follow axtb's conventions: by default its own (an SCF that fails with
+Broyden mixing tries DIIS before smearing, so stretched structures stay
+on the 300 K surface more often), "gxtb" / "xtb-6.7.1" reproduce the xtb
+programs. CPCM-X, an explicit `executable`, or `backend = "xtb"` in the
+[solvation] table run the xtb program as before.
+
 Energies in solvent are E + dG_solv (ALPB's reference state: 1 M in the
 gas phase to 1 M in solution, xtb's default `gsolv`). They are not full
 free energies: no thermal or entropic corrections are added.
@@ -140,15 +150,28 @@ def _xtb_executable(explicit: Optional[str] = None) -> str:
             "on PATH). The g-xTB-only `gxtb` binary has no solvent model.")
 
 
+def axtb_available() -> bool:
+    from mepd.engines import axtb_backend
+
+    return axtb_backend.version() is not None
+
+
 @dataclass
 class SolvationCorrection:
     """dG_solv(x) and its gradient from GFN2-xTB with an implicit model:
-    the difference of two GFN2 calculations on the same geometry."""
+    the difference of two GFN2 calculations on the same geometry.
+
+    `backend`: "axtb" (both GFN2 calculations in this process, mepd#40) or
+    "xtb" (two xtb runs); None: axtb when it is installed and can do it
+    (ALPB/GBSA, no explicit `executable`). `conventions`: axtb's for the
+    pair (None: its default; "xtb-6.7.1": the xtb program's numbers)."""
 
     solvent: str
     model: str = "alpb"
     executable: Optional[str] = None
     n_parallel: int = 0
+    backend: Optional[str] = None
+    conventions: Optional[str] = None
     _checked: bool = field(default=False, init=False, repr=False)
     # (index in its batch, xtb flags) of every node that needed an SCC fallback
     fallbacks: list = field(default_factory=list, init=False, repr=False)
@@ -173,6 +196,15 @@ class SolvationCorrection:
         if self.model not in sv.models:
             raise ValueError(f"{sv.label} has no {MODELS[self.model]} parameters; use "
                              f"{' or '.join(MODELS[m] for m in sv.models)}")
+        if self.backend is None:
+            self.backend = "axtb" if (self.model in ("alpb", "gbsa") and not self.executable
+                                      and axtb_available()) else "xtb"
+        if self.backend not in ("xtb", "axtb"):
+            raise ValueError(f"solvation backend must be \"xtb\" or \"axtb\", not {self.backend!r}")
+        if self.backend == "axtb":
+            if self.model not in ("alpb", "gbsa"):
+                raise ValueError(f"axtb has no {MODELS[self.model]}: use backend = \"xtb\" (the xtb program)")
+            return
         exe = _xtb_executable(self.executable)
         common = dict(executable=exe, add_gxtb_flag=False, n_parallel=self.n_parallel)
         self._gas = GXTBCalculator(**common)
@@ -193,6 +225,10 @@ class SolvationCorrection:
         """(dG_solv per node in Hartree, gradient of dG_solv in Hartree/Bohr)."""
         if not nodes:
             return np.zeros(0), np.zeros((0,))
+        if self.backend == "axtb":
+            dg, dgrad = self._axtb(nodes)
+            self._check(dg)
+            return dg, dgrad
         try:
             dg, dgrad = self._pair(self._gas, self._solv, nodes)
         except ElectronicStructureError:
@@ -204,6 +240,10 @@ class SolvationCorrection:
                 out = list(pool.map(lambda item: self._robust(item[1], item[0]), enumerate(nodes)))
             dg = np.array([d for d, _ in out])
             dgrad = np.array([g for _, g in out])
+        self._check(dg)
+        return dg, dgrad
+
+    def _check(self, dg) -> None:
         with self._lock:
             if not self._checked:
                 if not np.all(np.isfinite(dg)) or abs(float(dg[0])) < 1e-9:
@@ -212,7 +252,44 @@ class SolvationCorrection:
                             f"(dG_solv = {float(dg[0]):.3g} Eh): the xtb build ignored the solvent. Refusing to report "
                             "gas-phase energies as solvated.")
                 self._checked = True
-        return dg, dgrad
+
+    @classmethod
+    def _axtb_ladder(cls) -> list[dict]:
+        """SCC_FALLBACKS as axtb Calculator settings (the same rungs, in the same order)."""
+        keys = {"--iterations": ("max_iter", int), "--etemp": ("etemp", float)}
+        out = []
+        for flags in cls.SCC_FALLBACKS:
+            rung = {}
+            for name, value in zip(flags[::2], flags[1::2]):
+                key, conv = keys[name]
+                rung[key] = conv(value)
+            out.append(rung)
+        return out
+
+    def _axtb(self, nodes: list[StructureNode]) -> tuple[NDArray, NDArray]:
+        """The pair in axtb, node by node on up to n_parallel threads (axtb lets go of the GIL)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        from mepd.engines import axtb_backend
+
+        ladder = self._axtb_ladder()
+
+        def one(item):
+            index, node = item
+            dg, grad, rung = axtb_backend.solvation_pair(node, solvent=self.solvent, model=self.model, ladder=ladder,
+                                                         conventions=self.conventions)
+            if rung:
+                with self._lock:
+                    self.fallbacks.append((index, " ".join(self.SCC_FALLBACKS[rung])))
+            return dg, grad
+
+        width = max(1, min(len(nodes), self.n_parallel or available_cpus()))
+        if width == 1:
+            out = [one(item) for item in enumerate(nodes)]
+        else:
+            with ThreadPoolExecutor(max_workers=width) as pool:
+                out = list(pool.map(one, enumerate(nodes)))
+        return np.array([d for d, _ in out]), np.array([g for _, g in out])
 
     @staticmethod
     def _pair(gas_engine, solv_engine, nodes) -> tuple[NDArray, NDArray]:
@@ -256,12 +333,13 @@ class SolvatedEngine(ModifiedEngine):
     model: str = "alpb"
     method: str = "correction"     # "correction" | "native"
     executable: Optional[str] = None
+    backend: Optional[str] = None  # the correction's: "axtb" | "xtb" | None (see SolvationCorrection)
 
     def __post_init__(self):
         self.solvent = get_solvent(self.solvent).key
         self.correction = None if self.method == "native" else SolvationCorrection(
             self.solvent, self.model, executable=self.executable,
-            n_parallel=int(getattr(self.base, "n_parallel", 0) or 0))
+            n_parallel=int(getattr(self.base, "n_parallel", 0) or 0), backend=self.backend)
         self._inherit()
 
     @property
@@ -271,6 +349,31 @@ class SolvatedEngine(ModifiedEngine):
 
     def _term(self, nodes):
         return None if self.correction is None else self.correction.compute(nodes)
+
+
+def uses_correction(engine: Engine) -> bool:
+    """Whether `engine` (from solvate_engine) is in solvent through the GFN2-xTB correction, the
+    composite (a SolvatedEngine, or g-xTB with axtb's composite), not a solvent model of its own."""
+    from mepd.engines.gxtb import GXTBCalculator
+
+    for _ in range(8):
+        if isinstance(engine, SolvatedEngine):
+            return engine.method != "native"
+        if isinstance(engine, GXTBCalculator):
+            return bool(engine.axtb_solvation)
+        inner = getattr(engine, "base", None)
+        if inner is None or inner is engine:
+            return False
+        engine = inner
+    return False
+
+
+def _axtb_composite_capable(engine: Engine) -> bool:
+    """g-xTB on the axtb backend: axtb computes the whole composite in one call (mepd#40)."""
+    from mepd.engines.gxtb import GXTBCalculator
+
+    return isinstance(engine, GXTBCalculator) and engine.backend == "axtb" and engine.add_gxtb_flag \
+        and not engine.axtb_solvation
 
 
 def _native_capable(engine: Engine) -> bool:
@@ -298,9 +401,12 @@ ORCA_SOLVENTS = {"water": "water", "methanol": "methanol", "octanol": "octanol",
 
 def solvate_engine(engine: Engine, solvation: dict) -> Engine:
     """`engine` in the solvent that a profile's `[solvation]` table asks
-    for: {solvent, model = "alpb", method = "auto" | "native" | "correction"}.
+    for: {solvent, model = "alpb", method = "auto" | "native" | "correction",
+    backend = "axtb" | "xtb" (where the correction's GFN2-xTB runs; default
+    axtb when installed), executable (an xtb for it; implies "xtb")}.
     An engine with its own implicit solvent (GFN2-xTB's ALPB/GBSA, Psi4's
-    PCM, ORCA's CPCM) uses it: "auto" never adds the xTB correction on top of one."""
+    PCM, ORCA's CPCM) uses it: "auto" never adds the xTB correction on top of one.
+    g-xTB on the axtb backend gets the composite from axtb in one call."""
     from mepd.engines.orca import OrcaEngine
     from mepd.engines.psi4 import Psi4Engine
 
@@ -338,5 +444,14 @@ def solvate_engine(engine: Engine, solvation: dict) -> Engine:
         import dataclasses
 
         return dataclasses.replace(engine, extra_args=[*engine.extra_args, *sv.flag(model)])
+    backend = solvation.get("backend")
+    if backend is not None:
+        backend = str(backend).lower()
+        if backend not in ("xtb", "axtb"):
+            raise ValueError(f"solvation.backend must be \"axtb\" or \"xtb\", not {backend!r}")
+    if _axtb_composite_capable(engine) and backend != "xtb" and not solvation.get("executable"):
+        import dataclasses
+
+        return dataclasses.replace(engine, axtb_solvation={"solvent": solvent, "model": model})
     return SolvatedEngine(engine, solvent, model=model, method="correction",
-                          executable=solvation.get("executable"))
+                          executable=solvation.get("executable"), backend=backend)

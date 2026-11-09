@@ -256,7 +256,7 @@ class MicroIterations:
         other negative eigenvalues are made positive, so order-1 Sella follows
         the reaction rather than, say, a methyl rotation."""
         echo = echo or (lambda *_: None)
-        echo(f"Exact QM-region Hessian at the TS guess: {6 * len(self.outer)} QM/MM gradients...")
+        echo(f"Exact QM-region Hessian at the TS guess: {self.qm_hessian_cost()}...")
         w, V = self.qm_modes(structure, x, step, echo)
         neg = [i for i in range(len(w)) if w[i] < 0]
         keep = None
@@ -278,14 +278,30 @@ class MicroIterations:
                     w[i] = abs(w[i])
         return (V * w) @ V.T
 
+    def qm_hessian_cost(self) -> str:
+        """What the QM-region Hessian costs here, for log lines."""
+        if getattr(self.qmmm, "analytic_hessian_block", False):
+            return "the QM engine's analytic Hessian of the model system and the environment's block"
+        return f"{6 * len(self.outer)} QM/MM gradients"
+
     def qm_modes(self, structure, x, step: float = 0.005, echo=None) -> tuple[np.ndarray, np.ndarray]:
         """Eigenvalues (eV/Å², ascending) and eigenvectors (columns, over the
-        `outer` atoms' Cartesians) of the central finite-difference Hessian of
-        the atoms the outer optimizer moves, with the environment held."""
+        `outer` atoms' Cartesians) of the Hessian of the atoms the outer
+        optimizer moves, with the environment held: built from the QM
+        engine's analytic Hessian where the QM/MM engine can
+        (QMMMEngine.hessian_block, mepd#42; one QM Hessian instead of 6 QM/MM
+        gradients per atom, and no SCF noise), else central differences
+        (`step` Å) of the QM/MM gradient."""
         echo = echo or (lambda *_: None)
         x = np.asarray(x, dtype=float)
         n = 3 * len(self.outer)
         h = step * ANGSTROM_TO_BOHR
+        node = StructureNode(structure=structure.model_copy(update={"geometry": x}), has_molecular_graph=False)
+        analytic = getattr(self.qmmm, "hessian_block", None)
+        block = analytic(node, self.outer, step=h) if analytic is not None else None
+        if block is not None:
+            self.calls["qm_hessians"] = self.calls.get("qm_hessians", 0) + 1
+            return np.linalg.eigh(0.5 * (block + block.T) * HARTREE_EV * ANGSTROM_TO_BOHR ** 2)
         cols = []
         for k in range(n):
             a, c = divmod(k, 3)

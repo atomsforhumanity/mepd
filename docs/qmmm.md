@@ -16,9 +16,15 @@ and TeraChem's own QM/MM is kept as an option (see *TeraChem* below).
 
 * **Embedding.** Two low-level choices:
   * `mm = "gfnff"` (default), `"gfn2"` or `"gfn1"` use the subtractive
-    (ONIOM) scheme, `E = E_QM(model) + E_low(real) - E_low(model)`, with the
-    low level run by the xtb program. GFN-FF needs no parameters, so any
-    structure can be embedded as it is.
+    (ONIOM) scheme, `E = E_QM(model) + E_low(real) - E_low(model)`. GFN-FF
+    needs no parameters, so any structure can be embedded as it is. It runs
+    in axtb, in this process, when axtb is installed (xtb 6.7.1's force
+    field, reproduced term by term: no xtb process or `gfnff_topo` file per
+    call, an analytic Hessian, and none of xtb's memory ceiling, which ran
+    out at about 1700 waters; 1728 waters take 0.8 GB and 13 s per gradient
+    on one core). `[qmmm] gfnff_backend = "xtb"` (or
+    `MEPD_GFNFF_BACKEND=xtb`) runs the xtb program instead; GFN1/GFN2 low
+    levels and the mean-force sampler's dynamics always do.
   * `mm = "amber"` uses the additive scheme,
     `E = E_QM(model) + E_MM(everything except QM-QM terms)`, through OpenMM,
     from a prmtop (or a PDB of standard residues plus force-field XMLs).
@@ -120,8 +126,17 @@ the start's and marches the solvent along the interpolated QM path
 (`mepd.qmmm_path`). `mepd ts --guess path.xyz` (a path's frames, with its
 `.energies`) starts from the interpolated energy maximum. With
 microiterations (an OpenMM environment), the TS search then computes an exact
-Hessian of the QM region there, by finite differences of the QM/MM gradient
-with the environment held (6 gradients per QM atom), and starts Sella on it.
+Hessian of the QM region there, with the environment held, and starts Sella
+on it. With a QM engine that has analytic Hessians (g-xTB in axtb) and
+mechanical embedding, that Hessian is assembled from them:
+`J^T H_QM(model) J` plus the environment's block (`J^T H_low J` terms for
+GFN-FF in axtb, analytic; central differences of the cheap force-field
+gradient for AMBER and xtb), where `J` maps the model system, link hydrogens
+included, onto the real atoms (constant: a link sits at a fixed fraction of
+its cut bond). One QM Hessian then replaces 6 QM/MM gradients per QM atom,
+and no displaced SCF adds noise. Otherwise (electrostatic embedding, other QM
+engines) it is finite differences of the QM/MM gradient (6 gradients per QM
+atom). Partial Hessians for frequencies take the same route.
 Of its negative modes it climbs the one along the path's tangent; any others
 are made positive. Sella's model Hessian with only the tangent as a first
 guess lost the reaction mode within a few steps on the environment-relaxed

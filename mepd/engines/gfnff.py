@@ -12,6 +12,17 @@ mid-path (a jump in energy). A `topology_reference` fixes it: every geometry
 of a system is computed with the topology of its reference geometry (cached
 on disk), so all structures of a network sit on one smooth surface.
 
+Where it runs (mepd#41): GFN-FF in axtb, in this process, when axtb is
+installed (`backend = "axtb"`, the default then): a term-by-term port of
+xtb 6.7.1's GFN-FF (conventions "xtb-6.7.1", the force field mepd ran
+through xtb), with the topology set up once per reference and kept, an
+analytic Hessian, no process start or gfnff_topo file per call, and none
+of xtb's memory ceiling: xtb allocates an N_AB^2 x N_H array over the
+hydrogen-bond atoms in every evaluation (grimme-lab/xtb#1515), 10 GiB for
+1000 waters, out of memory at 1700; axtb needs 0.2 and 0.5 GiB there.
+`backend = "xtb"` (or $MEPD_GFNFF_BACKEND=xtb) runs the xtb program.
+GFN1/GFN2 low levels and xtb dynamics (the mean-force sampler) run xtb.
+
 GFN-FF: S. Spicher, S. Grimme, Angew. Chem. Int. Ed. 59, 15665 (2020),
 doi:10.1002/anie.202004239.
 """
@@ -114,10 +125,29 @@ def _raise_stack_limit() -> None:
         resource.setrlimit(resource.RLIMIT_STACK, (want if hard == resource.RLIM_INFINITY else min(want, hard), hard))
 
 
-def memory_gb(natoms: int) -> float:
-    """Rough peak memory of one GFN-FF run (measured: 7.6 GB at 2685
-    atoms; it grows with the square of the atom count)."""
+def memory_gb(natoms: int, backend: Optional[str] = None) -> float:
+    """Rough peak memory of one GFN-FF energy and gradient. xtb (measured:
+    7.6 GB at 2685 atoms; it grows with the square of the atom count in
+    proteins, faster in water, where hydrogen-bond atoms dominate); axtb
+    (backend None: the one GFNFFEngine picks by default) far less."""
+    if (backend or default_backend()) == "axtb":
+        from mepd.engines.axtb_backend import gfnff_memory_gb
+
+        return gfnff_memory_gb(natoms)
     return 0.15 + 1.06e-6 * natoms ** 2
+
+
+def default_backend(method: str = "gfnff") -> str:
+    """Where GFN-FF runs unless told: axtb when installed ($MEPD_GFNFF_BACKEND
+    overrides), else the xtb program. Other methods run xtb."""
+    if str(method).lower() != "gfnff":
+        return "xtb"
+    forced = os.getenv("MEPD_GFNFF_BACKEND", "").strip().lower()
+    if forced in ("xtb", "axtb"):
+        return forced
+    from mepd.engines import axtb_backend
+
+    return "axtb" if axtb_backend.version() is not None else "xtb"
 
 
 def available_gb() -> Optional[float]:
@@ -143,13 +173,18 @@ SCC_RUNGS = (1000.0, 3000.0)
 class GFNFFEngine(Engine):
     """`topology_reference`: xyz text whose GFN-FF topology every geometry
     with the same atoms uses (see the module doc); None = xtb's own (a
-    fresh topology for each geometry)."""
+    fresh topology for each geometry). `backend`: "axtb" (in this process)
+    or "xtb" (the program); None: default_backend(). `axtb_conventions`:
+    axtb's GFN-FF conventions (None: axtb_backend.GFNFF_CONVENTIONS, xtb
+    6.7.1's force field)."""
 
     executable: Optional[str] = None
     method: str = "gfnff"          # or "gfn2" / "gfn1" (xtb's tight-binding methods; no topology)
     n_parallel: int = 4
     topology_reference: Optional[str] = None
     timeout: float = 3600.0
+    backend: Optional[str] = None
+    axtb_conventions: Optional[str] = None
     _topologies: dict = field(default_factory=dict, repr=False)
     # Electronic temperature (K) every calculation now runs at, at least: raised for good
     # when an SCC converged only with Fermi smearing (SCC_RUNGS), so a path, Hessian or
@@ -158,15 +193,43 @@ class GFNFFEngine(Engine):
     _scc_epoch: int = field(default=0, repr=False)
 
     def __post_init__(self):
+        self.method = str(self.method).lower()
+        if self.method not in ("gfnff", "gfn2", "gfn1"):
+            raise ValueError(f"xtb method must be gfnff, gfn2 or gfn1, got {self.method!r}")
+        if self.backend is None:
+            self.backend = "xtb" if self.executable is not None else default_backend(self.method)
+        self.backend = str(self.backend).lower()
+        if self.backend not in ("xtb", "axtb"):
+            raise ValueError(f"GFN-FF backend must be \"axtb\" or \"xtb\", not {self.backend!r}")
+        if self.backend == "axtb":
+            if self.method != "gfnff":
+                raise ValueError(f"backend = \"axtb\" runs GFN-FF here; {self._label} runs the xtb program")
+            from mepd.engines import axtb_backend
+
+            axtb_backend._import()
+            self._refs: dict = {}
+            return      # the xtb program only if something asks for it (xtb dynamics): xtb_program()
+        self.xtb_program()
+
+    def xtb_program(self) -> str:
+        """The xtb executable (found on first use with backend "axtb")."""
         if self.executable is None:
             from mepd.programs import xtb_executable
 
             self.executable = xtb_executable()
         if not self.executable:
             raise ElectronicStructureError(msg="GFN-FF needs the xtb program (set XTB_EXECUTABLE).")
-        self.method = str(self.method).lower()
-        if self.method not in ("gfnff", "gfn2", "gfn1"):
-            raise ValueError(f"xtb method must be gfnff, gfn2 or gfn1, got {self.method!r}")
+        return self.executable
+
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        d.pop("_refs", None)
+        return d
+
+    def __setstate__(self, d):
+        self.__dict__.update(d)
+        if d.get("backend") == "axtb":
+            self._refs = {}
 
     @property
     def _label(self) -> str:
@@ -177,7 +240,7 @@ class GFNFFEngine(Engine):
              uhf: int = 0, point_charges=None, etemp: Optional[float] = None) -> tuple[float, np.ndarray]:
         (workdir / "in.xyz").write_text(_xyz(symbols, coords_bohr))
         method = ["--gfnff"] if self.method == "gfnff" else ["--gfn", self.method[-1], "--uhf", str(int(uhf))]
-        argv = [self.executable, "in.xyz", *method, "--chrg", str(int(charge))]
+        argv = [self.xtb_program(), "in.xyz", *method, "--chrg", str(int(charge))]
         if point_charges is not None and len(point_charges):
             # xtb's electrostatic embedding: charge, position (bohr) and the
             # element whose chemical hardness damps its interaction at short
@@ -262,8 +325,41 @@ class GFNFFEngine(Engine):
             self._topologies[key] = target
         return target
 
+    # ------------------------------------------------------------ axtb
+    def _axtb_reference(self, symbols, reference_xyz: Optional[str]) -> Optional[np.ndarray]:
+        """The topology reference's geometry (bohr) if it has these atoms, else None (as `topology`)."""
+        ref = reference_xyz if reference_xyz is not None else self.topology_reference
+        if ref is None:
+            return None
+        key = hashlib.sha1(ref.encode()).hexdigest()
+        refs = self.__dict__.setdefault("_refs", {})
+        if key not in refs:
+            from qcdata import Structure
+
+            s = Structure.from_xyz(ref)
+            refs[key] = ([str(a) for a in s.symbols], np.ascontiguousarray(s.geometry, dtype=float))
+            if len(refs) > 32:
+                refs.pop(next(iter(refs)))
+        ref_symbols, geometry = refs[key]
+        return geometry if ref_symbols == [str(a) for a in symbols] else None
+
+    @staticmethod
+    def _numbers(symbols) -> list[int]:
+        from mepd.helper_functions import symbol_to_atomic_number
+
+        return [int(symbol_to_atomic_number(str(s))) for s in symbols]
+
+    def _axtb_point(self, symbols, coords_bohr, charge: int, reference_xyz: Optional[str]):
+        from mepd.engines import axtb_backend
+
+        return axtb_backend.gfnff_point(self._numbers(symbols), coords_bohr, charge=int(charge),
+                                        reference=self._axtb_reference(symbols, reference_xyz),
+                                        conventions=self.axtb_conventions)
+
     def energy_gradient(self, symbols, coords_bohr, charge: int = 0,
                         reference_xyz: Optional[str] = None, uhf: int = 0) -> tuple[float, np.ndarray]:
+        if self.backend == "axtb":
+            return self._axtb_point(symbols, coords_bohr, charge, reference_xyz)
         topo = self.topology(symbols, charge, reference_xyz)
         with tempfile.TemporaryDirectory(prefix="mepd_xtb_") as tmp:
             if topo is not None:
@@ -278,7 +374,8 @@ class GFNFFEngine(Engine):
             # needs memory_gb(N); half of what is free is used).
             free = available_gb()
             if free is not None:
-                width = max(1, min(width, int(0.5 * free / memory_gb(max(len(j[0]) for j in jobs)))))
+                need = memory_gb(max(len(j[0]) for j in jobs), self.backend)
+                width = max(1, min(width, int(0.5 * free / need)))
         if width == 1:
             return [self.energy_gradient(*j) for j in jobs]
         with ThreadPoolExecutor(max_workers=width) as pool:
@@ -306,9 +403,27 @@ class GFNFFEngine(Engine):
     def compute_energies(self, chain: Union[Chain, List]) -> NDArray:
         return np.array([n.energy for n in self._compute(chain)])
 
+    @property
+    def analytic_hessian(self) -> bool:
+        return self.backend == "axtb"
+
+    def hessian(self, symbols, coords_bohr, charge: int = 0, reference_xyz: Optional[str] = None) -> NDArray:
+        """The analytic GFN-FF Hessian ((3N, 3N) Eh/bohr^2, backend "axtb"), with the topology of
+        `reference_xyz` (or topology_reference), on n_parallel threads."""
+        from mepd.engines import axtb_backend
+
+        if self.backend != "axtb":
+            raise ValueError("an analytic GFN-FF Hessian needs backend = \"axtb\"")
+        return axtb_backend.gfnff_hessian(self._numbers(symbols), coords_bohr, charge=int(charge),
+                                          reference=self._axtb_reference(symbols, reference_xyz),
+                                          conventions=self.axtb_conventions, threads=max(1, int(self.n_parallel or 1)))
+
     def compute_hessian(self, node, step_size: float | None = None) -> NDArray:
-        """Central differences of xtb's analytic gradients (6N runs, as many
-        at once as n_parallel), not the generic energy-only fallback."""
+        """axtb's analytic Hessian (backend "axtb"); with xtb, central
+        differences of its analytic gradients (6N runs, as many at once as
+        n_parallel), not the generic energy-only fallback."""
+        if self.backend == "axtb":
+            return self.hessian(list(node.symbols), np.asarray(node.coords), int(node.structure.charge))
         h = float(step_size if step_size is not None else getattr(self, "finite_difference_hessian_step_size", 1e-3) or 1e-3)
         x0 = np.asarray(node.coords, dtype=float)
         flat = x0.reshape(-1)

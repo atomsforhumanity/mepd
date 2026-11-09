@@ -60,21 +60,76 @@ HARTREE_KJ_MOL = 2625.4996394799
 BOHR_NM = 0.0529177210903
 
 
+def _dof(atoms: Sequence[int]) -> np.ndarray:
+    return np.array([3 * int(a) + c for a in atoms for c in range(3)], dtype=int)
+
+
+def finite_difference_block(gradients, x: np.ndarray, atoms: Sequence[int], step: float) -> np.ndarray:
+    """Central differences over the Cartesians of `atoms` of a cheap gradient: `gradients(list of
+    coordinate arrays) -> list of (N, 3) gradients`, called once with all 6 x len(atoms) displaced
+    geometries. (3a, 3a) in the gradient's units per bohr, symmetrized."""
+    x = np.asarray(x, dtype=float)
+    dof = _dof(atoms)
+    displaced = []
+    for k in dof:
+        for sign in (1.0, -1.0):
+            y = x.reshape(-1).copy()
+            y[k] += sign * step
+            displaced.append(y.reshape(x.shape))
+    grads = np.array([np.asarray(g, dtype=float).reshape(-1)[dof] for g in gradients(displaced)])
+    grads = grads.reshape(len(dof), 2, len(dof))
+    block = ((grads[:, 0] - grads[:, 1]) / (2.0 * step)).T
+    return 0.5 * (block + block.T)
+
+
+def hessian_memory_gb(natoms: int) -> float:
+    """Peak memory of axtb's analytic GFN-FF Hessian of `natoms` atoms (measured, axtb 0.1.0, water,
+    4 threads: 0.23 GB at 1029 atoms, 0.74 at 2187, 1.28 at 3000; Colton: 3.1 GiB at 5100)."""
+    return 0.05 + 1.4e-7 * natoms ** 2
+
+
 class _XTBLow:
-    """Subtractive low level through the xtb program (GFN-FF, GFN1, GFN2).
-    GFN-FF topologies come from the region's reference geometry (the same
-    for every structure of the system)."""
+    """Subtractive low level: GFN-FF (in axtb, or the xtb program), GFN1 or
+    GFN2 (xtb). GFN-FF topologies come from the region's reference geometry
+    (the same for every structure of the system)."""
 
     kind = "subtractive"
 
-    def __init__(self, region: QMMMRegion, method: str, n_parallel: int):
+    def __init__(self, region: QMMMRegion, method: str, n_parallel: int, backend: Optional[str] = None):
         from mepd.engines.gfnff import GFNFFEngine
 
         self.region = region
-        self.engine = GFNFFEngine(method=method, n_parallel=n_parallel)
+        self.engine = GFNFFEngine(method=method, n_parallel=n_parallel,
+                                  backend=backend if method == "gfnff" else None)
         ref = region.reference_structure()
         self.ref_real = ref.to_xyz() if ref is not None else None
         self.ref_model = region.model_structure(ref).to_xyz() if ref is not None else None
+
+    def hessian_block(self, x: np.ndarray, atoms: Sequence[int], charge: int, step: float) -> np.ndarray:
+        """d2[E_low(real) - E_low(model)] over the Cartesians of `atoms` (Eh/bohr^2), every other atom
+        held. GFN-FF in axtb: analytic (the real system's whole Hessian while it fits in half the free
+        memory, else central differences of its gradient over `atoms`; the model's is small).
+        Otherwise central differences of the low level's gradient."""
+        r = self.region
+        x = np.asarray(x, dtype=float)
+        eng = self.engine
+        if not getattr(eng, "analytic_hessian", False):
+            return finite_difference_block(lambda xs: [t["gradient"] for t in self.terms(xs, charge)], x, atoms, step)
+        from mepd.engines.gfnff import available_gb
+
+        jac = r.model_jacobian(atoms)
+        h_model = eng.hessian(r.model_symbols, r.model_coords(x), int(r.qm_charge), self.ref_model)
+        block = -(jac.T @ h_model @ jac)
+        free = available_gb()
+        if free is None or hessian_memory_gb(r.natoms) <= 0.5 * free:
+            dof = _dof(atoms)
+            block += eng.hessian(list(r.symbols), x, int(charge), self.ref_real)[np.ix_(dof, dof)]
+        else:
+            uhf = int(r.qm_multiplicity) - 1
+            block += finite_difference_block(
+                lambda xs: [g for _, g in eng.energy_gradients([(list(r.symbols), y, int(charge), self.ref_real, uhf)
+                                                                for y in xs])], x, atoms, step)
+        return 0.5 * (block + block.T)
 
     def terms(self, coords_list: list[np.ndarray], charge: int) -> list[dict]:
         r = self.region
@@ -398,9 +453,10 @@ def tip3p_system(region: QMMMRegion, openmm):
     return system
 
 
-def make_low(region: QMMMRegion, n_parallel: int = 4, base_dir: Optional[Path] = None):
+def make_low(region: QMMMRegion, n_parallel: int = 4, base_dir: Optional[Path] = None,
+             gfnff_backend: Optional[str] = None):
     if region.mm in ("gfnff", "gfn2", "gfn1"):
-        return _XTBLow(region, region.mm, n_parallel)
+        return _XTBLow(region, region.mm, n_parallel, gfnff_backend)
     if region.mm in ("amber", "tip3p"):
         return _OpenMMLow(region, base_dir)
     raise ValueError(f"QMMMEngine has no low level {region.mm!r} (TeraChem QM/MM is its own engine)")
@@ -418,13 +474,17 @@ class QMMMEngine(ModifiedEngine):
     # Harmonic distance restraints (mepd.restraints) in the QM/MM energy itself, so
     # microiterative optimizations hold them too.
     restraints: list = field(default_factory=list)
+    # Where a GFN-FF environment runs: "axtb" (in this process) | "xtb" (the program) | None
+    # (axtb when installed; mepd.engines.gfnff.default_backend). Profile: [qmmm] gfnff_backend.
+    gfnff_backend: Optional[str] = None
     _low: object = field(default=None, repr=False)
 
     def __post_init__(self):
         if self.region.embedding == "electrostatic" and not getattr(self.base, "supports_point_charges", False):
             raise ValueError(f"electrostatic embedding needs a QM engine that takes point charges (engine_name = "
                              f"\"xtb\" or \"psi4\"); {type(self.base).__name__} does not")
-        self._low = make_low(self.region, self.n_parallel, Path(self.base_dir) if self.base_dir else None)
+        self._low = make_low(self.region, self.n_parallel, Path(self.base_dir) if self.base_dir else None,
+                             self.gfnff_backend)
         from mepd.restraints import parse_restraints
 
         self.restraints = parse_restraints(self.restraints)
@@ -500,6 +560,48 @@ class QMMMEngine(ModifiedEngine):
 
         with ThreadPoolExecutor(max_workers=width) as pool:
             return list(pool.map(one, nodes, low))
+
+    @property
+    def analytic_hessian_block(self) -> bool:
+        """`hessian_block` can build the QM-region Hessian from the QM engine's analytic Hessian:
+        mechanical embedding and a QM engine whose compute_hessian is analytic (g-xTB in axtb)."""
+        return not getattr(self._low, "electrostatic", False) and bool(getattr(self.base, "analytic_hessian", False))
+
+    def hessian_block(self, node: StructureNode, atoms: Sequence[int], step: float = 1e-3) -> Optional[np.ndarray]:
+        """The QM/MM Hessian over the Cartesians of `atoms` (real-system indices; Eh/bohr^2), every
+        other atom held where it is, without differentiating the QM/MM gradient (mepd#42):
+
+            H[a, a] = J^T H_QM(model) J + d2 E_low(real)[a, a] - J^T d2 E_low(model) J  (subtractive)
+            H[a, a] = J^T H_QM(model) J + d2 E_MM[a, a]                                  (additive)
+
+        J = d(model coordinates)/d(real coordinates of `atoms`): constant, as a link atom sits at a
+        fixed fraction along its cut bond, so no second-derivative term appears. H_QM is the QM
+        engine's analytic Hessian, so no QM gradient carries SCF noise into the block; the
+        environment's part is analytic for GFN-FF in axtb and central differences (`step`, bohr) of
+        the cheap force-field gradient otherwise, as are restraints. None when this route does not
+        apply (`analytic_hessian_block`): callers then difference the QM/MM gradient."""
+        if not self.analytic_hessian_block:
+            return None
+        r = self.region
+        atoms = [int(a) for a in atoms]
+        self._check(node)
+        x = np.asarray(node.coords, dtype=float)
+        charge = int(node.structure.charge)
+        jac = r.model_jacobian(atoms)
+        model = StructureNode(structure=r.model_structure(node.structure), has_molecular_graph=False)
+        h_qm = np.asarray(self.base.compute_hessian(model), dtype=float)
+        block = jac.T @ h_qm @ jac
+        if isinstance(self._low, _XTBLow):
+            block += self._low.hessian_block(x, atoms, charge, step)
+        else:
+            block += finite_difference_block(lambda xs: [t["gradient"] for t in self._low.terms(xs, charge)],
+                                             x, atoms, step)
+        if self.restraints:
+            from mepd.restraints import restraint_energy_gradient
+
+            block += finite_difference_block(
+                lambda xs: [restraint_energy_gradient(self.restraints, y)[1] for y in xs], x, atoms, step)
+        return 0.5 * (block + block.T)
 
     def _run(self, chain: Union[Chain, List]) -> list[StructureNode]:
         from mepd.engines.gfnff import on_one_surface

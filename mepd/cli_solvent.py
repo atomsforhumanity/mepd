@@ -196,7 +196,8 @@ def solvent(
     """Recompute a reaction profile in implicit solvents, and say what changes."""
     from mepd.cli_common import _open_run_inputs
     from mepd.conditions import kinetics_row, solvent_insights
-    from mepd.solvation import CPCMX_NO_GRADIENT, MODELS, SolvationCorrection, get_solvent, solvate_engine
+    from mepd.solvation import (CPCMX_NO_GRADIENT, MODELS, SolvationCorrection, get_solvent, solvate_engine,
+                                uses_correction)
 
     source = Path(source)
     if mode not in ("single-point", "reoptimize"):
@@ -279,7 +280,7 @@ def solvent(
     engine_name = type(run_inputs.engine).__name__
     native = False
     try:
-        native = type(solvate_engine(run_inputs.engine, {"solvent": "water", "model": "alpb"})).__name__ != "SolvatedEngine"
+        native = not uses_correction(solvate_engine(run_inputs.engine, {"solvent": "water", "model": "alpb"}))
     except Exception:
         pass
     if not native:

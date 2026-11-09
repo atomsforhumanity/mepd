@@ -173,10 +173,18 @@ class FrozenAtomsEngine(ModifiedEngine):
         return [i for i in range(natoms) if i not in frozen]
 
     def hessian_block(self, node: StructureNode, step_size: float | None = None) -> tuple[np.ndarray, list[int]]:
-        """Central differences of gradients over the Hessian atoms only."""
+        """The Hessian over the Hessian atoms only: a QM/MM engine's analytic block where it has one
+        (QMMMEngine.hessian_block: the QM engine's analytic Hessian, no SCF noise; mepd#42), else
+        central differences of gradients over those atoms."""
         h = float(step_size or self.finite_difference_hessian_step_size)
         x0 = np.asarray(node.coords, dtype=float)
         atoms = self._hessian_atoms(x0.shape[0])
+        from mepd.engines.qmmm import QMMMEngine
+
+        if isinstance(self.base, QMMMEngine):
+            block = self.base.hessian_block(node, atoms, step=h)
+            if block is not None:
+                return block, atoms
         dof = [3 * a + c for a in atoms for c in range(3)]
         displaced = []
         for k in dof:
