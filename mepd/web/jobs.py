@@ -1154,15 +1154,15 @@ class JobManager:
         from mepd.web.live_network import ts_below_ends
 
         if ts_below_ends((fwd, rev)):
-            # Its TS lies below one of its own ends: not this reaction's TS (never IRC-checked). No barrier,
-            # no energy profile from it; an edge holding a step with a barrier keeps that one.
-            if (old.get("barrier_kcal") is not None and not old.get("proposed")) \
+            # Its TS lies below one of its own ends: not this reaction's TS (most never IRC-checked). No
+            # barrier, no energy profile, no kinetics from it; an edge holding another step's barrier keeps it.
+            if (old.get("barrier_kcal") is not None and not old.get("proposed") and old.get("label") != label) \
                     or (old.get("ts_below_ends") and old.get("label") == label):
                 return False
             with self.ws._lock:
                 edge["origin"] = {"kind": "job", "job": job["id"], "label": label, "has_ts": True, "ts_below_ends": True,
                                   "barrier_verified": False,
-                                  "headline": "TS below its ends: not this reaction, unchecked"}
+                                  "headline": "TS below its ends: not this reaction" + ("" if verified else ", unchecked")}
                 self.ws._save()
             return True
         old_verified = not old.get("proposed") and old.get("barrier_kcal") is not None and old.get("barrier_verified") is not False
@@ -1328,7 +1328,7 @@ class JobManager:
                 changed = True
             if changed:
                 self.ws._save()
-        job["steps_checked"] = True
+        job["steps_checked"] = 2    # (2: with steps whose TS lies below one of their ends taken off)
         self._write(job)
         return changed
 

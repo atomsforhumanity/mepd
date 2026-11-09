@@ -567,8 +567,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                         and j["status"] not in ("running", "queued")]:
                 changed = False if job.get("seed_adopted") else manager._adopt_seed_energy(job)
                 # Steps adopted before each was checked against its IRC (one that ran elsewhere
-                # counted, with a TS far below both species): checked once, the edges set again.
-                if not job.get("steps_checked"):
+                # counted, with a TS far below both species), or before a TS below one of its ends lost
+                # its barrier: checked once, the edges set again.
+                if job.get("steps_checked") != 2:
                     changed |= manager.recheck_expansion_steps(job)
                 if changed:
                     manager.bus.publish("workspace", manager.ws.snapshot())
@@ -2894,8 +2895,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         if job is None or not o.get("label"):
             raise HTTPException(404, "this edge has no step of its own")
         if o.get("ts_below_ends"):
-            raise HTTPException(404, "TS below its ends: not this reaction, unchecked. Its TS lies below one of the "
-                                     "two species, so it is no barrier between them and has no energy profile here.")
+            raise HTTPException(404, f"{o.get('headline')}. Its TS lies below one of the two species, so it is no "
+                                     "barrier between them and has no energy profile here.")
         if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
             raise HTTPException(404, "No TS was found for this step: its barrier is the highest point of a path "
                                      "between the two (an upper bound), so there is no path through a TS to play.")

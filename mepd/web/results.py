@@ -1051,9 +1051,10 @@ def _expansion_steps(out: Path, s: dict, charge: int, multiplicity: int) -> tupl
         forward = barriers[0] if barriers else None
         note = f"{names.get(st['a'], st['a'])}  ⇌  {names.get(st['b'], st['b'])}"
         if ts_below_ends(barriers):
+            verified = files.get("verified") is not False and files.get("irc")
             # Its TS lies below one of its ends: no barrier, no energy profile (its IRC, if any, left out)
             ts_entries.append({**_entry(label, f"TS {st['a']} → {st['b']}", [ts[0]], None,
-                                        note=f"TS below its ends: not this reaction, unchecked · {note}"),
+                                        note=f"TS below its ends: not this reaction{'' if verified else ', unchecked'} · {note}"),
                                "ts_below_ends": True})
             continue
         e_ts = _node_energy(ts[0])

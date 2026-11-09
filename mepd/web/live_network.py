@@ -191,9 +191,9 @@ def ts_below_ends(barriers) -> bool:
 
 def _unfit(frames: list) -> list:
     """In place: each frame's steps whose TS lies below one of their ends (ts_below_ends) without their
-    barriers, as unchecked, and marked (a 9th entry, 1): the page draws them as a TS that doesn't fit."""
+    barriers, and marked (a 9th entry, 1): the page draws them as a TS that doesn't fit its ends."""
     for f in frames:
-        f["steps"] = [s if not ts_below_ends(s[3:5]) else [*s[:3], None, None, s[5], -1, s[7] if len(s) > 7 else None, 1]
+        f["steps"] = [s if not ts_below_ends(s[3:5]) else [*s[:3], None, None, *s[5:7], s[7] if len(s) > 7 else None, 1]
                       for s in f.get("steps") or []]
     return frames
 

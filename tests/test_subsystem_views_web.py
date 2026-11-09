@@ -97,11 +97,11 @@ def test_a_propose_jobs_phase_is_read_for_the_live_view(tmp_path):
 
 
 def test_a_step_whose_ts_lies_below_one_of_its_ends_has_no_barrier(tmp_path):
-    # the live network: drawn unchecked, without its barriers, marked; one above both ends as before
+    # the live network: drawn without its barriers, marked; one above both ends as before
     fine = ["a", "0", "1", 12.0, 3.0, "g", 1, 0.5]
     below = ["b", "0", "2", -4.0, 9.0, "g", None, 0.0]
     tl = live_network.timeline([{"steps": [fine, below], "steered": True, "smiles": {}}], [], None, source={})
-    assert tl["frames"][0]["steps"] == [fine, ["b", "0", "2", None, None, "g", -1, 0.0, 1]]
+    assert tl["frames"][0]["steps"] == [fine, ["b", "0", "2", None, None, "g", None, 0.0, 1]]
     # the final network: its edge carries no barrier (no kinetics, no profile) and says why
     ws, jobs, (s0, s1, s2) = _ws(tmp_path)
     job = {"id": "j", "live_nodes": {"0": s0, "1": s1, "2": s2}}
@@ -112,6 +112,12 @@ def test_a_step_whose_ts_lies_below_one_of_its_ends_has_no_barrier(tmp_path):
     o = edge["origin"]
     assert o["ts_below_ends"] and o.get("barrier_kcal") is None and o["barrier_verified"] is False
     assert o["headline"] == "TS below its ends: not this reaction, unchecked"
+    # the same step adopted before with its negative barrier (an older server) loses it
+    with ws._lock:
+        ws._data["edges"][edge["id"]]["origin"] = {"kind": "job", "job": "j", "label": "low", "has_ts": True,
+                                                   "barrier_kcal": 5.0, "barrier_verified": True}
+    assert jobs._adopt_step(job, step, job["live_nodes"], known, final=True, verified=True)
+    assert ws.snapshot()["edges"][edge["id"]]["origin"]["ts_below_ends"]
     # a step with a real barrier replaces it; another TS below its ends never replaces that one
     assert jobs._adopt_step(job, {**step, "label": "real", "barrier_kcal": [15.0, 8.0]}, job["live_nodes"], known)
     assert not jobs._adopt_step(job, step, job["live_nodes"], known)

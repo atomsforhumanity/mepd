@@ -333,7 +333,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
                 onMouseEnter=${() => setHoverEdge(e.id)} onMouseLeave=${() => setHoverEdge((h) => (h === e.id ? null : h))}>
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-hit" />
               <line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} style=${`stroke:${band(e.barrier)};stroke-width:${on ? e.w + 2 : e.w}`}
-                class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''} ${e.irc === -1 ? 'unchecked' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
+                class=${`ln-line ${dashed(e.src) ? 'gxtb' : ''} ${e.irc === -1 || e.below ? 'unchecked' : ''}`} marker-end=${e.main || on ? `url(#ln-arr-${k})` : null} />
               ${!noFlux && e.main && html`<line x1=${e.p[0]} y1=${e.p[1]} x2=${e.q[0]} y2=${e.q[1]} class="ln-flow" style=${`stroke-width:${Math.max(2, e.w * 0.6)}`} />`}
               ${(labelledEdges.has(e.id) || on) && e.barrier != null && (() => {
                 const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2, txt = `‡ ${e.barrier.toFixed(1)}`, tw = txt.length * 6.6 + 10;
@@ -376,7 +376,7 @@ function ExpansionNetwork({ jobId = null, example = null }) {
           const mx = (e.p[0] + e.q[0]) / 2, my = (e.p[1] + e.q[1]) / 2;
           return html`<div class="ln-edge-card" style=${`left:${(100 * mx) / W}%;top:${(100 * my) / H}%`}>
             <div class="ln-ec-route"><b>${nm(e.from)}</b> <span class="muted">→</span> <b>${nm(e.to)}</b></div>
-            ${e.below ? html`<div class="small muted">TS below its ends: not this reaction, unchecked</div>` : html`<div class="ln-ec-nums">
+            ${e.below ? html`<div class="small muted">TS below its ends: not this reaction${e.irc === 1 ? '' : ', unchecked'}</div>` : html`<div class="ln-ec-nums">
               <span><b style=${`color:${band(e.barrier)}`}>${e.barrier?.toFixed(1) ?? '?'}</b>barrier</span>
               ${e.back != null && html`<span><b>${e.back.toFixed(1)}</b>back</span>`}
               ${dG != null && html`<span><b>${dG > 0 ? '+' : ''}${dG.toFixed(1)}</b>ΔG</span>`}
