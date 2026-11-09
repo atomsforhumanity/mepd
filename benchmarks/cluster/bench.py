@@ -282,10 +282,17 @@ def _run_pods(run: str) -> int:
 def image_components(reg: str, name: str, tag: str) -> dict:
     """The axtb and linus commits the image was built from, read from its config's labels (afh.axtb, afh.linus,
     written at build time, mepd-orca-uma-axtb:2026-11-09-main on); "no label" for images built before."""
-    man = subprocess.run(["afh", "ssh", f"curl -s -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' "
-                          f"http://{reg}/v2/{name}/manifests/{tag}"], capture_output=True, text=True).stdout
+    accept = ("-H 'Accept: application/vnd.docker.distribution.manifest.v2+json' "
+              "-H 'Accept: application/vnd.oci.image.index.v1+json' -H 'Accept: application/vnd.oci.image.manifest.v1+json'")
+    get = lambda ref: subprocess.run(["afh", "ssh", f"curl -s {accept} http://{reg}/v2/{name}/manifests/{ref}"],
+                                     capture_output=True, text=True).stdout
     try:
-        cfg = json.loads(man)["config"]["digest"]
+        man = json.loads(get(tag))
+        if "manifests" in man:   # an OCI index (buildx with attestations): the linux/amd64 image
+            ref = next(x["digest"] for x in man["manifests"]
+                       if (x.get("platform") or {}).get("architecture") == "amd64")
+            man = json.loads(get(ref))
+        cfg = man["config"]["digest"]
         blob = subprocess.run(["afh", "ssh", f"curl -s http://{reg}/v2/{name}/blobs/{cfg}"], capture_output=True,
                               text=True).stdout
         labels = (json.loads(blob).get("config") or {}).get("Labels") or {}
