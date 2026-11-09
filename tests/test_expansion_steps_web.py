@@ -5,7 +5,7 @@ import json
 from mepd.web import chem
 from mepd.web.jobs import JobManager
 from mepd.web.workspace import Workspace
-from tests.test_web import HCN_XYZ, WATER_BENT_XYZ, WATER_XYZ
+from tests.test_web import HCN_XYZ, WATER_BENT_XYZ, WATER_XYZ, client  # noqa: F401  (the app fixture)
 
 
 class Bus:
@@ -267,3 +267,35 @@ def test_a_live_step_whose_irc_joins_other_species_moves_there(tmp_path):
     moved = edges[frozenset((s0, s1))]
     assert moved["label"] == "x" and moved["barrier_verified"] is True
     assert abs(moved["barrier_kcal"] - (0.10 * 627.5094740631 if moved.get("barrier_from", s0) == s0 else 0.05 * 627.5094740631)) < 0.1
+
+
+def test_a_completed_step_of_a_running_expansion_opens_with_its_energy_profile(client, tmp_path):
+    """A start that came without an energy at the run's level (drawn, built) gets the run's only when it ends
+    (species/species_0.xyz): mid-run, or after a stopped or failed run, its completed steps measured from the
+    start's node energy had none ("No energy profile"). They are measured from the run's own optimized start
+    instead (summary_partial.json's seed_energy, the value the finished run writes to species_0)."""
+    from tests.test_web import _add
+
+    s0 = _add(client, WATER_XYZ)[0]["id"]
+    s1 = _add(client, WATER_BENT_XYZ)[0]["id"]
+    out = tmp_path / "run_out"
+    (out / "ts").mkdir(parents=True)
+    frames = [WATER_XYZ.replace("water\n", "\n"), WATER_XYZ.replace("0.758 0.000 0.504", "1.40 0.000 0.470").replace("water\n", "\n"),
+              WATER_BENT_XYZ.replace("water, one H pulled off\n", "\n")]
+    (out / "ts" / "fast_0_1_irc.xyz").write_text("".join(frames))
+    (out / "ts" / "fast_0_1_irc.energies").write_text("-76.40\n-76.30\n-76.35\n")
+    (out / "summary_partial.json").write_text(json.dumps({"partial": True, "seed_energy": -76.40}))
+    jobs = client.app.state.sessions.current.jobs
+    job = {"id": "j_running", "op": "graph-enumeration", "status": "running", "title": "expansion", "created": 0,
+           "output_dir": str(out), "targets": {"structures": [s0], "edges": []}, "live_nodes": {"0": s0, "1": s1}}
+    jobs.jobs[job["id"]] = job
+    ws = client.app.state.sessions.current.ws
+    assert ws.snapshot()["structures"][s0].get("energy") is None
+    edge = ws.add_edge(s0, s1, origin={"kind": "job", "job": "j_running", "label": "fast_0_1", "has_ts": True})
+    got = client.get(f"/api/edges/{edge['id']}/step-path").json()
+    kcal = [f["energy_kcal"] for f in got["frames"]]
+    assert kcal[0] == 0.0 and abs(kcal[1] - 0.1 * 627.5094740631) < 1e-6 and got["ts_index"] == 1
+    assert "run's own" in got["reference"]
+    # from the other end: that node is no start, and has no energy either: nothing made up
+    back = client.get(f"/api/edges/{edge['id']}/step-path", params={"start": s1}).json()
+    assert all(f["energy_kcal"] is None for f in back["frames"])

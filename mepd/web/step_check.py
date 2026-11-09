@@ -116,6 +116,24 @@ def path_frames(job: dict, label: str) -> Optional[tuple[list[str], list[Optiona
     return frames, energies
 
 
+def seed_energy(job: dict, node: Optional[str]) -> Optional[float]:
+    """The run's own optimized start (Hartree), when `node` is the job's start: what the finished run
+    writes to species/species_0.xyz, read while it runs (or after it stopped or failed) from its
+    summary_partial.json (summary.json once it is there). None for any other node."""
+    seeds = (job.get("targets") or {}).get("structures") or []
+    if node is None or node not in {(job.get("live_nodes") or {}).get("0"), *seeds[:1]}:
+        return None
+    out = Path(job.get("output_dir") or "")
+    for name in ("summary.json", "summary_partial.json"):
+        try:
+            e = json.loads((out / name).read_text()).get("seed_energy")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if e is not None:
+            return float(e)
+    return None
+
+
 def step_events(job_dir: Path) -> list[dict]:
     fp = Path(job_dir) / "live" / "events.jsonl"
     out = []

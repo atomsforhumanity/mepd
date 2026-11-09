@@ -2938,6 +2938,10 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             frames, energies = frames[::-1], energies[::-1]
             a, b = b, a
         ref = st.get(a, {}).get("energy")
+        reference = "the start's node energy (its lowest structure found), electronic"
+        if ref is None:   # a start with no energy at this level gets the run's only when it ends: the run's own now
+            ref = step_check.seed_energy(job, a)
+            reference = "the run's own optimized start (its summary so far), electronic"
         kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in energies]
         ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
         # Only the molecules the step's path search ran on (the explorer's subsystem); energies stay the
@@ -2947,7 +2951,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             frames = [step_check.subset_xyz(x, cut["atoms"]) for x in frames]
         return {"label": o["label"], "job": job["id"], "start": a, "end": b, "checked": v is not None,
                 "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
-                "subsystem": cut, "reference": "the start's node energy (its lowest structure found), electronic"}
+                "subsystem": cut, "reference": reference}
 
     @app.get("/api/jobs/{jid}/mixture")
     def mixture_network(jid: str):
