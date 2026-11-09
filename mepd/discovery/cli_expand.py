@@ -435,6 +435,8 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
     """IRCs of unverified steps' TSs, in parallel: [(step index, start, end) or None]. Each IRC is kept
     whole, minimized ends included, with its energies (ts/<label>_irc.xyz + .energies): the path through
     the TS is what the web draws for the step."""
+    import numpy as np
+
     import mepd
     from mepd.cli_common import _fork_map
 
@@ -443,33 +445,58 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
     def verify(items):
         eng = run_inputs.engine
 
+        def cut_of(ts_file, ts):
+            """The TS's subsystem (network_expansion.subsystem), from the ends its search started between."""
+            from mepd.discovery.network_expansion import subsystem
+
+            ends = Path(ts_file).with_name(f"{Path(ts_file).stem}_ends.xyz")
+            if not ends.exists():
+                return None
+            frames = mepd.read_frames(ends)
+            return subsystem(frames[0], frames[-1], eng, ref=ts)
+
         def one(item):
             idx, ts_file = item
             label = Path(ts_file).stem
             fp = ts_dir / f"{label}_irc.xyz"
+            ts = mepd.load(ts_file)
+            cut = cut_of(ts_file, ts)
             if not fp.exists():
                 try:
                     # ends minimized without the frequency check: its two Hessians were a fifth of an IRC
-                    # check's time (7-10 s of 30-50 s, 20-atom TSs) and the connectivity is what it decides
-                    path = mepd.irc(mepd.load(ts_file), eng, end_keywords={"check_frequencies": False}).path
+                    # check's time (7-10 s of 30-50 s, 20-atom TSs) and the connectivity is what it decides.
+                    # A TS with spectators: the IRC of its subsystem, put back among them.
+                    sub = cut.sub(ts) if cut else ts
+                    path = mepd.irc(sub, eng, end_keywords={"check_frequencies": False}).path
                     missing = [n for n in path.nodes if n._cached_energy is None]
                     if missing:
                         eng.compute_energies(missing)
-                    mepd.write_xyz(fp, path.nodes)
-                    path.write_ene_info_to_disk(fp)
+                    if cut is None:
+                        mepd.write_xyz(fp, path.nodes)
+                        path.write_ene_info_to_disk(fp)
+                    else:
+                        mepd.write_xyz(fp, [cut.whole(n, sub) for n in path.nodes])   # (in the TS's frame)
+                        np.savetxt(fp.with_suffix(".energies"), np.asarray(path.energies) + cut.env)
                 except Exception as exc:
                     (ts_dir / f"{label}_irc.failed").write_text(f"{type(exc).__name__}: {exc}\n")
                     return None
-            return str(fp)
+            if cut is None:
+                return str(fp), None
+            frames = mepd.read_frames(fp)
+            return str(fp), [float(e) + cut.env for e in eng.compute_energies([cut.sub(frames[0]), cut.sub(frames[-1])])]
 
         out = []
-        for (idx, _), fp in zip(items, _fork_map(one, list(items), workers)):
-            if fp is None:
+        for (idx, _), done in zip(items, _fork_map(one, list(items), workers)):
+            if done is None:
                 out.append((idx, None, None))
                 continue
+            fp, energies = done
             frames = mepd.read_frames(fp)
             a, b = frames[0], frames[-1]
-            eng.compute_energies([a, b])
+            if energies is None:
+                eng.compute_energies([a, b])
+            else:   # a subsystem's IRC: its ends' energies as the TS's (no calculation on the whole)
+                a._cached_energy, b._cached_energy = energies
             out.append((idx, a, b))
         return out
 

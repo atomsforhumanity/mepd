@@ -121,8 +121,8 @@ def test_a_ts_counts_its_spectators_apart_and_its_reacting_complex_whole(monkeyp
     monkeypatch.setattr(fe, "_one", lambda s, x, q, m, ts: seen.append((tuple(s), ts)) or -40.0)
     monkeypatch.setattr("mepd.energies", lambda nodes, eng: [0.0] * len(nodes))
     ts = _st(end)
-    assert fe._correction(ts, True, (_st(start), _st(end))) == (-80.0, -40.0)     # apart, and bound
-    assert seen == [(tuple(SYM), True), (("O", "H", "H"), False), (tuple(TS_SYM), True)]   # mode: TS only
+    assert fe._correction(ts, True, (_st(start), _st(end))) == -80.0     # apart only: no bound complex
+    assert seen == [(tuple(SYM), True), (("O", "H", "H"), False)]        # mode: TS only
     seen.clear()
     assert fe._correction(ts, True) == -40.0 and seen == [(tuple(TS_SYM), True)]   # no ends: whole
     assert fe._key(ts, True, (_st(start), _st(end))) != fe._key(ts, True)
@@ -148,33 +148,21 @@ def test_step_ends_come_from_the_irc_then_the_ts_job_then_the_species(tmp_path):
     assert np.allclose(e0.geometry, a.geometry, atol=1e-5) and np.allclose(e1.geometry, b.geometry, atol=1e-5)
 
 
-def test_a_ts_with_spectators_takes_the_lower_of_apart_and_bound(monkeypatch):
-    """Apart (spectators at the standard state) or bound (the whole complex: an H-bond, ion pair or dative
-    contact that lowers the TS), whichever is lower -- not the rates added, which would count a spectator that
-    does nothing for the TS twice (apart already holds the configurations with it next to the TS)."""
-    from mepd.discovery.free_energy import both_channels
+def test_a_ts_with_spectators_is_counted_from_its_own_energy_with_no_calculation_on_the_whole(monkeypatch):
+    """A TS the explorer computed on its subsystem (network_expansion.subsystem): its correction is relative to
+    the energy it was given (E_subsystem(TS) + env), from its reacting complex's and each spectator's own
+    energies -- no single point, and no Hessian, of the whole box."""
+    from mepd.discovery.free_energy import HARTREE_TO_KCAL
 
-    T = 1000.0
-    assert both_channels(-50.0, -50.0, T) == -50.0                              # no rate doubling
-    assert both_channels(-50.0, -80.0, T) == pytest.approx(-80.0, abs=1e-5)     # a bound catalyst wins
-    assert both_channels(-80.0, -50.0, T) == pytest.approx(-80.0, abs=1e-5)     # spectators apart win
-
-    fe = FreeEnergies(engine=None, temperature=T)
+    fe = FreeEnergies(engine=None, temperature=1000.0)
+    sizes = []
+    monkeypatch.setattr(fe, "_one", lambda s, x, q, m, ts: sizes.append(len(s)) or -40.0)
+    monkeypatch.setattr("mepd.energies", lambda nodes, eng: sizes.extend(len(n.symbols) for n in nodes)
+                        or [-1.0] * len(nodes))
     start, end = np.vstack([XYZ, _W]), np.vstack([_CO_H2O, _W])
-    ends = (_st(start), _st(end))
-    monkeypatch.setattr(fe, "_correction", lambda s, t, e=None: (-60.0, -70.0) if e is not None else -70.0)
-    ts = _st(end)
-    assert fe.corrections([ts], [True], [ends])[0] == pytest.approx(both_channels(-60.0, -70.0, T))
-    assert fe.ts_channels(ts, ends) == (-60.0, -70.0)
-    assert fe.corrections([ts], [True])[0] == -70.0 and fe.ts_channels(ts, None) is None   # no spectators
-
-
-def test_single_points_move_each_channel_of_a_ts_on_its_own():
-    from mepd.discovery.free_energy import both_channels, channels_shift
-
-    T = 1500.0
-    # the same shift for both: the combination moves by it
-    assert channels_shift(-60.0, -62.0, 4.0, 4.0, T) == pytest.approx(4.0)
-    # DFT binds the spectator 20 kcal/mol harder: the bound channel takes over
-    d = channels_shift(-60.0, -55.0, 0.0, -20.0, T)
-    assert -60.0 + 0.0 > both_channels(-60.0, -55.0, T) + d == pytest.approx(both_channels(-60.0, -75.0, T))
+    corr = fe._correction(_st(end), True, (_st(start), _st(end)), energy=-2.5)
+    assert corr == pytest.approx(-80.0 + (-2.0 + 2.5) * HARTREE_TO_KCAL)
+    assert len(TS_SYM) not in sizes and sorted(sizes) == [3, 3, 5, 5]     # each piece's Hessian and energy only
+    # an earlier version's correction (apart, bound) counts as the lower
+    fe._cache[fe._key(_st(end), True, (_st(start), _st(end)))] = (-60.0, -70.0)
+    assert fe.corrections([_st(end)], [True], [(_st(start), _st(end))]) == [-70.0]

@@ -641,7 +641,7 @@ def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tigh
             return super().compute_geometry_optimization(node, keywords)
 
     monkeypatch.setattr(ne, "_takes_fmax", lambda engine: True)
-    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
     engine = Engine()
     res = expand_network(_node("C#N"), engine, rounds=1, allow_zwitterions=True, steer="access",
                          connect=_connector(5.0), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
@@ -657,7 +657,7 @@ def test_a_step_out_of_reach_has_no_kinetics_barrier(monkeypatch):
     its rate: its kinetics barrier is None, not ~630 kcal/mol."""
     from mepd.discovery.free_energy import FreeEnergies
 
-    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
     res = expand_network(_node("C#N"), _ShiftEngine(), rounds=1, allow_zwitterions=True, steer="access",
                          connect=_connector(5.0), access_cutoff_kcal=3.0, kinetics={"free_energy": True})
     assert res.steps and res.kinetics.barriers_kcal[:len(res.steps)] == [None] * len(res.steps)

@@ -21,7 +21,7 @@ def _connector(tmp_path):
     hc._lock = threading.Lock()
     hc._running = SimpleNamespace(value=0)
     hc._fast_ts = lambda i, j, a, b: None                  # every single TS fails: path searches
-    hc._root_chain = lambda a, b: [a, b]
+    hc._root_chain = lambda a, b: ([a, b], None)   # (no subsystem)
     hc._leaf_ts = lambda chain, label: SimpleNamespace(energy=-1.0)
     hc.iced, hc._pieces, hc._next_index, hc.free, hc._jobs, hc._live = [], {}, {}, None, {}, None
     hc.stop_when = None

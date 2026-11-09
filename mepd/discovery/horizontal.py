@@ -160,6 +160,7 @@ class HorizontalConnector:
         # workers killed) and the call ends
         self.stop_when = None
         self._live = None         # while a call runs: its add_pairs / submit
+        self._ends_of: dict = {}  # id(piece chain) -> (chain, its ends as whole states): _whole_ends
 
     def register(self, kind: str, fn, slots: int = 1, rank: int = 2) -> None:
         """A job kind of the caller's own: `fn(*args)` runs in a worker like the queue's jobs, taking `slots`
@@ -220,7 +221,7 @@ class HorizontalConnector:
             st = _open_structure(self.ts_dir / f"{label}.xyz").model_copy(
                 update={"charge": ts.structure.charge, "multiplicity": ts.structure.multiplicity})
             ends = [n.structure for n in ends] if ends is not None else None
-            return self.free._key(st, True, ends), self.free._correction(st, True, ends)
+            return self.free._key(st, True, ends), self.free._correction(st, True, ends, float(ts.energy))
         except Exception:
             return None   # the caller computes it, or keeps the electronic energy (said)
 
@@ -231,40 +232,55 @@ class HorizontalConnector:
         if (self.ts_dir / f"{label}.xyz").exists():
             ts = mepd.load(self.ts_dir / f"{label}.xyz")
             return ts, label, self._ts_correction(ts, label, (a, b))
-        path = mepd.interpolate(a, b, nimages=self.nimages)
+        from mepd.discovery.network_expansion import subsystem
+
+        # only the molecules the reaction takes part in (network_expansion.subsystem); the TS back among the rest
+        cut = subsystem(a, b, self.job_inputs.engine)
+        path = mepd.interpolate(*((cut.sub(a), cut.sub(b)) if cut else (a, b)), nimages=self.nimages)
         en = mepd.energies(list(path.nodes), self.job_inputs.engine)
         k = max(range(1, len(en) - 1), key=lambda m: en[m])
         ts = mepd.find_ts(path.nodes[k], self.job_inputs.engine, maxiter=self.fast_ts_steps, continue_unconverged=0)
+        ts = cut.whole(ts, path.nodes[0]) if cut else ts
         self._write_ts(ts, label, (a, b))
         return ts, label, self._ts_correction(ts, label, (a, b))
 
-    def _piece(self, chain, index: int, depth: int):
+    def _piece(self, chain, index: int, depth: int, cut=None):
         from mepd.msmep import _parallel_recursive_step_worker
 
-        return _parallel_recursive_step_worker(self.job_inputs, chain, index, depth, self.max_depth, None)
+        inputs = self.job_inputs
+        floor = getattr(inputs.path_min_inputs, "network_floor_hartree", None)
+        if cut is not None and floor is not None:
+            # a subsystem's piece: the floor on its energy scale (a whole energy is the subsystem's + env)
+            inputs = copy.copy(inputs)
+            inputs.path_min_inputs = copy.copy(inputs.path_min_inputs)
+            inputs.path_min_inputs.network_floor_hartree = float(floor) - cut.env
+        return _parallel_recursive_step_worker(inputs, chain, index, depth, self.max_depth, None)
 
-    def _leaf_ts(self, chain, label: str):
+    def _leaf_ts(self, chain, label: str, cut=None):
         import mepd
 
         ts = mepd.find_ts(chain.get_ts_node(), self.job_inputs.engine)
-        self._write_ts(ts, label, (chain[0], chain[-1]))
-        corr = self._ts_correction(ts, label, (chain[0], chain[-1]))
+        ends = (chain[0], chain[-1])
+        if cut is not None:   # a subsystem's piece (_root_chain): the TS and its piece's ends back among the rest
+            ts, ends = cut.whole(ts), tuple(cut.whole(n) for n in ends)
+        self._write_ts(ts, label, ends)
+        corr = self._ts_correction(ts, label, ends)
         if self.end_keywords is None:
             return ("with_ends", ts, None, corr)
         # The piece's two ends minimized as the caller would (its `end_keywords`), here in the worker: done
         # by the caller as each TS comes in, they held up the queue (no job starts while it works).
         from mepd.nodes.node import StructureNode
 
-        ends = []
-        for node in (chain[0], chain[-1]):
+        minimized = []
+        for node in ends:
             try:
-                ends.append(self.job_inputs.engine.compute_geometry_optimization(
+                minimized.append(self.job_inputs.engine.compute_geometry_optimization(
                     StructureNode(structure=node.structure), keywords=dict(self.end_keywords))[-1])
             except Exception:
                 return ("with_ends", ts, None, corr)
-        return ("with_ends", ts, ends, corr)
+        return ("with_ends", ts, minimized, corr)
 
-    def _path_peak(self, chain, label: str):
+    def _path_peak(self, chain, label: str, cut=None):
         """The highest image of a finished elementary piece (written as
         ts/<label>.xyz), or None when the piece has no energies."""
         try:
@@ -272,18 +288,39 @@ class HorizontalConnector:
             if any(getattr(n, "_cached_energy", None) is None for n in nodes):
                 self.job_inputs.engine.compute_energies(nodes)
             peak = max(nodes, key=lambda n: float(n.energy)).copy()
-            self._write_ts(peak, label, (nodes[0], nodes[-1]))
+            ends = (nodes[0], nodes[-1])
+            if cut is not None:
+                peak, ends = cut.whole(peak), tuple(cut.whole(n) for n in ends)
+            self._write_ts(peak, label, ends)
             return peak
         except Exception:
             return None
 
     def _root_chain(self, a, b):
+        """(the first piece of a path search between whole states `a` and `b`, its subsystem or None): the
+        search runs on the molecules the reaction takes part in (network_expansion.subsystem)."""
         from mepd.chain import Chain
+        from mepd.discovery.network_expansion import subsystem
         from mepd.interpolation import initial_chain
 
+        cut = subsystem(a, b, self.job_inputs.engine)
+        if cut is not None:
+            a, b = cut.sub(a), cut.sub(b)
         seed = Chain.model_validate({"nodes": [a.copy(), b.copy()],
                                      "parameters": copy.deepcopy(self.run_inputs.chain_inputs)})
-        return initial_chain(seed, self.run_inputs.chain_inputs, self.run_inputs.gi_inputs)
+        return initial_chain(seed, self.run_inputs.chain_inputs, self.run_inputs.gi_inputs), cut
+
+    def _whole_ends(self, args) -> tuple:
+        """A waiting piece's two ends as whole states, for the caller's `relevant` (kept per piece: it caches
+        what it learns by node)."""
+        chain = args[0]
+        cut = args[3] if len(args) > 3 else None
+        if cut is None:
+            return chain
+        held = self._ends_of.get(id(chain))
+        if held is None or held[0] is not chain:
+            held = self._ends_of[id(chain)] = (chain, (cut.whole(chain[0]), cut.whole(chain[-1])))
+        return held[1]
 
     # --- the pool -----------------------------------------------------------
     def _pool(self):
@@ -402,7 +439,7 @@ class HorizontalConnector:
             def start_search(pair, a=None, b=None):
                 i, j = pair
                 try:
-                    root = self._root_chain(nodes[i] if a is None else a, nodes[j] if b is None else b)
+                    root, cut = self._root_chain(nodes[i] if a is None else a, nodes[j] if b is None else b)
                 except Exception as exc:
                     log_event({"event": "pair_failed", "pair": [i, j], "why": f"{type(exc).__name__}: {exc}"})
                     if not outstanding.get(pair) and on_pair_done is not None:
@@ -413,7 +450,7 @@ class HorizontalConnector:
                 idx = next_index.get(pair, 0)
                 next_index[pair] = idx + 1
                 counts["pieces"] += 1
-                queue("piece", pair, root, idx, 0)
+                queue("piece", pair, root, idx, 0, *(() if cut is None else (cut,)))   # its pieces carry it on
 
             def gated(job) -> bool:
                 """A piece below a split waits until material can reach one of its ends."""
@@ -467,7 +504,7 @@ class HorizontalConnector:
                 k = 0
                 while k < len(waiting) and busy() < self.workers:
                     job = waiting[k]
-                    if gated(job) and relevant(job[2][0], final) is not True:
+                    if gated(job) and relevant(self._whole_ends(job[2]), final) is not True:
                         k += 1
                         continue
                     if running and busy() + slots(job[0]) > self.workers:
@@ -638,17 +675,18 @@ class HorizontalConnector:
                                     counts["pieces"] += 1
                                     idx = next_index[pair]
                                     next_index[pair] += 1
-                                    queue("piece", pair, child, idx, args[2] + 1)
+                                    queue("piece", pair, child, idx, args[2] + 1, *args[3:])
                             else:
                                 data = getattr(history, "data", None)
                                 traj = getattr(data, "chain_trajectory", None) or []
                                 if traj and not getattr(history, "skip_ts", False):
-                                    queue("ts", pair, traj[-1], f"pair_{i}_{j}_leaf_{history.index}")
+                                    queue("ts", pair, traj[-1], f"pair_{i}_{j}_leaf_{history.index}", *args[3:])
                         elif kind == "ts":
-                            chain, label = args
+                            chain, label, cut = args[0], args[1], (args[2] if len(args) > 2 else None)
+                            ends = (chain[0], chain[-1]) if cut is None else tuple(cut.whole(n) for n in (chain[0], chain[-1]))
                             if out is None:
                                 counts["leaf_ts_failed"] += 1
-                                peak = self._path_peak(chain, label)
+                                peak = self._path_peak(chain, label, cut)
                                 if peak is not None:
                                     # An elementary piece whose TS search failed -- typically a nearly barrierless
                                     # association, which has no saddle to find. Dropping it would cut the network
@@ -656,23 +694,23 @@ class HorizontalConnector:
                                     # its path's highest image as the barrier: an upper bound, and its two ends
                                     # are the piece's own minimized endpoints (nothing for an IRC to check).
                                     counts["path_peak"] += 1
-                                    record({"start": chain[0], "end": chain[-1], "ts": peak, "label": label,
+                                    record({"start": ends[0], "end": ends[1], "ts": peak, "label": label,
                                             "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": True,
                                                       "ts_kind": "path_peak"}})
                                 continue
                             counts["leaf_ts_ok"] += 1
-                            ends = None
+                            minimized = None
                             if isinstance(out, tuple) and out and out[0] == "with_ends":
-                                _, out, ends, corr = out
+                                _, out, minimized, corr = out
                                 if corr is not None and free_cache is not None:
                                     free_cache[corr[0]] = corr[1]
-                            rec = {"start": chain[0], "end": chain[-1], "ts": out, "label": label,
+                            rec = {"start": ends[0], "end": ends[1], "ts": out, "label": label,
                                    "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": False}}
-                            if ends is not None:
-                                rec["ends"] = ends
+                            if minimized is not None:
+                                rec["ends"] = minimized
                             # The TS search can land on a saddle of some other motion (a rotation next to a
                             # barrierless association): if its IRC says so, the piece falls back to this.
-                            peak = self._path_peak(chain, f"{label}_peak")
+                            peak = self._path_peak(chain, f"{label}_peak", cut)
                             if peak is not None:
                                 rec["peak"] = peak
                                 rec["files"]["peak"] = str(self.ts_dir / f"{label}_peak.xyz")

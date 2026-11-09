@@ -29,16 +29,13 @@ partly formed bond is long, and a distance split could cut the reacting
 complex in two. Without ends, or with ends whose bonds don't bracket the
 TS's, the TS counts as one molecule.
 
-A TS with spectators is also counted bound, the whole complex as one
-molecule: a molecule whose bonds don't change can still lower the TS (an
-H-bond, an ion pair, a dative contact -- a catalyst), and apart that
-stabilization is lost. The TS takes the lower of the two (both_channels):
-not their rates added, since the apart free energy already lets each
-spectator roam the whole standard-state volume, the positions next to the TS
-included -- a sum would count a spectator that does nothing for the TS twice
-(up to RT ln 2). Bound counts only where binding lowers the TS by more than
-it costs in entropy. FreeEnergies.ts_channels gives the two for anything
-that moves them (the steering single points).
+A TS with spectators was optimized on its reacting complex alone (the
+explorer's subsystem, network_expansion.subsystem), so it counts apart only:
+G = its reacting complex's and each spectator's electronic energy and
+thermal correction, relative to the TS's own electronic energy (`energy`,
+which the kinetics add the correction to). It is not also counted bound (the
+whole complex as one molecule): that needed a Hessian of the whole box at a
+geometry that is no saddle of it.
 
 The rotational symmetry number and linearity come from xtb's analysis of the
 geometry (mepd.thermo.frequencies), which is cheap at these sizes.
@@ -54,19 +51,6 @@ HARTREE_TO_KCAL = 627.5094740631
 R_KCAL = 1.987204259e-3   # kcal/mol/K
 
 
-def both_channels(apart: float, bound: float, temperature: float) -> float:
-    """One correction (or free energy, kcal/mol) for a TS counted with its spectators apart and bound: the
-    lower. Not the two rates added: apart already holds the configurations with a spectator next to the TS
-    (module docstring). `temperature` is kept for the callers' signature."""
-    return min(float(apart), float(bound))
-
-
-def channels_shift(apart: float, bound: float, d_apart: float, d_bound: float, temperature: float) -> float:
-    """How far (kcal/mol) a higher level's single points move a TS of two channels: `d_apart` (its reacting
-    complex and spectators apart) and `d_bound` (the whole TS) move each channel's correction, and the
-    combination moves by this."""
-    return (both_channels(apart + d_apart, bound + d_bound, temperature)
-            - both_channels(apart, bound, temperature))
 BOHR_PER_ANGSTROM = 1.8897259886
 def _electrons(symbol: str) -> int:
     from rdkit import Chem
@@ -271,8 +255,9 @@ class FreeEnergies:
             return whole
         return out
 
-    def _correction(self, structure, ts: bool, ends=None):
-        """Thermal correction (kcal/mol); a TS with spectators: (apart, bound)."""
+    def _correction(self, structure, ts: bool, ends=None, energy: Optional[float] = None):
+        """Thermal correction (kcal/mol), relative to the structure's electronic energy: `energy` (Hartree), or
+        computed when not given."""
         symbols = [str(s) for s in structure.symbols]
         xyz = np.asarray(structure.geometry, dtype=float) / BOHR_PER_ANGSTROM
         parts = self.parts(structure, ts, ends)
@@ -291,32 +276,31 @@ class FreeEnergies:
                                                            charge=qi, multiplicity=mi)))
         # The molecules apart: their electronic energies too, not the complex's (whose binding would
         # otherwise count on top of the separated molecules' entropy). Each at its geometry in the complex.
-        whole = StructureNode(structure=structure)
-        apart = sum(mepd.energies(frags, self.engine)) - mepd.energies([whole], self.engine)[0]
-        if not ts:
-            return total + apart * HARTREE_TO_KCAL
-        # ... and the TS bound, as one molecule: the other channel (a spectator's H-bond, ion pair, dative contact)
-        return total + apart * HARTREE_TO_KCAL, self._one(symbols, xyz, int(structure.charge),
-                                                          int(structure.multiplicity), True)
+        if energy is None:
+            energy = mepd.energies([StructureNode(structure=structure)], self.engine)[0]
+        apart = sum(mepd.energies(frags, self.engine)) - float(energy)
+        return total + apart * HARTREE_TO_KCAL
 
-    def corrections(self, structures: list, ts_flags: list[bool], ends: Optional[list] = None
-                    ) -> list[Optional[float]]:
+    def corrections(self, structures: list, ts_flags: list[bool], ends: Optional[list] = None,
+                    energies: Optional[list] = None) -> list[Optional[float]]:
         """Thermal corrections (kcal/mol) for `structures`, each computed once
         (cached by geometry); None where the Hessian failed. `ends`: per
-        structure, a TS's step's two ends (see parts) or None."""
+        structure, a TS's step's two ends (see parts) or None. `energies`: per
+        structure, its electronic energy (Hartree) or None (see _correction)."""
         from mepd.cli_common import _fork_map
 
         ends = ends if ends is not None else [None] * len(structures)
+        energies = energies if energies is not None else [None] * len(structures)
         keys = [self._key(s, t, e) for s, t, e in zip(structures, ts_flags, ends)]
         todo = {}
-        for k, s, t, e in zip(keys, structures, ts_flags, ends):
+        for k, s, t, e, en in zip(keys, structures, ts_flags, ends, energies):
             if k not in self._cache and k not in todo:
-                todo[k] = (s, t, e)
+                todo[k] = (s, t, e, en)
 
         def run(item):
-            s, t, e = item
+            s, t, e, en = item
             try:
-                return self._correction(s, t, e)
+                return self._correction(s, t, e, en)
             except Exception as exc:   # reported by the caller: the species keeps its electronic energy
                 return f"{type(exc).__name__}: {exc}"
 
@@ -330,10 +314,6 @@ class FreeEnergies:
                 self.notes.append(f"thermal correction failed ({v}); electronic energy used")
                 out.append(None)
             else:
-                out.append(both_channels(*v, self.T) if isinstance(v, tuple) else float(v))
+                # (a TS saved by an earlier version as apart and bound: the lower, as it counted then)
+                out.append(float(min(v) if isinstance(v, tuple) else v))
         return out
-
-    def ts_channels(self, structure, ends) -> Optional[tuple[float, float]]:
-        """(apart, bound) corrections (kcal/mol) of a TS with spectators, once `corrections` has it; else None."""
-        v = self._cache.get(self._key(structure, True, ends))
-        return tuple(v) if isinstance(v, tuple) else None

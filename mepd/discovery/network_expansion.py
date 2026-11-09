@@ -578,6 +578,94 @@ def _open_structure(fp):
     return Structure.open(str(fp))
 
 
+def _xyz_energy(structure) -> Optional[float]:
+    """The energy on an xyz file's comment line ("E=<Hartree>", as the explorer writes its TS files)."""
+    for line in (getattr(structure, "extras", None) or {}).get("xyz_comments") or []:
+        for word in str(line).split():
+            if word.startswith("E="):
+                try:
+                    return float(word[2:])
+                except ValueError:
+                    pass
+    return None
+
+
+@dataclass
+class Subsystem:
+    """The molecules a reaction between two whole states takes part in (`subsystem`): its path search, TS,
+    IRC and their Hessians run on these atoms alone. The other molecules -- spectators, bonded the same at
+    both ends -- stay where they are in `ref`.
+
+    `env` (Hartree) is what the rest of `ref` adds to a subsystem energy, E(ref) - E_subsystem(ref): a TS's
+    energy as the network keeps it is E_subsystem(TS) + env, so its barrier from the reactant is the
+    subsystem's own and the spectators sit as they do at the reactant. Its free energy counts the
+    spectators apart (free_energy: the reacting complex and each spectator alone), as the species' do."""
+    atoms: list
+    charge: int
+    multiplicity: int
+    ref: object       # the whole Structure
+    env: float
+
+    def sub(self, node) -> StructureNode:
+        from mepd.discovery.mixture import _sub
+
+        return StructureNode(structure=_sub(node.structure, self.atoms, self.charge, self.multiplicity))
+
+    def whole(self, node, frame=None) -> StructureNode:
+        """A subsystem structure put back among `ref`'s spectators; its energy, when it has one, + env. Placed
+        by the rigid motion that takes `frame` -- a structure in the node's coordinates standing for ref's
+        subsystem (the start a computation began from, or the TS of an IRC) -- onto ref's subsystem atoms;
+        without one, by its centre of mass alone: a computation that starts from ref's subsystem keeps its
+        orientation (an interpolation only centres its start; optimizers and IRCs don't turn it), and a best
+        fit of, say, CO2 + H2 onto formic acid would turn them into the spectators."""
+        from qcdata import Structure
+        from rdkit import Chem
+
+        from mepd.interpolation import _rigid_fit
+
+        x = np.array(self.ref.geometry, dtype=float)
+        target, y = x[self.atoms], np.asarray(node.structure.geometry, dtype=float)
+        if frame is None:
+            w = np.array([Chem.GetPeriodicTable().GetAtomicWeight(str(self.ref.symbols[k])) for k in self.atoms])
+            x[self.atoms] = y + (w @ target - w @ y) / w.sum()
+        else:
+            f = np.asarray(frame.structure.geometry, dtype=float)
+            rot, _ = _rigid_fit(f, target)
+            x[self.atoms] = (y - f.mean(axis=0)) @ rot + target.mean(axis=0)
+        out = StructureNode(structure=Structure(symbols=list(self.ref.symbols), geometry=x,
+                                                charge=int(self.ref.charge), multiplicity=int(self.ref.multiplicity)))
+        if node._cached_energy is not None:
+            out._cached_energy = float(node._cached_energy) + self.env
+        return out
+
+
+def subsystem(a, b, engine, ref=None) -> Optional[Subsystem]:
+    """The subsystem of a reaction between whole states `a` and `b` (nodes in one atom order): every molecule
+    -- connected piece of the two ends' bond graphs together -- holding an atom whose bonds change, so one
+    that relays an atom (a water shuttling a proton) is in it. These are the TS's reacting complex as the
+    free energies count it (free_energy.ts_groups, FreeEnergies.parts; their charges too). None when every
+    molecule takes part (the reaction runs on the whole, as it always did), and for a QM/MM system or a
+    profile's restraints, whose engines number the whole system's atoms.
+
+    `ref` (a node, default `a`): the whole structure the subsystem's results are put back into. Its energy --
+    its own, else the E= of the file it was read from, else computed -- is what `env` is measured from."""
+    from mepd.discovery.free_energy import FreeEnergies
+
+    if getattr(engine, "region", None) is not None or getattr(engine, "restraints", None):
+        return None
+    parts = FreeEnergies(None, 298.15).parts(a.structure, True, (a.structure, b.structure))
+    if len(parts) == 1:
+        return None
+    atoms, charge, mult = parts[0]
+    ref = a if ref is None else ref
+    e_ref = ref._cached_energy if ref._cached_energy is not None else _xyz_energy(ref.structure)
+    if e_ref is None:
+        e_ref = engine.compute_energies([StructureNode(structure=ref.structure)])[0]
+    cut = Subsystem(list(atoms), int(charge), int(mult), ref.structure, 0.0)
+    cut.env = float(e_ref) - float(engine.compute_energies([cut.sub(ref)])[0])
+    return cut
+
+
 def _region_proposals(view: "_View", node, source: int, items: Iterable) -> tuple[list[Proposal], dict]:
     """Products a whole-molecule generator made of a QM/MM system's QM model
     (QM atoms + link H, `region.model_structure`), put back into the full
@@ -1689,8 +1777,9 @@ def expand_network(
         keys = []
         todo: dict = {}
         for s, is_ts, ends in structs:
-            # a TS with spectators apart is another item than the TS whole (keys saved before kept theirs)
-            groups = splitter._groups(s, is_ts, ends) if free is not None else None
+            # a TS with spectators apart is another item than the TS whole (keys saved before kept theirs); apart
+            # on electronic energies too: it was computed without them (subsystem)
+            groups = splitter._groups(s, is_ts, ends)
             xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
             key = hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
                                      is_ts) + ((groups,) if groups and len(groups) > 1 else ()))
@@ -1702,7 +1791,7 @@ def expand_network(
             if done is not None:
                 steer_delta[key] = done["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
                 continue
-            parts = [s] if free is None else _fragments(s, splitter.parts(s, is_ts, ends))
+            parts = [s] if free is None and not is_ts else _fragments(s, splitter.parts(s, is_ts, ends))
             todo[key] = Item("ts" if is_ts else "species", 0, s, parts)
         if todo and queue is not None:
             for key, item in todo.items():
@@ -1749,7 +1838,6 @@ def expand_network(
         if steer_engine is None or not result.steps:
             return g, steps, basis
         from mepd.discovery.energy_refine import kinetic_reach
-        from mepd.discovery.free_energy import channels_shift
 
         reach, open_steps = kinetic_reach(result.steps, [float(s.node.energy) for s in result.species], e0,
                                           access_cutoff_kcal, _mirror_of())
@@ -1757,14 +1845,9 @@ def expand_network(
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
         open_steps = [m for m in open_steps if ts[m] is not None]
         ends = {m: _ts_ends(result.steps[m]) for m in open_steps}
-        # a TS with spectators is counted apart and bound, the lower kept (free_energy.both_channels): each its own shift
-        channels = {m: c for m in open_steps
-                    if free is not None and (c := free.ts_channels(ts[m], ends[m])) is not None}
-        bound = list(channels)
         d = _steer_shifts([(result.species[k].node.structure, False, None) for k in sp_idx]
-                          + [(ts[m], True, ends[m]) for m in open_steps] + [(ts[m], True, None) for m in bound], queue)
+                          + [(ts[m], True, ends[m]) for m in open_steps], queue)
         d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
-        d_bound = dict(zip(bound, d[len(sp_idx) + len(open_steps):]))
         if d_sp.get(0) is None and queue is not None:
             return g, steps, basis     # the seed's single point is still running
         if d_sp.get(0) is None:
@@ -1773,13 +1856,6 @@ def expand_network(
             return g, steps, basis
         # relative to the seed, on the explorer's scale (the rest of the network keeps the explorer's energies)
         g = [e + (d_sp[k] - d_sp[0] if d_sp.get(k) is not None else 0.0) for k, e in enumerate(g)]
-        for m, (ca, cb) in channels.items():
-            if d_ts.get(m) is not None and d_bound.get(m) is not None:
-                # both channels at the steering level: what moves their combination
-                d_ts[m] = channels_shift(ca, cb, d_ts[m] * HARTREE_TO_KCAL_PER_MOL, d_bound[m] * HARTREE_TO_KCAL_PER_MOL,
-                                         kin["temperature"]) / HARTREE_TO_KCAL_PER_MOL
-            else:
-                d_ts[m] = None
         steps = [Step(st.a, st.b, st.ts_energy + (d_ts[m] - d_sp[0] if d_ts.get(m) is not None else 0.0),
                       st.label, st.files) for m, st in enumerate(steps)]
         n = sum(x is not None for x in d)
@@ -1812,7 +1888,8 @@ def expand_network(
         sp_idx = sorted(reach)
         corr = free.corrections([result.species[k].node.structure for k in sp_idx] + ts_structs,
                                 [False] * len(sp_idx) + [True] * len(ts_structs),
-                                [None] * len(sp_idx) + [_ts_ends(result.steps[m]) for m in open_steps])
+                                [None] * len(sp_idx) + [_ts_ends(result.steps[m]) for m in open_steps],
+                                [None] * len(sp_idx) + [result.steps[m].ts_energy for m in open_steps])
         for note in dict.fromkeys(free.notes):
             _emit(on_event, "warning", message=f"free energies: {note}")
         free.notes.clear()
@@ -2015,6 +2092,40 @@ def expand_network(
                 todo.append((key, a, b))
         return todo
 
+    def _sampled(a: int, b: int) -> tuple:
+        """((structures, label) step a-b's channel sampling runs on, their subsystem or None): the two species,
+        or only the molecules the step takes part in (`subsystem`) -- their conformers and paths alone."""
+        na, nb = result.species[a].node, result.species[b].node
+        cut = subsystem(na, nb, engine)
+        return ((cut.sub(na), cut.sub(nb), f"{a}_{b}") if cut else (na, nb, f"{a}_{b}")), cut
+
+    def _whole_sampled(out, cut):
+        """A subsystem's channel sampling (`refine`'s record) back among its spectators: every structure whole,
+        and each TS and IRC file written whole beside its own (`<stem>_whole.xyz`, what the kinetics read)."""
+        if not out or cut is None:
+            return out
+        import mepd
+
+        def whole(rec):
+            ts = rec["ts"]   # (its frame: the conformers a channel search starts from are turned every way)
+            rec = {**rec, "start": cut.whole(rec["start"], ts), "end": cut.whole(rec["end"], ts),
+                   "ts": cut.whole(ts, ts)}
+            files = dict(rec.get("files") or {})
+            fp = Path(files["ts"])
+            files["ts"] = str(fp.with_name(f"{fp.stem}_whole.xyz"))
+            mepd.write_xyz(files["ts"], rec["ts"], comments=[f"E={rec['ts'].energy:.10f}"])
+            if files.get("irc") and Path(files["irc"]).exists():
+                fp = Path(files["irc"])
+                files["irc"] = str(fp.with_name(f"{fp.stem}_whole.xyz"))
+                mepd.write_xyz(files["irc"], [cut.whole(n, ts) for n in mepd.read_frames(fp)])
+            return {**rec, "files": files}
+
+        # (its lowest end conformers are the subsystem's, not the whole states': no species reference from them)
+        return {**out, "direct": [whole(r) for r in out.get("direct", [])],
+                "other": [whole(r) for r in out.get("other", [])], "conformers": [],
+                "deferred": [{"start": cut.whole(p["start"], p["start"]), "end": cut.whole(p["end"], p["start"])}
+                             for p in out.get("deferred", [])]}
+
     def _prefetch_steps(kinetic) -> None:
         """Start sampling the steps these kinetics would send to `refine` (`refine.prefetch`, if it has
         one) while the round's verification runs: its tail leaves most cores idle, and `refine` then finds
@@ -2022,7 +2133,7 @@ def expand_network(
         prefetch = getattr(refine, "prefetch", None)
         todo = _refine_todo(kinetic) if prefetch is not None else []
         if todo:
-            prefetch([(result.species[a].node, result.species[b].node, f"{a}_{b}") for _, a, b in todo])
+            prefetch([_sampled(a, b)[0] for _, a, b in todo])
 
     def _refine_steps(kinetic) -> int:
         """Channel sampling (`refine`, e.g. `mepd channels`: conformers and mechanisms of both ends, a TS and
@@ -2037,7 +2148,8 @@ def expand_network(
                 refine([])   # ends a background sampling (`_prefetch_steps`) of steps no longer needed
             return 0
         _emit(on_event, "refining", round=rnd, total=len(todo))
-        outs = refine([(result.species[a].node, result.species[b].node, f"{a}_{b}") for _, a, b in todo])
+        sampled = [_sampled(a, b) for _, a, b in todo]
+        outs = [_whole_sampled(out, cut) for out, (_, cut) in zip(refine([item for item, _ in sampled]), sampled)]
         _minimize_ends([n for out in outs if out for n in out.get("conformers", [])]
                        + [rec[k] for out in outs if out for rec in out.get("direct", []) + out.get("other", [])
                           if "pair" not in rec for k in ("start", "end")])
@@ -2450,21 +2562,34 @@ def expand_network(
             _, start, end = verify([(0, ts_file)])[0]
             return None if start is None else (start, end, _minimized([start, end]))
 
-        def _channels_job(a, b, label):
-            """In a worker: a step's conformers and atom-mapped conformer pairs (`refine.pairs`)."""
-            return refine.pairs((a, b, label))
+        def _channels_job(a, b, label, cut=None):
+            """In a worker: a step's conformers and atom-mapped conformer pairs (`refine.pairs`). A subsystem's
+            (`_sampled`) pairs are put back among its spectators; its conformers are the subsystem's, not the
+            whole states', so they give its species no reference."""
+            out = refine.pairs((a, b, label))
+            if not out or cut is None:
+                return out
+            missing = [n for pair in out["pairs"] for n in pair if n._cached_energy is None]
+            if missing:   # (each pair's TS search measures its env from them: `subsystem`)
+                connect.job_inputs.engine.compute_energies(missing)
+            return {**out, "start": [], "end": [], "pairs": [(cut.whole(x, x), cut.whole(y, x)) for x, y in out["pairs"]]}
 
-        def _rotamer_job(guess, fp, core, ends):
+        def _rotamer_job(guess, fp, core, ends, parent):
             """In a worker: a TS optimized from one rotamer guess of a step's TS (`ts_rotamer_guesses`), written
             to `fp` with its parent's IRC ends beside it (`<stem>_ends.xyz`, what tells its spectators); None
             unless every distance of the reacting `core` stayed within CORE_TOLERANCE_ANG of the guess's (the
             parent's): it went to another TS. With free energies, also its (cache key, thermal correction), as the
-            queue's own TS jobs compute it."""
+            queue's own TS jobs compute it. A TS with spectators is optimized on its subsystem (`subsystem`, put
+            back among them as its `parent` TS has them)."""
             import mepd
             from mepd.cli_conformers import CORE_TOLERANCE_ANG
 
-            ts = mepd.find_ts(StructureNode(structure=guess), connect.job_inputs.engine,
+            eng = connect.job_inputs.engine
+            cut = subsystem(*(StructureNode(structure=e) for e in ends), eng, ref=StructureNode(structure=parent))
+            node = StructureNode(structure=guess)
+            ts = mepd.find_ts(cut.sub(node) if cut else node, eng,
                               maxiter=int(getattr(connect, "fast_ts_steps", 300)), continue_unconverged=0)
+            ts = cut.whole(ts) if cut else ts
             x0, x1 = (np.asarray(s.geometry, dtype=float) / ANGSTROM_TO_BOHR for s in (guess, ts.structure))
             if any(abs(np.linalg.norm(x1[i] - x1[j]) - np.linalg.norm(x0[i] - x0[j])) > CORE_TOLERANCE_ANG
                    for i, j in core):
@@ -2477,7 +2602,7 @@ def expand_network(
                 try:
                     st = _open_structure(fp).model_copy(update={"charge": guess.charge,
                                                                 "multiplicity": guess.multiplicity})
-                    corr = (free._key(st, True, ends), free._correction(st, True, ends))
+                    corr = (free._key(st, True, ends), free._correction(st, True, ends, float(ts.energy)))
                 except Exception:
                     corr = None    # the kinetics compute it, or keep the electronic energy (said)
             return ts, str(fp), corr
@@ -2537,10 +2662,16 @@ def expand_network(
                 return 0
             ends = _ts_ends(st)
             guesses, core = ts_rotamer_guesses(ts, ends)
+            from mepd.discovery.free_energy import FreeEnergies
+
+            # a spectator's rotamers are no TS's: it is not in the TS's search (subsystem), and counts apart
+            react = (FreeEnergies._groups(ts, True, ends) or [list(range(len(ts.symbols)))])[0]
+            guesses = [(g, what) for g, what in guesses
+                       if not np.allclose(np.asarray(g.geometry)[react], np.asarray(ts.geometry)[react])]
             stem = Path(st.files["ts"]).stem
             for k, (guess, what) in enumerate(guesses):
                 connect.submit("rotamer", (guess, str(Path(st.files["ts"]).with_name(f"{stem}_rot{k}.xyz")), core,
-                                           ends),
+                                           ends, ts),
                                lambda out, a=st.a, b=st.b: _rotamer_back(a, b, stem, out),
                                label=f"{st.a}→{st.b} · {stem} turned {what}",
                                priority=(st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
@@ -2642,7 +2773,8 @@ def expand_network(
                     if key not in queued_channels:
                         queued_channels.add(key)
                         h = lambda key=key: _height(key)
-                        connect.submit("channels", (result.species[a].node, result.species[b].node, f"{a}_{b}"),
+                        item, cut = _sampled(a, b)
+                        connect.submit("channels", item + (() if cut is None else (cut,)),
                                        lambda out, key=key, a=a, b=b, h=h: _channels_back(key, a, b, out, h),
                                        label=f"{a}→{b}", priority=h)
                         n += 1
