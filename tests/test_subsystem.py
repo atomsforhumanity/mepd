@@ -223,4 +223,7 @@ def test_when_every_molecule_reacts_the_explorer_gives_what_it_gave_before(name,
     want_species, want_steps = BEFORE[name]
     assert len(steps) == len(want_steps)
     assert species == pytest.approx(want_species, rel=0, abs=1e-7)                      # Hartree
-    assert [x for s in steps for x in s] == pytest.approx([x for s in want_steps for x in s], rel=0, abs=1e-4)
+    # TS energies (Hartree), then the free-energy barriers (kcal/mol), where a TS optimization and Hessian amplify
+    # that noise (5.5e-4 kcal/mol on the image)
+    assert [s[0] for s in steps] == pytest.approx([s[0] for s in want_steps], rel=0, abs=1e-6)
+    assert [x for s in steps for x in s[1:]] == pytest.approx([x for s in want_steps for x in s[1:]], rel=0, abs=1e-2)
