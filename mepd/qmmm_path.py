@@ -195,7 +195,8 @@ MIN_TANGENT_OVERLAP = 0.3
 
 def reaction_mode_problems(ts_node, engine, direction, echo=None) -> list[str]:
     """Why a QM/MM TS is not the path's reaction, from its QM-region Hessian
-    (environment held; 6 QM/MM gradients per moving atom): no negative mode,
+    (environment held; analytic where the QM engine has one, else 6 QM/MM
+    gradients per moving atom): no negative mode,
     or an imaginary mode that hardly overlaps the path tangent. Empty when it
     passes, or when there is nothing to compare (no microiterations, no
     tangent)."""
@@ -205,7 +206,8 @@ def reaction_mode_problems(ts_node, engine, direction, echo=None) -> list[str]:
     d = np.asarray(direction, dtype=float).reshape(-1, 3)[micro.outer].ravel()
     if np.linalg.norm(d) < 1e-8:
         return []
-    (echo or (lambda *_: None))(f"Checking the TS's mode: QM-region Hessian, {6 * len(micro.outer)} QM/MM gradients...")
+    cost = micro.qm_hessian_cost() if hasattr(micro, "qm_hessian_cost") else f"{6 * len(micro.outer)} QM/MM gradients"
+    (echo or (lambda *_: None))(f"Checking the TS's mode: QM-region Hessian, {cost}...")
     w, V = micro.qm_modes(ts_node.structure, np.asarray(ts_node.coords, dtype=float), echo=echo)
     if w[0] >= 0:
         return [f"the QM region has no negative curvature at the TS (lowest Hessian eigenvalue {w[0]:.3f} eV/Å²): "

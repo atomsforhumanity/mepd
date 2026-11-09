@@ -10,7 +10,7 @@ Three pieces, from cheap to complete:
 |---|---|---|
 | **Solvent effects** on a finished TS search: barriers in several implicit solvents, half-lives, the temperature each needs, plain-language insights | `mepd solvent`; web: a TS job's page › *Reaction conditions* | seconds (single points) to minutes per solvent (re-optimized) |
 | **Setups in Explore**: solvent + temperature + reaction time + starting structures; every edge shows whether it runs; *Predict outcome* runs the graph forward in time | web: Explore › *Conditions* | instant (uses what is computed) |
-| **A solvated level of theory**: every calculation of a profile in solvent | profile `[solvation]` table; web: Settings › *Solvent* | as the gas-phase level, plus two GFN2-xTB calls per gradient |
+| **A solvated level of theory**: every calculation of a profile in solvent | profile `[solvation]` table; web: Settings › *Solvent* | as the gas-phase level, plus two GFN2-xTB calls per gradient (in process with axtb) |
 
 ## The solvent model
 
@@ -25,6 +25,21 @@ This is a composite model, and the results say so. Because the correction
 has a gradient, TS optimizations, IRCs and minimizations all run on the
 solvated surface (`mepd.solvation.SolvatedEngine`). When the engine *is*
 GFN2-xTB, its own solvent flag is used instead, and gives the same numbers.
+
+Where it runs. With axtb installed, g-xTB on the axtb backend computes the
+whole composite in one in-process call, with analytic Hessians of all three
+parts, and keeps its own optimizers (qcopt, Sella) on it; the correction for
+other engines runs its GFN2-xTB pair in axtb too. Checked against the xtb
+program route on water, acetate and caffeine in six solvents with ALPB and
+GBSA: energies within 1.2e-8 Eh, and within 2e-11 Eh at the programs' SCF
+accuracy and conventions (`[gxtb_engine_kwds] axtb_conventions = "gxtb"`);
+HCN → HNC in water gives the same TS and barriers. One energy and gradient
+of caffeine takes 19-29 ms against 68 ms for g-xTB plus two xtb runs. Both
+follow axtb's conventions: in its default ones, an SCF that fails with
+Broyden mixing tries DIIS before Fermi smearing, so stretched structures
+stay on the 300 K surface more often than with xtb's SCC loop, and a
+structure that converged only on a retry rung is logged. CPCM-X,
+`[solvation] backend = "xtb"` or an `executable` run the xtb program.
 
 g-xTB itself has no ALPB/GBSA parameters: xtb exits with *No ALPB/GBSA
 parameters found*. Worse, with `--cpcmx` it silently returns the gas-phase
@@ -47,6 +62,7 @@ A profile runs in solvent with:
 solvent = "water"      # see mepd.solvation.SOLVENTS
 model = "alpb"         # alpb | gbsa
 method = "auto"        # auto (native for GFN2-xTB, else correction) | native | correction
+# backend = "xtb"      # the correction's GFN2-xTB from the xtb program (default: axtb when installed)
 ```
 
 The solvent is part of the level of theory (`workspace.effective_level`),

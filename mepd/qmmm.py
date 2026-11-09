@@ -307,6 +307,27 @@ class QMMMRegion:
                          charge=int(self.qm_charge if charge is None else charge),
                          multiplicity=int(self.qm_multiplicity if multiplicity is None else multiplicity))
 
+    def model_jacobian(self, atoms: Optional[Sequence[int]] = None) -> np.ndarray:
+        """d(model coordinates)/d(real coordinates of `atoms`), (3 x model atoms, 3 x len(atoms));
+        all atoms if None. Constant: link L = Q + g (M - Q) with a fixed g, so the model's Hessian
+        maps exactly as J^T H J (and its gradient as J^T g, `model_gradient_to_full`)."""
+        atoms = list(range(self.natoms)) if atoms is None else [int(a) for a in atoms]
+        col = {a: k for k, a in enumerate(atoms)}
+        nq = len(self.qm_atoms)
+        jac = np.zeros((3 * (nq + len(self.links)), 3 * len(atoms)))
+        eye = np.eye(3)
+
+        def put(row: int, atom: int, w: float) -> None:
+            if atom in col:
+                jac[3 * row:3 * row + 3, 3 * col[atom]:3 * col[atom] + 3] += w * eye
+
+        for i, a in enumerate(self.qm_atoms):
+            put(i, int(a), 1.0)
+        for k, ((q, m), g) in enumerate(zip(self.links, self.link_ratios())):
+            put(nq + k, int(q), 1.0 - g)
+            put(nq + k, int(m), g)
+        return jac
+
     def model_gradient_to_full(self, g_model: np.ndarray) -> np.ndarray:
         """Spread a model-system gradient (QM atoms + links) onto the full
         system: link L = Q + g (M - Q), so dE/dQ += (1-g) dE/dL and
@@ -376,11 +397,15 @@ class QMMMRegion:
                                 f"cut a C-C bond instead if you can")
         if not qmset.isdisjoint(self.frozen_atoms):
             problems.append("some QM atoms are frozen")
-        if self.mm == "gfnff" and self.natoms > 1500:
-            from mepd.engines.gfnff import memory_gb
+        if self.mm == "gfnff":
+            from mepd.engines.gfnff import default_backend, memory_gb
 
-            problems.append(f"{self.natoms} atoms is large for GFN-FF (about {memory_gb(self.natoms):.0f} GB and "
-                            f"several seconds per energy): for a protein, use AMBER (a prmtop) instead")
+            # The xtb program's GFN-FF memory grows past what a machine has at a few thousand atoms;
+            # axtb's does not (mepd#41), but its energies still take seconds there.
+            in_process = default_backend() == "axtb"
+            if self.natoms > (6000 if in_process else 1500):
+                problems.append(f"{self.natoms} atoms is large for GFN-FF (about {memory_gb(self.natoms):.1f} GB and "
+                                f"several seconds per energy): for a protein, use AMBER (a prmtop) instead")
         return problems
 
     # ---------------------------------------------------------------- io
@@ -451,7 +476,7 @@ def region_from_inputs(data) -> Optional[QMMMRegion]:
     in its `file` key); None if there is none."""
     if not data:
         return None
-    data = {k: v for k, v in dict(data).items() if k not in ("base_dir",)}
+    data = {k: v for k, v in dict(data).items() if k not in ("base_dir", "gfnff_backend")}
     if "file" in data:
         fp = Path(data.pop("file"))
         region = QMMMRegion.open(fp)

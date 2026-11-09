@@ -466,6 +466,12 @@ class GXTBCalculator(Engine):
     backend: str | None = None
     # axtb's conventions: None/"axtb" (its default) or "gxtb" (reproduces the program to ~1e-12 Eh).
     axtb_conventions: str | None = None
+    # g-xTB in implicit solvent through axtb's composite, E_gxtb + [E_GFN2+model - E_GFN2], in one
+    # in-process call with analytic Hessians: {"solvent": <xtb name>, "model": "alpb" | "gbsa"}.
+    # Set by mepd.solvation.solvate_engine from a profile's [solvation] table (backend "axtb" only);
+    # the program route is mepd.solvation.SolvatedEngine (three xtb runs per gradient). The GFN2
+    # halves follow axtb_conventions: "gxtb" reproduces those three runs, rung for rung.
+    axtb_solvation: dict | None = None
 
     def __post_init__(self) -> None:
         if self._ts_optimizer() not in ("sella", "qcopt"):
@@ -483,6 +489,15 @@ class GXTBCalculator(Engine):
                 raise ValueError("minimizer = \"xtb\" runs the g-xTB program's own optimizer; with backend = "
                                  "\"axtb\" use qcopt, sella, geometric or lbfgs.")
             self._axtb_settings = axtb_backend.settings_from_args(_split_args(self.extra_args))
+        if self.axtb_solvation:
+            from mepd.engines import axtb_backend
+
+            if self.backend != "axtb":
+                raise ValueError("axtb_solvation is g-xTB in solvent through axtb (backend = \"axtb\"); with the "
+                                 "program, a profile's [solvation] table wraps the engine instead.")
+            sv = dict(self.axtb_solvation)
+            self.axtb_solvation = {"solvent": str(sv["solvent"]), "model": str(sv.get("model", "alpb")).lower()}
+            axtb_backend.solvation_settings(self.axtb_solvation["solvent"], self.axtb_solvation["model"])
         # Nothing configured: $GXTB_EXECUTABLE, else `gxtb`, which (if not on
         # PATH) _resolve_executable looks up -- or fetches -- on first use.
         self._default_executable = self.executable is None and not os.getenv("GXTB_EXECUTABLE")
@@ -585,7 +600,12 @@ class GXTBCalculator(Engine):
 
     def _axtb_kwds(self) -> dict:
         return {"threads": max(1, int(self.n_threads)), "conventions": self.axtb_conventions,
-                "settings": getattr(self, "_axtb_settings", {})}
+                "settings": getattr(self, "_axtb_settings", {}), "solvation": self.axtb_solvation}
+
+    @property
+    def analytic_hessian(self) -> bool:
+        """compute_hessian is analytic (axtb), not finite differences of gradients."""
+        return self.backend == "axtb"
 
     def _axtb_compute_node(self, node: StructureNode) -> FakeQCIOOutput:
         from mepd.engines import axtb_backend

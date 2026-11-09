@@ -93,6 +93,35 @@ def test_rigid_spin_is_stripped_from_the_frames_and_gradients_turn_with_them():
     assert np.isclose(np.linalg.norm(out[0][1] - out[0][0]), 1.0)   # the real motion (the stretch) is kept
 
 
+def test_alignment_keeps_the_center_of_mass_of_an_irc_step():
+    """mepd#35: an IRC step keeps the center of mass, so the alignment must too. Fitting
+    on the geometric centroid moved it 0.026 A on this H-transfer step of HCN -> HNC."""
+    from mepd.engines.ase import _align_frames
+
+    masses = np.array([12.011, 14.007, 1.008])
+    com = lambda x: (masses[:, None] * x).sum(axis=0) / masses.sum()  # noqa: E731
+    ts = np.array([[0.009, 0.019, 0.0], [1.208, -0.072, 0.0], [0.529, 1.058, 0.0]])
+    step = np.zeros_like(ts)
+    step[2] = [0.07, -0.07, 0.0]
+    step[:2] -= masses[2] * step[2] / masses[:2].sum()
+    nxt = ts + step
+    # Sella's drift on top: the frame comes back spun and shifted.
+    drifted = (nxt - com(nxt)) @ _rotation(25).T + com(nxt) + [0.3, -0.2, 0.1]
+    (out,), _ = _align_frames([drifted], [np.zeros_like(ts)], ts, masses=masses)
+    assert np.allclose(com(out), com(ts), atol=1e-12)
+    # What is left of rigid motion in the mass-weighted step is tiny (Colton measured <= 0.001).
+    sq = np.sqrt(masses)[:, None]
+    rel = ts - com(ts)
+    rigid = [(sq * np.eye(3)[k]).ravel() for k in range(3)]
+    rigid += [(sq * np.cross(np.eye(3)[k], rel)).ravel() for k in range(3)]
+    q, _ = np.linalg.qr(np.array(rigid).T)
+    dq = (sq * (out - ts)).ravel()
+    assert np.linalg.norm(q.T @ dq) ** 2 / (dq @ dq) < 1e-3
+    # Equal masses (no `masses`) is the old, geometric fit: it moves the center of mass.
+    (old,), _ = _align_frames([drifted], [np.zeros_like(ts)], ts)
+    assert np.linalg.norm(com(old) - com(ts)) > 0.02
+
+
 def test_irc_convergence_ignores_the_rotational_eigenvalues():
     """Sella's test (lowest Hessian eigenvalue > 0) fails at a minimum when noise pushes a
     rotation's ~0 eigenvalue negative; the vibrational curvature is what counts."""

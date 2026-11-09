@@ -83,16 +83,27 @@ def _sella_irc_class(base):
     return _IRC
 
 
-def _align_frames(frames: list[NDArray], gradients: list[NDArray], reference: NDArray):
+def _align_frames(frames: list[NDArray], gradients: list[NDArray], reference: NDArray,
+                  masses: NDArray | None = None):
     """Strip rigid motion from an IRC branch: each frame is rotated and
     translated onto the one before it (the first onto `reference`), its
-    gradient rotated with it. Returns the new (frames, gradients)."""
+    gradient rotated with it. Returns the new (frames, gradients).
+
+    The fit is mass-weighted: centers of mass are superposed and the rotation
+    is the mass-weighted Kabsch one. An IRC step is taken in mass-weighted
+    coordinates and keeps the center of mass and the (mass-weighted) Eckart
+    frame, so this removes only Sella's drift. Fitting on the geometric
+    centroid instead adds a rigid shift whenever a light atom moves (an H
+    transfer): about 80% of every step's mass-weighted length on HCN -> HNC
+    (mepd#35). `masses` (amu, one per atom) default to equal masses."""
     prev = np.asarray(reference, dtype=float)
+    m = np.ones(len(prev)) if masses is None else np.asarray(masses, dtype=float).reshape(-1)
+    w = m[:, None] / m.sum()
     out_frames, out_grads = [], []
     for coords, grad in zip(frames, gradients):
         coords = np.asarray(coords, dtype=float)
-        mu, mu_prev = coords.mean(axis=0), prev.mean(axis=0)
-        u, _, vt = np.linalg.svd((coords - mu).T @ (prev - mu_prev))
+        mu, mu_prev = (w * coords).sum(axis=0), (w * prev).sum(axis=0)
+        u, _, vt = np.linalg.svd((w * (coords - mu)).T @ (prev - mu_prev))
         rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
         prev = (coords - mu) @ rot + mu_prev
         out_frames.append(prev)
@@ -553,9 +564,11 @@ class ASEEngine(Engine):
             energies = [obj.get_potential_energy() / Hartree for obj in aT]
             gradients = [(-1 * obj.get_forces() / ANGSTROM_TO_BOHR) / Hartree for obj in aT]
             if not atoms.constraints:
-                # Sella steps in Cartesians with rotations left in, so the path also drifts rigidly; drop that.
+                # Sella steps in Cartesians with rotations left in, so the path also drifts rigidly; drop that,
+                # with Sella's own (ASE) masses, as the IRC's mass-weighted steps keep the center of mass.
                 positions, gradients = _align_frames(
-                    [obj.get_positions() for obj in aT], gradients, structure_to_ase_atoms(ts_node.structure).get_positions())
+                    [obj.get_positions() for obj in aT], gradients, structure_to_ase_atoms(ts_node.structure).get_positions(),
+                    masses=atoms.get_masses())
                 for obj, pos in zip(aT, positions):
                     obj.positions = pos
             traj_nodes = [

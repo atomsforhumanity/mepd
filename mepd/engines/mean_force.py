@@ -184,7 +184,7 @@ class MeanForceEngine(ModifiedEngine):
                 f"$constrain\n   force constant={float(self.restraint)}\n   atoms: {atoms}\n$end\n"
                 f"$md\n   temp={float(self.temperature)}\n   time={total}\n   dump={dump_fs}\n"
                 f"   step={float(self.timestep_fs)}\n   hmass=4\n   shake=0\n   nvt=true\n$end\n")
-            args = [low.engine.executable, "system.xyz", "--md", "--input", "md.inp",
+            args = [low.engine.xtb_program(), "system.xyz", "--md", "--input", "md.inp",
                     "--chrg", str(int(charge)), "--uhf", str(int(r.qm_multiplicity) - 1)]
             if low.engine.method == "gfnff":
                 topo = low.engine.topology(list(r.symbols), int(charge), low.ref_real)
