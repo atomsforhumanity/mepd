@@ -1,5 +1,7 @@
 """CREST msreact as a network-expansion generator, and the web's network
 exploration methods."""
+import tempfile
+from pathlib import Path
 import shutil
 
 import pytest
@@ -54,6 +56,7 @@ def test_the_network_card_is_one_expansion_in_stages_and_msreact_builds_its_comm
     p = op.parse_params({"generator": "crest-msreact", "msreact_mode": "isomers", "msreact_nshifts": 2})
 
     class Ctx:
+        job_dir = Path(tempfile.mkdtemp(prefix="mepd-test-job-"))   # a job's inputs (e.g. the steering profile)
         output_dir = "/out"
 
         def snapshot_structure(self, sid, name):
@@ -81,6 +84,7 @@ def test_every_stage_combination_builds_real_flags_and_impossible_ones_settle():
     op = OPERATIONS["graph-enumeration"]
 
     class Ctx:
+        job_dir = Path(tempfile.mkdtemp(prefix="mepd-test-job-"))   # a job's inputs (e.g. the steering profile)
         output_dir = "/out"
         structures = ["s_1"]
 
@@ -131,6 +135,7 @@ def test_follow_up_expansions_pass_earlier_runs_as_known_once_the_cli_has_it(tmp
     (other / "summary.json").write_text("{}")
 
     class Ctx:
+        job_dir = Path(tempfile.mkdtemp(prefix="mepd-test-job-"))   # a job's inputs (e.g. the steering profile)
         output_dir = str(tmp_path / "new" / "output")
         structures = ["s_1"]
         jobs = {"j1": {"op": "graph-enumeration", "status": "done", "created": 1, "output_dir": str(done), "level": {"key": "k1"}},
