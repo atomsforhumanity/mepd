@@ -549,12 +549,20 @@ def expand(
         help="--steer access with --connect-mode fast: 'rounds' expands the species the kinetics populate "
         "once per round. 'async': no rounds -- a species' proposals start the moment the live kinetics populate "
         "it within reach, and their reactions, IRC checks, channel sampling and steering single points join the "
-        "same job queue as they are asked for. It ends when the kinetics ask for nothing more (converged) or a "
-        "budget runs out (--time-budget, --max-species, a stop request); --rounds and --max-expand do not apply."),
+        "same job queue as they are asked for. It ends when the kinetics ask for nothing more (converged), when the "
+        "predicted products settled (--settle-kcal), or a budget runs out (--time-budget, --max-species, a stop "
+        "request); --rounds and --max-expand do not apply."),
     time_budget: float = typer.Option(
         0.0, "--time-budget",
         help="--schedule async: seconds of wall time; then no new job starts, the running ones are cancelled and the "
         "network found so far is written with its kinetics. 0 (default): no limit."),
+    settle_kcal: float = typer.Option(
+        0.0, "--settle-kcal",
+        help="--schedule async: stop once the predicted product distribution has settled ('settled'): no populated "
+        "product's ratio to another (RT ln, kcal/mol) moved by more than this over the last 30 s and the last 10 "
+        "live kinetics, the seed's proposals are all searched and no steering single point is out. Then it ends "
+        "as on --time-budget. 0 (default): off, run until converged or a budget runs out. 0.3 is the value tested "
+        "on recorded runs; not yet gated on the cluster."),
     max_expand: int = typer.Option(
         10, "--max-expand",
         help="--steer access: at most this many species expanded per round (the most populated first, among "
@@ -723,7 +731,7 @@ def expand(
         _completed_tree_dirs, _echo_run_inputs_summary, _load_structure_from_smiles_or_xyz, _open_run_inputs,
         _run_msmep_pairs,
     )
-    from mepd.discovery.network_expansion import REFERENCES, expand_network
+    from mepd.discovery.network_expansion import REFERENCES, SETTLE_KCAL, expand_network
     from mepd.discovery.kinetics import negative_barrier_warning, raw_barriers
     from mepd.nodes.node import StructureNode
 
@@ -924,6 +932,7 @@ def expand(
                 max_expand_per_round=int(max_expand) if isinstance(max_expand, int) else 10,
                 schedule=str(schedule).lower() if isinstance(schedule, str) else "rounds",
                 time_budget_s=float(time_budget) if isinstance(time_budget, (int, float)) and time_budget > 0 else None,
+                settle_kcal=float(settle_kcal) if isinstance(settle_kcal, (int, float)) else None,
                 checkpoint=checkpoint,
                 proposal_fmax=float(proposal_fmax) if isinstance(proposal_fmax, (int, float)) else 0.05,
                 refine=(_channels_refiner(run_inputs, output, workers,

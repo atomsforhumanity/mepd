@@ -1362,6 +1362,42 @@ def test_async_schedule_stops_on_a_budget_not_a_depth():
     assert len(res.species) <= 4 + 20       # one batch of proposals may land after the cap is reached
 
 
+def _settle_run(monkeypatch, product_ratio):
+    """An async run of ethanol whose live kinetics put the material in species 1 and 2 at `product_ratio(n)` to 1
+    at their n-th solve (the rest as computed), with the settle window cut to 2 kinetics and no wall time."""
+    from mepd.discovery import kinetics, network_expansion
+
+    monkeypatch.setattr(network_expansion, "SETTLE_S", 0.0)
+    monkeypatch.setattr(network_expansion, "SETTLE_UPDATES", 2)
+    simulate, calls = kinetics.simulate, [0]
+
+    def fixed(n, *args, **kw):
+        k = simulate(n, *args, **kw)
+        calls[0] += 1
+        if n > 2:
+            r = product_ratio(calls[0])
+            k.final_concentration = [0.0, r / (1 + r), 1 / (1 + r)] + [0.0] * (len(k.final_concentration) - 3)
+        return k
+
+    monkeypatch.setattr(kinetics, "simulate", fixed)
+    return expand_network(_node("CCO"), _GraphEngine(), steer="access", settle_kcal=network_expansion.SETTLE_KCAL,
+                          connect=_AsyncConnector(),
+                          access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6}, schedule="async")
+
+
+def test_async_schedule_stops_when_the_predicted_products_settled(monkeypatch):
+    """Products whose ratio no longer moves end the run ("settled"), with what it has, as a budget does."""
+    res = _settle_run(monkeypatch, lambda n: 3.0)
+    assert res.rounds[0]["stopped"] == "settled"
+
+
+def test_async_schedule_runs_on_while_the_products_ratio_moves(monkeypatch):
+    """A ratio that moves by more than settle_kcal at every kinetics (x4 each time: RT ln 4 = 0.8 kcal/mol at
+    298 K) never settles: the run goes on until the kinetics ask for nothing more."""
+    res = _settle_run(monkeypatch, lambda n: 4.0 ** n)
+    assert res.rounds[0]["stopped"] == "converged"
+
+
 def test_async_schedule_out_of_time_ends_with_what_it_has(monkeypatch):
     """Stopped (time budget, or Stop & analyze), an async run doesn't go on to sample the channels of the
     steps it found after the queue (unbudgeted: 48 min past a 1 h budget in j_4e10ef7a)."""

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import importlib
 import itertools
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -765,7 +766,47 @@ def external_proposals(structures: Iterable, source_structure, source: int, star
 
 
 # an async run that stopped for one of these ends with what it has (no end-of-run IRC checks or channel sampling)
-OUT_OF_TIME = ("time budget", "stop requested", "max species")
+OUT_OF_TIME = ("time budget", "stop requested", "max species", "settled")
+
+# The "settled" stop of an async run (expand_network's settle_kcal): its predicted product distribution has not
+# moved by more than settle_kcal (RT ln of any populated product's ratio to another) over the last SETTLE_S
+# seconds and the last SETTLE_UPDATES live kinetics, the seed's proposals are back, every reaction they proposed
+# has been searched (its fast TS, its path search if that failed) and no steering single point is out. A product
+# is a non-seed species with at least SETTLE_SHARE of the non-seed material at the kinetics' end (below it a share
+# counts as SETTLE_SHARE / 10). Chosen on 320 recorded scoreboard runs (team29): stopped there, no run lost a
+# channel or got further from experiment; without the seed's searches, furan + maleimide lost its exo adduct (a
+# seed path search finds it at 600-1000 s, after minutes of a steady endo-only answer), without the single points
+# isoprene + methyl acrylate its meta one.
+# Off by default (settle_kcal None) until a cluster gate: a settled answer can still precede the search of a
+# structure that changes it.
+SETTLE_KCAL = 0.3
+SETTLE_S = 30.0
+SETTLE_UPDATES = 10
+SETTLE_SHARE = 0.01
+
+
+def _product_shares(final, n: int) -> dict:
+    """{species: its share of the non-seed material} of found species 1..n-1 (`final`: amounts at the kinetics'
+    end), shares under SETTLE_SHARE / 10 left out."""
+    tot = float(sum(final[1:n]))
+    if tot <= 0:
+        return {}
+    return {i: float(final[i]) / tot for i in range(1, n) if float(final[i]) / tot >= SETTLE_SHARE / 10}
+
+
+def _ratios_moved(a: dict, b: dict, temperature: float) -> float:
+    """kcal/mol: the most any product's ratio to another changed from shares `a` to `b` (RT ln), over the products
+    with SETTLE_SHARE in either; inf if either has none."""
+    from mepd.discovery.free_energy import R_KCAL
+
+    floor = SETTLE_SHARE / 10
+    keys = [k for k in a.keys() | b.keys() if a.get(k, 0.0) >= SETTLE_SHARE or b.get(k, 0.0) >= SETTLE_SHARE]
+    if not a or not b or not keys:
+        return math.inf
+    d = [math.log(max(b.get(k, 0.0), floor) / max(a.get(k, 0.0), floor)) for k in keys]
+    return R_KCAL * temperature * (max(d) - min(d))
+
+
 UNVERIFIED_LEFT_OUT = "no IRC check: the run ended before it (its TS may join other species, or none)"
 
 
@@ -1250,7 +1291,7 @@ def expand_network(
     verify: Optional[Callable] = None, proposal_fmax: Optional[float] = 0.05,
     steer_engine=None, steer_save_dir: Optional[Path] = None,
     state_file: Optional[Path] = None, resume: bool = False, schedule: str = "rounds",
-    time_budget_s: Optional[float] = None, known: Optional[dict] = None,
+    time_budget_s: Optional[float] = None, known: Optional[dict] = None, settle_kcal: Optional[float] = None,
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -1339,9 +1380,14 @@ def expand_network(
     queued the moment the live kinetics (steered by the single points back so
     far) ask for it: no stage waits for another. No distance from the seed
     caps the growth (`rounds` is not used): the queue ends when the kinetics
-    ask for nothing more ("converged"), or when `time_budget_s`, a stop
-    request or `max_species` runs out -- then no new job starts and the
-    running ones are cancelled (one record in `rounds`, its "stopped" saying which).
+    ask for nothing more ("converged"), when the predicted product
+    distribution has settled ("settled": no populated product's ratio to
+    another moved by more than `settle_kcal`, RT ln, over the last SETTLE_S
+    seconds and SETTLE_UPDATES live kinetics, with the seed's proposals all
+    searched and no steering single point out; None or 0: never), or when
+    `time_budget_s`, a stop request or `max_species` runs out -- then no new
+    job starts and the running ones are cancelled (one record in `rounds`, its
+    "stopped" saying which).
 
     `known` ({"runs": [mepd.discovery.known.KnownRun], "skipped": [{"folder", "why"}], "dir": Path}): earlier
     expansions at this level of theory, taken as they are instead of being computed again. A seed that is one of
@@ -1666,6 +1712,7 @@ def expand_network(
         return superimposable(list(map(str, other.symbols)), _angstrom(other), _angstrom(ts_structure)) is not False
 
     live_kin = {"n_steps": -1, "hot": set(), "version": 0}
+    settle_hist: list = []   # (time, product shares) of each live kinetics once the seed's proposals are back
     live_steer = [None]   # schedule async: queues a steering single point (the live kinetics are steered too)
     known_end: dict = {}
     # every structure counts with its mirror image (mepd.discovery.mirror): the twin of a chiral TS
@@ -1735,6 +1782,8 @@ def expand_network(
                                      if k.max_concentration[i] >= tau or k.flux[i] >= tau}
             live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
             _show_kinetics(k, basis)
+            if schedule == "async" and 0 in expanded:
+                settle_hist.append((time.monotonic(), _product_shares(k.final_concentration, len(result.species))))
             live_kin["n_steps"] = (len(result.steps), live_kin["version"])
             live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         return live_kin["hot"]
@@ -3066,8 +3115,25 @@ def expand_network(
         deadline = _time.monotonic() + float(time_budget_s) if time_budget_s else None
         stopped = [None]
 
+        def _settled() -> bool:
+            """The predicted product distribution settled (SETTLE_KCAL): the seed's proposals are back and each
+            pair they gave is searched, no steering single point is out, and every live kinetics of the last
+            SETTLE_S seconds and the last SETTLE_UPDATES is within `settle_kcal` of the latest."""
+            import bisect
+
+            if (not settle_kcal or 0 not in expanded or any(0 in p for p in pending)
+                    or any(key not in steer_delta for key in queued_steer)):
+                return False
+            i = bisect.bisect_right([t for t, _ in settle_hist], _time.monotonic() - SETTLE_S) - 1
+            lo = min(i, len(settle_hist) - 1 - SETTLE_UPDATES)
+            if lo < 0:
+                return False
+            last = settle_hist[-1][1]
+            return all(_ratios_moved(h, last, float(kin["temperature"])) <= settle_kcal for _, h in settle_hist[lo:])
+
         def _out_of_budget() -> bool:
-            """Out of time (`time_budget_s`), asked to stop (the web's Stop & analyze), or at `max_species`."""
+            """Out of time (`time_budget_s`), asked to stop (the web's Stop & analyze), at `max_species`, or
+            settled (`_settled`)."""
             if stopped[0] is None:
                 if deadline is not None and _time.monotonic() > deadline:
                     stopped[0] = "time budget"
@@ -3075,6 +3141,8 @@ def expand_network(
                     stopped[0] = "stop requested"
                 elif len(result.species) >= max_species:
                     stopped[0] = "max species"
+                elif _settled():
+                    stopped[0] = "settled"
             return stopped[0] is not None
 
         connect.stop_when = _out_of_budget
@@ -3090,7 +3158,7 @@ def expand_network(
                 on_pair_done=_pair_done_async, free_cache=free._cache if free is not None else None,
                 start=_follow_up, on_drain=lambda: _follow_up(final=True))
         result.rounds[-1]["iced_pieces"] = len(connect.iced)
-        # why it ended: "converged" (the kinetics asked for nothing more), or the budget that ran out
+        # why it ended: "converged" (the kinetics asked for nothing more), "settled", or the budget that ran out
         result.rounds[-1]["stopped"] = stopped[0] or "converged"
         live_steer[0] = None    # the queue is closed: missing steering single points are computed here, not queued
         _emit(on_event, "phase", round=cycle, phase=f"ended: {result.rounds[-1]['stopped']}")
