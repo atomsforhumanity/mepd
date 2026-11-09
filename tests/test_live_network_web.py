@@ -301,3 +301,61 @@ def test_an_event_movie_can_be_a_short_preview(tmp_path):
     assert full["frames"][full["reactant_frame"]] == short["frames"][short["reactant_frame"]]
     assert full["frames"][full["product_frame"]] == short["frames"][short["product_frame"]]
     assert 0 <= short["changes"][0]["frame"] < len(short["frames"])
+
+
+def test_what_forms_is_counted_per_molecule_not_per_box_state():
+    """A species is a whole box. Two formic acids: 90 % of the boxes end with one dehydrated (water + CO +
+    the other formic acid), 10 % with both (2 water + 2 CO). Per starting pair: CO and water 0.9 + 2 x 0.1 =
+    1.1 each (a molecule in both states counted from both, twice where a box holds two), formic acid
+    left 0.9; the species that holds most of each comes along (for the view's link)."""
+    tl = {"smiles": {"0": "OC=O.OC=O", "1": "O.OC=O.[C-]#[O+]", "2": "O.O.[C-]#[O+].[C-]#[O+]"}, "names": {},
+          "frames": [{"t": 0.0, "species": [["0", 0.0, 1.0, 0.0, 1, 0], ["1", -5.0, 0.9, 0.9, 1, 0],
+                                            ["2", -9.0, 0.1, 0.1, 1, 0]]}]}
+    ln.molecule_yields(tl)
+    f = tl["frames"][0]
+    assert sorted(f["yields"]) == [["O", 1.1, "1"], ["[C-]#[O+]", 1.1, "1"]]
+    assert f["left"] == [["O=CO", 0.9]]
+    assert tl["start"] == ["O=CO", "O=CO"]
+    assert tl["molecules"]["[C-]#[O+]"]["name"] == "CO" and tl["molecules"]["O=CO"]["name"] == "formic acid"
+
+
+def _embedded_xyz(smiles, seed=7):
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    m = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(m, randomSeed=seed)
+    return Chem.MolToXYZBlock(m)
+
+
+def test_molecules_keep_their_geometrys_stereo_and_meet_their_mirror_image(tmp_path):
+    """The explorer's SMILES carry no stereo (endo and exo furan-maleimide adducts read the same): a species'
+    molecules take it from its geometry. The run counts every chiral species with its mirror image (its
+    default), so the two hands of a molecule are one, said to be (`mirror`); with --no-mirror-images, two."""
+    from rdkit import Chem
+
+    endo, exo = "O=C1NC(=O)[C@H]2[C@@H]1[C@H]1C=C[C@@H]2O1", "O=C1NC(=O)[C@H]2[C@@H]1[C@@H]1C=C[C@H]2O1"
+    plain = "O=C1NC(=O)C2C3C=CC(O3)C12"
+    canon = lambda s: Chem.MolToSmiles(Chem.MolFromSmiles(s))
+    assert canon(ln.stereo_smiles_of(plain, _embedded_xyz(endo))) == canon(endo)
+    assert canon(ln.stereo_smiles_of(plain, _embedded_xyz(exo))) == canon(exo)
+    assert ln.stereo_smiles_of("CCO", _embedded_xyz(endo)) is None                  # not this geometry's graph
+
+    para_r, para_s = "COC(=O)[C@@H]1CC=C(C)CC1", "COC(=O)[C@H]1CC=C(C)CC1"
+    (tmp_path / "live").mkdir()
+    lines = [json.dumps({"event": "species", "index": k, "smiles": "COC(=O)C1CC=C(C)CC1", "xyz": _embedded_xyz(s)})
+             for k, s in ((1, para_r), (2, para_s))]
+    smiles = {"0": "C=CC(=C)C.C=CC(=O)OC", "1": "COC(=O)C1CC=C(C)CC1", "2": "COC(=O)C1CC=C(C)CC1"}
+    stereo = ln._species_stereo(tmp_path, smiles, lines)
+    assert set(stereo) == {"1", "2"} and canon(stereo["1"]) == canon(para_r) and canon(stereo["2"]) == canon(para_s)
+    assert (tmp_path / "live" / ln.STEREO).exists()
+
+    def tl():
+        return {"smiles": smiles, "names": {}, "frames": [{"t": 0.0, "species": [
+            ["0", 0.0, 1.0, 0.5, 1, 0], ["1", -41.0, 0.25, 0.25, 1, 0], ["2", -41.0, 0.25, 0.25, 1, 0]]}]}
+    one = ln.molecule_yields(tl(), stereo)
+    [(m, amount, _)] = one["frames"][0]["yields"]
+    assert amount == 0.5 and one["molecules"][m]["mirror"] and canon(m) in (canon(para_r), canon(para_s))
+    two = ln.molecule_yields(tl(), stereo, mirror_images=False)
+    assert sorted(a for _, a, _ in two["frames"][0]["yields"]) == [0.25, 0.25]
+    assert two["frames"][0]["left"] == [["C=CC(=C)C", 0.5], ["C=CC(=O)OC", 0.5]]

@@ -7,7 +7,8 @@ frame, holding only what can matter on screen:
 - the species that ever hold material (their energy, peak and final amount,
   whether their energy is DFT-corrected);
 - the open steps between them (barriers, source, IRC check, net flux);
-- counts of everything else.
+- counts of everything else;
+and, when read, what forms per molecule rather than per box state (molecule_yields).
 
 Correction events (barrier moved, step replaced, a species re-referenced to
 a lower conformer, a step closed or reopened) come from live/events.jsonl, and
@@ -241,6 +242,80 @@ def names_of(smiles: dict, formulas: Optional[dict] = None) -> dict:
     return out
 
 
+MAX_YIELDS = 16           # molecules per frame, by amount (from a billionth of the start up)
+MIN_YIELD = 1e-9
+
+
+def _mirror_smiles(smiles: str) -> str:
+    """The mirror image of a stereo SMILES (every tetrahedral centre inverted; double bonds keep E/Z)."""
+    return smiles.replace("@@", "\0").replace("@", "@@").replace("\0", "@")
+
+
+def molecule_yields(tl: dict, stereo: Optional[dict] = None, mirror_images: bool = True) -> dict:
+    """In place: what forms, per molecule rather than per box state. A species is a whole box (every
+    molecule of the start, reacted or not); in each frame a molecule's amount, per starting box, is the sum
+    over the species of what each holds at the end of the simulated time times the copies of that molecule
+    in it (2 H2 in a box count twice), so it can exceed 1. Molecules by canonical SMILES, with the stereo of
+    each species' geometry where it has any (`stereo`: {species: stereo SMILES}, from stereo_smiles_of); a
+    molecule and its mirror image are one when the run counts mirror images (the explorer's default), as
+    its kinetics do. The start's own molecules, wherever they are, are what is left of the start.
+
+    Each frame gets `yields` ([molecule, amount, the species holding most of it], the MAX_YIELDS largest
+    from MIN_YIELD up)
+    and `left` ([molecule, amount] for the start's molecules); the timeline `molecules` ({molecule: {name,
+    species, mirror (it stands for itself and its mirror image)}}) and `start` (the start's molecules, as
+    many times as the box holds each)."""
+    from collections import Counter
+
+    from mepd.web.chem import common_name
+
+    smiles, frames = tl.get("smiles") or {}, tl.get("frames") or []
+    stereo = stereo or {}
+    seed = frames[0]["species"][0][0] if frames and frames[0].get("species") else "0"
+    one, chiral, parts = {}, set(), {}
+
+    def key_of(m):
+        if not mirror_images or "@" not in m:
+            return m
+        if m not in one:
+            twin = _canonical_one(_mirror_smiles(m))
+            one[m] = min(m, twin) if twin else m
+            if twin and twin != m:
+                chiral.add(one[m])
+        return one[m]
+
+    def molecules_of(sid):
+        if sid not in parts:
+            smi = stereo.get(sid) or smiles.get(sid) or ""
+            ms = _canon_multiset(smi) if drawable(smi) else None
+            parts[sid] = Counter(key_of(m) for m in ms) if ms else Counter({f"#{sid}": 1})
+        return parts[sid]
+
+    start = molecules_of(seed)
+    table = {}
+    for f in frames:
+        amount, main = Counter(), {}
+        for s in f.get("species") or []:
+            fin = s[3] or 0.0
+            if fin <= 0:
+                continue
+            for m, n in molecules_of(s[0]).items():
+                amount[m] += fin * n
+                if fin * n > main.get(m, (0.0, None))[0]:
+                    main[m] = (fin * n, s[0])
+        made = sorted((m for m in amount if m not in start and amount[m] >= MIN_YIELD), key=lambda m: -amount[m])[:MAX_YIELDS]
+        f["yields"] = [[m, _sig(amount[m]), main[m][1]] for m in made]
+        f["left"] = [[m, _sig(amount[m])] for m in sorted(start) if m in amount]
+        for m in made:
+            table.setdefault(m, main[m][1])
+    for m in start:
+        table.setdefault(m, seed)
+    tl["molecules"] = {m: {"name": (tl.get("names") or {}).get(sid) if m.startswith("#") else common_name(m),
+                           "species": sid, **({"mirror": True} if m in chiral else {})} for m, sid in table.items()}
+    tl["start"] = sorted(start.elements())
+    return tl
+
+
 def from_snapshots(snap_dir: Path, selectivity_file: Optional[Path] = None) -> dict:
     """A replay folder: kinetics_<mtime_ns>.json versions + events.jsonl."""
     snap_dir = Path(snap_dir)
@@ -321,6 +396,65 @@ def _perceived(job_dir: Path, lines: list) -> dict:
     except OSError:
         pass
     return known
+
+
+STEREO = "stereo_smiles.json"
+_MAY_STEREO: dict = {}
+
+
+def _species_stereo(job_dir: Path, smiles: dict, lines: list) -> dict:
+    """{species: its SMILES with the stereo of its geometry} for the species with a molecule that can
+    have stereoisomers: from its final geometry (output/species), else as the run reported it
+    (events.jsonl; the start's from inputs/seed.xyz). Cached in live/stereo_smiles.json by SMILES and
+    geometry, so each species is matched once (and again when the run ends)."""
+    job_dir = Path(job_dir)
+    fp = job_dir / "live" / STEREO
+    try:
+        cache = json.loads(fp.read_text()) if fp.exists() else {}
+    except ValueError:
+        cache = {}
+    try:
+        out = Path(json.loads((job_dir / "job.json").read_text()).get("output_dir") or job_dir / "output")
+    except (OSError, ValueError):
+        out = job_dir / "output"
+
+    def may(m):
+        if m not in _MAY_STEREO:
+            _MAY_STEREO[m] = _may_have_stereo_smiles(m)
+        return _MAY_STEREO[m]
+
+    want = {sid: smi for sid, smi in smiles.items() if drawable(smi) and any(may(m) for m in smi.split("."))}
+    todo = {}
+    for sid, smi in want.items():
+        final = out / "species" / f"species_{sid}.xyz"
+        src = "final" if final.exists() else "live"
+        if (cache.get(sid) or [None, None])[:2] != [smi, src]:
+            todo[sid] = (smi, src, final)
+    if todo:
+        found = {}
+        need = {sid for sid, (_, src, _) in todo.items() if src == "live"}
+        for line in lines if need else []:
+            if '"species"' not in line[:40]:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("event") == "species" and str(ev.get("index")) in need and ev.get("xyz"):
+                found[str(ev["index"])] = ev["xyz"]
+        seed = job_dir / "inputs" / "seed.xyz"
+        if "0" in need and "0" not in found and seed.exists():
+            found["0"] = seed.read_text()
+        for sid, (smi, src, final) in todo.items():
+            xyz = final.read_text() if src == "final" else found.get(sid)
+            if xyz:          # (no geometry yet: asked again next time)
+                cache[sid] = [smi, src, stereo_smiles_of(smi, xyz) or ""]
+        try:
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(json.dumps(cache))
+        except OSError:
+            pass
+    return {sid: cache[sid][2] for sid, smi in want.items() if sid in cache and cache[sid][0] == smi and cache[sid][2]}
 
 
 def fill_species_smiles(job_dir: Path, kin: dict) -> None:
@@ -810,6 +944,12 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
     tl["explored"] = _explored(frames, lines)
     tl["activity"] = activity(job_dir)
     tl["conditions"] = conditions_of(job_dir, frames[-1].get("basis", "") if frames else "")
+    try:
+        job = json.loads((Path(job_dir) / "job.json").read_text())
+    except (OSError, ValueError):
+        job = {}
+    flags = [str(x) for x in job.get("argv") or []] + str(job.get("command") or "").split()
+    molecule_yields(tl, _species_stereo(job_dir, tl["smiles"], lines), mirror_images="--no-mirror-images" not in flags)
     tl["recorded"] = recorded
     if since is not None and running:
         tl["since"] = since = max(0, min(int(since), recorded))
@@ -843,7 +983,7 @@ def example_timeline(slug: str) -> Optional[dict]:
     if "names" not in tl:    # packed before names were part of the timeline
         tl["names"] = names_of(tl.get("smiles") or {})
     _unfit(tl.get("frames") or [])
-    return tl
+    return molecule_yields(tl)
 
 
 if __name__ == "__main__":
@@ -875,18 +1015,24 @@ SEGMENT_FRAMES = 125   # frames per segment file the reactor writes (reactor_gen
 _REACTOR: dict = {}
 
 
-def _canon_multiset(smiles: str) -> Optional[tuple]:
-    """A state as its sorted canonical molecules (None if one does not parse)."""
+def _canonical_one(m: str) -> str:
+    """One molecule's canonical SMILES (cached; "" if it does not parse)."""
     from mepd.web.chem import _canonical
 
+    c = _CANON.get(m)
+    if c is None:
+        c = _CANON[m] = _canonical(m) or ""
+    return c
+
+
+def _canon_multiset(smiles: str) -> Optional[tuple]:
+    """A state as its sorted canonical molecules (None if one does not parse)."""
     out = []
     for m in str(smiles).split("|")[0].split("."):
         m = m.strip()
         if not m:
             continue
-        c = _CANON.get(m)
-        if c is None:
-            c = _CANON[m] = _canonical(m) or ""
+        c = _canonical_one(m)
         if not c:
             return None
         out.append(c)
@@ -1189,23 +1335,61 @@ _Z = {"H": 1, "He": 2, "Li": 3, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11
       "S": 16, "Cl": 17, "K": 19, "Br": 35, "I": 53}
 
 
+def _bare(mol):
+    """A molecule as its bare bond graph: hydrogens as atoms, every bond single, no charges, radicals or
+    aromaticity (atom order kept)."""
+    from rdkit import Chem
+
+    m = Chem.RWMol(Chem.AddHs(mol) if any(a.GetNumImplicitHs() or a.GetNumExplicitHs() for a in mol.GetAtoms()) else mol)
+    for a in m.GetAtoms():
+        a.SetFormalCharge(0)
+        a.SetNumExplicitHs(0)
+        a.SetNoImplicit(True)
+        a.SetIsAromatic(False)
+        a.SetNumRadicalElectrons(0)
+    for bd in m.GetBonds():
+        bd.SetBondType(Chem.BondType.SINGLE)
+        bd.SetIsAromatic(False)
+    return m.GetMol()
+
+
 def _skeleton(mol) -> Optional[str]:
     """A molecule's bond graph as a canonical string: hydrogens as atoms, every bond single, no charges
     (bond orders and charges are perception; the graph is what the network compares first)."""
     from rdkit import Chem
 
     try:
-        m = Chem.RWMol(Chem.AddHs(mol) if any(a.GetNumImplicitHs() or a.GetNumExplicitHs() for a in mol.GetAtoms()) else mol)
-        for a in m.GetAtoms():
-            a.SetFormalCharge(0)
-            a.SetNumExplicitHs(0)
-            a.SetNoImplicit(True)
-            a.SetIsAromatic(False)
-            a.SetNumRadicalElectrons(0)
-        for bd in m.GetBonds():
-            bd.SetBondType(Chem.BondType.SINGLE)
-            bd.SetIsAromatic(False)
-        return Chem.MolToSmiles(m.GetMol(), canonical=True, isomericSmiles=False, allHsExplicit=True)
+        return Chem.MolToSmiles(_bare(mol), canonical=True, isomericSmiles=False, allHsExplicit=True)
+    except Exception:
+        return None
+
+
+def stereo_smiles_of(smiles: str, xyz: str) -> Optional[str]:
+    """`smiles` (a species' molecules, with the network's bond orders and charges) with the stereo of its
+    geometry: matched atom for atom onto the geometry's bond graph (bonds from distances), stereocentres
+    and double bonds assigned from 3D (RDKit). None when the two graphs differ."""
+    from rdkit import Chem, rdBase
+    from rdkit.Chem import rdDetermineBonds
+
+    try:
+        with rdBase.BlockLogs():
+            mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+            rows = [r.split()[:4] for r in xyz.strip().splitlines()[2:] if len(r.split()) >= 4]
+            geo = Chem.MolFromXYZBlock(f"{len(rows)}\n\n" + "".join(" ".join(r) + "\n" for r in rows))
+            rdDetermineBonds.DetermineConnectivity(geo)
+            a, b = _bare(mol), _bare(geo)
+            if a.GetNumAtoms() != b.GetNumAtoms() or a.GetNumBonds() != b.GetNumBonds():
+                return None
+            match = b.GetSubstructMatch(a)
+            if len(match) != a.GetNumAtoms():
+                return None
+            conf, at = Chem.Conformer(mol.GetNumAtoms()), geo.GetConformer()
+            for i, j in enumerate(match):
+                conf.SetAtomPosition(i, at.GetAtomPosition(j))
+            mol.RemoveAllConformers()
+            mol.AddConformer(conf, assignId=True)
+            Chem.AssignStereochemistryFrom3D(mol)
+            return Chem.MolToSmiles(Chem.RemoveHs(mol))
     except Exception:
         return None
 
