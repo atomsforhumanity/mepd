@@ -409,12 +409,13 @@ def run_molden(symbols: list, coords_A: np.ndarray, charge: int = 0, multiplicit
         return out.read_text()
 
 
-def _frontier(mos: list) -> tuple[list, int, int]:
+def _frontier(mos: list, spin: str = "alpha") -> tuple[list, int, int]:
     """(the orbitals of one spin channel, sorted by energy, HOMO index, LUMO
     index). Open shell: xtb writes the orbitals spin-averaged (a SOMO holds
     e.g. 1.0, a degenerate pair 1.5 each); the highest one holding more than
-    half an electron is the HOMO (SOMO). A file with separate spin channels: alpha."""
-    alpha = [m for m in mos if m["spin"].startswith("a")] or mos
+    half an electron is the HOMO (SOMO). A file with separate spin channels:
+    `spin`'s ("alpha" or "beta"; a restricted file has alpha only)."""
+    alpha = [m for m in mos if m["spin"].startswith(spin[0])] or mos
     alpha = sorted(alpha, key=lambda m: m["energy"])
     occ = [i for i, m in enumerate(alpha) if m["occ"] > 0.5]
     if not occ:

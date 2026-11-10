@@ -409,8 +409,87 @@ def test_orbitals_follow_by_overlap_and_say_what_happens(tmp_path):
     sigma = next(o for o in first if o["rel"] == 0)
     sigma_star = next(o for o in first if o["rel"] == 1)
     assert sigma["what"]["kind"] == "bond" and sigma_star["what"]["kind"] == "antibond"
-    assert doc["story"][0]["kind"] == "frontier" and doc["story"][0]["text"] == "HOMO: σ H1–H2 all along"
-    assert "H1–H2 σ*" in doc["story"][1]["detail"]
+    # near equilibrium the closed shell is stable: said first, then the frontier
+    assert doc["story"][0]["kind"] == "stability" and doc["story"][0]["ok"] is True
+    assert doc["story"][1]["kind"] == "frontier" and doc["story"][1]["text"] == "HOMO: σ H1–H2 all along"
+    assert "H1–H2 σ*" in doc["story"][2]["detail"]
     assert json.loads((tmp_path / "orbitals.json").read_text())["status"] == "done"
     cube = op.orbital_cube(tmp_path, 0, sigma["i"], max_points=12 ** 3)
     assert cube.splitlines()[2].split()[0] == "2"                       # two atoms in the cube
+
+
+def test_the_closed_shell_check_finds_the_coulson_fischer_point_of_h2(tmp_path):
+    """H2 pulled apart at HF/STO-3G (Szabo & Ostlund, Modern Quantum Chemistry, 3.8.7): the restricted solution is
+    stable at equilibrium and becomes unstable to the unrestricted (broken-symmetry) one past the Coulson-Fischer
+    point near 1.2 A; far apart, the natural orbitals tend to one electron each (a pure diradical, y -> 1)."""
+    import numpy as np
+    import pytest
+
+    pytest.importorskip("linus")
+    from mepd import orbital_path as op
+
+    R = [0.74, 1.0, 1.15, 1.3, 2.0, 3.5]
+    frames = [np.array([[0, 0, 0], [0, 0, r]]) for r in R]
+    doc = op.analyze(["H", "H"], frames, 0, 1, "hf", "sto-3g", tmp_path, count=len(R), threads=1, log=lambda m: None)
+    st = [f["stability"] for f in doc["frames"]]
+    assert [s["unstable"] for s in st] == [False, False, False, True, True, True]
+    assert st[0]["n_homo"] == 2.0 and st[0]["n_lumo"] == 0.0 and st[0]["y"] == 0.0
+    assert st[3]["de_kcal"] < -1 and 0.1 < st[3]["n_lumo"] < 0.5
+    assert abs(st[-1]["n_homo"] - 1) < 0.05 and abs(st[-1]["n_lumo"] - 1) < 0.05 and st[-1]["y"] > 0.9
+    assert abs(st[-1]["s2"] - 1.0) < 0.02                      # the broken-symmetry singlet: half triplet
+    head = doc["story"][0]
+    assert head["kind"] == "stability" and head["ok"] is False and head["text"].startswith("Closed-shell picture fails at frames 4–6")
+    assert op.diradical_character(0.0, 2.0) == 0.0 and abs(op.diradical_character(1.0, 1.0) - 1.0) < 1e-12
+
+
+def test_an_open_shell_follows_both_spins_and_names_its_somo(tmp_path):
+    """Linear H + H2 -> H2 + H, a doublet (unrestricted): the unpaired electron moves from one end H to the other
+    through the nonbonding sigma orbital of linear H3, with a node at the central H at the symmetric TS (e.g. Albright,
+    Burdett & Whangbo, Orbital Interactions in Chemistry); alpha and beta are followed apart, <S^2> stays near 0.75."""
+    import numpy as np
+    import pytest
+
+    pytest.importorskip("linus")
+    from mepd import orbital_path as op
+
+    frames = []
+    for s in np.linspace(-2.0, 2.0, 7):
+        r1, r2 = 0.74 + 0.19 * np.exp(s), 0.74 + 0.19 * np.exp(-s)
+        frames.append(np.array([[0, 0, 0], [r1, 0, 0], [r1 + r2, 0, 0]]))
+    doc = op.analyze(["H", "H", "H"], frames, 0, 2, "pbe0", "sto-3g", tmp_path, ts_index=3, count=7, threads=1,
+                     log=lambda m: None)
+    assert doc["spin"] == "unrestricted" and not doc["stability_checked"]
+    assert {ln["spin"] for ln in doc["lines"]} == {"a", "b"}
+    ts = doc["frames"][3]
+    somo = next(o for o in ts["orbitals"] if o.get("somo"))
+    assert somo["what"]["kind"] == "radical" and sorted(somo["what"]["atoms"]) == [0, 2]      # on the two ends
+    assert ts["beta"]["homo"] == 0 and all(0.75 <= f["s2"] < 0.8 for f in doc["frames"])
+    start = next(o for o in doc["frames"][0]["orbitals"] if o.get("somo"))
+    assert start["what"]["kind"] == "radical" and start["what"]["atoms"] == [2]               # on the free H (H3)
+    texts = [x["text"] for x in doc["story"]]
+    assert texts[0].startswith("⟨S²⟩ 0.75") and any(t.startswith("α SOMO: • H3 → • H1,H3 at the TS → • H1") for t in texts)
+    assert op.orbital_cube(tmp_path, 3, ts["beta"]["orbitals"][0]["i"], max_points=10 ** 3, spin="beta")
+
+
+def test_a_delocalized_pi_orbital_is_named_as_one(tmp_path):
+    """s-cis butadiene's frontier orbitals (Huckel psi2 and psi3) are pi systems over all four carbons."""
+    import numpy as np
+    import pytest
+
+    pytest.importorskip("linus")
+    from mepd import orbital_path as op
+
+    C2, C3 = np.array([-0.74, 0, 0]), np.array([0.74, 0, 0])
+    c, s = np.cos(np.radians(124)), np.sin(np.radians(124))
+    C1 = C2 + 1.34 * np.array([c, s, 0])
+    C4 = np.array([-C1[0], C1[1], 0])
+    rot = lambda v, a: np.array([np.cos(a) * v[0] - np.sin(a) * v[1], np.sin(a) * v[0] + np.cos(a) * v[1], 0])
+    H2 = C2 + 1.09 * rot(np.array([1, 0, 0]), np.radians(-117))
+    u = (C2 - C1) / np.linalg.norm(C2 - C1)
+    Ha, Hb = C1 + 1.08 * rot(u, np.radians(121.5)), C1 + 1.08 * rot(u, np.radians(-121.5))
+    m = lambda v: np.array([-v[0], v[1], v[2]])
+    xyz = np.array([C1, C2, C3, C4, H2, m(H2), Ha, Hb, m(Ha), m(Hb)])
+    f = op.Frame(op.linus_molden(["C"] * 4 + ["H"] * 6, xyz, 0, 1, "pbe0", "sto-3g", 1)[0], ["C"] * 4 + ["H"] * 6)
+    homo, lumo = f.character(f.side.homo), f.character(f.side.homo + 1)
+    assert homo["kind"] == "pi" and homo["atoms"] == [0, 1, 2, 3] and not homo["empty"]
+    assert lumo["kind"] == "pi" and lumo["atoms"] == [0, 1, 2, 3] and lumo["empty"]
