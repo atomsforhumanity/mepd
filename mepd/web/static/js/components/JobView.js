@@ -17,6 +17,7 @@ import { ReactionTable, SpawnedSearches } from './Reactions.js';
 import { ReactorStory } from './ReactorStory.js';
 import { RetroRoutes } from './Retro.js';
 import { ProteinSites } from './ProteinSites.js';
+import { OrbitalsPath, PathOrbitalsLauncher } from './OrbitalsPath.js';
 import { Viewer3D } from './Viewer3D.js';
 import { QmmmCheck } from './QMMM.js';
 import { AtomMappingPanel } from './AtomMapping.js';
@@ -566,6 +567,7 @@ function ResultPanel({ job }) {
                 ? html`<span class="badge">✓ in Explore</span>`
                 : html`<button class="btn small primary" onClick=${() => importEntry('one', { frame: 0 })}>Add to Explore</button>`}
             </div>
+            ${multi && ['ts', 'channels'].includes(job.op) && !job.qmmm && html`<${PathOrbitalsLauncher} job=${job} entry=${entry} />`}
           </div>`}
       </div>`}
       ${result.vri?.explorer && html`<${VriExplorer} job=${job} />`}
@@ -1072,7 +1074,7 @@ export function JobView({ jobId: openedId }) {
   const reactorGen = job.op === 'graph-enumeration' && ['md', 'nanoreactor', 'reactor', 'collide'].includes(job.params?.generator);
   // An interactive reactor's analysis opens on its plain-words summary (ReactorStory).
   const story = job.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(job.params?.trajectory || '');
-  const current = tab || (story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
+  const current = tab || (job.op === 'orbitals' && run.status !== 'failed' ? 'orbitals' : story ? 'story' : ['done'].includes(run.status) || job.external ? 'result' : run.status === 'failed' ? 'log'
     : (job.op === 'nanoreactor' && !job.params?.trajectory) || reactorGen ? 'reactor' : 'live');
   // On its plain-words summary, a reactor run shows only that: the run's
   // controls, its command and the other tabs wait behind "⋯" and "All results".
@@ -1128,14 +1130,15 @@ export function JobView({ jobId: openedId }) {
         was found until then.</p>`)}
       ${['cancelled', 'interrupted'].includes(run.status) && html`<p class="warn-box small">${run.error} ${!run.external && html`<button class="btn small" onClick=${() => attempt(() => api.post(`/api/jobs/${run.id}/retry`))}>Resume</button>`}</p>`}
       ${simple ? '' : html`<div class="tabs">
-        ${[story && ['story', 'What happened'], ['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
+        ${[story && ['story', 'What happened'], job.op === 'orbitals' && ['orbitals', 'Orbitals'], job.op !== 'orbitals' && ['result', 'Results'], (job.op === 'nanoreactor' || reactorGen) && ['reactor', 'Reactor'], !job.external && job.op !== 'orbitals' && ['live', 'Live'], !job.external && family.some((j) => ['channels', 'channels-more'].includes(j.op)) && ['map', 'Path map'],
           ['ts', 'channels', 'channels-more', 'network-splits'].includes(job.op) && ['tree', 'Optimization tree'],
           !job.external && ['log', 'Log'], ['files', 'Files']].filter(Boolean)
-          .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && !['live', 'reactor', 'story'].includes(k)} onClick=${() => setTab(k)}>${l}</button>`)}
+          .map(([k, l]) => html`<button class=${current === k ? 'on' : ''} disabled=${!hasOutput && !['live', 'reactor', 'story', 'orbitals'].includes(k)} onClick=${() => setTab(k)}>${l}</button>`)}
       </div>`}
       ${job.op === 'nanoreactor' && current !== 'live' && current !== 'story' && html`<${RefiningNote} job=${run} onWatch=${() => setTab('live')} />`}
       <div class="tab-body">
         ${current === 'story' && html`<${ReactorStory} job=${page} />`}
+        ${current === 'orbitals' && html`<${OrbitalsPath} key=${page.id} job=${page} />`}
         ${current === 'result' && html`<${ResultPanel} job=${page} />`}
         ${current === 'live' && (job.op === 'complex' ? html`<${ComplexLive} key=${run.id} job=${run} />` : html`<${LivePanel} key=${run.id} job=${run} />`)}
         ${current === 'reactor' && html`<${ReactorLive} key=${page.id} job=${page} />`}

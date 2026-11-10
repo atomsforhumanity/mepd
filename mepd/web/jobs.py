@@ -461,7 +461,9 @@ class JobManager:
                     busy = [r["name"] for r in recs if r.get("status") == "optimizing"]
                     if busy:
                         raise WorkspaceError(f"{', '.join(busy)} is still being optimized; run this once it is done")
-                ctx = JobContext(self.ws, jdir, jdir / "output", recs, profile, source=source,
+                # Orbitals along a path read the result as its page shows it (with its Sample more paths runs).
+                ctx = JobContext(self.ws, jdir, jdir / "output", recs, profile,
+                                 source=self.result_view(source) if source is not None and op.key == "orbitals" else source,
                                  edge_ids=list(eids), jobs=self.jobs)
                 from mepd.web.operations import QMMM_OPS
 
