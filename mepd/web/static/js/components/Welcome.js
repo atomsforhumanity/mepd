@@ -1,13 +1,12 @@
-// The first screen of an empty session, and the steps a newcomer follows:
-// a molecule (ready-made, or built in Design), then the interactive reactor.
-// Everything deeper (barriers, networks) opens from what happens there.
+// The first screen (the landing): pick a molecule and grow its reaction network, beside a finished
+// network as mepd shows it. Also the steps a newcomer follows elsewhere (StepBar, the reactor helpers)
+// and the map of tools (QuestMap).
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, openTab, prefs, select, set, state, update, useStore } from '../store.js';
-import { Viewer3D } from './Viewer3D.js';
+import { openJob, openTab, prefs, set, state, update, useStore } from '../store.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
-import { PHONE_QUERY } from '../util.js';
+import { depictUrl } from '../util.js';
 
 // Ready-made molecules, with enough copies and water to give the reactor
 // something to do (MMFF geometries; the reactor needs no minimum).
@@ -92,16 +91,6 @@ export function reactorFor(rec) {
   });
 }
 
-function startPreset(p) {
-  return attempt(async () => {
-    const added = await api.post('/api/structures', { text: `${p.smiles} ${p.name}\nO water`, optimize: false });
-    const [mol, wat] = added;
-    const counts = { [mol.id]: p.n };
-    counts[wat.id] = (counts[wat.id] || 0) + p.water;
-    return launch(counts);
-  });
-}
-
 // ---- the map ----------------------------------------------------------------
 // What the first chain opened: done quests, ones to try now, and the next
 // ones as silhouettes; the rest stays a count, to discover.
@@ -132,169 +121,100 @@ export function QuestMap() {
   </section>`;
 }
 
-// ---- the first screen ---------------------------------------------------------
-// What mepd does is the way in: one column per scale its tools are grouped
-// by (Actions.js), each saying what mepd does there and holding your step.
-// What a reaction step is to mepd: up over a barrier, down to the product.
-function ProfilePic() {
-  return html`<svg class="scale-pic" viewBox="0 0 240 120" role="img" aria-label="An energy profile: reactant, transition state, product">
-    <path class="sp-line" d="M14 78 H58 C88 78 96 24 120 24 C144 24 152 92 182 92 H226" />
-    <path class="sp-level" d="M14 78 H58 M182 92 H226 M104 24 H136" />
-    <path class="sp-arrow" d="M36 74 V30" marker-end="url(#sp-head)" />
-    <defs><marker id="sp-head" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="sp-head" /></marker></defs>
-    <text x="42" y="54" class="sp-num">barrier</text>
-    <text x="36" y="108" class="sp-cap" text-anchor="middle">start</text>
-    <text x="120" y="14" class="sp-cap" text-anchor="middle">transition state</text>
-    <text x="204" y="108" class="sp-cap" text-anchor="middle">product</text>
-  </svg>`;
+// The landing (2026-11-10 design, canvas "mepd landing: grow a network"): pick a molecule and grow its
+// network, beside a finished network exactly as mepd shows it (a real run, replayed from Examples), and
+// the finished networks to open. The guided run is hot (1000 K, 1 min simulated): at room temperature
+// glycine's lowest barrier is ~46 kcal/mol and nothing forms, so the guide would end on "nothing".
+const GUIDED = { temperature: 1000, time_s: 60 };
+const HERO = { slug: 'glycine-live', img: '/static/img/landing-glycine-network.png' };
+
+async function grow(text, label) {
+  return attempt(async () => {
+    const added = await api.post('/api/structures', { text, optimize: false });
+    if (!added?.length) throw new Error('nothing to grow from');
+    const mol = added[0];
+    const jobs = await api.post('/api/jobs', { op: 'graph-enumeration', structures: [mol.id], params: GUIDED,
+      label: `Reaction network expansion: ${label || mol.name}` });
+    markStep('molecule');
+    openJob(jobs[0].id);
+    return jobs;
+  });
 }
 
-// What a network is: molecules joined by the reactions between them.
-function NetworkPic() {
-  const nodes = [[30, 60], [92, 26], [96, 92], [160, 54], [212, 22], [210, 98]];
-  const edges = [[0, 1, '18'], [0, 2, '25'], [1, 3, '12'], [2, 3, ''], [3, 4, '31'], [3, 5, '9']];
-  return html`<svg class="scale-pic" viewBox="0 0 240 120" role="img" aria-label="A reaction network: molecules joined by reactions">
-    ${edges.map(([a, b, t]) => { const [x1, y1] = nodes[a], [x2, y2] = nodes[b];
-      return html`<line x1=${x1} y1=${y1} x2=${x2} y2=${y2} class=${`sp-edge ${t ? '' : 'idle'}`} />
-        ${t && html`<text x=${(x1 + x2) / 2} y=${(y1 + y2) / 2 + 3} class="sp-enum" text-anchor="middle">${t}</text>`}`; })}
-    ${nodes.map(([x, y], i) => html`<rect x=${x - 11} y=${y - 9} width="22" height="18" rx="3" class=${`sp-node ${i ? '' : 'start'}`} />`)}
-  </svg>`;
-}
-
-function Scale({ n, icon, name, what, done, on, later, children }) {
-  return html`<li class=${`scale ${on ? 'on' : ''} ${done ? 'done' : ''} ${later ? 'scale-later' : ''}`}>
-    <div class="scale-head">
-      <span class="ws-icon"><${QuestIcon} id=${icon} size=${26} /></span>
-      <b>${name}</b>
-      <span class="step-num" title=${done ? 'Done' : `Step ${n}`}>${done ? '✓' : n}</span>
-    </div>
-    <p class="scale-what">${what}</p>
-    <div class="scale-do">${children}</div>
-  </li>`;
-}
-
-function Recent() {
-  const [data, setData] = useState(null);
-  useEffect(() => { api.get('/api/sessions').then(setData).catch(() => setData(null)); }, []);
-  const others = (data?.sessions || []).filter((s) => !s.current && (s.structures || s.jobs)).slice(0, 4);
-  if (!others.length) return null;
-  return html`<div class="welcome-recent">
-    <h4 class="section-title">Recent</h4>
-    <ul>${others.map((s) => html`<li><a href="#" title=${s.path}
-      onClick=${(e) => { e.preventDefault(); attempt(() => api.post('/api/sessions/open', { path: s.path })); }}>${s.name}</a>
-      <span class="small muted">${s.structures} molecules</span></li>`)}</ul>
-  </div>`;
-}
-
-// Phones: one column, so the preview sits right under the choices.
-function usePhone() {
-  const [phone, setPhone] = useState(() => window.matchMedia(PHONE_QUERY).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(PHONE_QUERY);
-    const f = () => setPhone(mq.matches);
-    mq.addEventListener('change', f);
-    return () => mq.removeEventListener('change', f);
-  }, []);
-  return phone;
-}
+const possessive = (name) => `${name}${name.endsWith('s') ? "'" : "'s"}`;
 
 export function WelcomeView() {
-  const phone = usePhone();
   const [pick, setPick] = useState('glycine');
+  const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const map = useMap();
-  // A step is done once it was done here, or the workspace shows it (a reload, another browser).
-  const tour = { molecule: map.done.has('molecule'), reactor: map.done.has('reactor'), reaction: map.done.has('reaction') };
-  const jobs = useStore((s) => s.jobs);
-  const lastRun = Object.values(jobs).filter((j) => j.op === 'nanoreactor' && /[\\/]sandbox[\\/]/.test(j.params?.trajectory || ''))
-    .sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+  const ex = useExamples();
   const p = PRESETS.find((x) => x.key === pick);
-  const start = async () => { setBusy(true); await startPreset(p); setBusy(false); };
-  const build = async () => {
+  const typed = text.trim();
+  const short = (x) => (x.key === 'hcn' ? 'HCN' : x.name);
+  const name = typed || (p.key === 'hcn' ? 'HCN' : p.name.toLowerCase());
+  const go = async (e) => {
+    e?.preventDefault();
+    setBusy(true);
+    await (typed ? grow(typed, typed) : grow(`${p.smiles} ${p.name.toLowerCase()}`, p.name.toLowerCase()));
+    setBusy(false);
+  };
+  const draw = async () => {
     const out = await attempt(() => api.post('/api/design/new', { scratch: true }));
     if (out) openTab('design');
   };
-  const ex = useExamples();
-  return html`<div class="welcome home">
-    <header class="welcome-hero">
-      <div class="welcome-brand">
-        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><polygon points="16,3 27,9.5 27,22.5 16,29 5,22.5 5,9.5" fill="none" stroke="currentColor" stroke-width="2.6"/><circle cx="16" cy="16" r="3.2" fill="currentColor"/></svg>
-        <h1>mepd</h1>
+  const workbench = () => { setEverything(true); openTab('graph'); };
+  const hero = ex.find((x) => x.slug === HERO.slug);
+  const openHero = (e) => { e.preventDefault(); if (hero) openExample(hero); };
+  return html`<div class="land">
+    <section class="land-start" aria-label="Start">
+      <h1>Predict what reactions will happen in real time</h1>
+      <p class="land-lede">Pick a molecule. mepd heats it until bonds break, finds every reaction it can take, checks the energies, and shows what it becomes, live.</p>
+      <form onSubmit=${go}>
+        <h2 class="land-label">Pick a molecule</h2>
+        <div class="land-picks" role="radiogroup" aria-label="Molecule">
+          ${PRESETS.map((x) => html`<button type="button" role="radio" aria-checked=${!typed && x.key === pick ? 'true' : 'false'}
+            class=${`land-pick ${!typed && x.key === pick ? 'on' : ''}`} onClick=${() => { setPick(x.key); setText(''); }}>
+            <img src=${depictUrl(x.smiles, 168, 124)} alt="" /><span>${short(x)}</span></button>`)}
+          <button type="button" class="land-pick land-draw" onClick=${draw}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z" /><path d="M14 6l3 3" /></svg>Draw one</button>
+        </div>
+        <label class="land-type" for="land-text"><span>or type one</span>
+          <input id="land-text" class="mono" placeholder="name or SMILES, e.g. aspirin" value=${text} onInput=${(e) => setText(e.target.value)} /></label>
+        <button class="btn primary land-go" type="submit" disabled=${busy}>
+          ${busy ? 'Starting…' : `Grow ${possessive(name)} network`}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg></button>
+      </form>
+      <p class="land-note">First reactions in about 2 minutes, in the view on the right. It runs hot (${GUIDED.temperature} K, ${GUIDED.time_s / 60} min simulated) so that something forms.</p>
+      <div class="land-foot">
+        <a href="#/explore" onClick=${(e) => { e.preventDefault(); workbench(); }}>Know what you want? Open the workbench</a>
+        <label class="door-switch" title="Every tool now, without the step-by-step unlocking">
+          <input type="checkbox" class="switch" checked=${map.all} onChange=${(e) => setEverything(e.target.checked)} /><span>All tools</span></label>
       </div>
-      <p class="welcome-tag">Compute how molecules react.</p>
-    </header>
-    <section class="door door-learn" aria-label="Learn">
-      <h4 class="door-label">${DOOR_ICON.learn}Learn<span class="door-sub">step by step</span></h4>
-      <ol class="welcome-scales">
-        <${Scale} n=${1} icon="molecule" name="Molecule" what="Pick one, or build your own." on=${!tour.molecule} done=${tour.molecule}>
-          <div class="welcome-preview"><${Viewer3D} key=${p.key} xyz=${p.xyz} height=${phone ? 130 : 150} /></div>
-          <div class="chips">
-            ${PRESETS.map((x) => html`<button class=${`chip ${x.key === pick ? 'on' : ''}`} onClick=${() => setPick(x.key)}>${x.name}</button>`)}
-            <button class="chip add" onClick=${build} title="Draw one atom by atom in Design">✎ Build your own</button>
-          </div>
-        <//>
-        <${Scale} n=${2} icon="reaction" name="Reaction" what="Heat it and watch bonds break and form." on=${tour.molecule && !tour.reaction} done=${tour.reaction}>
-          <${ProfilePic} />
-          <button class="btn primary" disabled=${busy} onClick=${start}>${busy ? 'Starting…' : `Put ${p.name.toLowerCase()} in the reactor`}</button>
-          <span class="small muted">${tour.reaction ? (map.done.has('barrier') ? 'Again, or with another molecule.' : 'Next: find its barrier') : `${p.n} ${p.name.toLowerCase()} + ${p.water} water · ${TEMPERATURE} K`}</span>
-        <//>
-        <${Scale} n=${3} icon="network" name="Network" what="What a mixture becomes." on=${tour.reaction} later=${!tour.reaction}>
-          <${NetworkPic} />
-          ${tour.reaction || map.all
-            ? html`<button class="btn" onClick=${() => openTab('graph')}>Open Explore</button>`
-            : html`<span class="small muted">After your first reaction.</span>`}
-        <//>
-      </ol>
-      ${lastRun && html`<p class="small welcome-more"><a href="#" onClick=${(e) => { e.preventDefault(); openJob(lastRun.id, 'story'); }}>Your last reactor run ›</a></p>`}
-      ${(map.done.has('reactor') || map.all) && html`<${QuestMap} />`}
     </section>
-    <aside class="door door-start" aria-label="Start working">
-      <h4 class="door-label">${DOOR_ICON.start}Start working</h4>
-      <${StartBox} />
-      <${Recent} />
-      <label class="door-switch" title="Every tool now, without the step-by-step unlocking">
-        <input type="checkbox" class="switch" checked=${map.all} onChange=${(e) => setEverything(e.target.checked)} />
-        <span>All tools</span>
-      </label>
-    </aside>
-    ${ex.length > 0 && html`<section class="door door-examples" aria-label="Examples">
-      <h4 class="door-label">${DOOR_ICON.examples}Examples<span class="door-sub">real results, open now</span></h4>
-      <ul class="example-cards">${ex.map((x) => html`<li><button class="example-card" onClick=${() => openExample(x)} title=${x.blurb || ''}>
-        <b>${x.title}</b><span class="small muted">${x.tag}</span></button></li>`)}</ul>
+    <section class="land-hero" aria-label="A finished network, as mepd shows it">
+      <div class="land-card">
+        <div class="land-card-head">
+          <h2 class="land-label">A finished network, as mepd shows it</h2>
+          ${hero && html`<a href=${`#/network/example/${HERO.slug}`} onClick=${openHero}>Open it ›</a>`}
+        </div>
+        <div class="land-card-title"><span class="land-serif">Glycine</span><span class="muted">1000 K · 1 min simulated</span>
+          <span class="land-count"><b>400</b> species <b>1543</b> reactions</span></div>
+        <a class="land-shot" href=${`#/network/example/${HERO.slug}`} onClick=${openHero} aria-label="Open glycine's finished network">
+          <img src=${HERO.img} alt="mepd's network view of glycine's finished run: glycine on the left, the species it reaches in columns by reactions from the start, routes drawn by how fast they go, and what forms per glycine on the right" /></a>
+        <p class="land-forms">What forms, per glycine: <b>methylcarbamic acid 0.81</b> · CO₂ + methylamine 0.15 · 0.6 % left as glycine.</p>
+        <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT, 1421 single points) · rates from <b>electronic energies</b>, gas phase.
+          Electronic energies leave out the entropy of splitting in two, worth tens of kcal/mol at 1000 K, so CO₂ + methylamine is badly under-counted:
+          recomputed on free energies from the same network (only the final kinetics), CO₂ + methylamine is 0.93 and methylcarbamic acid almost none. A fresh free-energy run is pending.</p>
+        <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 6 h on 2 workers).</p>
+      </div>
+    </section>
+    ${ex.length > 0 && html`<section class="land-examples" aria-label="Finished networks">
+      <h2 class="land-label">Finished networks</h2>
+      <ul>${ex.map((x) => html`<li><button class="land-example" onClick=${() => openExample(x)} title=${x.blurb || ''}>
+        <b>${x.title}</b><span>${x.tag}</span></button></li>`)}</ul>
     </section>`}
   </div>`;
-}
-
-const DOOR_ICON = {
-  learn: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="18" r="2.5"/><circle cx="12" cy="11" r="2.5"/><circle cx="19" cy="5" r="2.5"/><path d="M7 16l3-3M14 9l3-2"/></svg>`,
-  start: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/></svg>`,
-  examples: html`<svg class="door-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1"/></svg>`,
-};
-
-// "Start working": anything mepd can read, straight into Explore.
-function StartBox() {
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const go = async (e) => {
-    e?.preventDefault();
-    if (!text.trim()) return;
-    setBusy(true);
-    const added = await attempt(() => api.post('/api/structures', { text, optimize: prefs.get('optimizeOnAdd', true) }),
-      (a) => `Added ${a.length} structure${a.length === 1 ? '' : 's'}`);
-    setBusy(false);
-    if (!added) return;
-    setText('');
-    select({ structures: [...new Set(added.map((a) => a.id))] });
-    openTab('graph');
-  };
-  return html`<form class="start-box" onSubmit=${go}>
-    <label class="small muted" for="start-text">SMILES, name or reaction (A>>B)</label>
-    <div class="start-row">
-      <input id="start-text" class="mono" placeholder="[Cl-].CBr>>ClC.[Br-]" value=${text} onInput=${(e) => setText(e.target.value)} />
-      <button class="btn primary" type="submit" disabled=${busy || !text.trim()}>${busy ? '…' : 'Open'}</button>
-    </div>
-    <span class="small muted">or <a href="#" onClick=${(e) => { e.preventDefault(); openTab('design'); }}>draw it</a> · drop .xyz files on Explore</span>
-  </form>`;
 }
 
 // Examples: finished studies that open as your own copy (mepd/web/examples).
