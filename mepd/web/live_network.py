@@ -1109,6 +1109,14 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
         if g is not None and (not frames or g["counts"]["species"] > frames[-1]["counts"]["species"]
                               or g["counts"]["steps"] > frames[-1]["counts"]["steps"]):
             frames.append(g)
+    # A finished run's frames end when it ended: a frame recorded later (a server that first read the
+    # finished run's summary hours after, from the run's start) is that end, not hours of more growth.
+    origin = t_start or t0
+    if not running and t_end and origin and t_end > origin:
+        cap = float(t_end) - float(origin)
+        for f in frames:
+            if f.get("t", 0.0) > cap:
+                f["t"] = round(cap, 1)
     events = _changes(lines, t_start or t0 or 0.0)
     sel = None
     sfp = live / SELECTIVITY_FRAMES

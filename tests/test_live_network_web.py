@@ -388,3 +388,14 @@ def test_isomers_get_labels_that_tell_them_apart():
     mol = {m: (x.get("label"), x.get("tell")) for m, x in tl["molecules"].items() if x.get("tell")}
     assert sorted(mol.values()) == [("C9H14O2, 1,3-isomer", "1,3-isomer"), ("C9H14O2, 1,4-isomer", "1,4-isomer")]
     assert tl["molecules"]["C=CC(=C)C"] == {"name": "isoprene", "formula": "C5H8", "species": "0"}
+
+
+def test_a_finished_runs_frames_end_when_it_ended(tmp_path):
+    """A frame recorded after the run finished (a server that first read its end hours later) is the run's
+    end, not hours more of growth: its time is the finish, so the replay's clock ends with the run."""
+    for t in (0.0, 30.0):
+        assert ln.record(tmp_path, _kin(t))
+    assert ln.record(tmp_path, _kin(5000.0))                          # recorded long after the end
+    tl = ln.from_job(tmp_path, t0=1000.0, t_end=1100.0)
+    assert [f["t"] for f in tl["frames"]] == [0.0, 30.0, 100.0]
+    assert [f["t"] for f in ln.from_job(tmp_path, running=True, t0=1000.0)["frames"]][-1] == 5000.0   # running: as recorded
