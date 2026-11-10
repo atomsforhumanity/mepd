@@ -225,3 +225,48 @@ def subset_xyz(xyz: str, atoms: list) -> str:
     n = int(lines[0].split()[0])
     body = lines[2:2 + n]
     return "\n".join([str(len(atoms)), lines[1] if len(lines) > 1 else ""] + [body[i] for i in atoms]) + "\n"
+
+
+class NoStepPath(Exception):
+    """An edge has no step path of its own to read (the message says why, for the visitor)."""
+
+
+def edge_step(snap: dict, job: Optional[dict], eid: str, start: Optional[str] = None) -> dict:
+    """The path of the very step an expansion put on edge `eid` (its own IRC, not the run's lowest path),
+    from `start` (a node id; default the edge's source) to the other end: {"label", "start", "end",
+    "checked", "frames" (xyz, whole system), "energies" (Hartree, whole system), "ts_index", "subsystem",
+    "reference" (Hartree or None), "reference_text"}. Raises NoStepPath with the reason when there is none.
+    `job`: the edge's origin job record. Used by /api/edges/{eid}/step-path and by Orbitals along a path."""
+    edge = snap["edges"].get(eid)
+    if edge is None:
+        raise NoStepPath("no such edge")
+    o = edge.get("origin") or {}
+    if job is None or not o.get("label") or job.get("id") != o.get("job"):
+        raise NoStepPath("this edge has no step of its own")
+    if o.get("ts_below_ends"):
+        raise NoStepPath(f"{o.get('headline')}. Its TS lies below one of the two species, so it is no "
+                         "barrier between them and has no energy profile here.")
+    if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
+        raise NoStepPath("No TS was found for this step: its barrier is the highest point of a path "
+                         "between the two (an upper bound), so there is no path through a TS to play.")
+    got = path_frames(job, o["label"])
+    if got is None:
+        raise NoStepPath("Its IRC is not written yet.")
+    frames, energies = got
+    st = snap["structures"]
+    a, b = edge["source"], edge["target"]
+    v = check(job, o["label"], st.get(a, {}).get("smiles"), st.get(b, {}).get("smiles"))
+    if v is not None and v["reversed"]:            # the IRC runs target -> source
+        frames, energies = frames[::-1], energies[::-1]
+    if start == b:
+        frames, energies = frames[::-1], energies[::-1]
+        a, b = b, a
+    ref = st.get(a, {}).get("energy")
+    reference = "the start's node energy (its lowest structure found), electronic"
+    if ref is None:   # a start with no energy at this level gets the run's only when it ends: the run's own now
+        ref = seed_energy(job, a)
+        reference = "the run's own optimized start (its summary so far), electronic"
+    ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
+    return {"label": o["label"], "start": a, "end": b, "checked": v is not None, "frames": frames,
+            "energies": energies, "ts_index": ts, "subsystem": subsystem(job, o["label"]),
+            "reference": ref, "reference_text": reference}

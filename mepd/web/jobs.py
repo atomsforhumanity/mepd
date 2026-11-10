@@ -391,9 +391,10 @@ class JobManager:
                 raise WorkspaceError("Sample more paths runs on the same two structures as the search it extends")
         if op.target == "job":
             source = self.get(source_job_id or "")
-            if source["op"] not in op.source_ops:
+            step_edge = getattr(parsed, "edge", "") if source["op"] in op.edge_step_sources else ""
+            if source["op"] not in op.source_ops and not step_edge:
                 raise WorkspaceError(f"{op.title} follows up on {', '.join(op.source_ops)} results, not {source['op']}")
-            if source["status"] != "done":
+            if source["status"] != "done" and not step_edge:   # a step's own IRC is there while its run goes on
                 raise WorkspaceError(f"{op.title} needs the {source['title']} job to have finished")
             # At its source's level -- except a retry at another one (a solvent added), which is its point.
             if op.key != "reaction-retry" or not profile:
@@ -401,6 +402,11 @@ class JobManager:
             known = self.ws.snapshot()
             structure_ids = [sid for sid in source["targets"]["structures"] if sid in known["structures"]]
             edge_ids = [eid for eid in source["targets"]["edges"] if eid in known["edges"]]
+            if step_edge:   # on that reaction: listed with its calculations
+                e = known["edges"].get(step_edge)
+                if e is None or (e.get("origin") or {}).get("job") != source["id"]:
+                    raise WorkspaceError("that reaction is not a step of this run")
+                structure_ids, edge_ids = [e["source"], e["target"]], [step_edge]
         if profile and profile not in self.ws.profile_names():
             raise WorkspaceError(f"unknown profile {profile!r}")
         if profile:

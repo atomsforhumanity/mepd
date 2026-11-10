@@ -299,3 +299,40 @@ def test_a_completed_step_of_a_running_expansion_opens_with_its_energy_profile(c
     # from the other end: that node is no start, and has no energy either: nothing made up
     back = client.get(f"/api/edges/{edge['id']}/step-path", params={"start": s1}).json()
     assert all(f["energy_kcal"] is None for f in back["frames"])
+
+
+def test_orbitals_follow_an_expansions_own_step_on_its_edge(client, tmp_path, monkeypatch):
+    """Explore's reaction from a network expansion: Orbitals along this path read that step's own IRC (as the
+    player shows it, source -> target), even while the run goes on, and are listed on that reaction."""
+    from tests.test_web import _add
+    from mepd.web import operations
+
+    monkeypatch.setattr(operations.get_operation("orbitals"), "available", True)
+    s0 = _add(client, WATER_XYZ)[0]["id"]
+    s1 = _add(client, WATER_BENT_XYZ)[0]["id"]
+    out = tmp_path / "run_out"
+    (out / "ts").mkdir(parents=True)
+    frames = [WATER_XYZ.replace("water\n", "\n"), WATER_XYZ.replace("0.758 0.000 0.504", "1.40 0.000 0.470").replace("water\n", "\n"),
+              WATER_BENT_XYZ.replace("water, one H pulled off\n", "\n")]
+    (out / "ts" / "fast_0_1_irc.xyz").write_text("".join(frames))
+    (out / "ts" / "fast_0_1_irc.energies").write_text("-76.40\n-76.30\n-76.35\n")
+    jobs = client.app.state.sessions.current.jobs
+    job = {"id": "j_running", "op": "graph-enumeration", "status": "running", "title": "expansion", "created": 0,
+           "output_dir": str(out), "targets": {"structures": [s0], "edges": []}, "live_nodes": {"0": s0, "1": s1},
+           "charge": 0, "multiplicity": 1}
+    jobs.jobs[job["id"]] = job
+    ws = client.app.state.sessions.current.ws
+    edge = ws.add_edge(s0, s1, origin={"kind": "job", "job": "j_running", "label": "fast_0_1", "has_ts": True})
+    r = client.post("/api/jobs", json={"op": "orbitals", "source_job": "j_running", "dry_run": True,
+                                       "params": {"edge": edge["id"], "basis": "sto-3g", "frames": 3}})
+    assert r.status_code == 200, r.text
+    rec = r.json()[0]
+    assert rec["targets"] == {"structures": [s0, s1], "edges": [edge["id"]]}
+    assert "--ts-frame" in rec["argv"] and rec["argv"][rec["argv"].index("--ts-frame") + 1] == "2"
+    # without an edge, an expansion is no source of orbitals; nor is a reaction of another run
+    assert client.post("/api/jobs", json={"op": "orbitals", "source_job": "j_running", "dry_run": True,
+                                          "params": {}}).status_code == 400
+    s2 = _add(client, HCN_XYZ)[0]["id"]
+    other = ws.add_edge(s0, s2, origin={"kind": "job", "job": "j_other", "label": "fast_0_1"})
+    assert client.post("/api/jobs", json={"op": "orbitals", "source_job": "j_running", "dry_run": True,
+                                          "params": {"edge": other["id"]}}).status_code == 400

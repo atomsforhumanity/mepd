@@ -8,6 +8,7 @@ import { goToPage, openJob, originLabel, select, set, state, useStore } from '..
 import { cls, edgeStatus, fmtKcal, subsetXyz } from '../util.js';
 import { Viewer3D } from './Viewer3D.js';
 import { EnergyPlot } from './EnergyPlot.js';
+import { EdgeOrbitalsLauncher } from './OrbitalsPath.js';
 
 const COV = { H: 0.31, C: 0.76, N: 0.71, O: 0.66, F: 0.57, P: 1.07, S: 1.05, Cl: 1.02, Br: 1.2, I: 1.39, B: 0.84, Si: 1.11, Li: 1.28, Na: 1.66, K: 2.03, Mg: 1.41 };
 const cov = (e) => COV[e] ?? 1.2;
@@ -173,5 +174,6 @@ export function ReactionFocus({ edgeId }) {
       : st.barrierJob
       ? html`<${ReactionPlayer} jobId=${st.barrierJob} />`
       : html`<div class="focus-empty"><p>No path computed for this reaction yet.</p><p class="small muted">Pick Transition state in the panel on the right.</p></div>`}
+    <${EdgeOrbitalsLauncher} edge=${edge} />
   </div>`;
 }
