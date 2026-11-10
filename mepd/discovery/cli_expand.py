@@ -1014,6 +1014,18 @@ def expand(
             summary["mirror_images"] = {**k.mirrors, "virtual_species": [
                 {**v, "flux": k.flux[v["index"]], "max_concentration": k.max_concentration[v["index"]],
                  "final_concentration": k.final_concentration[v["index"]]} for v in k.mirrors["virtual_species"]]}
+        # next to what was asked (kinetics_energy): what the final kinetics rested on, and the structures within
+        # reach that had no free-energy correction (each round's: rounds[i]["kinetics"])
+        k_rec = next((r["kinetics"] for r in reversed(result.rounds) if r.get("kinetics")), None)
+        if k_rec is not None and "energy_basis" in k_rec and "kinetics_energy" in summary["steering"]:
+            summary["steering"]["kinetics_energy_used"] = k_rec["energy_basis"]
+            summary["steering"]["kinetics_energy_basis"] = k_rec["energies"]
+            if "free_energy_gaps" in k_rec:
+                summary["steering"]["free_energy_gaps"] = k_rec["free_energy_gaps"]
+            if summary["steering"]["kinetics_energy"] == "free" and k_rec["energy_basis"] != "free":
+                summary["warnings"].append(f"free-energy kinetics were asked for, but they rest on electronic "
+                                           f"energies ({k_rec['energies']})")
+                typer.echo(f"WARNING: {summary['warnings'][-1]}")
     network_note = ""
     if steer in ("flux", "access"):
         connect = True   # the pair trees exist already: network.json is built from them below

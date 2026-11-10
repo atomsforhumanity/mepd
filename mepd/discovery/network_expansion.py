@@ -1628,6 +1628,9 @@ def expand_network(
         mirror_finder = MirrorFinder()
     mirror_said: set = set()
     split_cache: dict = {}
+    # the structures within reach the last free-energy view had no thermal correction for (_explorer_view)
+    free_gaps: list = []
+    free_said: set = set()
 
     def _mirror_of():
         """Each species' mirror image in the network (-1: not found), or None without mirror images."""
@@ -1783,6 +1786,10 @@ def expand_network(
             "connected_pairs": [list(p) for p in pairs], "verified_steps": len(result.steps),
             "flux": kinetic.flux, "max_concentration": kinetic.max_concentration,
             "final_concentration": kinetic.final_concentration, "warnings": warnings, "energies": basis,
+            # what the rates rest on, as used ("free" or "electronic"), and the structures within reach that
+            # had no thermal correction (why, and how many steps that closed)
+            "energy_basis": "free" if basis.startswith("free") else "electronic",
+            **({"free_energy_gaps": [dict(g) for g in free_gaps]} if free is not None else {}),
             **({"mirror_images": kinetic.mirrors} if kinetic.mirrors is not None else {})}
         return kinetic
 
@@ -1899,10 +1906,14 @@ def expand_network(
         return g, steps, f"{basis}; {type(steer_engine).__name__} single points on {n} of {len(d)} structures"
 
     def _explorer_view(energies):
-        """(species energies, steps, basis) for the kinetics: free energies when
-        asked for and every correction worked, else the electronic ones (said)."""
+        """(species energies, steps, basis) for the kinetics: free energies when asked for, else the electronic
+        ones. A structure within reach without a thermal correction (no TS file, a failed Hessian) closes only
+        its own steps -- a TS its step, a species every step it is an end of -- so each open barrier is a free
+        energy at both ends; recorded in free_gaps (summary: free_energy_gaps) and said once. Only the seed's
+        own failure leaves the whole network electronic."""
         from mepd.discovery.kinetics import Step
 
+        free_gaps.clear()
         if free is None or not result.steps:
             return energies, result.steps, "electronic"
         # Only the part of the network some route reaches within the cutoff gets Hessians: the rest carries
@@ -1912,36 +1923,63 @@ def expand_network(
         reach, open_steps = kinetic_reach(result.steps, energies, e0, access_cutoff_kcal, _mirror_of())
         _tighten(sorted(reach))   # their Hessians need true minima
         energies = [float(s.node.energy) for s in result.species]
-        ts_structs = []
+        ts_structs, ts_steps = [], []
         ref = result.species[0].node.structure
-        for st in (result.steps[m] for m in open_steps):
+        for m in open_steps:
+            st = result.steps[m]
             fp = (st.files or {}).get("ts")
             if not fp or not Path(fp).exists():
-                _emit(on_event, "warning", message=f"step {st.label} has no TS geometry: kinetics on electronic "
-                                                   "energies this round")
-                return energies, result.steps, "electronic"
+                free_gaps.append({"kind": "ts", "step": st.label, "a": st.a, "b": st.b, "reason": "no TS geometry file"})
+                continue
             ts = _open_structure(fp)
             ts_structs.append(ts.model_copy(update={"charge": ref.charge, "multiplicity": ref.multiplicity}))
+            ts_steps.append(m)
         sp_idx = sorted(reach)
-        corr = free.corrections([result.species[k].node.structure for k in sp_idx] + ts_structs,
-                                [False] * len(sp_idx) + [True] * len(ts_structs),
-                                [None] * len(sp_idx) + [_ts_ends(result.steps[m]) for m in open_steps],
-                                [None] * len(sp_idx) + [result.steps[m].ts_energy for m in open_steps])
+        sp_structs = [result.species[k].node.structure for k in sp_idx]
+        ts_ends = [_ts_ends(result.steps[m]) for m in ts_steps]
+        corr = free.corrections(sp_structs + ts_structs, [False] * len(sp_idx) + [True] * len(ts_structs),
+                                [None] * len(sp_idx) + ts_ends,
+                                [None] * len(sp_idx) + [result.steps[m].ts_energy for m in ts_steps])
         for note in dict.fromkeys(free.notes):
             _emit(on_event, "warning", message=f"free energies: {note}")
         free.notes.clear()
-        if any(c is None for c in corr):
-            return energies, result.steps, "electronic"
-        sp_corr = dict(zip(sp_idx, corr[:len(sp_idx)]))
-        ts_corr = dict(zip(open_steps, corr[len(sp_idx):]))
+
+        def why(s, is_ts, ends):
+            v = free._cache.get(free._key(s, is_ts, ends))
+            return f"thermal correction failed ({v[:300]})" if isinstance(v, str) else "thermal correction failed"
+
+        sp_corr = {k: c for k, c in zip(sp_idx, corr[:len(sp_idx)]) if c is not None}
+        ts_corr = {m: c for m, c in zip(ts_steps, corr[len(sp_idx):]) if c is not None}
+        free_gaps.extend({"kind": "species", "index": k, "smiles": result.species[k].smiles,
+                          "reason": why(s, False, None)}
+                         for k, s, c in zip(sp_idx, sp_structs, corr) if c is None)
+        free_gaps.extend({"kind": "ts", "step": result.steps[m].label, "a": result.steps[m].a,
+                          "b": result.steps[m].b, "reason": why(s, True, e)}
+                         for m, s, e, c in zip(ts_steps, ts_structs, ts_ends, corr[len(sp_idx):]) if c is None)
+        for gap in free_gaps:
+            said = f"{gap['kind']} {gap.get('step', gap.get('index'))}: {gap['reason']}"
+            if said not in free_said:
+                free_said.add(said)
+                _emit(on_event, "warning", message=f"free energies: no correction for {said}; "
+                                                   + ("kinetics on electronic energies" if gap.get("index") == 0
+                                                      else "its step(s) closed"))
+        if 0 not in sp_corr:
+            return energies, result.steps, "electronic; the seed has no free-energy correction"
+        open_ = {m for m in ts_corr if result.steps[m].a in sp_corr and result.steps[m].b in sp_corr}
         g = [e + sp_corr.get(k, 0.0) / HARTREE_TO_KCAL_PER_MOL for k, e in enumerate(energies)]
         # a closed step: TS + 1 Hartree, no rate -- marked, so no one reads that as its barrier
         steps = [Step(st.a, st.b, st.ts_energy + ts_corr[m] / HARTREE_TO_KCAL_PER_MOL, st.label, st.files)
-                 if m in ts_corr else Step(st.a, st.b, st.ts_energy + 1.0, st.label, {**st.files, "closed": True})
+                 if m in open_ else Step(st.a, st.b, st.ts_energy + 1.0, st.label, {**st.files, "closed": True})
                  for m, st in enumerate(result.steps)]
         closed = len(result.steps) - len(open_steps)
+        gap_closed = len(open_steps) - len(open_)
+        for gap in free_gaps:
+            gap["closed_steps"] = 1 if gap["kind"] == "ts" else sum(
+                1 for m in open_steps if gap["index"] in (result.steps[m].a, result.steps[m].b))
         return g, steps, (f"free energy ({kin['temperature']:g} K, {kin.get('standard_state', '1M')})"
-                          + (f"; {closed} step(s) out of reach closed" if closed else ""))
+                          + (f"; {closed} step(s) out of reach closed" if closed else "")
+                          + (f"; {len(free_gaps)} structure(s) without a correction, {gap_closed} step(s) they are "
+                             "in closed" if free_gaps else ""))
 
     def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.discovery.kinetics import select_for_expansion

@@ -652,7 +652,23 @@ def test_proposals_are_minimized_loosely_and_species_the_free_energies_need_tigh
     assert not any(s.loose for s in tight.species)
 
 
-def test_a_step_out_of_reach_has_no_kinetics_barrier(monkeypatch):
+def _filed_connector(ts_kcal, folder):
+    """_connector, each TS written to a file of its own (the free-energy kinetics take its Hessian there)."""
+    import mepd
+
+    plain = _connector(ts_kcal)
+
+    def connect(pairs, nodes):
+        out = plain(pairs, nodes)
+        for r in out:
+            fp = folder / f"ts_{r['label']}.xyz"
+            mepd.write_xyz(fp, r["ts"])
+            r["files"] = {"ts": str(fp)}
+        return out
+    return connect
+
+
+def test_a_step_out_of_reach_has_no_kinetics_barrier(monkeypatch, tmp_path):
     """A step the free-energy kinetics close (its TS above the cutoff) runs at TS + 1 Hartree, which only stops
     its rate: its kinetics barrier is None, not ~630 kcal/mol."""
     from mepd.discovery.free_energy import FreeEnergies
@@ -662,8 +678,74 @@ def test_a_step_out_of_reach_has_no_kinetics_barrier(monkeypatch):
                          connect=_connector(5.0), access_cutoff_kcal=3.0, kinetics={"free_energy": True})
     assert res.steps and res.kinetics.barriers_kcal[:len(res.steps)] == [None] * len(res.steps)
     res = expand_network(_node("C#N"), _ShiftEngine(), rounds=1, allow_zwitterions=True, steer="access",
-                         connect=_connector(5.0), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
+                         connect=_filed_connector(5.0, tmp_path), access_cutoff_kcal=30.0, kinetics={"free_energy": True})
     assert all(b is not None and b[0] < 10.0 for b in res.kinetics.barriers_kcal[:len(res.steps)])
+    assert res.rounds[-1]["kinetics"]["energy_basis"] == "free" and res.rounds[-1]["kinetics"]["free_energy_gaps"] == []
+
+
+def _free_run(monkeypatch, tmp_path, fail=None, connect=None):
+    """CCO's network on free energies (corrections 0, or None where `fail(structure, is_ts, k)` says; k: its place
+    among the species, or among the TSs, asked for)."""
+    from mepd.discovery.free_energy import FreeEnergies
+
+    def corrections(self, structures, ts, ends=None, energies=None):
+        n_sp = list(ts).count(False)
+        return [None if fail is not None and fail(s, t, n - n_sp if t else n) else 0.0
+                for n, (s, t) in enumerate(zip(structures, ts))]
+
+    monkeypatch.setattr(FreeEnergies, "corrections", corrections)
+    return expand_network(_node("CCO"), _ShiftEngine(), rounds=1, max_products=4, steer="access",
+                          connect=connect or _filed_connector(5.0, tmp_path), access_cutoff_kcal=30.0,
+                          kinetics={"free_energy": True})
+
+
+def test_one_structure_without_a_free_energy_correction_closes_only_its_own_steps(monkeypatch, tmp_path):
+    """A TS whose thermal correction failed closes its step; a species', every step it is an end of; the rest of
+    the network stays on free energies, and the kinetics record says which structures and why. Only the seed's
+    failure leaves the whole network electronic."""
+    full = _free_run(monkeypatch, tmp_path)
+    n = len(full.steps)
+    assert n >= 2 and all(b is not None for b in full.kinetics.barriers_kcal[:n])
+    res = _free_run(monkeypatch, tmp_path, fail=lambda s, t, k: t and k == 0)    # step 0's TS
+    rec = res.rounds[-1]["kinetics"]
+    assert rec["energy_basis"] == "free" and "1 structure(s) without a correction, 1 step(s)" in rec["energies"]
+    [gap] = rec["free_energy_gaps"]
+    assert gap["kind"] == "ts" and gap["step"] == res.steps[0].label and gap["closed_steps"] == 1
+    assert gap["reason"].startswith("thermal correction failed")
+    assert res.kinetics.barriers_kcal[0] is None and all(b is not None for b in res.kinetics.barriers_kcal[1:n])
+    # a species (not the seed): its steps close, the others stay open
+    k = res.steps[0].b
+    res = _free_run(monkeypatch, tmp_path, fail=lambda s, t, _: not t and np.allclose(s.geometry, full.species[k].node.structure.geometry))
+    rec = res.rounds[-1]["kinetics"]
+    [gap] = rec["free_energy_gaps"]
+    assert gap == {**gap, "kind": "species", "index": k, "closed_steps": sum(k in (st.a, st.b) for st in res.steps)}
+    assert [b is None for b in res.kinetics.barriers_kcal[:n]] == [k in (st.a, st.b) for st in res.steps]
+    # the seed: nothing to measure free energies from
+    res = _free_run(monkeypatch, tmp_path, fail=lambda s, t, k: not t and k == 0)
+    rec = res.rounds[-1]["kinetics"]
+    assert rec["energy_basis"] == "electronic" and "seed" in rec["energies"]
+    assert rec["free_energy_gaps"][0]["index"] == 0
+
+
+def test_a_step_without_a_ts_file_closes_alone(monkeypatch, tmp_path):
+    """No TS geometry file for one step: that step is closed (and recorded), not the whole network electronic."""
+    filed = _filed_connector(5.0, tmp_path)
+
+    def connect(pairs, nodes):
+        out = filed(pairs, nodes)
+        if out and not hasattr(connect, "done"):
+            connect.done = out[0]["label"]
+            out[0]["files"] = {"ts": str(tmp_path / "missing.xyz")}
+        return out
+
+    res = _free_run(monkeypatch, tmp_path, connect=connect)
+    rec = res.rounds[-1]["kinetics"]
+    assert rec["energy_basis"] == "free"
+    [gap] = rec["free_energy_gaps"]
+    assert gap["kind"] == "ts" and gap["step"] == connect.done and gap["reason"] == "no TS geometry file"
+    m = [st.label for st in res.steps].index(connect.done)
+    assert res.kinetics.barriers_kcal[m] is None
+    assert sum(b is None for b in res.kinetics.barriers_kcal[:len(res.steps)]) == 1
 
 
 def test_a_path_piece_whose_ts_belongs_to_another_motion_keeps_its_path_peak(refine=None):
@@ -1847,3 +1929,42 @@ def test_in_budget_the_final_kinetics_are_as_before(monkeypatch, tmp_path):
     assert not any("left_out_of_final_kinetics" in st.files for st in res.steps)
     assert with_rule == without
     assert conc_with == pytest.approx(conc_without, rel=1e-9, abs=1e-15)
+
+
+def test_summary_says_which_energies_the_kinetics_rested_on(tmp_path, monkeypatch):
+    """summary.json's steering record: next to the kinetics_energy asked for, the one the final kinetics used, its
+    basis, and the structures that had no free-energy correction (why); a free run that fell back to electronic
+    energies says so in the warnings."""
+    import mepd.discovery.network_expansion as ne
+    from mepd.discovery.free_energy import FreeEnergies
+
+    real = ne.expand_network
+
+    def expand(*a, **kw):
+        return real(*a, **{**kw, "connect": _filed_connector(5.0, tmp_path), "verify": None, "refine": None})
+
+    def run_inputs(_path):
+        ri = RunInputs()
+        ri.engine = _ShiftEngine()
+        return ri
+
+    monkeypatch.setattr(cli_common, "_open_run_inputs", run_inputs)
+    monkeypatch.setattr(ne, "expand_network", expand)
+    for fail_seed in (False, True):
+        monkeypatch.setattr(FreeEnergies, "corrections", lambda self, structures, ts, ends=None, energies=None:
+                            [None if fail_seed and k == 0 else 0.0 for k in range(len(structures))])
+        out = tmp_path / f"out{fail_seed}"
+        res = CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions", "--steer", "access",
+                                       "--barrier-cutoff", "30", "--kinetics-energy", "free", "-o", str(out)])
+        assert res.exit_code == 0, res.output
+        summary = json.loads((out / "summary.json").read_text())
+        steering = summary["steering"]
+        assert steering["kinetics_energy"] == "free"
+        assert steering["kinetics_energy_used"] == ("electronic" if fail_seed else "free")
+        assert steering["kinetics_energy_basis"] == summary["rounds"][-1]["kinetics"]["energies"]
+        assert summary["rounds"][-1]["kinetics"]["energy_basis"] == steering["kinetics_energy_used"]
+        fell_back = [w for w in summary["warnings"] if w.startswith("free-energy kinetics were asked for")]
+        if fail_seed:
+            assert [g["kind"] for g in steering["free_energy_gaps"]] == ["species"] and fell_back
+        else:
+            assert steering["free_energy_gaps"] == [] and not fell_back

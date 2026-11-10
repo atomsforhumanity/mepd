@@ -64,17 +64,19 @@ def _xtb() -> str:
 
 
 def frequencies(symbols: Sequence[str], coords_ang: np.ndarray, *, charge: int = 0, multiplicity: int = 1,
-                solvent: Optional[str] = None, model: str = "alpb", executable: Optional[str] = None) -> dict:
+                solvent: Optional[str] = None, model: str = "alpb", executable: Optional[str] = None,
+                method_args: Sequence[str] = ()) -> dict:
     """GFN2-xTB single-point Hessian of a geometry: {freqs (cm^-1, without
     the translations and rotations), rotational_number, linear, xtb_g298_eh
-    (xtb's own G_RRHO at 298.15 K and 1 atm, for checking)}."""
+    (xtb's own G_RRHO at 298.15 K and 1 atm, for checking)}. `method_args`:
+    another method for xtb (e.g. ["--gfnff"]; "method" still says GFN2)."""
     work = Path(tempfile.mkdtemp(prefix="mepd_thermo_"))
     try:
         lines = [str(len(symbols)), ""] + [f"{s} {x:.10f} {y:.10f} {z:.10f}" for s, (x, y, z) in
                                             zip(symbols, np.asarray(coords_ang).reshape(-1, 3))]
         (work / "in.xyz").write_text("\n".join(lines) + "\n")
         cmd = [executable or _xtb(), "in.xyz", "--bhess", "--chrg", str(int(charge)),
-               "--uhf", str(int(multiplicity) - 1)]
+               "--uhf", str(int(multiplicity) - 1), *method_args]
         if solvent:
             cmd += [f"--{model}", solvent]
         env = {**os.environ, "OMP_NUM_THREADS": "1", "OMP_STACKSIZE": os.environ.get("OMP_STACKSIZE", "1G")}
