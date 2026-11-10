@@ -76,9 +76,12 @@ barriers it searched past, and the species it expanded. Kinetics run later
 longer time cross higher barriers and put material into species the run never
 expanded. Both views then say so above their numbers:
 
-- **Barriers:** the run's conditions and its cutoff (for example 1000 K over
-  1 h: 88 kcal/mol), and the barrier crossed at the new conditions (1500 K
-  over 1 h: 118 kcal/mol). Steps between the two were never looked for.
+- **Barriers:** the run's conditions and the barrier it searched past for
+  sure, its cutoff less the 10 kcal/mol margin for the method's error (for
+  example 1000 K over 1 h: 78 kcal/mol, 88 with the margin), against the
+  barrier crossed at the new conditions. Within the margin (1100 K: 86) a
+  step was searched only if its barrier came out low enough; past the cutoff
+  (1500 K: 118) higher steps were never looked for.
 - **Unexpanded species:** the share of the starting mass that ends in species
   no exploration expanded (a mixture's molecules count as expanded with it).
   What they do next was never searched; the Landscape marks their states
