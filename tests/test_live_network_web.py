@@ -359,3 +359,44 @@ def test_molecules_keep_their_geometrys_stereo_and_meet_their_mirror_image(tmp_p
     two = ln.molecule_yields(tl(), stereo, mirror_images=False)
     assert sorted(a for _, a, _ in two["frames"][0]["yields"]) == [0.25, 0.25]
     assert two["frames"][0]["left"] == [["C=CC(=C)C", 0.5], ["C=CC(=O)OC", 0.5]]
+
+
+def test_a_finished_runs_frames_end_when_it_ended(tmp_path):
+    """A frame recorded after the run finished (a server that first read its end hours later) is the run's
+    end, not hours more of growth: its time is the finish, so the replay's clock ends with the run."""
+    for t in (0.0, 30.0):
+        assert ln.record(tmp_path, _kin(t))
+    assert ln.record(tmp_path, _kin(5000.0))                          # recorded long after the end
+    tl = ln.from_job(tmp_path, t0=1000.0, t_end=1100.0)
+    assert [f["t"] for f in tl["frames"]] == [0.0, 30.0, 100.0]
+    assert [f["t"] for f in ln.from_job(tmp_path, running=True, t0=1000.0)["frames"]][-1] == 5000.0   # running: as recorded
+
+
+def test_a_runs_timeline_says_how_its_numbers_were_made(tmp_path):
+    """The page says how a network's numbers were made: structures' level, the DFT steering and its single
+    points, the energies asked for against those the kinetics used (an explorer missing one structure's
+    frequencies runs electronic), conditions and the barrier searched up to (the cutoff less its margin)."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({"steering": {"mode": "access", "cutoff_kcal": 79.8, "temperature_K": 1000.0,
+                                                                "time_s": 60.0, "kinetics_energy": "free", "standard_state": "1M"}}))
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out), "level": {"label": "gxtb"},
+                                                   "params": {"steer_profile": "linus · ωB97X-D3BJ/def2-TZVP (built in)",
+                                                              "flux_threshold": 0.01}}))
+    m = ln.method_of(tmp_path, "electronic", {"queue": {"finished": {"steer": {"done": 1421}}}})
+    assert m["structures"] == "g-xTB" and m["steer_points"] == 1421 and m["steering"].startswith("linus")
+    assert (m["asked"], m["used"]) == ("free", "electronic")
+    assert abs(m["searched_kcal"] - 69.8) < 1e-9 and m["margin_kcal"] == 10.0 and m["T"] == 1000.0
+    assert ln.method_of(tmp_path, "free energy (1000 K, 1M)")["used"] == "free"
+
+
+def test_the_runs_own_record_of_its_energies_wins(tmp_path):
+    """A run that records what its kinetics ran on (steering.kinetics_energy_used) and the structures whose
+    free-energy correction failed (free_energy_gaps) is reported from that record."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({"steering": {"mode": "access", "kinetics_energy": "free",
+        "kinetics_energy_used": "free", "free_energy_gaps": [{"kind": "ts", "reason": "SCF", "closed_steps": ["ch_39_48_8"]}]}}))
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out)}))
+    m = ln.method_of(tmp_path, "electronic")
+    assert m["used"] == "free" and m["gaps"] == 1 and m["gaps_closed"] == 1

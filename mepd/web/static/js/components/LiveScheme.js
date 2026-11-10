@@ -559,7 +559,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
 
   const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series.slice(0, 3)}
     left=${left} per=${per} steady=${f.t - steadySince} imgOf=${molImg} nameOf=${molName} cond=${cond} pending=${!f.steered} basis=${f.basis}
-    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:')}
+    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job) || tl.method?.steering || null} merged=${String(jobId).startsWith('mix:')}
     reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
       open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
   const table = html`<div class="ld-tables">${!isMixture && html`<h3 class="ld-table-h">What forms, ${per} <span class="muted small">at the end of the simulated time; a molecule counted in every state that holds it</span></h3>
@@ -571,6 +571,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
     ${!mixture && html`<div class="ln-head"><h2>${example ? 'Live network · example' : job?.title?.replace(/^Reaction network expansion:\s*/, 'Network: ') || 'Live network'}</h2>
       ${running && html`<span class="ln-live" title="Updating as the explorer works">● live</span>`}</div>`}
     ${strip}
+    ${!mixture && html`<${MethodNote} m=${tl.method} cond=${cond} example=${!!example} />`}
     <div class="ld-viewbar">
       <div class="segmented small" role="tablist" aria-label="Show the network as">
         <button role="tab" aria-selected=${view === 'scheme'} class=${view === 'scheme' ? 'on' : ''} onClick=${() => setView('scheme')}>Scheme</button>
@@ -754,6 +755,40 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = []
         ${pending ? 'energies wait for DFT' : merged ? '' : products.length ? html`answer held <b>${steady >= 60 ? `${(steady / 60).toFixed(1)} min` : `${Math.round(steady)} s`}</b>` : 'nothing formed yet'}
         ${steering && html`<br /><span title="The level the live kinetics' energies are steered to (DFT single points)">energies: <b>${steering}</b></span>`}</span>
     </div>
+  </div>`;
+}
+
+// How the numbers on this page were made (live_network.method_of), said where they are read: a surprising
+// answer can then be traced to the level, the rates or what was searched, instead of guessed at. Rates from
+// electronic energies when free ones were asked (one structure without frequencies makes the explorer's
+// whole network electronic) are said plainly: they leave out the entropy of splitting in two.
+const steerName = (x) => { const [prog, lvl] = String(x || '').replace(/\s*\(built in\)\s*$/, '').split(/\s*·\s*/); return lvl ? `${lvl} (DFT, ${prog})` : prog; };
+const fmtSpan = (s) => (s == null ? '' : s >= 3600 ? `${+(s / 3600).toPrecision(3)} h` : s >= 60 ? `${+(s / 60).toPrecision(3)} min` : `${+s.toPrecision(3)} s`);
+function MethodNote({ m, cond, example = false }) {
+  if (!m) {
+    return example ? html`<p class="ln-method small muted">How this was computed was not recorded with this replay (an earlier explorer version):
+      its level of theory, the energies its rates come from and what it searched are unknown here.</p>` : null;
+  }
+  const T = m.T ?? cond?.T, t = m.time_s ?? cond?.time_s;
+  const rates = m.used === 'free' ? `free energies (quasi-RRHO${m.standard_state ? `, ${m.standard_state}` : ''})` : m.used === 'electronic' ? 'electronic energies' : null;
+  const mismatch = m.asked === 'free' && m.used === 'electronic';
+  const where = m.solvent ? `in ${m.solvent}` : 'gas phase';
+  return html`<div class="ln-method small">
+    ${mismatch && html`<p class="ln-method-warn"><b>Rates come from electronic energies, not the free energies asked for.</b>
+      ${` Some structures have no frequencies, and then the explorer runs the whole network on electronic energies. They leave out the entropy a molecule gains by splitting in two (about 10 kcal/mol at room temperature, tens of kcal/mol${T >= 600 ? ` at ${T} K` : ' when hot'}): products that are two molecules come out under-counted, and their recombining over-counted.`}</p>`}
+    <details>
+      <summary>How this was computed: ${m.structures && html`<b>${m.structures}</b> structures`}${m.steering ? html` · energies <b>${steerName(m.steering)}</b>` : ''}${rates ? html` · rates from <b>${rates}</b>` : ''}${T ? ` · ${T} K` : ''}${t ? ` for ${fmtSpan(t)}` : ''} · ${where}</summary>
+      <dl>
+        ${m.structures && html`<dt>Structures</dt><dd>Every species, transition state and IRC: <b>${m.structures}</b> (geometries, and the frequencies free energies need).</dd>`}
+        <dt>Energies</dt><dd>${m.steering ? html`<b>${steerName(m.steering)}</b>: DFT single points at the ${m.structures || 'same'} geometries${m.steer_points ? `, ${m.steer_points} computed` : ''}. The kinetics use these; a structure still waiting for its own uses ${m.structures || 'the structures\' level'} meanwhile.`
+          : html`The structures' own level, <b>${m.structures || 'as run'}</b> (no DFT steering).`}</dd>
+        <dt>Rates</dt><dd>Transition-state theory (Eyring) from ${rates ? html`<b>${rates}</b>` : 'the energies above'}${m.asked && m.used && m.asked !== m.used ? ` (asked: ${m.asked})` : ''}; mass-action kinetics from the start alone${T ? ` at ${T} K` : ''}${t ? ` over ${fmtSpan(t)}` : ''}, ${where}.</dd>
+        ${m.mode === 'access' && m.searched_kcal != null && html`<dt>Searched</dt><dd>Reactions out of species that hold material, with barriers up to${' '}<b>${m.searched_kcal.toFixed(0)} kcal/mol</b>: what crosses in that time at that temperature${m.margin_kcal ? ` (${m.cutoff_kcal.toFixed(0)} with a ${m.margin_kcal.toFixed(0)} kcal/mol margin for the method's error)` : ''}. Higher ones were never looked for.</dd>`}
+        ${m.gaps > 0 && html`<dt>Gaps</dt><dd>${m.gaps} structure${m.gaps === 1 ? '' : 's'} had no free-energy correction (frequencies that failed)${m.gaps_closed
+          ? `: ${m.gaps_closed} step${m.gaps_closed === 1 ? '' : 's'} through ${m.gaps === 1 ? 'it' : 'them'} closed` : ''}; the rest use free energies.</dd>`}
+        ${m.threshold != null && html`<dt>Grown from</dt><dd>A species' own reactions are searched once ${(m.threshold * 100).toFixed(0)} % of the start has passed through it.</dd>`}
+      </dl>
+    </details>
   </div>`;
 }
 

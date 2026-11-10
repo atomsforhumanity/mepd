@@ -739,3 +739,12 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ls-mass { margin: 8px 0 0; }
 .kn-coverage p { margin: 4px 0; }
 .ls-scroll { overflow-x: auto; }
+.ln-method { margin: 6px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+.ln-method-warn { margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--warn-soft); color: var(--text); line-height: 1.45; }
+.ln-method-warn b { color: var(--warn); }
+.ln-method summary { cursor: pointer; color: var(--muted); }
+.ln-method summary b { color: var(--heading); font-weight: 600; }
+.ln-method dl { margin: 8px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; max-width: 980px; }
+.ln-method dt { font-weight: 700; color: var(--heading); }
+.ln-method dd { margin: 0; line-height: 1.45; }
+@media (max-width: 640px) { .ln-method dl { grid-template-columns: minmax(0, 1fr); } .ln-method dd { margin-bottom: 4px; } }
