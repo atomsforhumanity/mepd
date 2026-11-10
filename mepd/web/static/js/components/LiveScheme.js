@@ -514,7 +514,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
           <g class="ld-grow"><circle r="3" /><circle r="5" class="ld-hit" /></g></g>`;
       })}</g>
       ${rx.events.length > 0 && html`<${ReactorOverlay} apiJob=${apiJob} events=${rx.events} now=${nowOf} live=${followLive || !!eventClock}
-        posOf=${(id) => (known.has(id) ? P(id) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
+        posOf=${(id) => (known.has(id) ? P(id) : isMixture && id === '0' ? P(m.seed) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
         avoid=${avoid} settleOf=${settleOf} scale=${1} onOpen=${openEvent} onCatch=${onCatch} />`}
       <g class="ld-cards">${cardIds.map((id) => {
         const w = cardW(id), h = w * 0.75, hue = hueOf(id), img = imgOf(id), nm = nameOf(id) || short(tl.smiles[id], 16), fin = groupFin(id);
@@ -533,7 +533,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
       ${sel && html`<${LaneGauge} sel=${sel} f=${f} x=${laneX} y=${laneTop - 40} />`}
       <text x=${laneX} y=${laneTop + 14} class="ld-lane-head">${outcomes === series ? `What forms, ${per}` : 'Outcomes as whole mixtures'}</text>
       <text x=${laneX} y=${laneTop + 34} class="ld-lane-sub">${outcomes === series
-        ? (lane.length ? `at the end of the simulated time${cond.tauKnown ? ` (${fmtTime(cond.tau)})` : ''}` : 'nothing formed yet')
+        ? (lane.length ? `at the end of the simulated time${cond.tauKnown ? ` (${fmtTime(cond.tau)})` : ''}` : tl.mixture?.pending ? 'nothing merged yet: the seeds are running' : 'nothing formed yet')
         : 'share of the starting boxes that end as each'}</text>
       ${lane.map((p) => {
         const nm = p.mol ? molName(p.key) : label(p.id), img = p.mol ? molImg(p.key) : imgOf(p.id);
@@ -564,7 +564,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
 
   const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series.slice(0, 3)}
     left=${left} per=${per} steady=${f.t - steadySince} imgOf=${molImg} nameOf=${molName} tellOf=${molTell} cond=${cond} pending=${!f.steered} basis=${f.basis}
-    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:')}
+    live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:') ? (tl.mixture?.pending ? 'none' : 'some') : null}
     reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
       open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
   const table = html`<div class="ld-tables">${!isMixture && html`<h3 class="ld-table-h">What forms, ${per} <span class="muted small">at the end of the simulated time; a molecule counted in every state that holds it</span></h3>
@@ -740,7 +740,7 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = []
       ${cond.budget && html`<span class="ld-s-budget" title=${`of a ${fmtClock(cond.budget)} time budget`}><i style=${`width:${Math.min(100, (100 * t) / cond.budget)}%`}></i></span>`}
     </div>
     <div class="ld-s-phase">
-      <b>${merged ? (running ? 'Seeds running; merged so far' : 'Merged network') : ph ? ph.text : running ? (atEnd ? 'Starting' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)} so far`) : atEnd ? 'Finished' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)}`}</b>
+      <b>${merged ? (merged === 'none' ? (running ? 'Seeds running; nothing merged yet' : 'Nothing was merged') : running ? 'Seeds running; merged so far' : 'Merged network') : ph ? ph.text : running ? (atEnd ? 'Starting' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)} so far`) : atEnd ? 'Finished' : `Replay · ${fmtClock(t)} of ${fmtClock(tEnd)}`}</b>
       <span class="small muted">${ph ? ph.detail : `${cond.T ? `${Math.round(cond.T)} K` : ''}${cond.tauKnown ? ` · ${fmtTime(cond.tau)} simulated` : ''}`}</span>
     </div>
     <div class="ld-s-counts"><span><b>${counts.species}</b> species</span><span><b>${counts.steps ?? nSteps}</b> steps</span></div>
@@ -749,7 +749,7 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = []
       <b>Reactor MD ›</b><span class="small muted">${reactor.running ? `${reactor.running} trajector${reactor.running === 1 ? 'y' : 'ies'} running · ` : ''}${reactor.recent
         ? `${reactor.recent} event${reactor.recent === 1 ? '' : 's'} in the last ${WINDOW_S} s` : `${reactor.events} events`}</span></button>`}
     <div class="ld-s-products" title=${`What forms at the end of the simulated time, ${per} (a molecule counted in every state of the box that holds it)`}>
-      <span class="small muted ld-s-per">${per}:</span>
+      ${(products.length > 0 || left.length > 0) && html`<span class="small muted ld-s-per">${per}:</span>`}
       ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${`${nameOf(p.key)}: ${amt(p.fin)} ${per}`}>
         ${imgOf(p.key, 120, 90) && html`<img src=${imgOf(p.key, 120, 90)} alt=${nameOf(p.key)} />`}${tellOf(p.key) && html`<span class="ld-s-pname">${short(tellOf(p.key), 26)}</span>`}<b>${amt(p.fin)}</b></span>`)}
       ${left.map((l) => html`<span class="ld-s-prod start" title=${`${l.name}, left of the start at the end of the simulated time`}>
@@ -858,9 +858,9 @@ export function mixtureTimeline(mx, names) {
   // per molecule (here every species is one): mol per mol of feed, the feed's own molecules left
   const fin = (x) => (x.final_concentration || 0) / fedTotal;
   frame.yields = mols.filter((x) => !feed.has(x.molecule) && fin(x) >= 1e-9).sort((a, b) => fin(b) - fin(a)).slice(0, 16).map((x) => [x.molecule, fin(x), x.molecule]);
-  frame.left = mols.filter((x) => feed.has(x.molecule)).map((x) => [x.molecule, fin(x)]);
+  frame.left = mx.pending ? [] : mols.filter((x) => feed.has(x.molecule)).map((x) => [x.molecule, fin(x)]);
   const molecules = Object.fromEntries(mols.map((x) => [x.molecule, { name: names?.[x.molecule] || null, species: x.molecule }]));
-  return { frames: [frame], smiles, names, explored, co, molecules, start: [...feed], mixture: { feed: [...feed], tau, seeds: mx.seeds || [], generation: mx.generation },
+  return { frames: [frame], smiles, names, explored, co, molecules, start: [...feed], mixture: { feed: [...feed], tau, seeds: mx.seeds || [], generation: mx.generation, pending: !!mx.pending },
     command: tau != null ? `--time ${tau}` : '' };
 }
 

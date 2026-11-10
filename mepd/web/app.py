@@ -2965,8 +2965,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def mixture_network(jid: str):
         """A reacting mixture as it stands (`discovery mixture` rewrites mixture.json after each merge): its
         molecules with their concentrations, its reactions with barriers and extents, the seeds' progress,
-        and everyday names where molecules have them."""
-        from mepd.web.live_network import names_of
+        and everyday names where molecules have them. Before the first merge: the seeds started so far, and
+        the feed and conditions from the job's command (`feed`, `settings`)."""
+        from mepd.web.live_network import mixture_feed, names_of
 
         job = J().jobs.get(jid)
         if job is None:
@@ -2977,7 +2978,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             data = json.loads((out / "mixture.json").read_text())
         except (OSError, ValueError):
             pass
-        seeds = []
+        seeds, feed = [], None
+        if data is None:
+            feed = mixture_feed(J().job_dir(jid), job)
         if data is None and (out / "seeds").is_dir():   # before the first merge: the seeds started so far
             for d in sorted((out / "seeds").iterdir()):
                 if d.is_dir():
@@ -2999,16 +3002,19 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                     rx.append(kept[key])
             data["channels"] = len(data.get("reactions") or [])
             data["reactions"] = rx
-            # the feed by the names its structures have in the workspace, not the snapshot file the run was given
-            targets = (job.get("targets") or {}).get("structures") or []
-            for i, f in enumerate(data.get("feed") or []):
-                if i < len(targets) and (f.get("name") or "").endswith(".xyz"):
-                    try:
-                        f["name"] = W().structure(targets[i]).get("name") or f["molecule"]
-                    except Exception:   # noqa: BLE001 -- a structure deleted since: its SMILES then
-                        f["name"] = f["molecule"]
-        smiles = {m["molecule"]: m["molecule"].split("|")[0] for m in (data or {}).get("molecules") or []}
-        return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles)}
+        # the feed by the names its structures have in the workspace, not the snapshot file the run was given
+        targets = (job.get("targets") or {}).get("structures") or []
+        for i, f in enumerate((data or {}).get("feed") or feed or []):
+            if i < len(targets) and (f.get("name") or "").endswith(".xyz"):
+                try:
+                    f["name"] = W().structure(targets[i]).get("name") or f["molecule"]
+                except Exception:   # noqa: BLE001 -- a structure deleted since: its SMILES then
+                    f["name"] = f["molecule"]
+        smiles = {m["molecule"]: m["molecule"].split("|")[0] for m in (data or {}).get("molecules") or feed or []}
+        params = job.get("params") or {}
+        before = {"feed": feed, "settings": {"temperature_K": params.get("temperature"), "time_s": params.get("time_s"),
+                                             "standard_state": params.get("standard_state")}} if data is None else {}
+        return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles), **before}
 
     @app.get("/api/jobs/{jid}/network-timeline")
     def network_timeline(jid: str, since: Optional[int] = None):

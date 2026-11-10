@@ -820,6 +820,43 @@ def _xyz_key(xyz: str) -> Optional[tuple]:
     return _key(mols) if mols else None
 
 
+_FEED: dict = {}
+
+
+def mixture_feed(job_dir: Path, job: dict) -> list:
+    """A reacting mixture's feed before its first merge (no mixture.json yet), from its command: each --feed
+    (a SMILES, or an xyz file of one molecule, the copy the job keeps under inputs/, perceived), its
+    --concentration (in order; 1 each without) and a name (the file's, which the workspace's replaces)."""
+    argv = [str(x) for x in job.get("argv") or []]
+    feeds = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--feed"]
+    conc = [argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "--concentration"]
+    out = []
+    for k, f in enumerate(feeds):
+        smi, name = f, f
+        if f.endswith(".xyz"):
+            name = Path(f).name
+            try:
+                xyz = (Path(job_dir) / "inputs" / name).read_text()
+            except OSError:
+                continue
+            if xyz not in _FEED:
+                from qcdata import Structure
+
+                from mepd.web.chem import perceive_smiles
+                try:
+                    _FEED[xyz] = perceive_smiles(Structure.from_xyz(xyz)) or ""
+                except Exception:  # noqa: BLE001 -- not perceived: left out
+                    _FEED[xyz] = ""
+            smi = _FEED[xyz]
+        if smi:
+            try:
+                c = float(conc[k]) if k < len(conc) else 1.0
+            except ValueError:
+                c = 1.0
+            out.append({"name": name, "molecule": smi, "concentration": c})
+    return out
+
+
 def species_formula(job_dir: Path, sid: str) -> Optional[str]:
     from mepd.web.depict_graph import formula
 

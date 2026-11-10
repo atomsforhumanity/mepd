@@ -4,8 +4,9 @@
 // was an explorer run; their steps are merged into reactions between molecules with mass-action
 // kinetics from the feed's concentrations. Drawn as the live network is (LiveScheme.js): the feed at
 // the left, each molecule out from the molecule it is made from, a reaction an arrow from its main
-// reactant to each product with its co-reactant written on it, amounts as a share of the feed, and the
-// seeds' reactor events. Experimental: the mixture explorer is not yet benchmarked.
+// reactant to each product with its co-reactant written on it, amounts in mol per mol of feed, and the
+// seeds' reactor events. Before the first merge, the feed alone (from the job's command), the seeds'
+// reactor events playing on it. Experimental: the mixture explorer is not yet benchmarked.
 import { html, useEffect, useState } from '../lib.js';
 import { api } from '../api.js';
 import { openJob, useStore } from '../store.js';
@@ -34,7 +35,11 @@ export function MixtureView({ jobId }) {
 
   if (error) return html`<div class="ln-empty"><p>${error}</p></div>`;
   if (!d) return html`<p class="boot">Loading the mixture…</p>`;
-  const m = d.mixture;
+  // Before the first merge: the feed alone, as a mixture that has not reacted yet ("pending").
+  const pre = !(d.mixture?.molecules || []).length && (d.feed || []).length ? {
+    feed: d.feed, settings: d.settings || {}, seeds: d.seeds || [], reactions: [], notes: [], generation: null, pending: true,
+    molecules: d.feed.map((f) => ({ molecule: f.molecule, max_concentration: f.concentration, final_concentration: f.concentration, feed: true })) } : null;
+  const m = (d.mixture?.molecules || []).length ? d.mixture : pre;
   // The feed's own names (as given to the mixture), else everyday names, else the SMILES.
   const names = { ...(d.names || {}), ...Object.fromEntries(((m && m.feed) || []).filter((f) => f.name && f.name !== f.molecule).map((f) => [f.molecule, f.name])) };
   const nameOf = (k) => names[k] || k.split('|')[0];   // "A|B": forms counted as one species
@@ -48,7 +53,7 @@ export function MixtureView({ jobId }) {
   const head = html`<div class="ln-head"><h2>${job?.title?.replace(/^Reacting mixture[^:]*:\s*/, 'Mixture: ') || 'Reacting mixture'}</h2>
     <span class="ln-exp" title="The mixture explorer is not yet benchmarked against experiment">experimental</span>
     ${running && html`<span class="ln-live">● live</span>`}<span class="spacer"></span>
-    ${m && html`<span class="small muted">${m.settings?.temperature_K} K · ${m.settings?.time_s} s · generation ${m.generation ?? 0}</span>`}</div>`;
+    ${m && html`<span class="small muted">${m.settings?.temperature_K} K · ${m.settings?.time_s} s · ${m.pending ? 'nothing merged yet' : `generation ${m.generation ?? 0}`}</span>`}</div>`;
   if (!m || !(m.molecules || []).length) {
     return html`<div class="ld-page">${head}
       <div class="ln-stage ln-waiting"><div class="ln-seed-pulse"></div>
@@ -61,8 +66,9 @@ export function MixtureView({ jobId }) {
       ${(m.feed || []).map((f) => html`<div class="ln-prod" title=${f.molecule}>
         <img class="ln-prod-mol" src=${depictUrl(f.molecule, 160, 120)} alt=${f.molecule} />
         <span class="ln-prod-name">${nameOf(f.molecule)}</span><b>${fmtC(f.concentration)} ${unit}</b></div>`)}
-      <span class="small muted">${seeds.length} seed${seeds.length === 1 ? '' : 's'} (${doneSeeds} done), generation ${m.generation ?? 0}: each seed is one
-        combination of molecules explored on its own; its steps join this network. Amounts are a share of the feed.</span>
+      <span class="small muted">${seeds.length} seed${seeds.length === 1 ? '' : 's'} (${doneSeeds} done)${m.pending ? '' : `, generation ${m.generation ?? 0}`}: each seed is one
+        combination of molecules explored on its own; its steps join this network${m.pending ? ' when it finishes (none has yet)' : ''}.
+        Amounts are in mol per mol of feed.</span>
       <span class="section-title">Look closer</span>${doors}</section>
     ${(m.notes || []).length > 0 && html`<section class="ln-closer"><span class="section-title">Notes</span>
       <ul class="ln-feed">${m.notes.slice(0, 4).map((n) => html`<li class="muted">${n}</li>`)}</ul></section>`}

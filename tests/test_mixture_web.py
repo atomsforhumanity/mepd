@@ -47,7 +47,7 @@ def test_the_demo_caps_a_mixture():
             policy.check_op("network-mixture", bad)
 
 
-def test_the_mixture_page_reads_mixture_json_and_the_seeds_before_it(tmp_path):
+def test_the_mixture_page_reads_mixture_json_and_the_seeds_and_feed_before_it(tmp_path):
     from fastapi.testclient import TestClient
 
     from mepd.web.app import create_app
@@ -64,10 +64,21 @@ def test_the_mixture_page_reads_mixture_json_and_the_seeds_before_it(tmp_path):
                            "targets": {"structures": [], "edges": []}}
         d = c.get("/api/jobs/j_m/mixture").json()
         assert d["mixture"] is None and d["seeds"] == [{"name": "g0-a", "status": "running"}]
+        # before the first merge the page draws the feed: from the command (an xyz file the job keeps, or SMILES)
+        inputs = mgr.job_dir("j_m") / "inputs"
+        inputs.mkdir(parents=True)
+        (inputs / "feed_0.xyz").write_text("3\n\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n")
+        mgr.jobs["j_m"].update(argv=["discovery", "mixture", "--feed", "/elsewhere/feed_0.xyz", "--concentration", "2",
+                                     "--feed", "CC", "--concentration", "0.5", "--temperature", "300", "--time", "60"],
+                               params={"temperature": 300.0, "time_s": 60.0, "standard_state": "1M"})
+        d = c.get("/api/jobs/j_m/mixture").json()
+        assert [(f["molecule"], f["concentration"]) for f in d["feed"]] == [("O", 2.0), ("CC", 0.5)]
+        assert d["settings"] == {"temperature_K": 300.0, "time_s": 60.0, "standard_state": "1M"}
+        assert d["names"] == {"O": "water", "CC": "ethane"}
         (out / "mixture.json").write_text(json.dumps({"feed": [{"name": "water", "molecule": "O", "concentration": 1}],
                                                       "molecules": [{"molecule": "O"}], "reactions": [], "seeds": []}))
         d = c.get("/api/jobs/j_m/mixture").json()
-        assert d["mixture"]["feed"][0]["molecule"] == "O" and d["names"]["O"] == "water"
+        assert d["mixture"]["feed"][0]["molecule"] == "O" and d["names"]["O"] == "water" and "feed" not in d
 
 
 def test_a_real_mixture_reads_by_its_names_with_mirror_images_counted(tmp_path):
