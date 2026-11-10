@@ -1070,6 +1070,10 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Demo mode offers only models that are installed.** It used to accept Orb and MACE, which can't be
   installed alongside fairchem and so aren't in the image; a tester's job with them failed at run time.
 
+### Removed
+
+- **Web: the Reacting mixture is no longer offered as a tool.** It sat silent: each seed ran up to 15 minutes before anything reached its page, and a complex went in as one molecule (3 water + 3 methane + 3 ammonia + 3 H2 became one 42-atom feed, seeded alone and as an 84-atom pair). Several molecules that should react together are a complex grown by Network expansion, which shows its live network from the start. Older mixture jobs still open and resume (`mepd discovery mixture` is unchanged). With several molecules selected, Network expansion's card now says it runs one expansion per molecule, each alone, and points to the complex; the Discover step opens the Complex tool with Network expansion.
+
 ### Fixed
 
 - **The ORCA engine works with qccodec 0.21 and later.** qccodec 0.21's `encode()` returns its input files in

@@ -37,14 +37,15 @@ def test_the_mixture_command_has_every_feed_its_concentration_and_the_growth_cho
         op.build(Ctx(), op.parse_params({"concentrations": "1, 2, 3"}))
 
 
-def test_the_demo_caps_a_mixture():
+def test_the_mixture_is_no_longer_a_tool_but_older_jobs_still_open():
+    """Not offered in Explore; its operation stays (demo caps included) so older jobs keep their page and resume."""
     from mepd.web.demo import DemoPolicy
 
-    policy = DemoPolicy()
-    policy.check_op("network-mixture", {"workers": 4, "copies": 2})
-    for bad in ({"workers": 16}, {"copies": 3}, {"generations": 4}, {"seed_minutes": 120}):
-        with pytest.raises(WorkspaceError):
-            policy.check_op("network-mixture", bad)
+    op = OPERATIONS["network-mixture"]
+    assert op.hidden and op.describe()["hidden"]
+    DemoPolicy().check_op("network-mixture", {"workers": 4, "copies": 2})
+    with pytest.raises(WorkspaceError):
+        DemoPolicy().check_op("network-mixture", {"workers": 16})
 
 
 def test_the_mixture_page_reads_mixture_json_and_the_seeds_before_it(tmp_path):

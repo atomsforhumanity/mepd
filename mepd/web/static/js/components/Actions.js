@@ -87,7 +87,12 @@ export function applicability(op, sel) {
     // Retrosynthesis plans routes to one molecule: a complex (several) would only fail ("one molecule").
     if (op.key === 'retrosynthesis' && sel.structures.some((id) => isComplex(state.workspace.structures[id])
       && (state.workspace.structures[id].members || []).length > 1)) return null;
-    return { n: nS, what: nS === 1 ? 'this structure' : `${nS} structures` };
+    const fit = { n: nS, what: nS === 1 ? 'this structure' : `${nS} structures` };
+    // Several molecules selected: one run each, alone. Growing them together is a complex's expansion.
+    if (nS > 1 && op.family?.key === 'network') {
+      fit.note = 'One expansion per molecule, each alone. To let them react with each other, make them a complex (Molecule › Complex) and expand the complex.';
+    }
+    return fit;
   }
   if (op.target === 'job') return null;   // follow-ups live on their source job's result page
   if (op.target === 'set') {
@@ -97,7 +102,7 @@ export function applicability(op, sel) {
       const recs = sel.structures.map((id) => state.workspace.structures[id]).filter(Boolean);
       const key = (r) => `${r.formula}|${r.charge}|${r.multiplicity}`;
       if (new Set(recs.map(key)).size > 1) {
-        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. The Reacting mixture handles molecules with different atoms.';
+        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. For molecules with different atoms, make them a complex and grow it with Network expansion.';
       }
     }
     return fit;
@@ -306,7 +311,7 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
   const nChanged = Object.entries(clean(values)).filter(([k, v]) => k in props && JSON.stringify(v ?? null) !== JSON.stringify(props[k].default ?? null)).length;
   const names = (ends ? ends.filter(Boolean).map((r) => r.name) : targetIds.map((id) => structures[id]?.name).filter(Boolean));
   const what = op.target === 'pair' && names.length === 2 ? html`from <b>${names[0]}</b> to <b>${names[1]}</b>`
-    : names.length ? html`for <b>${names.length > 2 ? `${names.length} structures` : names.join(' and ')}</b>` : null;
+    : names.length ? html`for ${op.target === 'structure' && names.length > 1 ? 'each of ' : ''}<b>${names.length > 2 ? `${names.length} structures` : names.join(' and ')}</b>` : null;
   const took = Object.values(state.jobs).filter((j) => j.op === op.key && j.status === 'done' && j.finished && j.started)
     .map((j) => j.finished - j.started).sort((a, b) => a - b);
   const usual = took.length ? took[Math.floor(took.length / 2)] : null;

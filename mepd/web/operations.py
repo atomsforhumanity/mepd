@@ -2209,6 +2209,10 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "kinetics. Experimental: not yet benchmarked. (`mepd discovery mixture`)",
         "set", EXPLORE, MixtureParams, _build_mixture, min_structures=1, stoppable=True,
         produces=["molecules and reactions of the mixture", "their kinetics from the feed's concentrations"],
+        # Not offered as a tool: a complex went in as one molecule and the page sat empty for each seed's
+        # 15 minutes; several molecules together are a complex grown by Network expansion. Kept so older
+        # mixture jobs still open.
+        hidden=True,
         cli_path=("discovery", "mixture"),
         cli_extra_flags=("--feed", "--concentration", "--temperature", "--time", "--standard-state", "--copies",
                          "--generations", "--threshold", "--inputs", "--expand-args", "--workers", "--seed-workers",
@@ -2245,7 +2249,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
     Operation(
         "network-splits", "Paths between isomers", "Search a path between every pair of the selected isomers (same "
         "atoms, same charge and spin) and join the steps it finds, with any intermediates, into one network. For "
-        "molecules with different atoms, use the Reacting mixture. (`mepd network-splits`)",
+        "molecules with different atoms, make them a complex and grow it with Network expansion. (`mepd network-splits`)",
         "set", SET, NetworkSplitsParams, _build_network_splits, min_structures=2, same_atoms=True,
         produces=["network edges", "intermediates"]),
     Operation(
