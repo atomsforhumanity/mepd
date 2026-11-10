@@ -240,11 +240,39 @@ export function KineticsView() {
   </div>`;
 }
 
+const fmtPct = (v) => (v >= 0.995 && v < 1 ? '>99%' : v >= 0.01 ? `${Math.round(v * 100)}%` : v >= 1e-4 ? `${(v * 100).toPrecision(1)}%` : '<0.01%');
+const fmtTime = (s) => (s >= 86400 ? `${+(s / 86400).toPrecision(3)} d` : s >= 3600 ? `${+(s / 3600).toPrecision(3)} h`
+  : s >= 60 ? `${+(s / 60).toPrecision(3)} min` : `${+s.toPrecision(3)} s`);
+
+// Kinetics outside what explored the network (res.coverage, mepd.web.kinetics.coverage): hotter or longer than
+// the explorations' own kinetics crosses barriers they never searched past, and material that ends in species
+// they never expanded goes on in ways nobody looked for. Said plainly, so the numbers below read as what they are.
+export function CoverageWarning({ res, compact = false }) {
+  const c = res?.coverage;
+  if (!c) return null;
+  const front = (c.frontier || []).filter((f) => (f.share ?? 0) >= 0.005);
+  if (!c.beyond && c.frontier_share < 0.01) return null;
+  const ex = c.explorations || [];
+  const conds = [...new Set(ex.map((e) => `${+e.temperature.toPrecision(4)} K over ${fmtTime(e.time_s)}`))];
+  const names = front.slice(0, 4).map((f) => `${f.name} ${fmtPct(f.share)}`).join(', ') + (front.length > 4 ? ', …' : '');
+  return html`<div class="warn-box kn-coverage">
+    <p><b>Beyond what was explored: read these numbers with care.</b></p>
+    ${c.beyond && html`<p>${`The network was explored with kinetics at ${conds.join(' and ')}, searching past barriers up to ${c.searched_kcal.toFixed(0)} kcal/mol. `
+      + `At ${res.temperature} K over ${fmtTime(res.time_s)}, barriers up to ${c.reach_kcal.toFixed(0)} kcal/mol are crossed: steps between the two were never looked for, `
+      + 'so routes that matter here may be missing.'}</p>`}
+    ${c.frontier_share >= 0.01 && html`<p>${`${fmtPct(c.frontier_share)} of the starting mass ends in species no exploration expanded (${names}): `
+      + `what ${front.length === 1 ? 'it does' : 'they do'} next was never searched.`}</p>`}
+    ${!compact && html`<p class="small muted">${`To check: run Network expansion again at these conditions (cutoff temperature ${res.temperature} K)`
+      + `${front.length ? `, or from ${front[0].name}` : ''}.`}</p>`}
+  </div>`;
+}
+
 function Results({ res, T, onReaction, onRerun, onIncludeUnchecked }) {
   const [showAll, setShowAll] = useState(false);
   const [logTime, setLogTime] = useState(false);
   // What keeps the asked-for reactions out comes first: missing energies, steps still being checked.
-  const before = html`<${MissingEnergy} res=${res} onRerun=${onRerun} />
+  const before = html`<${CoverageWarning} res=${res} />
+    <${MissingEnergy} res=${res} onRerun=${onRerun} />
     ${res.unchecked_running > 0 && html`<div class="kn-missing"><p><b>${res.unchecked_running} step${res.unchecked_running === 1 ? '' : 's'} of a running
       expansion wait${res.unchecked_running === 1 ? 's' : ''} for ${res.unchecked_running === 1 ? 'its' : 'their'} IRC check</b>, so ${res.unchecked_running === 1 ? 'it is' : 'they are'} left out for now
       (a step counts once its IRC joins its two species).</p>

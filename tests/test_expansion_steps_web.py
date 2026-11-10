@@ -336,3 +336,32 @@ def test_orbitals_follow_an_expansions_own_step_on_its_edge(client, tmp_path, mo
     other = ws.add_edge(s0, s2, origin={"kind": "job", "job": "j_other", "label": "fast_0_1"})
     assert client.post("/api/jobs", json={"op": "orbitals", "source_job": "j_running", "dry_run": True,
                                           "params": {"edge": other["id"]}}).status_code == 400
+
+
+def test_kinetics_say_when_they_go_beyond_what_was_explored(tmp_path):
+    """Kinetics hotter than the expansion's own cross barriers it never searched past, and material that ends in
+    species it never expanded goes on in ways nobody looked for: both are said, with the mass that ends there.
+    A mixture the run expanded ("ketene + water") counts for its molecules; at the run's own conditions, nothing."""
+    from mepd.web.kinetics import coverage
+
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({
+        "steering": {"mode": "access", "cutoff_kcal": 87.9, "temperature_K": 1000.0, "time_s": 3600.0},
+        "rounds": [{"sources": [0, 1]}]}))
+    job = {"id": "j_x", "op": "graph-enumeration", "status": "done", "title": "expansion", "output_dir": str(out),
+           "live_nodes": {"0": "s_a", "1": "s_kw", "2": "s_co"}, "params": {"flux_threshold": 0.01}}
+    snap = {"structures": {"s_a": {"smiles": "CC(=O)O"}, "s_kw": {"smiles": "C=C=O.O"}, "s_k": {"smiles": "C=C=O"},
+                           "s_w": {"smiles": "O"}, "s_co": {"smiles": "[C-]#[O+]"}}}
+    sp = lambda i, c0, final, mx, m: {"id": i, "name": i, "c0": c0, "final": final, "max": mx, "mass": m}
+    species = [sp("s_a", 1.0, 0.0, 1.0, 60.0), sp("s_k", 0, 0.5, 0.6, 42.0), sp("s_w", 0, 0.5, 0.6, 18.0),
+               sp("s_co", 0, 0.0, 0.002, 28.0)]
+    at_run = coverage(snap, {"j_x": job}, species, 1000.0, 3600.0, {"s_a"})
+    assert at_run["beyond"] is False and at_run["frontier"] == []
+    assert abs(at_run["searched_kcal"] - 87.9) < 1e-9 and at_run["reach_kcal"] < 87.9
+    species[1:] = [sp("s_k", 0, 0.0, 0.6, 42.0), sp("s_w", 0, 0.5, 0.6, 18.0), sp("s_co", 0, 1.0, 1.0, 28.0)]
+    hot = coverage(snap, {"j_x": job}, species, 1500.0, 3600.0, {"s_a"})
+    assert hot["beyond"] is True and hot["reach_kcal"] > 110
+    assert [f["id"] for f in hot["frontier"]] == ["s_co"] and abs(hot["frontier_share"] - 28.0 / 60.0) < 1e-9
+    # no kinetics-steered exploration behind the network: nothing to compare with
+    assert coverage(snap, {}, species, 1500.0, 3600.0, {"s_a"}) is None

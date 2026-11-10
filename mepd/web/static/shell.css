@@ -735,3 +735,7 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .op-line.on path.weak, .op-line.sel path.weak { opacity: .55; }
 .op-prof-bs { fill: none; stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
 .op-diagram text.op-bs-mark { fill: var(--warn); font-weight: 600; }
+.ls-open { font: 600 11px var(--font-ui); fill: var(--warn); text-anchor: middle; cursor: help; }
+.ls-mass { margin: 8px 0 0; }
+.kn-coverage p { margin: 4px 0; }
+.ls-scroll { overflow-x: auto; }
