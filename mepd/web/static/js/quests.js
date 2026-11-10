@@ -28,7 +28,10 @@ export const QUESTS = [
   { id: 'kinetics', short: 'Kinetics', title: 'Kinetics', blurb: 'Which products a mixture ends up with.', after: ['network'],
     opens: { tabs: ['analyze'] }, start: { analyze: 'kinetics' } },
   { id: 'discover', short: 'Discover', title: 'Find new reactions', blurb: 'Let mepd propose products for a molecule.', after: ['network'],
-    opens: { ops: ['graph-enumeration', 'nanoreactor', 'nanoreactor-more', 'network-splits', 'hessian-sample', 'hessian-global'] },
+    // A complex too: several molecules grow together as one complex's expansion.
+    opens: { ops: ['graph-enumeration', 'nanoreactor', 'nanoreactor-more', 'network-splits', 'hessian-sample', 'hessian-global', 'complex'],
+      features: ['complex'] },
+    uses: ['graph-enumeration', 'nanoreactor', 'nanoreactor-more', 'network-splits', 'hessian-sample', 'hessian-global'],
     start: { pick: 'molecule', op: 'graph-enumeration' } },
   { id: 'solvent', short: 'Solvent', title: 'Solvent', blurb: 'How a solvent changes a barrier.', after: ['network'],
     opens: { ops: ['solvent'] }, start: { job: 'barrier', op: 'solvent' } },

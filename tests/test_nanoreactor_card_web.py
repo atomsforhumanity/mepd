@@ -108,7 +108,7 @@ def test_the_reactor_view_has_the_forces_and_pulls_of_the_run(tmp_path):
 
 def test_the_nanoreactor_tool_is_merged_into_the_expansions_grow():
     """The standalone Nanoreactor is no longer its own tool: the expansion grows by the Nanoreactor by default
-    (several molecules: the Reacting mixture). The operation stays for older jobs and the Reactor's Stop & analyze."""
+    (several molecules: a complex). The operation stays for older jobs and the Reactor's Stop & analyze."""
     nano = OPERATIONS["nanoreactor"]
     assert nano.hidden and nano.describe()["hidden"]
     assert OPERATIONS["graph-enumeration"].parse_params({}).generator == "md"
