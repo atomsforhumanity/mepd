@@ -84,6 +84,9 @@ export function applicability(op, sel) {
     if (!(nS > 0 && nE === 0)) return null;
     // e.g. a VRI search: offered only when every selected structure is a TS.
     if (op.structure_role === 'ts' && !sel.structures.every((id) => isTs(state.workspace.structures[id]))) return null;
+    // Retrosynthesis plans routes to one molecule: a complex (several) would only fail ("one molecule").
+    if (op.key === 'retrosynthesis' && sel.structures.some((id) => isComplex(state.workspace.structures[id])
+      && (state.workspace.structures[id].members || []).length > 1)) return null;
     return { n: nS, what: nS === 1 ? 'this structure' : `${nS} structures` };
   }
   if (op.target === 'job') return null;   // follow-ups live on their source job's result page

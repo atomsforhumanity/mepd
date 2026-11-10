@@ -1076,6 +1076,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web: the selection panel scrolls as one, on every screen.** Its name, 3D view and details took up to 55 % of the panel with a scroller of their own, leaving the tools (and their forms) a narrow strip below; they now scroll away with the tools, and the panel's head stays on top. (Phones got this for the bottom sheet first.)
+- **Web: Retrosynthesis is no longer offered for a complex.** It plans routes to one molecule, so on a complex it always failed ("the target must be one molecule").
 - **Web on phones: a calculation can be started again (network expansion included).** The selection's bottom sheet kept its name, 3D view and tabs pinned and gave the tools a ~130 px strip at its bottom, under the Calculations bar: a swipe on the sheet moved nothing, so tools such as Network expansion, and their Run button, were out of reach by touch. On phones the whole sheet now scrolls (its header stays on top).
 - **Web: a molecule added again is no longer stuck "optimizing".** The second copy's minimization relaxes onto the conformer the molecule already has, and that path never cleared the status, so every calculation on it was refused ("still being optimized") for good. A finished minimization now settles the status unless another one still works on the structure, and a stale status with no minimization queued or running settles when a calculation is asked for (workspaces already stuck heal themselves). Tests: `tests/test_readd_optimizing.py`.
 
