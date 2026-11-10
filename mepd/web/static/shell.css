@@ -725,3 +725,17 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ls-mass { margin: 8px 0 0; }
 .kn-coverage p { margin: 4px 0; }
 .ls-scroll { overflow-x: auto; }
+.op-line path.somo { stroke: var(--warn); stroke-width: 2.2; }
+.op-key.somo { border-top: 2px solid var(--warn); }
+.op-unstable { fill: color-mix(in srgb, var(--warn) 10%, transparent); stroke: none; }
+.op-story li.op-s-warn { color: var(--warn); }
+.op-diagram text.op-unstable-label { fill: var(--warn); font-weight: 600; font-size: .9em; }
+.op-key.unstable { height: 9px; border: 0; background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.op-occ.somo { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.op-card-spin { font-family: var(--font-ui); font-size: 13px; margin-left: 4px; color: var(--muted); vertical-align: super; }
+.op-spin button { min-width: 30px; }
+.op-story li.op-s-stability, .op-story li.op-s-spin { font-weight: 600; }
+.op-line path.weak { opacity: .35; stroke-dasharray: 2 3; }
+.op-line.on path.weak, .op-line.sel path.weak { opacity: .55; }
+.op-prof-bs { fill: none; stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.op-diagram text.op-bs-mark { fill: var(--warn); font-weight: 600; }

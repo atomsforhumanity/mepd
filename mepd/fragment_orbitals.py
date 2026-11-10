@@ -148,12 +148,12 @@ class _Side:
     """One molecule's (or the whole system's) orbitals: sorted alpha MOs, HOMO
     index, basis, and energy levels (degenerate orbitals grouped)."""
 
-    def __init__(self, text: str, method: str):
+    def __init__(self, text: str, method: str, spin: str = "alpha"):
         self.mol = orb.parse_molden(text, orb.D_NORM[method])
         try:
-            self.orbs, self.homo, self.lumo = orb._frontier(self.mol["mos"])
-        except orb.OrbitalError:   # no electrons left (a bare cation: Mg2+, Li+, H+): empty orbitals only
-            alpha = [m for m in self.mol["mos"] if m["spin"].startswith("a")] or self.mol["mos"]
+            self.orbs, self.homo, self.lumo = orb._frontier(self.mol["mos"], spin)
+        except orb.OrbitalError:   # no electrons left (a bare cation: Mg2+, Li+, H+; H's beta): empty orbitals only
+            alpha = [m for m in self.mol["mos"] if m["spin"].startswith(spin[0])] or self.mol["mos"]
             self.orbs, self.homo, self.lumo = sorted(alpha, key=lambda m: m["energy"]), -1, 0
         self.basis = basis(self.mol, method)
         self.C = np.array([m["coef"] for m in self.orbs])   # (n_mo, n_bf)

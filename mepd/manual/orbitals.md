@@ -577,8 +577,58 @@ atom):
 - **n Cl6**: a lone pair, 60 % or more on one atom.
 - **n Br2,Cl6**: a combination of two unbonded atoms' lone pairs, such as the
   3-centre HOMO at an SN2 transition state.
+- **π C1–C2–C3–C4** (or **π\***, empty): a delocalized π orbital over three
+  or more heavy atoms, such as butadiene's ψ1 to ψ4: little s on each, and
+  their p parts along one common direction.
+- **• H3**, **• H1,H3**: an open shell's singly occupied orbital (SOMO):
+  where its unpaired electron sits.
 - **Cl6 empty**, **C1·Br2·Cl6**: an empty orbital on one atom, or an orbital
   spread over several.
+
+### Open shells
+
+A radical or a triplet (multiplicity above 1) runs unrestricted (UKS):
+
+- The α and β orbitals are followed apart. The **α | β** switch under the
+  diagram shows one set at a time; switching keeps the frame and moves to the
+  matching orbital (a SOMO's empty β partner).
+- α orbitals with no β partner are singly occupied: named **SOMO**, drawn in
+  amber, "singly occupied" on the card.
+- Every frame records ⟨S²⟩, shown under the diagram. What happens opens with
+  its range against the pure value S(S+1) (0.75 for a doublet), and warns
+  when it strays more than 10 %: the orbitals then mix in higher spin states.
+
+### Is the closed-shell picture right?
+
+A closed shell's orbitals hold two electrons each. Where a bond breaks into
+two radicals, or a reaction is forbidden by orbital symmetry, that is no
+longer true, and the orbitals drawn overstate how paired the electrons are.
+With **Check the closed-shell picture** (on by default; about twice the time),
+every frame also gets its broken-symmetry solution: an unrestricted SCF
+started from the closed shell, which follows any instability down to a lower
+solution. Where that lies lower:
+
+- the frames are hatched in the diagram ("closed shell fails"), and What
+  happens opens with where and how much;
+- the energy profile also shows the broken-symmetry energy (amber, dashed);
+- the card gives that frame's natural orbital occupations, HONO and LUNO
+  (eigenvalues of the total density; 2 and 0 for a closed shell, 1 and 1 for
+  a pure diradical), and the diradical character y (Yamaguchi: 0 closed
+  shell, 1 pure diradical).
+
+A step followed with an overlap under 0.8 is drawn faded: which orbital the
+line becomes there is uncertain (two orbitals of one energy meet, or a
+closed-shell solution breaks symmetry).
+
+### Checked against textbook cases
+
+| Case | The textbook | Here (ωB97X-D3BJ/def2-SVP unless said) |
+|---|---|---|
+| H₂ pulled apart, HF/STO-3G | restricted solution unstable past the Coulson–Fischer point, about 1.2 Å (Szabo & Ostlund 3.8.7); natural occupations → 1, 1 | unstable from 1.2 Å (stable at 1.1); 1.04/0.96 at 3 Å |
+| Ethylene twisted to 90° | π rises, π\* falls, they meet at 90°: a perfect diradical (Mulliken; Salem & Rowland 1972) | π +8.8 eV, π\* −8.6 eV; closed shell fails 67.5–112.5°; y = 1.00 at 90°; the closed shell polarizes there (lone pair on one carbon), the known sudden polarization |
+| H + H₂, doublet | the unpaired electron passes through the nonbonding σ of linear H₃, node on the middle H | α SOMO • H3 → • H1,H3 (49 % each, ~0 on H2) → • H1; ⟨S²⟩ 0.75–0.76 |
+| Butadiene → cyclobutene, conrotatory | allowed: ψ2 → σ, ψ1 → π (Woodward & Hoffmann 1969) | ψ2 becomes σ C1–C4; nothing crosses the gap; closed shell holds |
+| … disrotatory | forbidden: ψ2 → π\*, ψ3 → π, ψ1 → σ | exactly these three; both frontier orbitals cross the gap; closed shell fails mid-path (y 0.69) |
 
 ### The page
 
@@ -608,7 +658,9 @@ atom):
   energies are rough. The page says so.
 - Near-degenerate orbitals mix freely, so a line can swap partners where two
   orbitals of one energy meet. More frames make the following safer.
-- Open shells: the alpha orbitals are shown.
+- Broken-symmetry solutions mix spin states (⟨S²⟩ near 1 for a singlet
+  diradical): their energies are a lower bound on the closed shell's error,
+  not a spin-pure answer. Multireference methods are the next step.
 
 From the command line:
 `mepd orbitals path.xyz --charge -1 --functional wb97x-d3bj --basis def2-svp --frames 41 --ts-frame 36`.

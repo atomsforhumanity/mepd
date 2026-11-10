@@ -2105,8 +2105,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return d
 
     @app.get("/api/jobs/{jid}/path-orbitals/cube")
-    def path_orbital_cube(jid: str, k: int, i: int, request: Request):
-        """Orbital `i` of computed frame `k` as a cube ({cube}, gzip JSON), built once and kept."""
+    def path_orbital_cube(jid: str, k: int, i: int, request: Request, spin: str = "a"):
+        """Orbital `i` of computed frame `k` (`spin` "a" or "b": an open shell's alpha or beta orbitals) as a
+        cube ({cube}, gzip JSON), built once and kept."""
         import gzip
         import json as _json
 
@@ -2118,10 +2119,12 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             out = J().job_dir(jid) / "output"
         if not (out / "frames" / f"{int(k)}.molden.gz").exists():
             raise HTTPException(404, "that frame has no orbitals (yet)")
-        fp = out / "cubes" / f"{int(k)}_{int(i)}.json.gz"
+        beta = spin == "b"
+        fp = out / "cubes" / f"{int(k)}_{int(i)}{'b' if beta else ''}.json.gz"
         if not fp.exists():
             fp.parent.mkdir(exist_ok=True)
-            data = gzip.compress(_json.dumps({"cube": orbital_path.orbital_cube(out, int(k), int(i))}).encode(), 5)
+            cube = orbital_path.orbital_cube(out, int(k), int(i), spin="beta" if beta else "alpha")
+            data = gzip.compress(_json.dumps({"cube": cube}).encode(), 5)
             tmp = fp.with_suffix(".tmp")
             tmp.write_bytes(data)
             tmp.replace(fp)

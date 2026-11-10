@@ -13,6 +13,7 @@ import { drawOrbital, isoFor } from './Viewer3D.js';
 import { Why } from './Why.js';
 
 const STICKS = { stick: { radius: 0.11 }, sphere: { scale: 0.22 } };
+const WEAK = 0.8;   // a step followed with less overlap than this is drawn faded: the orbital's identity is uncertain there
 const HARTREE_KCAL = 627.509474;
 // The drawing's own units: a phone draws a narrower diagram so its text stays readable.
 const GEOM = { desk: { W: 780, L: 150, R: 128, PT: 84, PB: 30, H: 480, fs: 11.5 },
@@ -28,7 +29,7 @@ export const levelName = (lv) => `${FUNC[lv?.functional] || lv?.functional || '?
 // ------------------------------------------------------------------ words
 
 const atomName = (sym, a) => `${sym[a]}${a + 1}`;
-// Short (diagram labels): σ C1–Br2, σ* C1–Br2, π* C1–O5, n Cl6, n O2,O5, Cl6 empty, C1·Br2·Cl6.
+// Short (diagram labels): σ C1–Br2, σ* C1–Br2, π* C1–O5, n Cl6, n O2,O5, • H1,H3 (unpaired), π C1–C2–C3–C4, Cl6 empty, C1·Br2·Cl6.
 function shortWhat(sym, w) {
   if (!w) return '';
   const at = w.atoms.map((a) => atomName(sym, a));
@@ -37,6 +38,8 @@ function shortWhat(sym, w) {
   if (w.kind === 'antibond') return `${g}* ${at[0]}–${at[1]}`;
   if (w.kind === 'lone') return `n ${at[0]}`;
   if (w.kind === 'lones') return `n ${at[0]},${at[1]}`;
+  if (w.kind === 'radical') return `• ${at.join(',')}`;
+  if (w.kind === 'pi') return `π${w.empty ? '*' : ''} ${at.length <= 4 ? at.join('–') : `${at[0]}…${at[at.length - 1]} (${at.length})`}`;
   if (w.kind === 'atom') return `${at[0]} empty`;
   return at.join('·');
 }
@@ -49,10 +52,15 @@ function longWhat(sym, w) {
   if (w.kind === 'antibond') return `${at[0]}–${at[1]} ${g}* (antibonding)`;
   if (w.kind === 'lone') return `lone pair on ${at[0]}`;
   if (w.kind === 'lones') return `lone-pair combination on ${at[0]} and ${at[1]}`;
+  if (w.kind === 'radical') return `unpaired electron on ${at.join(' and ')}`;
+  if (w.kind === 'pi') return `π${w.empty ? '*' : ''} system over ${at.join(', ')}`;
   if (w.kind === 'atom') return `empty orbital on ${at[0]}`;
   return `spread over ${at.join(', ')}`;
 }
 const relName = (rel) => (rel === 0 ? 'HOMO' : rel === 1 ? 'LUMO' : rel < 0 ? `HOMO−${-rel}` : `LUMO+${rel - 1}`);
+// An open shell's alpha orbitals with no beta partner hold one electron: SOMO (the highest, or SOMO−n below it).
+const orbName = (p) => (p.somo ? 'SOMO' : relName(p.rel));
+const occWord = (p) => (p.somo ? 'singly occupied' : p.occ > 0.5 ? 'filled' : 'empty');
 const sameWhat = (a, b) => a && b && a.kind === b.kind && a.atoms.join() === b.atoms.join();
 
 function splitXyz(text) {
@@ -88,15 +96,17 @@ function useDoc(job) {
   return { doc, error, live };
 }
 
-function shape(doc) {
+// `spin`: an open shell's channel shown, "a" (alpha) or "b" (beta); a closed shell has alpha only.
+function shape(doc, spin = 'a') {
   const sym = doc.symbols;
-  const level = new Map();      // `${k}:${i}` -> {e, occ, rel, what}
-  doc.frames.forEach((f, k) => f && f.orbitals.forEach((o) => level.set(`${k}:${o.i}`, o)));
-  const lines = doc.lines.map((ln) => {
+  const orbs = doc.frames.map((f) => (!f ? null : spin === 'b' ? f.beta?.orbitals || [] : f.orbitals));
+  const level = new Map();      // `${k}:${i}` -> {e, occ, rel, what, somo}
+  orbs.forEach((os, k) => os && os.forEach((o) => level.set(`${k}:${o.i}`, o)));
+  const lines = doc.lines.filter((ln) => (ln.spin || 'a') === spin).map((ln) => {
     const pts = ln.points.map(([k, i, sign]) => ({ k, i, sign, ...(level.get(`${k}:${i}`) || {}) })).filter((p) => p.e != null);
     const a = pts[0], b = pts[pts.length - 1];
     return {
-      id: ln.id, pts, a, b,
+      id: ln.id, pts, a, b, overlaps: ln.overlaps || [],
       changes: !!(a && b && !sameWhat(a.what, b.what)),
       crosses: !!(a && b && (a.occ > 0.5) !== (b.occ > 0.5)),
       frontier: pts.some((p) => p.rel === 0 || p.rel === 1),
@@ -109,7 +119,9 @@ function shape(doc) {
   const allE = lines.flatMap((l) => l.pts.map((p) => p.e));
   // The view opens on HOMO−5 .. LUMO+2 (higher empty orbitals of a small basis crowd the top otherwise).
   const nearE = lines.flatMap((l) => l.pts.filter((p) => p.rel >= -5 && p.rel <= 3).map((p) => p.e));
-  return { sym, lines, done, prof, hasE: E.length > 1,
+  // A closed shell checked against its broken-symmetry solution, frame by frame (orbital_path.stability_record).
+  const stab = doc.frames.map((f) => f?.stability || null);
+  return { sym, lines, done, prof, hasE: E.length > 1, orbs, spin, stab, unstable: stab.some((x) => x?.unstable),
     emin: Math.min(...allE), emax: Math.max(...allE), nmin: Math.min(...nearE), nmax: Math.max(...nearE),
     smax: doc.s[doc.s.length - 1] || 1 };
 }
@@ -164,9 +176,9 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
   // The gap: between the HOMO and the LUMO of every computed frame.
   const gap = useMemo(() => {
     const top = [], bot = [];
-    doc.frames.forEach((f, k) => {
-      if (!f) return;
-      const h = f.orbitals.find((o) => o.rel === 0), u = f.orbitals.find((o) => o.rel === 1);
+    d.orbs.forEach((os, k) => {
+      if (!os) return;
+      const h = os.find((o) => o.rel === 0), u = os.find((o) => o.rel === 1);
       if (h && u) { bot.push([X(doc.s[k]), Y(h.e)]); top.push([X(doc.s[k]), Y(u.e)]); }
     });
     if (bot.length < 2) return null;
@@ -180,10 +192,14 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
     const pmin = Math.min(...vals), pmax = Math.max(...vals, pmin + 1);
     const PY = (v) => 14 + (1 - (v - pmin) / (pmax - pmin)) * (PT - 40);
     const pts = d.prof.map((v, k) => (v == null ? null : [X(doc.s[k]), PY(v), v])).filter(Boolean);
+    // Where the closed shell is unstable: the broken-symmetry solution's energy (lower), dashed.
+    const bs = d.prof.map((v, k) => (v == null || !d.stab[k]?.unstable ? null : [X(doc.s[k]), PY(Math.max(pmin, v + d.stab[k].de_kcal)), v + d.stab[k].de_kcal]));
+    const bsPath = bs.map((p, k) => (p ? `${bs[k - 1] ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}` : '')).join('');
+    const bsMin = bs.filter(Boolean).reduce((m, p) => (!m || p[2] > m[2] ? p : m), null);
     const kTs = doc.ts_frame != null && d.prof[doc.ts_frame] != null ? doc.ts_frame : null;
     const end = pts[pts.length - 1];
     const fmt = (v) => `${v > 0.05 ? '+' : v < -0.05 ? '−' : ''}${Math.abs(v).toFixed(1)}`;
-    return { path: pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(''),
+    return { bsPath, bsTop: bsMin, path: pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(''),
       area: `M${pts[0][0]},${PT - 22}` + pts.map((p) => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join('') + `L${end[0]},${PT - 22}Z`,
       marks: [{ x: pts[0][0], y: pts[0][1], t: '0', a: 'start' },
         kTs != null && { x: X(doc.s[kTs]), y: PY(d.prof[kTs]), t: fmt(d.prof[kTs]), a: 'middle' },
@@ -211,6 +227,20 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
     for (let i = 1; i < items.length; i += 1) items[i].y = Math.max(items[i].y, items[i - 1].y + fs + 2);
     return items;
   };
+  // Frames whose closed-shell solution is unstable (a broken-symmetry one lies lower): hatched, edge to edge
+  // halfway to the neighbouring frames.
+  const unstable = useMemo(() => {
+    const ks = d.done.map((x, k) => (x ? k : -1)).filter((k) => k >= 0);
+    const out = [];
+    ks.forEach((k, j) => {
+      if (!d.stab[k]?.unstable) return;
+      const x0 = j ? (X(doc.s[ks[j - 1]]) + X(doc.s[k])) / 2 : X(doc.s[k]);
+      const x1 = j < ks.length - 1 ? (X(doc.s[ks[j + 1]]) + X(doc.s[k])) / 2 : X(doc.s[k]);
+      const last = out[out.length - 1];
+      if (last && Math.abs(last.x1 - x0) < 0.5) { last.x1 = x1; last.y = Math.max(last.y, d.stab[k].y); } else out.push({ x0, x1, y: d.stab[k].y });
+    });
+    return out;
+  }, [doc, d, W, H]);
   const tsK = doc.ts_frame;
   const ticks = [];
   const tstep = hi - lo > 24 ? 5 : hi - lo > 12 ? 2 : 1;
@@ -223,7 +253,7 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
     for (let j = 1; j < ln.pts.length; j += 1) {
       const p = ln.pts[j - 1], q = ln.pts[j];
       out.push({ d: `M${X(doc.s[p.k]).toFixed(1)},${Y(p.e).toFixed(1)}L${X(doc.s[q.k]).toFixed(1)},${Y(q.e).toFixed(1)}`,
-        occ: p.occ > 0.5 && q.occ > 0.5, key: j });
+        occ: p.occ > 0.5 && q.occ > 0.5, somo: !!(p.somo && q.somo), key: j, weak: (ln.overlaps[j - 1] ?? 1) < WEAK });
     }
     return out;
   };
@@ -235,6 +265,9 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
       ${prof && html`<g class="op-prof">
         <path class="op-prof-area" d=${prof.area} />
         <path class="op-prof-line" d=${prof.path} />
+        ${prof.bsPath && html`<path class="op-prof-bs" d=${prof.bsPath}><title>Broken-symmetry (unrestricted) energy where the closed shell is unstable</title></path>`}
+        ${prof.bsTop && html`<text class="op-mark op-bs-mark" x=${prof.bsTop[0] + 6} y=${prof.bsTop[1] + 12} text-anchor="start"
+          >${`${prof.bsTop[2] > 0.05 ? '+' : ''}${prof.bsTop[2].toFixed(1)} broken symmetry`}</text>`}
         <text x=${L - 8} y=${26} text-anchor="end">energy</text>
         <text x=${L - 8} y=${26 + fs + 2} text-anchor="end" class="op-sub">kcal/mol</text>
         ${prof.marks.map((m) => html`<text class="op-mark" x=${m.x} y=${m.y - 5} text-anchor=${m.a}>${m.t}</text>`)}
@@ -245,21 +278,25 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
         <text class="op-tick" x=${L - 4} y=${Y(e) + 4} text-anchor="end">${e < 0 ? `−${-e}` : e}</text></g>`)}
       <text class="op-unit" x=${L - 8} y=${PT - 2} text-anchor="end">eV</text>
       <g clip-path="url(#op-clip)">
+      ${unstable.map((u, j) => html`<rect key=${`u${j}`} class="op-unstable" x=${u.x0} y=${PT - 16} width=${Math.max(2, u.x1 - u.x0)} height=${H - PB - PT + 16}>
+        <title>Closed-shell picture fails here: a broken-symmetry solution lies lower (diradical character up to ${u.y.toFixed(2)})</title></rect>`)}
       ${gap && html`<polygon class="op-gap" points=${gap} />`}
       ${tsK != null && d.done[tsK] && html`<g class="op-ts"><line x1=${X(doc.s[tsK])} x2=${X(doc.s[tsK])} y1=${PT - 16} y2=${H - PB} /></g>`}
-      ${tsK != null && d.done[tsK] && html`<text class="op-ts-label" x=${X(doc.s[tsK])} y=${H - PB + 18} text-anchor="middle">‡ TS</text>`}
-      <text class="op-end" x=${L} y=${H - PB + 18}>start</text>
-      <text class="op-end" x=${W - R} y=${H - PB + 18} text-anchor="end">end</text>
       ${(() => { const ln = d.lines.find((l) => l.id === sel); return ln && html`<g class="op-halo">${segs(ln).map((s) => html`<path key=${s.key} d=${s.d} />`)}</g>`; })()}
       ${d.lines.map((ln) => html`<g key=${ln.id} class=${`op-line ${active(ln) ? 'on' : dim ? 'dim' : ''} ${sel === ln.id ? 'sel' : ''} ${lit.includes(ln.id) ? 'lit' : ''}`}>
-        ${segs(ln).map((s) => html`<path key=${s.key} d=${s.d} class=${s.occ ? 'occ' : 'virt'} />`)}
+        ${segs(ln).map((s) => html`<path key=${s.key} d=${s.d} class=${`${s.somo ? 'occ somo' : s.occ ? 'occ' : 'virt'}${s.weak ? ' weak' : ''}`}>${s.weak
+          ? html`<title>Followed here with an overlap of only ${(ln.overlaps[s.key - 1]).toFixed(2)}: which orbital this one becomes is uncertain</title>` : ''}</path>`)}
         ${ln.pts.length === 1 && html`<circle cx=${X(doc.s[ln.pts[0].k])} cy=${Y(ln.pts[0].e)} r="2" />`}
       </g>`)}
       </g>
+      ${tsK != null && d.done[tsK] && html`<text class="op-ts-label" x=${X(doc.s[tsK])} y=${H - PB + 18} text-anchor="middle">‡ TS</text>`}
+      ${unstable.map((u, j) => html`<text key=${`ut${j}`} class="op-unstable-label" x=${(u.x0 + u.x1) / 2} y=${PT - 20} text-anchor="middle">${u.x1 - u.x0 > 70 ? 'closed shell fails' : '⚠'}</text>`)}
+      <text class="op-end" x=${L} y=${H - PB + 18}>start</text>
+      <text class="op-end" x=${W - R} y=${H - PB + 18} text-anchor="end">end</text>
       ${[false, true].map((end) => edgeLabels(end).map(({ ln, p, y, text, n }) => html`<text key=${`${end}${ln.id}`}
         class=${`op-lab ${active(ln) ? 'on' : ''} ${p.occ > 0.5 ? 'occ' : 'virt'}`} x=${end ? W - R + 6 : L - 28} y=${y + 4}
         text-anchor=${end ? 'start' : 'end'} onPointerDown=${(e) => { e.stopPropagation(); setSel(ln.id); }}>
-        ${p.rel === 0 || p.rel === 1 ? html`<tspan class="op-fr">${relName(p.rel)} </tspan>` : ''}${text}${n > 1 ? ` ×${n}` : ''}</text>`))}
+        ${p.somo || p.rel === 0 || p.rel === 1 ? html`<tspan class="op-fr">${orbName(p)} </tspan>` : ''}${text}${n > 1 ? ` ×${n}` : ''}</text>`))}
       <line class="op-cursor" x1=${cx} x2=${cx} y1=${8} y2=${H - PB} />
       ${(() => {
         const ln = d.lines.find((l) => l.id === sel);
@@ -268,7 +305,7 @@ function Diagram({ doc, d, frame, setFrame, sel, setSel, lit, phone, all }) {
       })()}
     </svg>
     ${hv && hp && html`<div class="op-tip" style=${{ left: `${(hover.x / W) * 100}%`, top: `${(hover.y / H) * 100}%` }}>
-      <b>${relName(hp.rel)}</b> ${hp.e.toFixed(2)} eV · ${hp.occ > 0.5 ? 'filled' : 'empty'}<br />${longWhat(d.sym, hp.what)}</div>`}
+      <b>${orbName(hp)}</b>${d.spin === 'b' ? ' β' : doc.spin === 'unrestricted' ? ' α' : ''} ${hp.e.toFixed(2)} eV · ${occWord(hp)}<br />${longWhat(d.sym, hp.what)}</div>`}
   </div>`;
 }
 
@@ -394,25 +431,25 @@ function Orbital3D({ job, doc, d, frame, line, phone }) {
     const v = viewer.current;
     if (!v) return;
     if (!p) { drawOrbital(v, surfaces, null, 0); return; }
-    const key = `${frame}_${p.i}`;
+    const key = `${d.spin}${frame}_${p.i}`;
     let stop = false;
     const draw = (orb) => { if (!stop) drawOrbital(v, surfaces, orb, isoFor(orb, pct), p.sign); };
     const hit = cache.current.get(key);
     if (hit) { draw(hit); return () => { stop = true; }; }
     setLoading(true);
-    api.get(`/api/jobs/${job.id}/path-orbitals/cube?k=${frame}&i=${p.i}`)
+    api.get(`/api/jobs/${job.id}/path-orbitals/cube?k=${frame}&i=${p.i}&spin=${d.spin}`)
       .then((orb) => { cache.current.set(key, orb); draw(orb); })
       .catch(() => {}).finally(() => !stop && setLoading(false));
     return () => { stop = true; };
-  }, [frame, p?.i, p?.sign, pct, frames]);
+  }, [frame, p?.i, p?.sign, pct, frames, d.spin]);
   // Ahead of the cursor: the next frames of the chosen orbital.
   useEffect(() => {
     if (!line) return;
     line.pts.filter((q) => q.k > frame && q.k <= frame + 2).forEach((q) => {
-      const key = `${q.k}_${q.i}`;
+      const key = `${d.spin}${q.k}_${q.i}`;
       if (!cache.current.has(key)) {
         cache.current.set(key, null);
-        api.get(`/api/jobs/${job.id}/path-orbitals/cube?k=${q.k}&i=${q.i}`).then((orb) => cache.current.set(key, orb)).catch(() => cache.current.delete(key));
+        api.get(`/api/jobs/${job.id}/path-orbitals/cube?k=${q.k}&i=${q.i}&spin=${d.spin}`).then((orb) => cache.current.set(key, orb)).catch(() => cache.current.delete(key));
       }
     });
   }, [frame, line?.id]);
@@ -444,9 +481,9 @@ function OrbitalCard({ d, doc, line, frame, setFrame }) {
   const stops = [['start', line.a], tsK != null && at(tsK) && ['‡ TS', at(tsK)], ['end', line.b]].filter(Boolean);
   return html`<div class="op-card">
     ${p ? html`<div class="op-card-head">
-      <span class="op-card-name">${relName(p.rel)}</span>
+      <span class="op-card-name">${orbName(p)}${doc.spin === 'unrestricted' ? html`<span class="op-card-spin">${d.spin === 'b' ? 'β' : 'α'}</span>` : ''}</span>
       <span class="op-card-e">${p.e.toFixed(2)} eV</span>
-      <span class=${`op-occ ${p.occ > 0.5 ? 'occ' : 'virt'}`}>${p.occ > 0.5 ? 'filled' : 'empty'}</span>
+      <span class=${`op-occ ${p.somo ? 'somo' : p.occ > 0.5 ? 'occ' : 'virt'}`}>${occWord(p)}</span>
     </div>
     <div class="op-card-what">${longWhat(d.sym, p.what)}
       <span class="muted small">${p.what.atoms.map((a, j) => ` · ${atomName(d.sym, a)} ${Math.round(p.what.shares[j] * 100)} %`).join('')}</span></div>`
@@ -457,6 +494,8 @@ function OrbitalCard({ d, doc, line, frame, setFrame }) {
         <span class="op-stop-what">${shortWhat(d.sym, q.what)}</span><span class="op-stop-e">${q.e.toFixed(1)} eV</span></button>`)}
     </div>
     ${line.crosses && html`<p class="op-flag small">Filled at one end and empty at the other: it crosses the frontier.</p>`}
+    ${d.stab[frame]?.unstable && html`<p class="op-flag small">${`Closed-shell picture fails at this frame: natural occupations HONO ${d.stab[frame].n_homo.toFixed(2)}, `
+      + `LUNO ${d.stab[frame].n_lumo.toFixed(2)} (diradical character ${d.stab[frame].y.toFixed(2)}). These orbitals pair the electrons more than they are.`}</p>`}
   </div>`;
 }
 
@@ -467,7 +506,9 @@ const LEAD = 3;   // sentences shown before "more"
 export function OrbitalsPath({ job }) {
   const { doc, error, live } = useDoc(job);
   const phone = useMemo(() => !!window.matchMedia?.(PHONE_QUERY).matches, []);
-  const d = useMemo(() => (doc && doc.lines?.length ? shape(doc) : null), [doc]);
+  const [spin, setSpinState] = useState('a');
+  const open = doc?.spin === 'unrestricted';
+  const d = useMemo(() => (doc && doc.lines?.length ? shape(doc, open ? spin : 'a') : null), [doc, spin, open]);
   const [frame, setFrameState] = useState(null);
   const [sel, setSel] = useState(null);
   const [lit, setLit] = useState([]);
@@ -510,6 +551,17 @@ export function OrbitalsPath({ job }) {
       ' ': () => setPlaying((x) => !x) }[e.key];
     if (k) { e.preventDefault(); k(); }
   };
+  // Alpha <-> beta: keep the frame, and choose the orbital in the same place (SOMO -> its empty beta partner).
+  const setSpin = (to) => {
+    if (to === spin || !doc) return;
+    const was = d?.lines.find((ln) => ln.id === sel)?.pts.find((q) => q.k === frame);
+    const nd = shape(doc, to);
+    const want = was ? (was.somo ? 1 : was.rel) : 0;
+    const hit = nd.lines.find((ln) => ln.pts.some((q) => q.k === frame && q.rel === want))
+      || nd.lines.find((ln) => ln.pts.some((q) => q.k === frame && q.rel === 0));
+    setSpinState(to);
+    if (hit) setSel(hit.id);
+  };
   const line = d && d.lines.find((ln) => ln.id === sel);
   const total = doc?.frames?.length || 0;
   const computed = doc ? doc.frames.filter(Boolean).length : 0;
@@ -517,8 +569,9 @@ export function OrbitalsPath({ job }) {
   const lead = phone ? 2 : LEAD;
   const shown = more ? story : story.slice(0, lead);
   const goStory = (s) => {
+    if (s.spin) setSpinState(s.spin === 'β' ? 'b' : 'a');
     if (s.lines?.length) setSel(s.lines[0]);
-    const ln = d?.lines.find((l) => l.id === s.lines?.[0]);
+    const ln = d?.lines.find((l) => l.id === s.lines?.[0]) || (doc && s.spin ? shape(doc, s.spin === 'β' ? 'b' : 'a').lines.find((l) => l.id === s.lines?.[0]) : null);
     const k = s.frame ?? (s.kind === 'move' && doc.ts_frame != null ? doc.ts_frame : s.kind === 'change' && ln ? ln.b.k : null);
     if (k != null) setFrame(k);
   };
@@ -540,7 +593,7 @@ export function OrbitalsPath({ job }) {
     </div>
     ${story.length > 0 && html`<section class="op-story" aria-label="What happens">
       <h3>What happens</h3>
-      <ul>${shown.map((s, j) => html`<li key=${j} class=${`op-s-${s.kind}`} onMouseEnter=${() => setLit(s.lines || [])} onMouseLeave=${() => setLit([])}
+      <ul>${shown.map((s, j) => html`<li key=${j} class=${`op-s-${s.kind} ${s.ok === false ? 'op-s-warn' : ''}`} onMouseEnter=${() => setLit(s.lines || [])} onMouseLeave=${() => setLit([])}
         onClick=${() => goStory(s)} title=${s.detail || 'Show these orbitals'}>${s.text}</li>`)}</ul>
       ${story.length > lead && html`<button class="btn-link small" onClick=${() => setMore(!more)}>${more ? 'Fewer' : `${story.length - lead} more`}</button>`}
     </section>`}
@@ -551,12 +604,17 @@ export function OrbitalsPath({ job }) {
           <button class="btn small" onClick=${() => setPlaying(!playing)} title="Play along the path (Space)">${playing ? '❚❚ Pause' : '▶ Play'}</button>
           <button class="btn small op-step" onClick=${() => step(-1)} title="Frame before (←)" aria-label="Frame before">‹</button>
           <button class="btn small op-step" onClick=${() => step(1)} title="Next frame (→)" aria-label="Next frame">›</button>
+          ${open && html`<div class="segmented op-spin" role="group" aria-label="Spin">
+            <button class=${spin === 'a' ? 'on' : ''} onClick=${() => setSpin('a')} title="The alpha (spin-up) orbitals">α</button>
+            <button class=${spin === 'b' ? 'on' : ''} onClick=${() => setSpin('b')} title="The beta (spin-down) orbitals">β</button></div>`}
           <span class="small nowrap">frame ${doneKs.indexOf(frame) + 1} of ${doneKs.length}${tsHere ? html` · <b class="op-ts-tag">‡ TS</b>` : frame === doneKs[0] ? ' · start' : frame === doneKs[doneKs.length - 1] ? ' · end' : ''}</span>
+          ${open && doc.frames[frame]?.s2 != null && html`<span class="small nowrap muted" title=${`<S²> of the unrestricted solution at this frame; a pure ${['singlet', 'doublet', 'triplet', 'quartet', 'quintet'][doc.multiplicity - 1] || 'state'} has ${(((doc.multiplicity - 1) / 2) * ((doc.multiplicity + 1) / 2)).toFixed(2)}`}>⟨S²⟩ ${doc.frames[frame].s2.toFixed(2)}</span>`}
+          ${d.stab[frame]?.unstable && html`<span class="small nowrap op-caveat" title="A broken-symmetry solution lies lower at this frame: the closed-shell orbitals pair the electrons more than they are">⚠ diradical ${d.stab[frame].y.toFixed(2)}</span>`}
           ${(d.emin < d.nmin - 0.3 || d.emax > d.nmax + 0.3) && html`<label class="small nowrap" title="Also the orbitals far below and above the gap">
             <input type="checkbox" checked=${all} onChange=${(e) => setAll(e.target.checked)} /> all orbitals</label>`}
           <span class="op-legend small" title=${phone ? 'Tap a line to choose an orbital; drag across to move along the path.'
             : 'Click a line to choose an orbital; drag across to move along the path. ← → frames, ↑ ↓ the orbital above or below, Space plays.'}>
-            <span class="op-key occ"></span>filled <span class="op-key virt"></span>empty <span class="op-key gap"></span>gap</span>
+            <span class="op-key occ"></span>filled ${open && spin === 'a' && d.lines.some((l) => l.pts.some((q) => q.somo)) ? html`<span class="op-key somo"></span>singly ` : ''}<span class="op-key virt"></span>empty <span class="op-key gap"></span>gap${d.unstable ? html` <span class="op-key unstable"></span>closed shell fails` : ''}</span>
         </div>
         <p class="op-hint small muted">${phone ? 'Tap a line · drag across' : 'Click a line · drag across · ← → ↑ ↓ · Space'}</p>
       </div>
@@ -596,7 +654,7 @@ export function PathOrbitalsLauncher({ job, entry = null, edgeId = null }) {
       : (job.title || '').replace(/^(Transition state|TS|Reaction channels):\s*/, '');
     const where = edgeId ? { edge: edgeId } : { entry: entry?.id || '' };
     const out = await attempt(() => api.post('/api/jobs', { op: 'orbitals', source_job: job.id,
-      label: `Orbitals: ${what}`, params: { ...where, functional: v('functional'), basis: v('basis'), frames: v('frames') } }));
+      label: `Orbitals: ${what}`, params: { ...where, functional: v('functional'), basis: v('basis'), frames: v('frames'), stability: v('stability') } }));
     setBusy(false);
     if (out?.length) openJob(out[0].id);
   };
@@ -615,6 +673,8 @@ export function PathOrbitalsLauncher({ job, entry = null, edgeId = null }) {
         ${(props.basis?.enum || []).map((x) => html`<option value=${x}>${prettyBasis(x)}</option>`)}</select></label>
       <label title=${props.frames?.description || ''}>Frames <input type="number" class="tiny" min="2" value=${v('frames')}
         onChange=${(e) => setV('frames', Math.max(2, +e.target.value || 2))} /></label>
+      <label title=${props.stability?.description || ''}><input type="checkbox" checked=${!!v('stability')}
+        onChange=${(e) => setV('stability', e.target.checked)} /> check closed shell</label>
       <button class="btn small primary" disabled=${busy} onClick=${run}>${busy ? 'Starting…' : 'Run'}</button>
       <span class="muted">DFT single points with linus; seconds to minutes for small molecules.</span>
     </div>`}

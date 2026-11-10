@@ -87,9 +87,12 @@ def pick_frames(frames: list, count: int, ts_index: Optional[int] = None) -> lis
 # ------------------------------------------------------------------ one frame's orbitals
 
 def linus_molden(symbols: list, coords_A: np.ndarray, charge: int, multiplicity: int, functional: str,
-                 basis: str, threads: int = 4, previous=None):
+                 basis: str, threads: int = 4, previous=None, *, restricted: Optional[bool] = None,
+                 stability: bool = False):
     """A linus single point with its orbitals: (molden text, energy in Eh, the output, to start the next
-    frame's SCF from). `previous`: the frame before's output (its orbitals start this SCF)."""
+    frame's SCF from). `previous`: the frame before's output (its orbitals start this SCF). `restricted`:
+    None by shell (closed shells restricted), False forces UKS; `stability`: follow any instability of the
+    solution found down to a lower one (with restricted=False on a singlet: the broken-symmetry solution)."""
     import linus
     from linus.qccodec import propagate_wfn
     from qcdata import ProgramInput, Structure
@@ -98,7 +101,9 @@ def linus_molden(symbols: list, coords_A: np.ndarray, charge: int, multiplicity:
                   charge=int(charge), multiplicity=int(multiplicity))
     inp = ProgramInput(program="linus", structure=s, calctype="energy",
                        model={"method": functional, "basis": basis},
-                       keywords={"jk": "df", "threads": int(threads), "molden": True})
+                       keywords={"jk": "df", "threads": int(threads), "molden": True,
+                                 **({"restricted": bool(restricted)} if restricted is not None else {}),
+                                 **({"scf": {"stability": True}} if stability else {})})
     if previous is not None:
         inp = propagate_wfn(previous, inp)
     out = linus.compute(inp, raise_exc=False)
@@ -115,14 +120,17 @@ _RCOV = {"H": 0.31, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "Si":
          "Cl": 1.02, "Br": 1.20, "I": 1.39, "Li": 1.28, "Na": 1.66, "K": 2.03, "Mg": 1.41, "Al": 1.21, "Se": 1.20}
 BONDED = 1.45       # loose enough for a TS's forming and breaking bonds (SN2: C-Cl 2.38 A = 1.34 x)
 PI_AXIAL = 0.25     # a bond orbital is pi when its p part on both atoms lies off the bond axis (and it has little s)
+PI_SHARE = 0.08     # an atom takes part in a delocalized pi orbital from this Mulliken share
+PI_ALONG = 0.75     # ... with at least this much of its p part along the system's common p direction
 
 
 class Frame:
     """One frame's orbitals (fragment_orbitals._Side) with each orbital's place: Mulliken shares per atom,
     overlap populations between atoms, and the direction of each atom's p part (sigma or pi)."""
 
-    def __init__(self, molden: str, symbols: list):
-        self.side = fo._Side(molden, METHOD)
+    def __init__(self, molden: str, symbols: list, spin: str = "alpha"):
+        self.spin = spin
+        self.side = fo._Side(molden, METHOD, spin)
         self.symbols = symbols
         mol = self.side.mol
         self.atom_of = np.concatenate([[atom] * len(orb._CART[l]) for atom, l, _ in mol["shells"]]).astype(int)
@@ -190,7 +198,30 @@ class Frame:
                 return {"kind": "lones", "atoms": [a, b], "shares": [round(float(q[a]), 2), round(float(q[b]), 2)]}
         if q[order[0]] >= LONE:
             return {"kind": "lone" if occ else "atom", "atoms": [order[0]], "shares": [round(float(q[order[0]]), 2)]}
+        conj = self._pi_system(c, sc, q)
+        if conj:
+            return {"kind": "pi", "atoms": conj, "shares": [round(float(q[a]), 2) for a in conj], "empty": not occ}
         return {"kind": "spread", "atoms": order[:3], "shares": [round(float(q[a]), 2) for a in order[:3]]}
+
+    def _pi_system(self, c: np.ndarray, sc: np.ndarray, q: np.ndarray) -> Optional[list]:
+        """The atoms of a delocalized pi orbital (butadiene's psi1..psi4, an allyl's, benzene's), 0-based by
+        index, or None: three or more heavy atoms share it (PI_SHARE each, most of it together), each with
+        little s and its p part along one common direction (the normal of the conjugated system)."""
+        heavy = [a for a in range(self.natoms) if self.symbols[a] != "H" and q[a] >= PI_SHARE]
+        if len(heavy) < 3 or sum(q[a] for a in heavy) < 0.6:
+            return None
+        if max(self._s_share(c, sc, a) for a in heavy) >= 0.1:
+            return None
+        T = np.zeros((3, 3))
+        for a, start in self.p_shells:
+            if a in heavy:
+                v = c[start:start + 3]
+                T += np.outer(v, v) / (float(v @ v) or 1.0)
+        w, V = np.linalg.eigh(T)
+        n = V[:, -1]
+        if min(self._axial(c, a, n) for a in heavy) < PI_ALONG:
+            return None
+        return sorted(int(a) for a in heavy)
 
 
 def _moved_basis(frame: Frame, onto: Frame) -> list:
@@ -198,6 +229,44 @@ def _moved_basis(frame: Frame, onto: Frame) -> list:
     ca = np.mean([p for _, p in frame.side.mol["atoms"]], axis=0)
     cb = np.mean([p for _, p in onto.side.mol["atoms"]], axis=0)
     return [(c + (cb - ca), l, a, cs, sc) for c, l, a, cs, sc in frame.side.basis]
+
+
+# ------------------------------------------------------------------ is the closed-shell picture right?
+
+UNSTABLE_KCAL = 0.05   # a broken-symmetry solution this much below the closed-shell one counts
+UNSTABLE_S2 = 0.05     # ... with at least this much spin polarization (<S^2>)
+
+
+def natural_occupations(molden: str) -> np.ndarray:
+    """The natural orbital occupation numbers (largest first) of an unrestricted determinant: the eigenvalues
+    of its total density P = P_alpha + P_beta in the orthonormal basis S^1/2 P S^1/2 (UNOs, Pulay & Hamilton
+    1988). A closed shell gives 2 and 0; a pure diradical 1 and 1 for its HONO and LUNO."""
+    a, b = fo._Side(molden, METHOD, "alpha"), fo._Side(molden, METHOD, "beta")
+    S = fo.overlap(a.basis, a.basis)
+    P = a.C[: a.homo + 1].T @ a.C[: a.homo + 1] + b.C[: b.homo + 1].T @ b.C[: b.homo + 1]
+    w, V = np.linalg.eigh(S)
+    half = (V * np.sqrt(np.clip(w, 0.0, None))) @ V.T
+    return np.sort(np.linalg.eigvalsh(half @ P @ half))[::-1]
+
+
+def diradical_character(n_lumo: float, n_homo: float) -> float:
+    """Yamaguchi's diradical character y from the HONO and LUNO occupations of an unrestricted solution
+    (spin-projected: y = 1 - 2T/(1 + T^2), T = (n_HONO - n_LUNO)/2): 0 closed shell, 1 pure diradical."""
+    T = max(0.0, (float(n_homo) - float(n_lumo)) / 2.0)
+    return float(max(0.0, 1.0 - 2.0 * T / (1.0 + T * T)))
+
+
+def stability_record(e_closed: float, e_open: float, s2: float, occ: np.ndarray, n_pairs: int) -> dict:
+    """One frame's check of its closed-shell (restricted) solution against the broken-symmetry one:
+    {unstable, de_kcal (open - closed), s2, occ (HONO-1 .. LUNO+1 natural occupations), n_homo, n_lumo, y}."""
+    de = (float(e_open) - float(e_closed)) * 627.5094740631
+    near = [round(float(x), 3) for x in occ[max(0, n_pairs - 2): n_pairs + 2]]
+    n_homo = float(occ[n_pairs - 1]) if n_pairs >= 1 else 2.0
+    n_lumo = float(occ[n_pairs]) if n_pairs < len(occ) else 0.0
+    unstable = de < -UNSTABLE_KCAL and float(s2) > UNSTABLE_S2
+    return {"unstable": bool(unstable), "de_kcal": round(de, 3), "s2": round(float(s2), 3), "occ": near,
+            "n_homo": round(n_homo, 3), "n_lumo": round(n_lumo, 3),
+            "y": round(diradical_character(n_lumo, n_homo), 3) if unstable else 0.0}
 
 
 # ------------------------------------------------------------------ following orbitals along the path
@@ -250,10 +319,17 @@ class Follower:
 
 # ------------------------------------------------------------------ the analysis, written as it goes
 
-def _level(f: Frame, i: int) -> dict:
+def _level(f: Frame, i: int, n_beta: Optional[int] = None) -> dict:
+    """One orbital of a frame. `n_beta`: the beta electrons, for the alpha channel of an open shell: its
+    occupied orbitals from there up are singly occupied (SOMOs: no beta partner)."""
     o = f.side.orbs[i]
-    return {"i": int(i), "rel": int(i - f.side.homo), "e": round(o["energy"] * orb.EV, 3),
-            "occ": round(float(o["occ"]), 3), "what": f.character(i)}
+    out = {"i": int(i), "rel": int(i - f.side.homo), "e": round(o["energy"] * orb.EV, 3),
+           "occ": round(float(o["occ"]), 3), "what": f.character(i)}
+    if n_beta is not None and n_beta <= i <= f.side.homo:
+        out["somo"] = True
+        if out["what"]["kind"] in ("lone", "lones"):   # an unpaired electron, not a lone pair
+            out["what"] = {**out["what"], "kind": "radical"}
+    return out
 
 
 def _label(symbols: list, what: dict) -> str:
@@ -266,6 +342,10 @@ def _label(symbols: list, what: dict) -> str:
         return f"lone-pair combination on {at[0]} and {at[1]}"
     if kind == "lone":
         return f"lone pair on {at[0]}"
+    if kind == "radical":
+        return f"unpaired electron on {' and '.join(at)}"
+    if kind == "pi":
+        return f"π{'*' if what.get('empty') else ''} system over {', '.join(at)}"
     if kind == "atom":
         return f"empty orbital on {at[0]}"
     return f"orbital spread over {', '.join(at)}"
@@ -291,7 +371,8 @@ def level_label(functional: str, basis: str) -> str:
 
 
 def _short(symbols: list, what: dict) -> str:
-    """The diagram's notation: σ C1–Br2, σ* C1–Br2, π* C1–O5, n Cl6, n O2,O5, Cl6 empty, C1·Br2·Cl6."""
+    """The diagram's notation: σ C1–Br2, σ* C1–Br2, π* C1–O5, n Cl6, n O2,O5, • H1,H3 (unpaired),
+    π C1–C2–C3–C4 (delocalized), Cl6 empty, C1·Br2·Cl6."""
     at = [f"{symbols[a]}{a + 1}" for a in what["atoms"]]
     kind, g = what["kind"], "π" if what.get("sym") == "pi" else "σ"
     if kind == "bond":
@@ -302,6 +383,10 @@ def _short(symbols: list, what: dict) -> str:
         return f"n {at[0]}"
     if kind == "lones":
         return f"n {at[0]},{at[1]}"
+    if kind == "radical":
+        return f"• {','.join(at)}"
+    if kind == "pi":
+        return f"π{'*' if what.get('empty') else ''} {'–'.join(at) if len(at) <= 4 else f'{at[0]}…{at[-1]} ({len(at)})'}"
     if kind == "atom":
         return f"{at[0]} empty"
     return "·".join(at)
@@ -309,8 +394,85 @@ def _short(symbols: list, what: dict) -> str:
 
 def story(doc: dict) -> list:
     """What happens, tersely ({kind, text, detail (the numbers, for a tooltip), lines, frame}), most telling
-    first: the HOMO's and the LUMO's journeys (start -> TS -> end), filled orbitals that end up empty,
-    orbitals that turn into others, and the largest moves on the way to the TS."""
+    first: whether the closed-shell picture holds (or how spin-contaminated an open shell is), then per spin
+    channel the HOMO's (an open shell's alpha: SOMO's) and the LUMO's journeys (start -> TS -> end), filled
+    orbitals that end up empty, orbitals that turn into others, and the largest moves on the way to the TS."""
+    out = _stability_story(doc) + _spin_story(doc)
+    if doc.get("spin") != "unrestricted":
+        return out + _story(doc)
+    somo = any(o.get("somo") for f in doc["frames"] if f for o in f["orbitals"])
+    a = _story(_channel(doc, "a"), "SOMO" if somo else "HOMO")
+    b = _story(_channel(doc, "b"))
+    tag = lambda items, t: [{**x, "text": f"{t} {x['text']}", "spin": t} for x in items]
+    a, b = tag(a, "α"), tag(b, "β")
+    front = [x for x in a + b if x["kind"] == "frontier"]
+    return out + front + [x for x in a + b if x["kind"] != "frontier"]
+
+
+def _channel(doc: dict, spin: str) -> dict:
+    """The doc as one spin channel's: its frames' orbitals, its lines."""
+    frames = [None if f is None else (f if spin == "a" else f.get("beta")) for f in doc["frames"]]
+    return {**doc, "frames": frames, "lines": [ln for ln in doc["lines"] if ln.get("spin", "a") == spin]}
+
+
+def _runs(flags: list) -> list:
+    """[(first, last)] of the stretches of consecutive True."""
+    out, start = [], None
+    for k, f in enumerate(flags + [False]):
+        if f and start is None:
+            start = k
+        elif not f and start is not None:
+            out.append((start, k - 1))
+            start = None
+    return out
+
+
+def _stability_story(doc: dict) -> list:
+    """Closed shells checked against their broken-symmetry solution: where the closed-shell orbitals stop
+    describing the molecule (diradical character), or that they hold all along."""
+    recs = [f.get("stability") if f else None for f in doc["frames"]]
+    if not any(recs):
+        return []
+    bad = [bool(r and r["unstable"]) for r in recs]
+    if not any(bad):
+        n = sum(1 for r in recs if r)
+        return [{"kind": "stability", "ok": True, "frames": [], "lines": [],
+                 "text": "Closed-shell picture holds all along",
+                 "detail": f"At {n} frames no lower broken-symmetry (unrestricted) solution was found: the orbitals shown "
+                           "describe the molecule throughout."}]
+    worst = max((r for r in recs if r and r["unstable"]), key=lambda r: r["y"])
+    k = recs.index(worst)
+    spans = _runs(bad)
+    where = ", ".join(f"frames {a + 1}–{b + 1}" if b > a else f"frame {a + 1}" for a, b in spans)
+    return [{"kind": "stability", "ok": False, "frame": k, "frames": [i for i, x in enumerate(bad) if x], "lines": [],
+             "text": f"Closed-shell picture fails at {where}: diradical character up to {worst['y']:.2f}",
+             "detail": f"A broken-symmetry (unrestricted) solution lies lower there, by up to {-worst['de_kcal']:.1f} "
+                       f"kcal/mol (frame {k + 1}: ⟨S²⟩ {worst['s2']:.2f}, natural occupations HONO {worst['n_homo']:.2f}, "
+                       f"LUNO {worst['n_lumo']:.2f}). The orbitals drawn are the closed-shell ones: there, read them "
+                       "as a guide only; the electrons pair up less than they suggest."}]
+
+
+def _spin_story(doc: dict) -> list:
+    """An open shell's spin contamination: <S^2> against S(S+1), when it strays more than 10 %."""
+    s2 = [f.get("s2") for f in doc["frames"] if f and f.get("s2") is not None]
+    if doc.get("spin") != "unrestricted" or not s2:
+        return []
+    S = (int(doc.get("multiplicity") or 1) - 1) / 2.0
+    ideal = S * (S + 1)
+    hi = max(s2)
+    k = next(i for i, f in enumerate(doc["frames"]) if f and f.get("s2") == hi)
+    if hi - ideal <= 0.1 * max(ideal, 0.75):
+        return [{"kind": "spin", "ok": True, "frame": k, "lines": [],
+                 "text": f"⟨S²⟩ {min(s2):.2f}–{hi:.2f} (pure: {ideal:.2f})",
+                 "detail": "Spin contamination stays under 10 %: the unrestricted orbitals describe one spin state."}]
+    return [{"kind": "spin", "ok": False, "frame": k, "lines": [],
+             "text": f"Spin contamination: ⟨S²⟩ up to {hi:.2f} (pure: {ideal:.2f})",
+             "detail": f"At frame {k + 1} the unrestricted solution mixes in higher spin states: its orbital energies "
+                       "and shapes there are less reliable."}]
+
+
+def _story(doc: dict, homo_name: str = "HOMO") -> list:
+    """One spin channel's story (see `story`)."""
     frames, lines, sym = doc["frames"], doc["lines"], doc["symbols"]
     done = [k for k, f in enumerate(frames) if f is not None]
     if len(done) < 2:
@@ -330,7 +492,7 @@ def story(doc: dict) -> list:
         return next((ln["id"] for ln in lines if at(ln, k) and at(ln, k)[1] == i), None)
 
     # The HOMO and the LUMO, start -> TS -> end: what they are at each stop.
-    for rel, name in ((0, "HOMO"), (1, "LUMO")):
+    for rel, name in ((0, homo_name), (1, "LUMO")):
         seq = []
         for k, where in stops:
             o = next((o for o in frames[k]["orbitals"] if o["rel"] == rel), None)
@@ -407,21 +569,28 @@ def story(doc: dict) -> list:
 
 def analyze(symbols: list, frames_A: list, charge: int, multiplicity: int, functional: str, basis: str,
             output: Path, *, ts_index: Optional[int] = None, count: int = 41, threads: int = 4,
-            window: int = WINDOW, log: Callable[[str], None] = print) -> dict:
-    """Run the frames and write <output>/orbitals.json (after every frame) and the frames' Molden files."""
+            window: int = WINDOW, stability: bool = True, log: Callable[[str], None] = print) -> dict:
+    """Run the frames and write <output>/orbitals.json (after every frame) and the frames' Molden files.
+    An open shell runs unrestricted: alpha and beta orbitals followed apart, <S^2> per frame. A closed shell
+    (`stability`) also gets its broken-symmetry solution at every frame: where it lies lower, the
+    closed-shell orbitals no longer describe the molecule (natural occupations, diradical character)."""
     output = Path(output)
     (output / "frames").mkdir(parents=True, exist_ok=True)
     picked = pick_frames(frames_A, count, ts_index)
     s_all = arc_lengths(frames_A)
     ts_k = picked.index(ts_index) if ts_index is not None and ts_index in picked else None
-    doc = {"version": 1, "method": "linus", "level": {"functional": functional, "basis": basis,
+    open_shell = int(multiplicity) > 1
+    check = bool(stability) and not open_shell
+    doc = {"version": 2, "method": "linus", "level": {"functional": functional, "basis": basis,
                                                       "label": level_label(functional, basis)},
+           "spin": "unrestricted" if open_shell else "restricted", "stability_checked": check,
            "symbols": symbols, "charge": int(charge), "multiplicity": int(multiplicity),
            "window": window, "path_frames": len(frames_A), "picked": picked,
            "s": [round(float(s_all[i]), 4) for i in picked], "ts_frame": ts_k,
            "frames": [None] * len(picked), "energies": [None] * len(picked), "lines": [], "story": [],
            "status": "running", "seconds": 0.0}
     follower, parsed, previous, t0 = Follower(window), [None] * len(picked), None, time.time()
+    follower_b, parsed_b, previous_bs = (Follower(window) if open_shell else None), [None] * len(picked), None
     # The frames computed, as one xyz file (what the page draws the orbitals on).
     (output / "frames.xyz").write_text("".join(
         f"{len(symbols)}\npath frame {idx + 1}\n" + "".join(f"{a} {x:.6f} {y:.6f} {z:.6f}\n"
@@ -442,16 +611,49 @@ def analyze(symbols: list, frames_A: list, charge: int, multiplicity: int, funct
             (output / "frames" / f"{k}.molden.gz").write_bytes(gzip.compress(text.encode(), 6))
             f = Frame(text, symbols)
             parsed[k] = f
-            doc["frames"][k] = {"homo": int(f.side.homo), "orbitals": [_level(f, i) for i in f.window(window)]}
+            rec: dict = {"homo": int(f.side.homo)}
+            extras = previous.results.extras or {}
+            if open_shell:
+                fb = Frame(text, symbols, "beta")
+                parsed_b[k] = fb
+                rec["orbitals"] = [_level(f, i, fb.side.homo + 1) for i in f.window(window)]
+                rec["beta"] = {"homo": int(fb.side.homo), "orbitals": [_level(fb, i) for i in fb.window(window)]}
+                rec["s2"] = round(float(extras.get("s2") or 0.0), 4)
+            else:
+                rec["orbitals"] = [_level(f, i) for i in f.window(window)]
+            note = ""
+            if check:
+                try:
+                    bs_text, e_bs, previous_bs = linus_molden(symbols, frames_A[idx], charge, multiplicity, functional,
+                                                              basis, threads, previous_bs, restricted=False,
+                                                              stability=True)
+                    s2 = float((previous_bs.results.extras or {}).get("s2") or 0.0)
+                    occ = natural_occupations(bs_text) if s2 > UNSTABLE_S2 else np.array([2.0] * (f.side.homo + 1) + [0.0])
+                    rec["stability"] = stability_record(energy, e_bs, s2, occ, f.side.homo + 1)
+                    if rec["stability"]["unstable"]:
+                        (output / "frames" / f"{k}.bs.molden.gz").write_bytes(gzip.compress(bs_text.encode(), 6))
+                        note = f", broken symmetry {rec['stability']['de_kcal']:.2f} kcal/mol, y {rec['stability']['y']:.2f}"
+                except Exception as exc:   # the check failing leaves the frame unchecked, not broken
+                    previous_bs = None
+                    log(f"frame {k + 1}: stability check failed: {exc}")
+            doc["frames"][k] = rec
             doc["energies"][k] = energy
+            spin_note = f", ⟨S²⟩ {rec['s2']:.3f}" if open_shell else ""
             log(f"frame {k + 1}/{len(picked)} (path frame {idx + 1}): E = {energy:.6f} Eh, "
-                f"HOMO {f.side.orbs[f.side.homo]['energy'] * orb.EV:.2f} eV ({time.time() - t:.1f} s)")
+                f"HOMO {f.side.orbs[f.side.homo]['energy'] * orb.EV:.2f} eV{spin_note}{note} ({time.time() - t:.1f} s)")
         except Exception as exc:   # one frame failing breaks the lines there, not the run
             previous = None
             log(f"frame {k + 1}/{len(picked)} (path frame {idx + 1}) failed: {exc}")
         follower.add(k, parsed[k])
-        doc["lines"] = [{"id": ln.get("id"), "points": ln["points"], "overlaps": ln["overlaps"]}
-                        for ln in follower.shown_lines(parsed)]
+        lines = [{"id": None, "spin": "a", "points": ln["points"], "overlaps": ln["overlaps"]}
+                 for ln in follower.shown_lines(parsed)]
+        if open_shell:
+            follower_b.add(k, parsed_b[k])
+            lines += [{"id": None, "spin": "b", "points": ln["points"], "overlaps": ln["overlaps"]}
+                      for ln in follower_b.shown_lines(parsed_b)]
+        for n, ln in enumerate(lines):
+            ln["id"] = n
+        doc["lines"] = lines
         write()
     doc["story"] = story(doc)
     doc["status"] = "done"
@@ -459,10 +661,10 @@ def analyze(symbols: list, frames_A: list, charge: int, multiplicity: int, funct
     return doc
 
 
-def orbital_cube(output: Path, k: int, i: int, sign: int = 1, max_points: int = CUBE_POINTS) -> str:
-    """Orbital `i` (index in the frame's sorted alpha orbitals) of picked frame `k` as cube text, times `sign`."""
+def orbital_cube(output: Path, k: int, i: int, sign: int = 1, max_points: int = CUBE_POINTS, spin: str = "alpha") -> str:
+    """Orbital `i` (index in the frame's sorted `spin` orbitals) of picked frame `k` as cube text, times `sign`."""
     text = gzip.decompress((Path(output) / "frames" / f"{int(k)}.molden.gz").read_bytes()).decode()
-    side = fo._Side(text, METHOD)
+    side = fo._Side(text, METHOD, spin)
     xyz = np.array([p for _, p in side.mol["atoms"]])
     origin, h, n = orb.grid_for(xyz, max_points=max_points)
     axes = [origin[a] + h * np.arange(n[a]) for a in range(3)]

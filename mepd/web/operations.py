@@ -1942,6 +1942,10 @@ class OrbitalsParams(Params):
                             "energies you compare; diffuse sets (D, aug-) for anions.", cli="--basis")
     frames: int = P(41, "Frames", "Single points spread evenly along the path (the ends and the TS always among "
                     "them). More: smoother lines through fast changes.", cli="--frames", ge=2)
+    stability: bool = P(True, "Check the closed-shell picture", "A closed shell also gets its broken-symmetry "
+                        "(unrestricted) solution at every frame: where that lies lower, the page says the closed-shell "
+                        "orbitals stop describing the molecule (diradical character, natural occupations). About "
+                        "doubles the time. Open shells always run unrestricted.", cli="--stability", kind="toggle")
     window: int = P(6, "Orbitals each side", "Followed above and below the HOMO–LUMO gap.", cli="--window", ge=1,
                     advanced=True, group="Advanced")
     threads: int = P(4, "Threads", cli="--threads", ge=1, advanced=True, group="Advanced")
