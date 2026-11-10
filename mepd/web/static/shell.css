@@ -83,6 +83,13 @@
   .drawer, .drawer-settings { width: 100%; }
   .ab-run, .ab-hint, .ab-units { display: none; }
   .canvas-tabs { padding: 0 var(--space-4); overflow-x: auto; }
+  /* The selection's bottom sheet scrolls as one: its name, 3D view and tabs stay above the tools only on wide
+     screens. Pinned on a phone they left the tools a strip of ~130 px at the bottom of the sheet, under the
+     Calculations bar, so a swipe on the sheet moved nothing and the tools' forms (Run) were out of reach. */
+  .inspector.has-selection:not(.collapsed) { overflow-y: auto; overscroll-behavior: contain; }
+  .inspector.has-selection > .pane-head { position: sticky; top: 0; z-index: 2; flex: none; background: var(--bg); }
+  .inspector.has-selection:not(.collapsed) > .insp-top { max-height: none; overflow: visible; }
+  .inspector.has-selection:not(.collapsed) > .inspector-scroll { flex: none; overflow: visible; padding-bottom: 72px; }
 }
 
 /* the structure list's own add row */
