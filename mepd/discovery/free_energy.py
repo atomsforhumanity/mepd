@@ -38,7 +38,8 @@ whole complex as one molecule): that needed a Hessian of the whole box at a
 geometry that is no saddle of it.
 
 The rotational symmetry number and linearity come from xtb's analysis of the
-geometry (mepd.thermo.frequencies), which is cheap at these sizes.
+geometry (mepd.thermo.frequencies, a GFN2-xTB run), which is cheap at these
+sizes; where GFN2-xTB's SCF fails at that geometry, from a GFN-FF run's.
 """
 from __future__ import annotations
 
@@ -200,7 +201,12 @@ class FreeEnergies:
 
         if len(symbols) == 1:
             return qrrho([], symbols, xyz_A, self.T, multiplicity=mult, standard_state=self.standard_state)["g_corr"]
-        shape = xtb_analysis(symbols, xyz_A, charge=charge, multiplicity=mult)
+        try:
+            shape = xtb_analysis(symbols, xyz_A, charge=charge, multiplicity=mult)
+        except RuntimeError:
+            # GFN2-xTB's SCF can fail at a geometry (a TS): the same analysis of the geometry in a GFN-FF run (no
+            # SCF; --bhess relaxes each a little, so the two agreed on 983 of 985 structures, not all)
+            shape = xtb_analysis(symbols, xyz_A, charge=charge, multiplicity=mult, method_args=["--gfnff"])
         node = StructureNode(structure=Structure(symbols=list(symbols), geometry=np.asarray(xyz_A) * BOHR_PER_ANGSTROM,
                                                  charge=int(charge), multiplicity=int(mult)))
         w = sorted(mepd.frequencies(node, self.engine).wavenumbers_cm.tolist(), key=abs)

@@ -166,3 +166,42 @@ def test_a_ts_with_spectators_is_counted_from_its_own_energy_with_no_calculation
     # an earlier version's correction (apart, bound) counts as the lower
     fe._cache[fe._key(_st(end), True, (_st(start), _st(end)))] = (-60.0, -70.0)
     assert fe.corrections([_st(end)], [True], [(_st(start), _st(end))]) == [-70.0]
+
+
+# glycine -> CH2=NH + H2O + CO, the TS whose GFN2-xTB SCF does not converge (Angstrom): xtb --bhess fails there
+GLY_TS_SYM = ["N", "C", "C", "O", "O", "H", "H", "H", "H", "H"]
+GLY_TS = np.array([[-1.03090, 0.19451, 0.30488], [-1.37377, -0.84223, -0.32760], [2.09112, 1.14423, 0.05358],
+                   [1.22001, 1.63990, 0.66316], [1.27103, -0.33598, -0.75534], [-0.01599, 0.48320, 0.20783],
+                   [-1.66005, 0.74138, 0.87941], [-0.56078, -1.29406, -0.88937], [-2.38325, -1.22950, -0.30182],
+                   [2.00267, -0.70065, -1.23095]])
+
+
+def test_a_geometry_where_gfn2_fails_takes_its_shape_from_gfn_ff(monkeypatch):
+    """The shape (linear?, symmetry number) the correction needs comes from xtb's analysis in a GFN2-xTB run; where
+    GFN2's SCF fails (a TS), from the same analysis in a GFN-FF run, so the structure still has a correction (and the
+    engine's own Hessian gives the vibrations either way)."""
+    from types import SimpleNamespace
+
+    import mepd.thermo as thermo
+
+    real, calls = thermo.frequencies, []
+
+    def frequencies(symbols, xyz, **kw):
+        calls.append(list(kw.get("method_args", ())))
+        if not kw.get("method_args"):
+            raise RuntimeError("xtb --bhess failed (exit 128): scf: Self consistent charge iterator did not converge")
+        return {"rotational_number": 1, "linear": False}
+
+    monkeypatch.setattr(thermo, "frequencies", frequencies)
+    w = [-300.0] + [100.0 * k for k in range(1, 3 * len(GLY_TS_SYM) - 6)]
+    monkeypatch.setattr("mepd.frequencies", lambda node, engine: SimpleNamespace(wavenumbers_cm=np.array(w)))
+    fe = FreeEnergies(engine=None, temperature=1000.0)
+    g = fe._one(GLY_TS_SYM, GLY_TS, 0, 1, True)
+    assert calls == [[], ["--gfnff"]] and np.isfinite(g)
+    monkeypatch.setattr(thermo, "frequencies", real)
+    import shutil
+
+    if not shutil.which("xtb"):
+        pytest.skip("no xtb")
+    shape = real(GLY_TS_SYM, GLY_TS, method_args=["--gfnff"])     # GFN-FF runs where GFN2's SCF does not
+    assert shape["rotational_number"] == 1 and not shape["linear"]
