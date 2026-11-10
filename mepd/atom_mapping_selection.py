@@ -292,13 +292,17 @@ class MechanismChoice:
 
 
 def _xtb_engine():
-    """GFN2-xTB from whatever xtb `mepd.programs` finds installed (no
-    download), to rank interpolations cheaply whatever the run's own level;
-    None if there is none."""
+    """GFN2-xTB to rank interpolations cheaply whatever the run's own level: axtb's, in this process, in xtb
+    6.7.1's conventions (the program's energies to ~1e-10 Eh, without its ~10 ms start per call: team30 measured
+    the program runs at 6.5 % of a scoreboard run's work); else whatever xtb `mepd.programs` finds installed (no
+    download); None if there is neither."""
     try:
+        from mepd.engines import axtb_backend
         from mepd.engines.gxtb import GXTBCalculator
         from mepd.programs import xtb_executable
 
+        if axtb_backend.version() is not None:
+            return GXTBCalculator(add_gxtb_flag=False, n_parallel=1, backend="axtb")
         exe = xtb_executable(download=False)
         return GXTBCalculator(executable=exe, add_gxtb_flag=False, n_parallel=1) if exe else None
     except Exception:

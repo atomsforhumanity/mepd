@@ -342,3 +342,43 @@ def test_a_mapping_with_more_bond_changes_must_beat_the_minimal_one_by_the_margi
         assert picks[k].label == expect
         assert notes[-1].startswith("Decided by") and ("within the 5 kcal/mol margin" in notes[-1]) == (relay == 112.0)
         assert any("<- chosen" in line and expect in line for line in notes)
+
+
+def _formic_acid_pulled_apart():
+    """Formic acid and 8 frames of its OH pulled off (up to 0.55 Eh above the start: hard SCFs, as an atom
+    mapping's interpolations have)."""
+    from mepd.nodes.node import StructureNode
+
+    xyz = np.array([[0.749648, -0.637310, -0.087142], [-0.404981, 0.041574, -0.165629],
+                    [-0.519717, 1.166880, 0.282119], [1.360172, -0.023906, 0.373102],
+                    [-1.185123, -0.547238, -0.669756]])
+    end = xyz.copy()
+    end[3], end[0] = [0.3, -1.9, 0.4], [1.4, -1.2, -0.3]
+    return [StructureNode(structure=Structure(symbols=["O", "C", "O", "H", "H"],
+                                              geometry=((1 - t) * xyz + t * end) / 0.529177210903))
+            for t in np.linspace(0, 1, 9)]
+
+
+def test_the_mapping_s_gfn2_is_axtb_and_gives_the_program_s_energies():
+    """team30 (A5): snap-gi-xtb's GFN2-xTB ran the xtb program (~10 ms a call, 6.5 % of a scoreboard run's work);
+    it is axtb's now, in xtb 6.7.1's conventions. On an interpolation the energies agree with the program's at
+    the same SCF accuracy to 1e-10 Eh at the start and 3e-9 Eh (2e-6 kcal/mol) along the hard frames, and with
+    the program as it ran (its default accuracy) to 3e-9 Eh: no ranking (a 0.1 kcal/mol tie) can change."""
+    pytest.importorskip("axtb")
+    from mepd.atom_mapping_selection import _xtb_engine
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.programs import xtb_executable
+
+    exe = xtb_executable(download=False)
+    if exe is None:
+        pytest.skip("no xtb program to compare with")
+    engine = _xtb_engine()
+    assert engine.backend == "axtb" and not engine.add_gxtb_flag
+    ax = np.array(engine.compute_energies(_formic_acid_pulled_apart()))
+    as_ran = np.array(GXTBCalculator(executable=exe, add_gxtb_flag=False, n_parallel=1).compute_energies(
+        _formic_acid_pulled_apart()))
+    same_acc = np.array(GXTBCalculator(executable=exe, add_gxtb_flag=False, n_parallel=1,
+                                       extra_args=["--acc", "0.01"]).compute_energies(_formic_acid_pulled_apart()))
+    assert ax.max() - ax[0] > 0.5                                   # the hard frames are there
+    assert abs(ax[0] - same_acc[0]) < 1e-10
+    assert np.abs(ax - same_acc).max() < 3e-9 and np.abs(ax - as_ran).max() < 3e-9
