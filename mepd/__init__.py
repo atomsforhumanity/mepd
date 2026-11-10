@@ -36,6 +36,16 @@ if (
         sys.modules.setdefault(_tk_module, None)
     del _tk_module
 
+# One BLAS thread per process unless the caller exported a count. mepd parallelizes across
+# calculations (pools of cores // n_threads, forked children, concurrent web jobs), and
+# numpy/scipy's OpenBLAS otherwise starts a thread per core under each of them: one local web
+# g-xTB minimization (qcopt's internal-coordinate solves) ran ~150x slower per step on 11 cores
+# than on one. The container image and afh jobs already set these. OpenBLAS and MKL read them
+# once, when numpy loads, so this stays above every import that can reach numpy.
+for _blas_threads in ("OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_blas_threads, "1")
+del _blas_threads
+
 import importlib
 from typing import TYPE_CHECKING
 

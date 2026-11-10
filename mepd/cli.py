@@ -1612,6 +1612,7 @@ def optimize(
 ) -> None:
     """Geometry-optimize structures at the level of theory in --inputs.
 
+    Up to 3000 optimizer steps per structure, or [geometry_optimizer_kwds] maxit.
     Writes opt_<i>.xyz (+ .energies) for every structure that converged, in
     input order, and summary.json with one record per structure
     ({index, source, converged, energy, error, and with Hessian validation
@@ -1638,7 +1639,10 @@ def optimize(
             nodes.append(StructureNode(structure=st.model_copy(update=updates) if updates else st))
             sources.append(f"{fp.name}" + (f"[{k}]" if len(frames) > 1 else ""))
 
-    keywords = _geometry_optimizer_keywords(run_inputs)
+    # 3000 steps unless the profile's [geometry_optimizer_kwds] maxit says otherwise: a box of
+    # molecules settles slowly (14 small molecules, the Design tab's: 539 qcopt steps, the energy
+    # still falling at 500), and a molecule takes tens, so the budget costs only runs that would fail.
+    keywords = _geometry_optimizer_keywords(run_inputs, default_maxiter=3000)
     engine = run_inputs.engine
     results: list = [None] * len(nodes)
     errors: list = [None] * len(nodes)
