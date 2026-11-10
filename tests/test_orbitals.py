@@ -385,3 +385,32 @@ def test_the_lookup_reads_only_live_entries_and_follows_a_growing_index(tmp_path
     assert orbitals.find_run_orbitals([d], syms[::-1], geoms[4]) is None   # other atoms
     (d / "1004-1.molden").unlink()                    # pruned after it was read: checked when found
     assert orbitals.find_run_orbitals([d], syms, geoms[4]) is None
+
+
+def test_orbitals_follow_by_overlap_and_say_what_happens(tmp_path):
+    """mepd.orbital_path on a short path with stand-in frames: lines follow each orbital, their character is read
+    from Mulliken shares, and the story names the frontier at both ends."""
+    import json
+
+    import numpy as np
+    import pytest
+
+    pytest.importorskip("linus")
+    from mepd import orbital_path as op
+
+    # H2 stretched along a path, within bonding distance (H-H 0.70 -> 0.88 A): the bonding orbital rises.
+    frames = [np.array([[0, 0, 0], [0, 0, r]]) for r in np.linspace(0.70, 0.88, 6)]
+    doc = op.analyze(["H", "H"], frames, 0, 1, "pbe0", "sto-3g", tmp_path, ts_index=3, count=6, threads=1,
+                     log=lambda m: None)
+    assert doc["status"] == "done" and all(f is not None for f in doc["frames"])
+    homo = [ln for ln in doc["lines"] if all(p[1] == doc["frames"][p[0]]["homo"] for p in ln["points"])]
+    assert homo and len(homo[0]["points"]) == 6                        # followed through every frame
+    first = doc["frames"][0]["orbitals"]
+    sigma = next(o for o in first if o["rel"] == 0)
+    sigma_star = next(o for o in first if o["rel"] == 1)
+    assert sigma["what"]["kind"] == "bond" and sigma_star["what"]["kind"] == "antibond"
+    assert doc["story"][0]["kind"] == "frontier" and doc["story"][0]["text"] == "HOMO: σ H1–H2 all along"
+    assert "H1–H2 σ*" in doc["story"][1]["detail"]
+    assert json.loads((tmp_path / "orbitals.json").read_text())["status"] == "done"
+    cube = op.orbital_cube(tmp_path, 0, sigma["i"], max_points=12 ** 3)
+    assert cube.splitlines()[2].split()[0] == "2"                       # two atoms in the cube

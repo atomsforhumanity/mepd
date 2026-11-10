@@ -1912,6 +1912,74 @@ def _build_variant(mode: str):
     return build
 
 
+# ------------------------------------------------------------------ orbitals along a path
+
+OrbitalFunctional = Literal["wb97x-d3bj", "b3lyp", "pbe0", "pbe", "bp86", "tpssh", "r2scan", "m06-2x", "cam-b3lyp",
+                            "wb97m-v", "b97m-v", "hf"]
+OrbitalBasis = Literal["sto-3g", "6-31g*", "6-31+g*", "6-311g**", "def2-svp", "def2-svpd", "def2-tzvp", "def2-tzvpd",
+                       "def2-qzvp", "cc-pvdz", "aug-cc-pvdz", "cc-pvtz"]
+FUNCTIONAL_LABELS = {"wb97x-d3bj": "ωB97X-D3BJ", "b3lyp": "B3LYP", "pbe0": "PBE0", "pbe": "PBE", "bp86": "BP86",
+                     "tpssh": "TPSSh", "r2scan": "r²SCAN", "m06-2x": "M06-2X", "cam-b3lyp": "CAM-B3LYP",
+                     "wb97m-v": "ωB97M-V", "b97m-v": "B97M-V", "hf": "Hartree–Fock"}
+
+
+class OrbitalsParams(Params):
+    """Orbitals along one path of a finished TS search or channels run (`mepd orbitals`)."""
+    entry: str = P("", "Path", "Which path of the result, by its id. Empty: the lowest channel's (its IRC).",
+                   kind="custom", advanced=True)
+    functional: OrbitalFunctional = P("wb97x-d3bj", "Functional", "The DFT functional of the orbitals (linus). "
+                                      "Range-separated hybrids (ωB97X) give the most reliable orbital energies; "
+                                      "pure functionals (PBE) shrink the gap.", cli="--functional",
+                                      labels=FUNCTIONAL_LABELS)
+    basis: OrbitalBasis = P("def2-svp", "Basis set", "def2-SVP is quick and shows the shapes; def2-TZVP for "
+                            "energies you compare; diffuse sets (D, aug-) for anions.", cli="--basis")
+    frames: int = P(41, "Frames", "Single points spread evenly along the path (the ends and the TS always among "
+                    "them). More: smoother lines through fast changes.", cli="--frames", ge=2)
+    window: int = P(6, "Orbitals each side", "Followed above and below the HOMO–LUMO gap.", cli="--window", ge=1,
+                    advanced=True, group="Advanced")
+    threads: int = P(4, "Threads", cli="--threads", ge=1, advanced=True, group="Advanced")
+
+
+def _orbital_path_entry(src: dict, job_dir: Path, entry: str) -> dict:
+    """The path entry of a finished result: by id, else the first channel's (or IRC's) with a TS."""
+    from mepd.web import results
+
+    result = results.collect(src, job_dir)
+    groups = result.get("groups") or []
+    entries = [e for g in groups for e in g.get("entries") or []]
+    if entry:
+        hit = next((e for e in entries if e.get("id") == entry), None)
+        if hit is None:
+            raise WorkspaceError(f"that calculation has no path {entry!r}")
+        return hit
+    # The path that sets the barrier (route_ts), else a channel's or IRC's with a TS, the longest first.
+    route = (result.get("route_ts") or {}).get("label")
+    rank = {"channel": 0, "irc": 1, "alternate": 2, "ts": 3}
+    paths = [(e, g.get("kind")) for g in groups for e in g.get("entries") or [] if len(e.get("frames") or []) >= 3]
+    if not paths:
+        raise WorkspaceError("that calculation has no path yet: orbitals along a path need its IRC or path frames")
+    return min(paths, key=lambda x: (x[0].get("label") != route, x[0].get("ts_index") is None,
+                                     rank.get(x[1], 9), -len(x[0]["frames"])))[0]
+
+
+def _build_orbitals(ctx: JobContext, p: OrbitalsParams) -> list[str]:
+    src = ctx.source
+    if src is None:
+        raise WorkspaceError("Orbitals along the path follow up on a finished TS search or channels run")
+    e = _orbital_path_entry(src, ctx.ws.jobs_dir / src["id"], p.entry)
+    path = ctx.job_dir / "inputs" / "path.xyz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f["xyz"] if f["xyz"].endswith("\n") else f["xyz"] + "\n" for f in e["frames"]))
+    (ctx.job_dir / "inputs" / "entry.json").write_text(json.dumps({"id": e.get("id"), "label": e.get("label"),
+                                                                   "ts_index": e.get("ts_index"),
+                                                                   "source": src["id"]}))
+    argv = ["orbitals", str(path), "--charge", str(src.get("charge") or 0), "--multiplicity",
+            str(src.get("multiplicity") or 1), *generic_flags(p)]
+    if e.get("ts_index") is not None:
+        argv += ["--ts-frame", str(int(e["ts_index"]) + 1)]
+    return argv + ["--output", str(ctx.output_dir)]
+
+
 PAIR = "Connect two structures"
 EXPLORE = "Explore around a structure"
 SET = "Across a set of structures"
@@ -2287,6 +2355,15 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "(TS1, VRI, TS2, P1, P2 on one map). (`mepd discovery vri-surface`)",
         "job", FROM_TS, VriSurfaceParams, _build_vri_followup("vri-surface"), source_ops=("vri",),
         cli_path=("discovery", "vri-surface")),
+    Operation(
+        "orbitals", "Orbitals along the path", "The molecular orbitals around the HOMO–LUMO gap at every frame of a "
+        "path, at a DFT level you choose (linus), each followed from reactants through the TS to products by its "
+        "overlap with the frame before: which orbitals rise, fall, cross, or turn into others. (`mepd orbitals`)",
+        "job", FROM_TS, OrbitalsParams, _build_orbitals, source_ops=("ts", "channels"), cli_path=("orbitals",),
+        cli_extra_flags=("--charge", "--multiplicity", "--ts-frame", "--output"), own_output=True,
+        available=_steering.linus_available(),
+        unavailable_reason="needs linus (AFH's DFT; pip install afh-linus[qc]), which is in the web image",
+        produces=["orbital energies along the path", "each orbital followed through the TS", "what changes, in words"]),
     Operation(
         "solvent", "Solvent effects", "Recompute this reaction's barrier in implicit solvents and see which "
         "conditions speed it up or slow it down: barriers, half-lives, and the temperature each solvent needs. "

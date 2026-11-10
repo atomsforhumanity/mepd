@@ -2085,6 +2085,51 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def get_job(jid: str):
         return {"job": J().get(jid), "progress": J().progress_snapshot(jid)}
 
+    @app.get("/api/jobs/{jid}/path-orbitals")
+    def path_orbitals_view(jid: str):
+        """An Orbitals-along-the-path run as it stands (mepd.orbital_path's orbitals.json, rewritten after
+        every frame), with the frames' geometries and the path it ran on."""
+        import json as _json
+
+        job = J().get(jid)
+        out = Path(job["output_dir"])
+        if not out.exists():
+            out = J().job_dir(jid) / "output"
+        fp = out / "orbitals.json"
+        if not fp.exists():
+            return {"status": "waiting"}
+        d = _json.loads(fp.read_text())
+        d["xyz"] = (out / "frames.xyz").read_text() if (out / "frames.xyz").exists() else None
+        entry = J().job_dir(jid) / "inputs" / "entry.json"
+        d["entry"] = _json.loads(entry.read_text()) if entry.exists() else None
+        return d
+
+    @app.get("/api/jobs/{jid}/path-orbitals/cube")
+    def path_orbital_cube(jid: str, k: int, i: int, request: Request):
+        """Orbital `i` of computed frame `k` as a cube ({cube}, gzip JSON), built once and kept."""
+        import gzip
+        import json as _json
+
+        from mepd import orbital_path
+
+        job = J().get(jid)
+        out = Path(job["output_dir"])
+        if not out.exists():
+            out = J().job_dir(jid) / "output"
+        if not (out / "frames" / f"{int(k)}.molden.gz").exists():
+            raise HTTPException(404, "that frame has no orbitals (yet)")
+        fp = out / "cubes" / f"{int(k)}_{int(i)}.json.gz"
+        if not fp.exists():
+            fp.parent.mkdir(exist_ok=True)
+            data = gzip.compress(_json.dumps({"cube": orbital_path.orbital_cube(out, int(k), int(i))}).encode(), 5)
+            tmp = fp.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(fp)
+        data = fp.read_bytes()
+        if "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(data, media_type="application/json", headers={"Content-Encoding": "gzip"})
+        return Response(gzip.decompress(data), media_type="application/json")
+
     @app.get("/api/jobs/{jid}/route-ts", response_class=PlainTextResponse)
     def job_route_ts(jid: str, reaction: Optional[int] = None):
         """The structure behind a job's barrier (xyz): its IRC-verified TS;

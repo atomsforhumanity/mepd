@@ -4047,5 +4047,42 @@
   ],
   "cli": "mepd discovery expand seed.xyz --steer access --schedule async --time-budget 3600",
   "manual": "network-expansion"
+ },
+ "op.orbitals": {
+  "title": "Orbitals along the path",
+  "does": "Computes the molecular orbitals around the HOMO–LUMO gap at frames along a path (an IRC, or a path piece) at a DFT level you choose, follows each orbital from frame to frame, and says in words which orbitals rise, fall, cross the frontier or turn into others.",
+  "how": [
+   "Picks frames evenly along the path's length, always with both ends and the TS.",
+   "Each frame: a DFT single point with linus (density fitting), its SCF started from the frame before's orbitals; the orbitals are kept as a Molden file.",
+   "Follows orbitals from frame to frame by their overlap (analytic, translation taken out), assigned one to one (Hungarian), not by energy order: a line keeps its character through a level crossing and carries its sign, so its lobes keep their colours.",
+   "Describes each orbital by its Mulliken share on each atom and, for two atoms, the sign of their overlap population (bonding or antibonding); a lone pair holds ≥60 % on one atom.",
+   "Writes what happens: the frontier at the start, the TS and the end; the largest moves on the way to the TS; filled orbitals that end up empty; orbitals that change what they are."
+  ],
+  "default": "ωB97X-D3BJ/def2-SVP, 41 frames, 6 orbitals each side of the gap.",
+  "swap": [
+   {
+    "option": "A larger basis (def2-TZVP) for energies you compare; diffuse (def2-SVPD, aug-) for anions",
+    "where": "Basis set"
+   },
+   {
+    "option": "Another functional (PBE0, B3LYP, r²SCAN…)",
+    "where": "Functional"
+   }
+  ],
+  "caveats": [
+   "Orbital energies depend on the functional: pure functionals (PBE) shrink the gap; range-separated hybrids (ωB97X) give the most physical ones.",
+   "Near-degenerate orbitals mix freely: a line can swap partners where two orbitals of one energy meet. More frames make the following safer.",
+   "Open shells: the alpha orbitals are shown.",
+   "Bonding/antibonding labels come from two atoms' overlap population, a simple population analysis; σ and π are not told apart."
+  ],
+  "code": [
+   "mepd/orbital_path.py:analyze",
+   "mepd/orbital_path.py:Follower",
+   "mepd/orbital_path.py:Frame.character",
+   "mepd/orbital_path.py:story",
+   "mepd/web/operations.py:_build_orbitals",
+   "mepd/web/static/js/components/OrbitalsPath.js"
+  ],
+  "cli": "mepd orbitals path.xyz --charge 0 --multiplicity 1 --functional wb97x-d3bj --basis def2-svp --frames 41 --ts-frame 35"
  }
 }

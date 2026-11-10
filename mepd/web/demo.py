@@ -65,6 +65,7 @@ class DemoPolicy:
         "nanoreactor": {"time_ps": 10.0, "max_connect": 5, "workers": 2, "instances": 3},
         "network-mixture": {"workers": 4, "seed_workers": 2, "copies": 2, "generations": 2, "seed_minutes": 15.0},
         "nanoreactor-more": {"more_ps": 10.0},
+        "orbitals": {"frames": 41, "threads": 2, "window": 8},
         # conformers: not capped. A TS's (--ts) is CREST plus one TS optimization per kept
         # conformer, at most max_atoms atoms, so job_timeout_s bounds it.
         # (a complex's atoms are capped by max_atoms, like any structure: /api/complexes)
@@ -106,7 +107,9 @@ class DemoPolicy:
                           # a few optimizations of one reaction's ends (its own small subsystem)
                           "reaction-retry",
                           # capped below: few workers, small combinations, two generations
-                          "network-mixture")
+                          "network-mixture",
+                          # DFT single points along one path (linus, in process): capped below
+                          "orbitals")
 
     # Tables of numbers that MEPD_DEMO_<FIELD> may change, as JSON merged into
     # the defaults. (What may run at all -- ops, engines, allowed values,

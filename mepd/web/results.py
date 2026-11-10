@@ -1808,7 +1808,30 @@ def collect_qmmm_inspect(out: Path, charge: int, multiplicity: int) -> dict:
                    [], [], warnings=list(rep.get("warnings") or []))
 
 
+def collect_orbitals(out: Path, charge: int, multiplicity: int) -> dict:
+    """Orbitals along a path (`mepd orbitals`): its page draws orbitals.json itself (OrbitalsPath.js);
+    the result is the headline and the run's numbers."""
+    d = _read_json(out / "orbitals.json")
+    if not d:
+        return _result("Starting the first frame", [], [])
+    frames = d.get("frames") or []
+    ok = sum(f is not None for f in frames)
+    lvl = (d.get("level") or {}).get("label") or "?"
+    if d.get("status") == "done":
+        head = f"{len(d.get('lines') or [])} orbitals followed over {ok} frames · {lvl}"
+    else:
+        head = f"Frame {ok} of {len(frames)} · {lvl}"
+    failed = len(frames) - ok if d.get("status") == "done" else 0
+    warn = [f"{failed} of {len(frames)} frames failed: lines break there"] if failed else []
+    story = d.get("story") or []
+    return _result(head, [], [{"label": "Level", "value": f"{lvl} (linus)"},
+                              {"label": "Frames", "value": f"{ok} of {len(frames)} along {d.get('path_frames')}"},
+                              {"label": "What happens", "value": story[0]["text"] if story else None}],
+                   warnings=warn)
+
+
 COLLECTORS = {
+    "orbitals": collect_orbitals,
     "qmmm-build": collect_qmmm_build,
     "qmmm-protein-sites": collect_protein_sites,
     "qmmm-protein-build": collect_protein_build,

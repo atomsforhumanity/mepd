@@ -226,8 +226,9 @@ def _self_overlap(alphas: np.ndarray, cs: np.ndarray, lx: int, ly: int, lz: int)
 # norm, g-xTB gives all of a shell's the norm of its x^l one. axtb (GFN2-xTB,
 # g-xTB v1.1 and 2.0.1; `molden=True` spherical, `molden="cartesian"`
 # Cartesian functions) writes the Molden convention, as TeraChem.
-D_NORM = {"gfn2": "own", "gxtb": "axis", "terachem": "own", "axtb": "own"}
-NORMALIZED_PRIMS = {"gfn2": False, "gxtb": False, "terachem": True, "axtb": True}
+# linus: spherical files of normalized primitives (orthonormal to 1e-13 in def2-SVP/TZVP, d and f shells).
+D_NORM = {"gfn2": "own", "gxtb": "axis", "terachem": "own", "axtb": "own", "linus": "own"}
+NORMALIZED_PRIMS = {"gfn2": False, "gxtb": False, "terachem": True, "axtb": True, "linus": True}
 
 
 def _prim_norm(a: float, lx: int, ly: int, lz: int) -> float:

@@ -536,6 +536,76 @@ LUMO. The cases where it is not:
 Also keep in mind that the orbitals are of isolated molecules: in a strongly
 polarizing environment (an ion pair, a solvent) the real orbitals shift.
 
+## Orbitals along a path
+
+The orbitals bar above shows a few orbitals at the frame on screen. To watch
+how every orbital near the HOMO–LUMO gap changes across a reaction, at a DFT
+level you choose, run **Orbitals along this path**. It sits under any path of
+a finished Transition state or Reaction channels result. It is a calculation
+of its own, and its page is the viewer.
+
+### What it computes
+
+- **Frames:** 41 by default, spread evenly along the path's length, always
+  with both ends and the TS.
+- **Each frame:** a DFT single point with linus (density fitting), with the
+  functional and basis set you pick (default ωB97X-D3BJ/def2-SVP). Its SCF
+  starts from the orbitals of the frame before. Each frame's orbitals are kept
+  as a Molden file.
+- **Following:** the orbitals of consecutive frames are matched one to one by
+  their overlap (analytic, with the molecule's drift taken out), not by
+  energy order. So a line in the diagram keeps its character through a level
+  crossing, and keeps its sign: the lobes keep their colours from frame to
+  frame.
+
+### What each orbital is called
+
+Each orbital is described by where its electrons sit (Mulliken shares per
+atom):
+
+- **σ / π C1–Br2**: two atoms that are bonded at that frame (or forming or
+  breaking a bond, up to 1.45× their covalent radii), in phase. It is π when
+  both atoms' p parts lie across the bond and it has little s; otherwise σ.
+- **σ\* / π\***: the same, out of phase (antibonding).
+- **n Cl6**: a lone pair, 60 % or more on one atom.
+- **n Br2,Cl6**: a combination of two unbonded atoms' lone pairs, such as the
+  3-centre HOMO at an SN2 transition state.
+- **Cl6 empty**, **C1·Br2·Cl6**: an empty orbital on one atom, or an orbital
+  spread over several.
+
+### The page
+
+- **What happens:**
+  - what the HOMO and LUMO are at the start, the TS and the end;
+  - filled orbitals that end up empty (the mark of a reaction that is hard by
+    orbital symmetry);
+  - orbitals that turn into others ("σ C1–Br2 becomes σ C1–Cl6");
+  - the largest moves on the way to the TS.
+
+  Hover over a sentence to light its orbitals, click it to show them; its
+  tooltip gives the numbers.
+- **The diagram:** orbital energies (eV) along the path, with the energy
+  profile (kcal/mol, from the same single points) on top. Filled orbitals are
+  solid lines, empty ones dashed, and the gap is shaded. Click a line to show
+  that orbital; drag across to move along the path. ← → move between frames,
+  ↑ ↓ choose the orbital above or below, and Space plays.
+- **The 3D view:** the chosen orbital at the chosen frame. The camera looks
+  across the atoms whose bonds change, with the start's side on the left.
+
+### Caveats
+
+- Orbital energies depend on the functional. Pure functionals (PBE) shrink
+  the gap; range-separated hybrids (ωB97X) give the most physical ones.
+- An anion needs diffuse functions (def2-SVPD, aug-cc-pVDZ, 6-31+G\*).
+  Without them its empty orbitals are confined by the basis set, so their
+  energies are rough. The page says so.
+- Near-degenerate orbitals mix freely, so a line can swap partners where two
+  orbitals of one energy meet. More frames make the following safer.
+- Open shells: the alpha orbitals are shown.
+
+From the command line:
+`mepd orbitals path.xyz --charge -1 --functional wb97x-d3bj --basis def2-svp --frames 41 --ts-frame 36`.
+
 ## Limits and possible improvements
 
 **Whole orbitals**

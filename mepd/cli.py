@@ -36,6 +36,7 @@ from mepd.cli_force import force
 from mepd.cli_substituents import substituents
 from mepd.cli_variant import variant
 from mepd.cli_complex import complex_
+from mepd.cli_orbitals import orbitals_
 from mepd.cli_common import (
     _check_endpoint_atom_mapping,
     _map_and_build_pair,
@@ -1579,6 +1580,7 @@ app.command("force")(force)
 app.command("substituents")(substituents)
 app.command("variant")(variant)
 app.command("complex")(complex_)
+app.command("orbitals")(orbitals_)
 
 
 @app.command("optimize")

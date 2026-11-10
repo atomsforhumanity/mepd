@@ -1304,12 +1304,19 @@ def _fake_finished_nanoreactor(client, tmp_path, a, b):
     return job
 
 
-def test_every_web_operation_emits_only_real_cli_flags(client, tmp_path):
+def test_every_web_operation_emits_only_real_cli_flags(client, tmp_path, monkeypatch):
     # The web UI drives mepd through its CLI; a renamed or removed flag
     # would otherwise only show up as a failed job (it happened: VRI's
     # --enumerate-products). Build every operation's command with default
     # parameters and with every on/off option flipped, and check each flag.
     from qcdata import Structure
+
+    from mepd.web import operations as web_ops
+
+    # Orbitals along a path read their source's path frames (the fake TS search has none).
+    frame = {"xyz": WATER_BENT_XYZ}
+    monkeypatch.setattr(web_ops, "_orbital_path_entry",
+                        lambda src, d, e: {"id": "irc", "label": "IRC", "ts_index": 1, "frames": [frame] * 3})
 
     ws = client.app.state.sessions.current.ws
     (a,) = _add(client, "C=CCOC=C")
