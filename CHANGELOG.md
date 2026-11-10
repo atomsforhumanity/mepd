@@ -1076,6 +1076,8 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Removed
 
+- **Web demo: compute is no longer limited.** `DemoPolicy.limit_compute` (off) turns off every compute limit of the public demo: atoms and structures per visitor, calculations at a time and kept, each operation's capped settings (workers, rounds, conformers, MD time...), run time per calculation, the interactive reactors' time and per-visitor count, a profile's parallelism and Psi4 memory, and QM/MM sizes. What may run at all and the blocks on server files, programs, URLs and credentials still apply, and work still queues (64 calculations at once on mepd.afh.org, 8 per workspace). The k8s manifest drops the overrides that sized the old limits. Setting `limit_compute = True` restores them all.
+
 - **Web: the Reacting mixture is no longer offered as a tool.** It sat silent: each seed ran up to 15 minutes before anything reached its page, and a complex went in as one molecule (3 water + 3 methane + 3 ammonia + 3 H2 became one 42-atom feed, seeded alone and as an 84-atom pair). Several molecules that should react together are a complex grown by Network expansion, which shows its live network from the start. Older mixture jobs still open and resume (`mepd discovery mixture` is unchanged). With several molecules selected, Network expansion's card now says it runs one expansion per molecule, each alone, and points to the complex; the Discover step opens the Complex tool with Network expansion.
 
 ### Fixed

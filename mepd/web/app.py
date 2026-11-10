@@ -1632,8 +1632,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError("orbitals need a geometry as xyz text") from None
         if len(symbols) != n or not n:
             raise WorkspaceError("orbitals need a geometry as xyz text")
-        if demo is not None and n > demo.max_atoms:
-            raise WorkspaceError(f"the demo computes orbitals for up to {demo.max_atoms} atoms")
+        if demo is not None and demo.atom_limit() is not None and n > demo.atom_limit():
+            raise WorkspaceError(f"the demo computes orbitals for up to {demo.atom_limit()} atoms")
         if W().qmmm_system_of_symbols(symbols) is not None:
             # A whole QM/MM system (a protein, a solvent box): the QM program
             # cannot take it (xtb crashed on 3,951 atoms after 3 s), and cutting
@@ -2531,7 +2531,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             demo.check_capacity(J().list())
             need = (await run_in_threadpool(variants.preview, W(), dict(J().jobs), d, _variant_level()))["jobs"]
             active = sum(1 for j in J().list() if j["status"] in ("queued", "running"))
-            if active + need > demo.max_active_jobs:
+            if demo.limit_compute and active + need > demo.max_active_jobs:
                 raise WorkspaceError(f"this variant needs {need} calculations; the demo runs at most "
                                      f"{demo.max_active_jobs} of yours at a time")
             demo.check_structures(len(W().snapshot()["structures"]), [0] * (need * 2))
@@ -2643,8 +2643,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         from mepd.web import sandbox
         from mepd.web.compose import species_structures
 
-        limits = demo.sandbox if demo is not None else None
-        max_atoms = min(120, demo.max_atoms * 3) if demo is not None else 120
+        limits = demo.sandbox_limits() if demo is not None else None
+        max_atoms = min(120, demo.atom_limit() * 3) if demo is not None and demo.atom_limit() is not None else 120
         if body.structure:
             from mepd.web.workspace import new_id
 

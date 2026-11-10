@@ -103,7 +103,7 @@ docker build --build-arg LINUS_COMMIT=$(git ls-remote ssh://git@ssh.github.com:4
 
 | Variable | Default | |
 |---|---|---|
-| `MEPD_MODE` | `demo` | `demo`: open to anyone who opens the page (or behind one shared password, `MEPD_DEMO_PASSWORD`). Each browser gets its own workspace (`/data/demo/visitors/<id>`), and the limits in `mepd/web/demo.py` apply (40 atoms, 30 min per job, ...). Compute profiles are read-only (`/data/demo/profiles/*.toml`, editable on the volume). `full`: the unrestricted app over one workspace (`/data/workspace`). Anyone logged in can read files and run programs in the container. |
+| `MEPD_MODE` | `demo` | `demo`: open to anyone who opens the page (or behind one shared password, `MEPD_DEMO_PASSWORD`). Each browser gets its own workspace (`/data/demo/visitors/<id>`), and the blocks in `mepd/web/demo.py` apply (no server files, programs or credentials; compute is not limited). Compute profiles are read-only (`/data/demo/profiles/*.toml`, editable on the volume). `full`: the unrestricted app over one workspace (`/data/workspace`). Anyone logged in can read files and run programs in the container. |
 | `MEPD_DEMO_PASSWORD` | none: the demo is open | a shared password to require in demo mode |
 | `MEPD_WEB_PASSWORD` | a generated token, printed in the log | full mode's password |
 | `MEPD_MAX_JOBS` | 4 | calculations at once |

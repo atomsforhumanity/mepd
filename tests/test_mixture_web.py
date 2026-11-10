@@ -43,9 +43,9 @@ def test_the_mixture_is_no_longer_a_tool_but_older_jobs_still_open():
 
     op = OPERATIONS["network-mixture"]
     assert op.hidden and op.describe()["hidden"]
-    DemoPolicy().check_op("network-mixture", {"workers": 4, "copies": 2})
+    DemoPolicy(limit_compute=True).check_op("network-mixture", {"workers": 4, "copies": 2})
     with pytest.raises(WorkspaceError):
-        DemoPolicy().check_op("network-mixture", {"workers": 16})
+        DemoPolicy(limit_compute=True).check_op("network-mixture", {"workers": 16})
 
 
 def test_the_mixture_page_reads_mixture_json_and_the_seeds_and_feed_before_it(tmp_path):
