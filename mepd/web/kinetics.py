@@ -4,6 +4,7 @@ plain edge whose TS search gave a barrier, among species with energies at
 one level of theory -- and the analyses the page shows."""
 from __future__ import annotations
 
+import json
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -369,7 +370,9 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
                             "barrierless that way.")
     out = {
         "species": [{"id": sid, "name": net.names[k], "g": float(net.g[k]), "c0": float(c0[k]), "final": float(res.c[-1, k]),
-                     "max": float(res.c[:, k].max()), "held": k in held_idx} for k, sid in enumerate(sids)],
+                     "max": float(res.c[:, k].max()), "held": k in held_idx,
+                     "mass": _mass(full["structures"].get(sid, {}).get("formula") if full else None)}
+                    for k, sid in enumerate(sids)],
         "times": res.times.tolist(),
         "series": {sid: res.c[:, k].tolist() for k, sid in enumerate(sids)},
         "steps": [{**i, "barrier_fwd": bf, "barrier_rev": br, "net_rate": float(nr), "extent": float(ex)}
@@ -381,6 +384,7 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         "warnings": warnings, "mode": "constant feed" if held_idx else "batch",
         "energies": "free" if fe_report else "electronic", "free_energy": fe_report,
     }
+    out["coverage"] = coverage(full or snap, jobs, out["species"], temperature, time_s, set(initial or {}))
     if target in pos:
         t = pos[target]
         out["target"] = {"id": target, "name": net.names[t], "final": float(res.c[-1, t]),
@@ -397,3 +401,103 @@ def analyze(snap: dict, jobs: dict, level_key: Optional[str], *, initial: dict, 
         out["sweep"] = mk.sweep(net, c0, [float(x) for x in sweep], time_s, None, held=held_idx,
                                 energies_at=energies_at)
     return out
+
+
+def _canonical(smiles: Optional[str]) -> Optional[str]:
+    if not smiles:
+        return None
+    try:
+        from rdkit import Chem
+
+        m = Chem.MolFromSmiles(smiles)
+        return Chem.MolToSmiles(m) if m is not None else smiles
+    except Exception:
+        return smiles
+
+
+def _mass(formula: Optional[str]) -> Optional[float]:
+    """Molar mass (g/mol) of a formula like "C2H4O2" (a complex's: all its molecules), or None."""
+    if not formula:
+        return None
+    try:
+        from ase.formula import Formula
+        from ase.data import atomic_masses, atomic_numbers
+
+        return float(sum(atomic_masses[atomic_numbers[el]] * n for el, n in Formula(formula).count().items()))
+    except Exception:
+        return None
+
+
+# Kinetics far from the conditions a network was explored at: what the exploration searched past, and what
+# these conditions cross. An exploration steered by kinetics expands a species only when its own kinetics put
+# material there, and (steer "access") only past barriers below its cutoff; hotter or longer kinetics cross
+# higher barriers, out of species it never expanded, into steps it never looked for.
+EXPLORE_OPS = ("graph-enumeration",)
+BEYOND_MARGIN_KCAL = 2.0   # crossing this much above what was searched past counts as beyond it
+
+
+def _exploration(job: dict) -> Optional[dict]:
+    """An expansion's conditions (summary.json's steering) and the workspace species it expanded."""
+    out = Path(job.get("output_dir") or "")
+    summary = None
+    for name in ("summary.json", "summary_partial.json"):
+        try:
+            summary = json.loads((out / name).read_text())
+            break
+        except (OSError, ValueError):
+            continue
+    nodes = job.get("live_nodes") or {}
+    steering = (summary or {}).get("steering") or {}
+    p = job.get("params") or {}
+    T = steering.get("temperature_K") or p.get("cutoff_temperature") or p.get("temperature")
+    t = steering.get("time_s") or p.get("cutoff_time") or p.get("time_s")
+    sources = {i for r in (summary or {}).get("rounds") or [] for i in r.get("sources") or []}
+    expanded = {nodes[str(i)] for i in sources if str(i) in nodes}
+    expanded |= {nodes["0"]} if "0" in nodes else set(((job.get("targets") or {}).get("structures") or [])[:1])
+    mode = steering.get("mode") or p.get("steer")
+    if not T or not t or mode not in ("flux", "access"):
+        return None   # not steered by kinetics: no conditions to compare with
+    from mepd.network_aware import eyring_cutoff_kcal
+
+    return {"job": job["id"], "title": job.get("title"), "status": job.get("status"), "mode": mode,
+            "temperature": float(T), "time_s": float(t), "cutoff_kcal": steering.get("cutoff_kcal"),
+            "reach_kcal": eyring_cutoff_kcal(float(T), float(t)),
+            "threshold": float(steering.get("flux_threshold") or p.get("flux_threshold") or 0.01),
+            "expanded": sorted(expanded), "nodes": set(nodes.values())}
+
+
+def coverage(snap: dict, jobs: dict, species: list, temperature: float, time_s: float, start: set) -> Optional[dict]:
+    """How far these kinetics are from what explored the network: the explorations behind its species (their
+    conditions; the barrier their kinetics crossed in their time, `reach_kcal`, and the access cutoff they
+    searched up to), the barrier these conditions cross (`reach_kcal`), whether that is beyond what was searched
+    (`beyond`), and the `frontier`: species that hold material here (at their peak, at least the explorations'
+    threshold of the start) but that no exploration expanded, so what they do next was never searched, with
+    their share of the starting mass at the end. None when no kinetics-steered exploration made this network."""
+    from mepd.network_aware import eyring_cutoff_kcal
+
+    ids = {s["id"] for s in species}
+    found = [e for j in jobs.values() if j.get("op") in EXPLORE_OPS and j.get("status") in ("done", "running", "cancelled",
+                                                                                            "interrupted", "failed")
+             for e in [_exploration(j)] if e is not None and e["nodes"] & ids]
+    if not found:
+        return None
+    reach = eyring_cutoff_kcal(float(temperature), float(time_s))
+    searched = max((e["cutoff_kcal"] if e["cutoff_kcal"] is not None else e["reach_kcal"]) for e in found)
+    expanded = {sid for e in found for sid in e["expanded"]}
+    # The explorer expands states: a mixture's ("ketene + water") molecules were expanded with it.
+    structures = snap.get("structures") or {}
+    expanded_smiles = {_canonical(x) for sid in expanded for x in (structures.get(sid, {}).get("smiles") or "").split(".") if x}
+    expanded |= {s["id"] for s in species if _canonical(structures.get(s["id"], {}).get("smiles")) in expanded_smiles - {None}}
+    threshold = min(e["threshold"] for e in found)
+    total0 = sum(s["c0"] * (s.get("mass") or 0) for s in species) or None
+    total_c0 = sum(s["c0"] for s in species) or 1.0
+    frontier = []
+    for s in species:
+        if s["id"] in expanded or s["id"] in start or s["max"] < threshold * total_c0:
+            continue
+        share = (s["final"] * s["mass"] / total0) if total0 and s.get("mass") else None
+        frontier.append({"id": s["id"], "name": s["name"], "share": share, "peak": s["max"] / total_c0})
+    frontier.sort(key=lambda f: -(f["share"] if f["share"] is not None else f["peak"]))
+    return {"explorations": [{k: v for k, v in e.items() if k not in ("expanded", "nodes")} for e in found],
+            "reach_kcal": reach, "searched_kcal": searched, "beyond": reach > searched + BEYOND_MARGIN_KCAL,
+            "frontier": frontier, "frontier_share": sum(f["share"] or 0 for f in frontier), "threshold": threshold}

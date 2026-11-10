@@ -68,6 +68,25 @@ Which species have their products proposed next.
 Experimental results never steer a run: they are only for checking it after
 the fact.
 
+### Kinetics at other conditions
+
+A network explored this way holds what its own kinetics reached: the
+barriers it searched past, and the species it expanded. Kinetics run later
+(Analyze › Kinetics, Explore › Landscape) at a higher temperature or for a
+longer time cross higher barriers and put material into species the run never
+expanded. Both views then say so above their numbers:
+
+- **Barriers:** the run's conditions and its cutoff (for example 1000 K over
+  1 h: 88 kcal/mol), and the barrier crossed at the new conditions (1500 K
+  over 1 h: 118 kcal/mol). Steps between the two were never looked for.
+- **Unexpanded species:** the share of the starting mass that ends in species
+  no exploration expanded (a mixture's molecules count as expanded with it).
+  What they do next was never searched; the Landscape marks their states
+  "unexplored".
+
+The numbers are then a picture of the steps found, not a prediction. Run
+the expansion again at the new conditions to fill the gap.
+
 ## Run
 
 - **Live queue** (with *Material flow, within reach* and *Fast*). No rounds: a species grows

@@ -721,3 +721,7 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .op-launch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .op-launch-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .op-launch-form label { display: inline-flex; align-items: center; gap: 6px; }
+.ls-open { font: 600 11px var(--font-ui); fill: var(--warn); text-anchor: middle; cursor: help; }
+.ls-mass { margin: 8px 0 0; }
+.kn-coverage p { margin: 4px 0; }
+.ls-scroll { overflow-x: auto; }
