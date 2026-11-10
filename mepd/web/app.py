@@ -327,7 +327,9 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         # to the job record so list views and edge badges need no extra fetch.
         async def attach() -> None:
             if job["op"] == "optimize" and not job.get("external"):
-                await run_in_threadpool(apply_optimization, manager.ws, job)
+                busy = frozenset(s for j in list(manager.jobs.values()) if j is not job and j.get("op") == "optimize"
+                                 and j.get("status") in ("queued", "running") for s in (j.get("targets") or {}).get("structures") or [])
+                await run_in_threadpool(apply_optimization, manager.ws, job, busy)
                 if job.get("qmmm"):
                     from mepd.web import qmmm as web_qmmm
 
@@ -3285,8 +3287,9 @@ def _read_summary(out: Path) -> Optional[list]:
         return None
 
 
-def apply_optimization(ws: Workspace, job: dict) -> None:
-    """Write a finished `optimize` job back onto its structures (in place)."""
+def apply_optimization(ws: Workspace, job: dict, busy: frozenset = frozenset()) -> None:
+    """Write a finished `optimize` job back onto its structures (in place). `busy`: structures another
+    minimization still works on (they stay "optimizing"); the rest leave that status."""
     sids = job["targets"]["structures"]
     out = Path(job["output_dir"])
     summary = {}
@@ -3311,4 +3314,5 @@ def apply_optimization(ws: Workspace, job: dict) -> None:
         else:
             why = (rec or {}).get("error") or job.get("error") or job["status"]
             ws.set_status([sid], "opt_failed", f"optimization {job['status']}: {str(why).splitlines()[-1][:300]}")
+    ws.settle_status([sid for sid in sids if sid not in busy])
 

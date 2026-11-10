@@ -450,6 +450,14 @@ class JobManager:
                     # The edge remembers the endpoint conformers chosen for it.
                     self.ws.update_edge(eids[0], conformers={s: conformers.get(s) for s in sids if s in conformers})
                 if op.target == "structure" and op.key != "tsopt":
+                    # "optimizing" with no minimization queued or running is a stale status (a duplicate
+                    # conformer's optimization never cleared it): settle it instead of refusing for good.
+                    minimizing = {s for j in self.jobs.values() if j.get("op") == "optimize"
+                                  and j.get("status") in ("queued", "running") for s in (j.get("targets") or {}).get("structures") or []}
+                    stale = [s for s, r in zip(sids, recs) if r.get("status") == "optimizing" and s not in minimizing]
+                    if stale:
+                        self.ws.settle_status(stale)
+                        recs = [self.ws.structure_view(s, c) for s, c in zip(sids, picks)]
                     busy = [r["name"] for r in recs if r.get("status") == "optimizing"]
                     if busy:
                         raise WorkspaceError(f"{', '.join(busy)} is still being optimized; run this once it is done")

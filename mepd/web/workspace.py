@@ -1076,6 +1076,24 @@ class Workspace:
                     rec["status_error"] = error
             self._save()
 
+    def settle_status(self, sids: list[str]) -> None:
+        """End "optimizing" for structures no minimization is still working on, from their representative
+        conformer. An optimized conformer that relaxed onto one the structure already had (the same molecule
+        added again), or that is not the representative, never reached the status update in replace_geometry,
+        which left the structure "optimizing" for good and every calculation on it refused."""
+        with self._lock:
+            changed = False
+            for sid in sids:
+                rec = self._data["structures"].get(sid)
+                if rec is None or rec.get("status") != "optimizing":
+                    continue
+                conf = next((c for c in rec.get("conformers") or [] if c["id"] == rec.get("conformer")), {})
+                bad = (conf.get("validation") or rec.get("validation") or {}).get("is_minimum") is False
+                rec["status"] = "not_minimum" if bad else "ready"
+                changed = True
+            if changed:
+                self._save()
+
     def replace_geometry(self, sid: str, structure: Structure, *, energy: Optional[float], level: dict,
                          validation: Optional[dict] = None, conformer: Optional[str] = None) -> Optional[dict]:
         """Swap in an optimized geometry, keeping the structure's identity
