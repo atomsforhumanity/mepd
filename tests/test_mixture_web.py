@@ -79,6 +79,14 @@ def test_the_mixture_page_reads_mixture_json_and_the_seeds_and_feed_before_it(tm
                                                       "molecules": [{"molecule": "O"}], "reactions": [], "seeds": []}))
         d = c.get("/api/jobs/j_m/mixture").json()
         assert d["mixture"]["feed"][0]["molecule"] == "O" and d["names"]["O"] == "water" and "feed" not in d
+        # molecules without an everyday name: their formula, and what tells apart those that share one
+        para, meta = "COC(=O)C1CC=C(C)CC1", "COC(=O)C1CCC=C(C)C1"
+        (out / "mixture.json").write_text(json.dumps({"feed": [{"name": "water", "molecule": "O", "concentration": 1}],
+                                                      "molecules": [{"molecule": "O"}, {"molecule": para}, {"molecule": meta}],
+                                                      "reactions": [], "seeds": []}))
+        d = c.get("/api/jobs/j_m/mixture").json()
+        assert d["labels"] == {para: {"formula": "C9H14O2", "label": "C9H14O2, 1,4-isomer", "tell": "1,4-isomer"},
+                               meta: {"formula": "C9H14O2", "label": "C9H14O2, 1,3-isomer", "tell": "1,3-isomer"}}
 
 
 def test_a_real_mixture_reads_by_its_names_with_mirror_images_counted(tmp_path):

@@ -2967,7 +2967,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         molecules with their concentrations, its reactions with barriers and extents, the seeds' progress,
         and everyday names where molecules have them. Before the first merge: the seeds started so far, and
         the feed and conditions from the job's command (`feed`, `settings`)."""
-        from mepd.web.live_network import mixture_feed, names_of
+        from mepd.web.live_network import _formula_of, drawable, isomer_labels, mixture_feed, names_of
 
         job = J().jobs.get(jid)
         if job is None:
@@ -3014,7 +3014,13 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         params = job.get("params") or {}
         before = {"feed": feed, "settings": {"temperature_K": params.get("temperature"), "time_s": params.get("time_s"),
                                              "standard_state": params.get("standard_state")}} if data is None else {}
-        return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names_of(smiles), **before}
+        names = names_of(smiles)
+        # molecules without an everyday name: their formula, and what tells apart those that share one
+        plain = {m: s for m, s in smiles.items() if m not in names and drawable(s)}
+        told = isomer_labels(sorted(set(plain.values())))
+        labels = {m: {"formula": _formula_of(s), **({"label": told[s][0], "tell": told[s][1]} if told.get(s, (0, 0))[1] else {})}
+                  for m, s in plain.items()}
+        return {"mixture": data, "seeds": seeds, "status": job.get("status"), "names": names, "labels": labels, **before}
 
     @app.get("/api/jobs/{jid}/network-timeline")
     def network_timeline(jid: str, since: Optional[int] = None):

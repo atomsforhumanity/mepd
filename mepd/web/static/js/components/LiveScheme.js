@@ -823,7 +823,7 @@ function conditionsFrom(tl, basis, job) {
 // reactant (the one that is not fed, else the first) to each product, its co-reactant written on it
 // ("+ formic acid"), as wide as the amount it converted. A molecule is placed from the molecule it
 // is made from (the reaction that makes the most of it); feed molecules sit at the start.
-export function mixtureTimeline(mx, names) {
+export function mixtureTimeline(mx, names, labels = {}) {
   const feed = new Set((mx.feed || []).map((f) => f.molecule));
   const fedTotal = (mx.feed || []).reduce((t, f) => t + (f.concentration || 0), 0) || 1;
   const mols = mx.molecules || [];
@@ -859,13 +859,13 @@ export function mixtureTimeline(mx, names) {
   const fin = (x) => (x.final_concentration || 0) / fedTotal;
   frame.yields = mols.filter((x) => !feed.has(x.molecule) && fin(x) >= 1e-9).sort((a, b) => fin(b) - fin(a)).slice(0, 16).map((x) => [x.molecule, fin(x), x.molecule]);
   frame.left = mx.pending ? [] : mols.filter((x) => feed.has(x.molecule)).map((x) => [x.molecule, fin(x)]);
-  const molecules = Object.fromEntries(mols.map((x) => [x.molecule, { name: names?.[x.molecule] || null, species: x.molecule }]));
+  const molecules = Object.fromEntries(mols.map((x) => [x.molecule, { name: names?.[x.molecule] || null, ...(labels[x.molecule] || {}), species: x.molecule }]));
   return { frames: [frame], smiles, names, explored, co, molecules, start: [...feed], mixture: { feed: [...feed], tau, seeds: mx.seeds || [], generation: mx.generation, pending: !!mx.pending },
     command: tau != null ? `--time ${tau}` : '' };
 }
 
-export function MixtureScheme({ mixture, names, jobId, job, running, extra = null }) {
-  const tl = useMemo(() => mixtureTimeline(mixture, names), [JSON.stringify(mixture)]);
+export function MixtureScheme({ mixture, names, labels = {}, jobId, job, running, extra = null }) {
+  const tl = useMemo(() => mixtureTimeline(mixture, names, labels), [JSON.stringify(mixture), JSON.stringify(labels)]);
   // A finished mixture has no timeline: its reactor events replay at their own pace, over and over
   // (the strip and the dialog say when each happened); a running one shows them as they come.
   const t0 = useRef(performance.now());

@@ -73,5 +73,5 @@ export function MixtureView({ jobId }) {
     ${(m.notes || []).length > 0 && html`<section class="ln-closer"><span class="section-title">Notes</span>
       <ul class="ln-feed">${m.notes.slice(0, 4).map((n) => html`<li class="muted">${n}</li>`)}</ul></section>`}
   </div>`;
-  return html`<div class="ld-mixture">${head}<${MixtureScheme} mixture=${m} names=${names} jobId=${jobId} job=${job} running=${running} extra=${extra} /></div>`;
+  return html`<div class="ld-mixture">${head}<${MixtureScheme} mixture=${m} names=${names} labels=${d.labels || {}} jobId=${jobId} job=${job} running=${running} extra=${extra} /></div>`;
 }
