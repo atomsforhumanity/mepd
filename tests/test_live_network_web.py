@@ -359,3 +359,32 @@ def test_molecules_keep_their_geometrys_stereo_and_meet_their_mirror_image(tmp_p
     two = ln.molecule_yields(tl(), stereo, mirror_images=False)
     assert sorted(a for _, a, _ in two["frames"][0]["yields"]) == [0.25, 0.25]
     assert two["frames"][0]["left"] == [["C=CC(=C)C", 0.5], ["C=CC(=O)OC", 0.5]]
+
+
+def test_isomers_get_labels_that_tell_them_apart():
+    """Molecules with one formula and no everyday name are told apart in plain words, from their graphs and
+    the stereo their geometry gave them, by only as much as it takes: endo or exo, E or Z, where a ring's
+    two substituents sit, open chain or the ring's size; failing those, the SMILES."""
+    def tells(keys):
+        return {k: v[1] for k, v in ln.isomer_labels(keys).items()}
+
+    para, meta, chain = "COC(=O)[C@@H]1CC=C(C)CC1", "COC(=O)[C@@H]1CCC=C(C)C1", "C=CC(=C)CCCC(=O)OC"
+    assert tells([para, meta, chain]) == {para: "1,4-isomer", meta: "1,3-isomer", chain: "open chain"}
+    assert ln.isomer_labels([para, meta])[para] == ("C9H14O2, 1,4-isomer", "1,4-isomer")
+    cyclobutane = "C=C[C@]1(C)C[C@H](C(=O)OC)C1"                        # 1,3 too, on a 4-ring
+    assert tells([para, meta, cyclobutane]) == {para: "1,4-isomer, 6-ring", meta: "1,3-isomer, 6-ring",
+                                                cyclobutane: "1,3-isomer, 4-ring"}
+    endo, exo = "O=C1NC(=O)[C@H]2[C@@H]1[C@H]1C=C[C@@H]2O1", "O=C1NC(=O)[C@H]2[C@@H]1[C@@H]1C=C[C@H]2O1"
+    assert tells([endo, exo]) == {endo: "endo", exo: "exo"}
+    f_endo, f_exo = "COC(=O)[C@@H]1C[C@@H]2C=C[C@H]1C2", "COC(=O)[C@@H]1C[C@H]2C=C[C@@H]1C2"
+    assert tells([f_endo, f_exo]) == {f_endo: "endo", f_exo: "exo"}
+    ze, ee = "COC(=O)/C=C\\C=C\\C(=O)OC", "COC(=O)/C=C/C=C/C(=O)OC"
+    assert tells([ze, ee]) == {ze: "E,Z", ee: "E,E"}
+    branched = "C=CC(=C)C[C@@H](C)C(=O)OC"                               # two open chains: their SMILES
+    assert tells([chain, branched]) == {chain: "C=CC(=C)CCCC(=O)OC", branched: "C=CC(=C)CC(C)C(=O)OC"}
+    assert ln.isomer_labels(["CCO"]) == {"CCO": ("C2H6O", None)}            # alone with its formula
+    tl = ln.molecule_yields({"smiles": {"0": "C=CC(=C)C.C=CC(=O)OC", "1": para, "2": meta}, "names": {}, "frames": [
+        {"t": 0.0, "species": [["0", 0.0, 1.0, 0.1, 1, 0], ["1", -41.0, 0.5, 0.5, 1, 0], ["2", -41.0, 0.4, 0.4, 1, 0]]}]})
+    mol = {m: (x.get("label"), x.get("tell")) for m, x in tl["molecules"].items() if x.get("tell")}
+    assert sorted(mol.values()) == [("C9H14O2, 1,3-isomer", "1,3-isomer"), ("C9H14O2, 1,4-isomer", "1,4-isomer")]
+    assert tl["molecules"]["C=CC(=C)C"] == {"name": "isoprene", "formula": "C5H8", "species": "0"}

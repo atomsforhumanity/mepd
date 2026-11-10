@@ -352,11 +352,16 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   }
   const mixtures = [...groups.values()].sort((a, b) => b.fin - a.fin).slice(0, LANE_N);
   const molOf = tl.molecules || {}, per = perText(tl), isMixture = !!tl.mixture;
-  const molName = (k) => {
+  // A molecule's name: its everyday or benchmark name, else its formula and, when others share that formula,
+  // what tells it apart (the server's isomer labels: "C9H14O2, 1,4-isomer, 6-ring"). The lane and the strip,
+  // beside its drawing, say what tells it apart; the table and its hover card, the formula too.
+  const molNamed = (k) => {
     const sid = molOf[k]?.species;
-    return molOf[k]?.name || (sid != null && m.productOf[sid] && !String(tl.smiles[sid] || '').includes('.') ? m.productOf[sid] : '')
-      || molOf[k]?.formula || (String(k).startsWith('#') ? `species ${String(k).slice(1)}` : short(k, 24));
+    return molOf[k]?.name || (sid != null && m.productOf[sid] && !String(tl.smiles[sid] || '').includes('.') ? m.productOf[sid] : '');
   };
+  const molTell = (k) => (molNamed(k) ? '' : molOf[k]?.tell || '');
+  const molHead = (k) => molNamed(k) || molOf[k]?.formula || (String(k).startsWith('#') ? `species ${String(k).slice(1)}` : short(k, 24));
+  const molName = (k) => (molTell(k) ? `${molHead(k)}, ${molTell(k)}` : molHead(k));
   const molImg = (k, w = 240, h = 180) => {
     const smi = isMixture ? tl.smiles[k] : k;   // (a mixture's species are its molecules)
     return drawable(smi) && !String(smi).startsWith('#') ? `${depictUrl(smi, w, h, null)}&bond=${Math.round(w / 3)}` : imgOf(molOf[k]?.species, w, h);
@@ -538,7 +543,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
           <rect x=${p.x + 4} y=${p.y - 35} width="96" height="70" rx="6" class="ld-card-bg" />
           ${img && html`<image href=${img} x=${p.x + 6} y=${p.y - 33} width="92" height="66" preserveAspectRatio="xMidYMid meet" />`}
           <text x=${p.x + 112} y=${p.y - 8} class="ld-lane-pct">${amt(p.fin)}</text>
-          <text x=${p.x + 112} y=${p.y + 13} class="ld-lane-name">${short(nm, 22)}</text>
+          <text x=${p.x + 112} y=${p.y + 13} class="ld-lane-name">${short(p.mol ? molTell(p.key) || molHead(p.key) : nm, 22)}</text>
           ${p.mol && molOf[p.key]?.mirror && html`<text x=${p.x + 300} y=${p.y - 13} class="ld-lane-sub end">+ mirror image</text>`}
           <rect x=${p.x + 112} y=${p.y + 24} width="186" height="7" rx="3.5" class="ld-bar-bg" />
           <rect x=${p.x + 112} y=${p.y + 24} width=${Math.max(2, (186 * (p.fin || 0)) / laneMax)} height="7" rx="3.5" class="ld-bar" />
@@ -550,7 +555,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
         smiles=${tl.smiles[hovered]} first=${m.first.get(hovered)} seed=${hovered === m.seed} made=${madeBy.get(hovered) || []} onEvent=${openEvent}
         unit=${isMixture ? 'of the feed' : 'of boxes'} /><//>`}
     ${hover?.kind === 'm' && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
-      <${MoleculeCard} k=${hover.id} y=${(f.yields || []).find((x) => x[0] === hover.id)} img=${molImg(hover.id, 320, 240)} name=${molName(hover.id)}
+      <${MoleculeCard} k=${hover.id} y=${(f.yields || []).find((x) => x[0] === hover.id)} img=${molImg(hover.id, 320, 240)} name=${molName(hover.id)} formula=${molOf[hover.id]?.formula}
         mirror=${molOf[hover.id]?.mirror} per=${per} holder=${(sid) => label(sid)} mixture=${isMixture} /><//>`}
     ${hoveredEdge && html`<${Popover} anchor=${hc.cur.anchor} className="ld-pop edge" onEnter=${hc.card.onEnter} onLeave=${hc.card.onLeave}>
       <${EdgeCard} e=${hoveredEdge} nm=${label} cond=${cond} /><//>`}
@@ -558,7 +563,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   </div>`;
 
   const strip = html`<${Strip} t=${f.t} tEnd=${m.frames[m.frames.length - 1].t} atEnd=${cur === m.frames.length - 1} running=${running} q=${tl.activity?.queue} counts=${f.counts} nSteps=${f.steps.length} products=${series.slice(0, 3)}
-    left=${left} per=${per} steady=${f.t - steadySince} imgOf=${molImg} nameOf=${molName} cond=${cond} pending=${!f.steered} basis=${f.basis}
+    left=${left} per=${per} steady=${f.t - steadySince} imgOf=${molImg} nameOf=${molName} tellOf=${molTell} cond=${cond} pending=${!f.steered} basis=${f.basis}
     live0=${followLive && job?.started ? job.started : null} steering=${steeringOf(job)} merged=${String(jobId).startsWith('mix:')}
     reactor=${rx.runs ? { running: rx.running, runs: rx.runs, recent: lastTen, events: rx.events.filter((e) => e.t <= tNow + 0.5).length,
       open: () => openJob(apiJob, apiJob === jobId ? 'reactor' : 'live') } : null} />`;
@@ -629,10 +634,10 @@ function MoleculeTable({ f, molImg, molName, molOf, label, hueOf }) {
       <td class="mono">${amtFine(a)}</td><td>${sid != null ? label(sid) : ''}</td></tr>`)}</tbody></table></div>`;
 }
 
-function MoleculeCard({ k, y, img, name, mirror, per, holder, mixture }) {
+function MoleculeCard({ k, y, img, name, formula, mirror, per, holder, mixture }) {
   return html`${img && html`<img src=${img} alt=${k} />`}
     <div class="ld-pop-name">${name}${mirror ? html` <span class="muted small">with its mirror image</span>` : ''}</div>
-    <div class="mono small muted ld-pop-smi">${String(k).startsWith('#') ? 'structure not perceived' : short(k, 48)}</div>
+    <div class="mono small muted ld-pop-smi">${String(k).startsWith('#') ? 'structure not perceived' : `${formula && !name.startsWith(formula) ? `${formula} · ` : ''}${short(k, 48)}`}</div>
     <div class="ld-pop-nums"><span><b>${amt(y?.[1])}</b>${per}, at the end</span></div>
     ${!mixture && y?.[2] != null && html`<div class="small muted">Counted in every state of the box that holds it; most of it in <b>${holder(y[2])}</b></div>`}`;
 }
@@ -726,7 +731,7 @@ function LiveClock({ t0 }) {
   return fmtClock(Math.max(0, Date.now() / 1000 - t0));
 }
 
-function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = [], per, steady, imgOf, nameOf, cond, pending, steering, reactor, live0 = null, merged = false }) {
+function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = [], per, steady, imgOf, nameOf, tellOf = () => '', cond, pending, steering, reactor, live0 = null, merged = false }) {
   const ph = running && atEnd ? phaseOf(q) : null;
   return html`<div class="ld-strip" role="status" aria-live="off">
     <div class="ld-s-time" title=${merged ? 'The mixture as merged so far' : 'Run time'}>
@@ -746,7 +751,7 @@ function Strip({ t, tEnd, atEnd, running, q, counts, nSteps, products, left = []
     <div class="ld-s-products" title=${`What forms at the end of the simulated time, ${per} (a molecule counted in every state of the box that holds it)`}>
       <span class="small muted ld-s-per">${per}:</span>
       ${products.map((p) => html`<span class=${`ld-s-prod h${p.hue ?? 'x'}`} title=${`${nameOf(p.key)}: ${amt(p.fin)} ${per}`}>
-        ${imgOf(p.key, 120, 90) && html`<img src=${imgOf(p.key, 120, 90)} alt=${nameOf(p.key)} />`}<b>${amt(p.fin)}</b></span>`)}
+        ${imgOf(p.key, 120, 90) && html`<img src=${imgOf(p.key, 120, 90)} alt=${nameOf(p.key)} />`}${tellOf(p.key) && html`<span class="ld-s-pname">${short(tellOf(p.key), 26)}</span>`}<b>${amt(p.fin)}</b></span>`)}
       ${left.map((l) => html`<span class="ld-s-prod start" title=${`${l.name}, left of the start at the end of the simulated time`}>
         <span class="ld-s-pname">${left.length > 1 ? `${short(l.name, 14)} ` : ''}left</span><b>${amt(l.fin)}</b></span>`)}
       ${products.length > 0 && html`<${Spark} series=${products} />`}

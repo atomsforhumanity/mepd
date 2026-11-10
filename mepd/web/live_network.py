@@ -255,6 +255,147 @@ def _formula_of(smiles: str) -> Optional[str]:
     return CalcMolFormula(mol) if mol is not None else None
 
 
+def _ring_positions(mol) -> Optional[str]:
+    """Where a one-ring molecule's two substituted ring atoms sit, the shorter way round: "1,4" (two
+    atoms apart is "1,3", next to each other "1,2"); None for any other molecule."""
+    ri = mol.GetRingInfo()
+    if ri.NumRings() != 1:
+        return None
+    ring = list(ri.AtomRings()[0])
+    held = [k for k, a in enumerate(ring) if any(nb.GetIdx() not in ring for nb in mol.GetAtomWithIdx(a).GetNeighbors())]
+    if len(held) != 2:
+        return None
+    d = abs(held[0] - held[1])
+    return f"1,{min(d, len(ring) - d) + 1}"
+
+
+def _endo_exo(mol) -> Optional[str]:
+    """endo or exo (IUPAC) of the substituents on a bridged bicyclic part, from the stereo the molecule has
+    (assigned from its geometry): a substituent on a bridge is exo when it points to the shortest of the
+    other two bridges, endo when away. Only bridge atoms with one substituent count; None unless they all
+    agree, or without a bridged part, a shortest bridge or a 3D embedding."""
+    from itertools import combinations
+
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    rings = [set(r) for r in mol.GetRingInfo().AtomRings()]
+    for r1, r2 in combinations(rings, 2):
+        shared = r1 & r2
+        if len(shared) < 3:      # fused (two atoms in common) or apart
+            continue
+        heads = {a for a in shared if any(nb.GetIdx() in (r1 | r2) - shared for nb in mol.GetAtomWithIdx(a).GetNeighbors())}
+        if len(heads) != 2:
+            continue
+        bridges = [r1 - shared, r2 - shared, shared - heads]
+        part = r1 | r2
+        found = []
+        for k, bridge in enumerate(bridges):
+            others = sorted((b for j, b in enumerate(bridges) if j != k), key=len)
+            if len(others[0]) == len(others[1]):
+                continue
+            for a in bridge:
+                out = [nb.GetIdx() for nb in mol.GetAtomWithIdx(a).GetNeighbors() if nb.GetIdx() not in part]
+                if len(out) == 1:
+                    found.append((out[0], others[0], others[1]))
+        if not found:
+            return None
+        h = Chem.AddHs(mol)
+        if AllChem.EmbedMolecule(h, randomSeed=7) != 0:
+            return None
+        xyz = h.GetConformer().GetPositions()
+        near = lambda x, b: min(((xyz[x] - xyz[i]) ** 2).sum() for i in b)
+        words = {"exo" if near(x, short) < near(x, long) else "endo" for x, short, long in found}
+        return words.pop() if len(words) == 1 else None
+    return None
+
+
+def _double_bond_stereo(mol) -> Optional[str]:
+    """E and Z of the molecule's stereo double bonds (CIP), as "E,Z"; None without any."""
+    from rdkit.Chem import rdCIPLabeler
+
+    rdCIPLabeler.AssignCIPLabels(mol)
+    codes = sorted(b.GetProp("_CIPCode") for b in mol.GetBonds() if b.HasProp("_CIPCode"))
+    return ",".join(codes) if codes else None
+
+
+def _ring_kind(mol) -> str:
+    """"open chain"; a ring by its size and what else than carbon is in it ("6-ring", "5-ring with O");
+    several rings by their count ("3 rings")."""
+    rings = mol.GetRingInfo().AtomRings()
+    if not rings:
+        return "open chain"
+    if len(rings) > 1:
+        return f"{len(rings)} rings"
+    other = sorted({mol.GetAtomWithIdx(a).GetSymbol() for a in rings[0]} - {"C"})
+    return f"{len(rings[0])}-ring" + (f" with {' and '.join(other)}" if other else "")
+
+
+def isomer_labels(keys: list) -> dict:
+    """Labels that tell apart molecules with one formula and no everyday name, in plain words, from their
+    graphs and the stereo their geometry gave them: the formula, then only as much as tells them apart,
+    in this order: endo or exo, E or Z, where a ring's two substituents sit ("1,4-isomer"), open chain or
+    the ring's size and make-up ("6-ring", "5-ring with O"); failing those, in their place, the SMILES
+    (without stereo when that is enough). One told apart
+    only by what the others are gets its own first trait ("open chain").
+    {molecule: (label, the part that tells it apart)}; a molecule alone with its formula: (formula, None)."""
+    from rdkit import Chem, rdBase
+
+    by = {}
+    for k in keys:
+        by.setdefault(_formula_of(k), []).append(k)
+    out = {}
+    for formula, ks in by.items():
+        if len(ks) == 1:
+            out[ks[0]] = (formula, None)
+            continue
+        traits = {}
+        for k in ks:
+            with rdBase.BlockLogs():
+                mol = Chem.MolFromSmiles(k)
+            ring = _ring_positions(mol) if mol is not None else None
+            traits[k] = [_endo_exo(mol) if mol is not None and "@" in k else None,
+                         _double_bond_stereo(mol) if mol is not None and ("/" in k or "\\" in k) else None,
+                         f"{ring}-isomer" if ring else None,
+                         _ring_kind(mol) if mol is not None else None]
+        tell = {k: [] for k in ks}
+
+        def colliding():
+            groups = {}
+            for k in ks:
+                groups.setdefault(tuple(tell[k]), []).append(k)
+            return [g for g in groups.values() if len(g) > 1]
+
+        for j in range(len(traits[ks[0]])):
+            for g in colliding():
+                if len({traits[k][j] for k in g}) > 1:
+                    for k in g:
+                        if traits[k][j]:
+                            tell[k].append(traits[k][j])
+        # one ring's size said for one isomer is said for every isomer told by where its ring's substituents sit
+        placed = [k for k in ks if traits[k][2] in tell[k]]
+        if any(traits[k][3] in tell[k] for k in placed):
+            for k in placed:
+                if traits[k][3] not in tell[k]:
+                    tell[k].append(traits[k][3])
+        for g in colliding():
+            flat = {}
+            for k in g:
+                with rdBase.BlockLogs():
+                    mol = Chem.MolFromSmiles(k)
+                flat[k] = Chem.MolToSmiles(mol, isomericSmiles=False) if mol is not None else k
+            for k in g:
+                tell[k] = [flat[k] if len(set(flat.values())) == len(g) else k]
+        for k in ks:   # one told apart by what the others are: what it is itself, when that is still unique
+            first = next((x for x in traits[k] if x), None)
+            if not tell[k] and first and all(tell[o] != [first] for o in ks):
+                tell[k] = [first]
+        for k in ks:
+            words = ", ".join(tell[k]) or None
+            out[k] = (f"{formula}, {words}" if words else formula, words)
+    return out
+
+
 def _mirror_smiles(smiles: str) -> str:
     """The mirror image of a stereo SMILES (every tetrahedral centre inverted; double bonds keep E/Z)."""
     return smiles.replace("@@", "\0").replace("@", "@@").replace("\0", "@")
@@ -272,7 +413,8 @@ def molecule_yields(tl: dict, stereo: Optional[dict] = None, mirror_images: bool
     Each frame gets `yields` ([molecule, amount, the species holding most of it], the MAX_YIELDS largest
     from MIN_YIELD up)
     and `left` ([molecule, amount] for the start's molecules); the timeline `molecules` ({molecule: {name,
-    formula, species, mirror (it stands for itself and its mirror image)}}) and `start` (the start's molecules, as
+    formula, label and tell (one without a name that shares its formula: isomer_labels), species, mirror (it
+    stands for itself and its mirror image)}}) and `start` (the start's molecules, as
     many times as the box holds each)."""
     from collections import Counter
 
@@ -319,8 +461,10 @@ def molecule_yields(tl: dict, stereo: Optional[dict] = None, mirror_images: bool
             table.setdefault(m, main[m][1])
     for m in start:
         table.setdefault(m, seed)
-    tl["molecules"] = {m: {"name": (tl.get("names") or {}).get(sid) if m.startswith("#") else common_name(m),
-                           "formula": None if m.startswith("#") else _formula_of(m),
+    names = {m: (tl.get("names") or {}).get(sid) if m.startswith("#") else common_name(m) for m, sid in table.items()}
+    labels = isomer_labels([m for m in table if not names[m] and not m.startswith("#")])
+    tl["molecules"] = {m: {"name": names[m], "formula": None if m.startswith("#") else _formula_of(m),
+                           **({"label": labels[m][0], "tell": labels[m][1]} if m in labels and labels[m][1] else {}),
                            "species": sid, **({"mirror": True} if m in chiral else {})} for m, sid in table.items()}
     tl["start"] = sorted(start.elements())
     return tl
