@@ -107,7 +107,7 @@ class Sessions:
             return None
         from mepd.web.orbital_store import MAX_ATOMS, OrbitalKeeper
 
-        return OrbitalKeeper(ws, max_atoms=self.demo.max_atoms if self.demo else MAX_ATOMS,
+        return OrbitalKeeper(ws, max_atoms=(self.demo.atom_limit() or MAX_ATOMS) if self.demo else MAX_ATOMS,
                              allow_terachem=self.demo is None).start()
 
     # ------------------------------------------------------------ lookup
@@ -266,8 +266,8 @@ class Sessions:
             jobs = JobManager(
                 ws, _SessionBus(self.bus, key), max_concurrent=self.max_concurrent,
                 global_slot_free=self._global_slot_free, on_slot_freed=self._wake_all,
-                max_runtime=self.demo.job_timeout_s if self.demo else None,
-                op_runtime=self.demo.op_timeout_s if self.demo else None,
+                max_runtime=self.demo.runtimes()[0] if self.demo else None,
+                op_runtime=self.demo.runtimes()[1] if self.demo else None,
             )
             jobs.on_finished = lambda job, _jobs=jobs: self._on_finished(_jobs, job)
             if visitor is None:

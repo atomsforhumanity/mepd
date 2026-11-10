@@ -291,7 +291,7 @@ def test_demo_visitors_get_qmmm_within_limits(tmp_path):
     root = tmp_path / "demo"
     (root / "profiles").mkdir(parents=True)
     (root / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
-    policy = DemoPolicy(max_atoms=10, qmmm={"max_atoms": 14, "max_active_radius": 6.0})
+    policy = DemoPolicy(limit_compute=True, max_atoms=10, qmmm={"max_atoms": 14, "max_active_radius": 6.0})
     with TestClient(create_app(root, demo=policy, demo_password="pw"), follow_redirects=False) as c:
         r = c.post("/login", data={"password": "pw"})
         c.cookies.set("mepd_visitor", r.cookies.get("mepd_visitor"))

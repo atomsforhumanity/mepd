@@ -63,30 +63,24 @@ Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
   without reserving it (no `nvidia.com/gpu`), so the new pod of a deploy can
   start beside the old one, and other pods can use it too. It's for the
   machine-learned potentials; g-xTB, xtb, CREST and Psi4 run on CPU.
-- **Demo limits.** The defaults in `mepd/web/demo.py` (`DemoPolicy`) suit a
-  small shared demo. The manifest sizes them for this node with
-  `MEPD_DEMO_<FIELD>` variables:
-  - 64 calculations at once, 8 per workspace;
-  - 150 atoms per structure;
-  - 4 h per calculation;
-  - 8 workers per operation and per profile;
-  - 8 interactive reactors;
-  - QM/MM systems up to 50,000 atoms.
-
-  Numbers are plain values (`MEPD_DEMO_MAX_ATOMS=150`). Tables (`CAPS`,
-  `OP_TIMEOUT_S`, `PROFILE_CAPS`, `SANDBOX`, `QMMM`) are JSON merged into the
-  defaults, e.g. `MEPD_DEMO_CAPS='{"channels": {"workers": 16}}'`. A bad value
-  or a misspelled name stops the server at start-up with a message saying
-  which. What may run at all (operations, engines, forbidden settings) cannot
-  be changed from the manifest.
+- **Demo limits.** Since 2026-11-10 the demo does not limit compute
+  (`DemoPolicy.limit_compute` off in `mepd/web/demo.py`): no caps on atoms,
+  structures, operation settings, run times or a profile's parallelism. The
+  manifest keeps only what queues work: 64 calculations at once across all
+  testers, 8 per workspace (the rest wait), and 8 interactive reactors. To
+  restore the limits, set `limit_compute = True`; they can then be sized with
+  `MEPD_DEMO_<FIELD>` variables: numbers plain (`MEPD_DEMO_MAX_ATOMS=150`),
+  tables (`CAPS`, `OP_TIMEOUT_S`, `PROFILE_CAPS`, `SANDBOX`, `QMMM`) as JSON
+  merged into the defaults. A bad value or a misspelled name stops the server
+  at start-up with a message saying which. What may run at all (operations,
+  engines, forbidden settings) cannot be changed from the manifest.
 - **What testers can't do** (by design): read files on the server, run the
   ASE, QCCompute or ChemCloud engines (they run arbitrary code or programs),
   set programs, file paths or credentials in a profile, use a local-LLM
-  retrosynthesis server, or ask Psi4 for more than 16 GB per job
-  (`MEPD_DEMO_PSI4_MAX_MEMORY_GB`). Everything else in the app is available.
-- **No password: the limits are the protection.** Anyone on the internet can
-  use the demo's compute, within the limits above and the demo's blocks on
-  programs, paths and credentials. A new visitor is made by opening the page,
+  retrosynthesis server. Everything else in the app is available.
+- **No password and no compute limits.** Anyone on the internet can use the
+  demo's compute, within the demo's blocks on programs, paths and credentials
+  and the queue above. A new visitor is made by opening the page,
   and their workspace by the page's first API call, so crawlers that run no
   JavaScript leave nothing on disk. To slow abuse, add a Cloudflare
   rate-limiting rule for `mepd.afh.org/` and `/api/jobs`;

@@ -10,9 +10,12 @@ would hand them the machine is switched off or capped here, server-side:
   each visitor workspace and read-only: a profile can name executables and
   read files, so visitors cannot write or validate one;
 * size/quantity caps (atoms, structures, sessions, jobs) and caps on the
-  expensive knobs of each operation;
-* a run-time limit per job and a concurrency limit across all visitors
-  (JobManager.max_runtime / global_slot_free).
+  expensive knobs of each operation, a run-time limit per job, the
+  interactive reactors' time, and a profile's parallelism and memory -- all
+  only while `limit_compute` is on (off since 2026-11-10: the demo's use did
+  not justify capping its compute);
+* a concurrency limit across all visitors (global_slot_free): work queues,
+  it is never refused.
 
 Run it inside the container described in deploy/demo/ for a second wall.
 """
@@ -29,6 +32,10 @@ from mepd.web.workspace import WorkspaceError
 
 @dataclass
 class DemoPolicy:
+    # Off: none of the compute limits below apply (sizes, counts, operation caps, run times, reactor time,
+    # profile parallelism and memory). What may run at all and the blocks on paths, programs, URLs and
+    # credentials always apply. Flip to True to restore every limit.
+    limit_compute: bool = False
     max_atoms: int = 40
     max_structures: int = 60
     max_sessions: int = 5
@@ -161,8 +168,24 @@ class DemoPolicy:
                 raise ValueError(f"{name}: {f.name} cannot be set from the environment")
         return policy
 
-    def qmmm_limits(self) -> dict:
-        return {"max_qm": self.max_atoms, **self.qmmm}
+    def qmmm_limits(self) -> Optional[dict]:
+        return {"max_qm": self.max_atoms, **self.qmmm} if self.limit_compute else None
+
+    def atom_limit(self) -> Optional[int]:
+        """Atoms per structure (None: no limit)."""
+        return self.max_atoms if self.limit_compute else None
+
+    def runtimes(self) -> tuple:
+        """(seconds per job, per-operation overrides) for JobManager; (None, None): no limit."""
+        return (self.job_timeout_s, self.op_timeout_s) if self.limit_compute else (None, None)
+
+    def sandbox_limits(self) -> dict:
+        """Interactive reactors: how many at once in all (always), and per visitor and for how long
+        (only while compute is limited; an unwatched one still stops after idle_s, to free its CPU)."""
+        if self.limit_compute:
+            return self.sandbox
+        total = int(self.sandbox.get("total", 2))
+        return {"total": total, "per_owner": total, "idle_s": self.sandbox.get("idle_s", 180.0)}
 
     def public(self) -> dict:
         """What the UI shows (and uses to hide admin-only controls)."""
@@ -178,7 +201,7 @@ class DemoPolicy:
         if desc["key"] not in self.allowed_ops:
             desc.update(available=False, unavailable_reason="Not available in the demo.")
             return desc
-        caps = self.caps.get(desc["key"], {})
+        caps = self.caps.get(desc["key"], {}) if self.limit_compute else {}
         if caps and desc.get("schema"):
             schema = {**desc["schema"], "properties": {k: dict(v) for k, v in desc["schema"]["properties"].items()}}
             for name, cap in caps.items():
@@ -212,7 +235,7 @@ class DemoPolicy:
     def check_op(self, op_key: str, params: Optional[dict]) -> None:
         if op_key not in self.allowed_ops:
             raise WorkspaceError(f"'{op_key}' is not available in the demo")
-        for name, cap in self.caps.get(op_key, {}).items():
+        for name, cap in (self.caps.get(op_key, {}) if self.limit_compute else {}).items():
             value = (params or {}).get(name)
             if value is None:
                 continue
@@ -233,6 +256,8 @@ class DemoPolicy:
                 raise WorkspaceError(f"{name} = {value!r} is not available in the demo")
 
     def check_capacity(self, jobs: list[dict]) -> None:
+        if not self.limit_compute:
+            return
         active = sum(1 for j in jobs if j["status"] in ("queued", "running"))
         if active >= self.max_active_jobs:
             raise WorkspaceError(f"the demo runs at most {self.max_active_jobs} of your calculations at a time; "
@@ -242,6 +267,8 @@ class DemoPolicy:
                                  "or start a new session")
 
     def check_structures(self, existing: int, new_atom_counts: list[int]) -> None:
+        if not self.limit_compute:
+            return
         if existing + len(new_atom_counts) > self.max_structures:
             raise WorkspaceError(f"the demo allows at most {self.max_structures} structures per session")
         big = [n for n in new_atom_counts if n > self.max_atoms]
@@ -289,7 +316,7 @@ class DemoPolicy:
                     here = f"{where}.{key}" if where else key
                     if key in self.profile_forbidden_keys:
                         raise WorkspaceError(f"{here} is not available in the demo")
-                    cap = self.profile_caps.get(key)
+                    cap = self.profile_caps.get(key) if self.limit_compute else None
                     if cap is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
                             and (value > cap or value <= 0):
                         raise WorkspaceError(f"{here} = {value} is outside the demo's limit (1 to {cap})")
@@ -311,7 +338,7 @@ class DemoPolicy:
             if m is None:
                 raise WorkspaceError(f"psi4_engine_kwds.memory = {memory!r}: give it as e.g. \"4 GB\"")
             gb = float(m.group(1)) * {"mb": 1e-3, "mib": 1e-3, "gb": 1, "gib": 1, "tb": 1e3, "tib": 1e3}[m.group(2)]
-            if gb > self.psi4_max_memory_gb:
+            if self.limit_compute and gb > self.psi4_max_memory_gb:
                 raise WorkspaceError(f"psi4_engine_kwds.memory = {memory!r} is above the demo's limit "
                                      f"({self.psi4_max_memory_gb:g} GB)")
         if _normalized_path_method(data.get("path_min_method") or DEFAULT_PATH_METHOD) == "NEB-DLF":

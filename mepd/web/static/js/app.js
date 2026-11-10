@@ -78,7 +78,7 @@ function App() {
   const showInspector = (view.tab === 'graph' && !(nothingSelected && howToHidden)) || view.tab === 'reaction';
   return html`
     <${TopBar} />
-    ${demo && html`<div class="demo-banner small" title=${`Limits: ${demo.max_atoms} atoms per structure, ${demo.max_active_jobs} calculations at a time, ${Math.round(demo.job_timeout_s / 60)} min per calculation${demo.op_timeout_s?.vri ? ` (VRI searches ${Math.round(demo.op_timeout_s.vri / 60)} min)` : ''}. The built-in profiles are fixed; Settings › Save as… makes your own.`}>${`Demo · your private workspace · up to ${demo.max_atoms} atoms, ${demo.max_active_jobs} calculations at a time`}</div>`}
+    ${demo && html`<div class="demo-banner small" title=${demo.limit_compute ? `Limits: ${demo.max_atoms} atoms per structure, ${demo.max_active_jobs} calculations at a time, ${Math.round(demo.job_timeout_s / 60)} min per calculation${demo.op_timeout_s?.vri ? ` (VRI searches ${Math.round(demo.op_timeout_s.vri / 60)} min)` : ''}. The built-in profiles are fixed; Settings › Save as… makes your own.` : 'The built-in profiles are fixed; Settings › Save as… makes your own.'}>${demo.limit_compute ? `Demo · your private workspace · up to ${demo.max_atoms} atoms, ${demo.max_active_jobs} calculations at a time` : 'Demo · your private workspace'}</div>`}
     <div class="wb-body">
       <main class=${`layout tab-${view.tab} ${browser ? '' : 'no-browser'} ${showInspector ? '' : 'no-inspector'}`}>
         ${browser && html`<${Library} />`}

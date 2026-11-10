@@ -82,7 +82,7 @@ def test_the_demo_reactor_is_per_visitor_and_never_evicts_another(tmp_path):
     root = tmp_path / "demo"
     (root / "profiles").mkdir(parents=True)
     (root / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
-    policy = DemoPolicy(max_atoms=10, sandbox={"total": 2, "per_owner": 1, "idle_s": 60, "max_s": 60})
+    policy = DemoPolicy(limit_compute=True, max_atoms=10, sandbox={"total": 2, "per_owner": 1, "idle_s": 60, "max_s": 60})
     app = create_app(root, demo=policy, demo_password="pw")
 
     def visitor():

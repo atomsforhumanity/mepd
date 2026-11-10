@@ -707,7 +707,7 @@ def demo_app(tmp_path):
     root = tmp_path / "demo"
     (root / "profiles").mkdir(parents=True)
     (root / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
-    policy = DemoPolicy(max_atoms=10, max_active_jobs=1, max_sessions=2)
+    policy = DemoPolicy(limit_compute=True, max_atoms=10, max_active_jobs=1, max_sessions=2)
     return root, create_app(root, demo=policy, demo_password="pw-for-tests")
 
 
@@ -825,7 +825,7 @@ def test_open_demo_needs_no_password_and_makes_a_workspace_only_for_the_page(tmp
     root = tmp_path / "demo"
     (root / "profiles").mkdir(parents=True)
     (root / "profiles" / "default.toml").write_text('engine_name = "gxtb"\n')
-    app = create_app(root, demo=DemoPolicy(max_atoms=10))
+    app = create_app(root, demo=DemoPolicy(limit_compute=True, max_atoms=10))
     with TestClient(app, follow_redirects=False) as c:
         assert c.get("/api/state").status_code == 401          # an API call alone makes nobody
         r = c.get("/")
@@ -1640,7 +1640,7 @@ def test_demo_retrosynthesis_runs_every_local_method_but_not_a_url_or_a_server_f
     from mepd.web.operations import OPERATIONS
     from mepd.web.workspace import WorkspaceError
 
-    policy = DemoPolicy()
+    policy = DemoPolicy(limit_compute=True)
     for ok in ({"method": "templates", "iterations": 100}, {"method": "reactiont5"},
                {"method": "aizynthfinder", "stock": "zinc"}, {"method": "templates", "verify": "all"}):
         policy.check_op("retrosynthesis", ok)
@@ -1908,3 +1908,30 @@ def test_a_search_on_no_edge_exports_on_its_own(client, tmp_path):
     data, _ = _report(client, "job:j_alone")
     assert [s["id"] for s in data["reactants"]] == [a["id"]] and [s["id"] for s in data["products"]] == [b["id"]]
     assert [c["job"] for c in data["channels"]] == ["j_alone"]
+
+
+def test_the_demo_no_longer_caps_compute_but_still_guards_the_server():
+    """Since 2026-11-10 the demo's compute is not limited (`limit_compute` off): no operation caps, sizes,
+    counts or run times. What may run, and the blocks on server files, URLs and programs, still hold."""
+    from mepd.web.demo import DemoPolicy
+    from mepd.web.operations import OPERATIONS
+    from mepd.web.workspace import WorkspaceError
+
+    policy = DemoPolicy()
+    assert not policy.limit_compute
+    policy.check_op("channels", {"workers": 64, "pairs_per_mechanism": 50, "n_conformers": 500})
+    policy.check_op("graph-enumeration", {"rounds": 20, "workers": 32})
+    policy.check_structures(10_000, [5_000])
+    policy.check_capacity([{"status": "running"}] * 500)
+    assert policy.runtimes() == (None, None) and policy.qmmm_limits() is None and policy.atom_limit() is None
+    assert "max_s" not in policy.sandbox_limits()
+    policy.check_profile('engine_name = "gxtb"\n[gxtb_engine_kwds]\nn_threads = 64\n')
+    desc = policy.adapt_operation(OPERATIONS["channels"].describe())
+    assert "maximum" not in desc["schema"]["properties"]["workers"]
+    for bad in ({"method": "local-llm"}, {"method": "templates", "stock_file": "/etc/passwd"}):
+        with pytest.raises(WorkspaceError):
+            policy.check_op("retrosynthesis", bad)
+    with pytest.raises(WorkspaceError):
+        policy.check_profile('engine_name = "gxtb"\n[gxtb_engine_kwds]\nexecutable = "/bin/sh"\n')
+    with pytest.raises(WorkspaceError):
+        policy.check_profile('engine_name = "ase"\n')
