@@ -1076,6 +1076,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 
 ### Fixed
 
+- **Web on touch screens: a swipe on a 3D view scrolls the page.** The molecule viewer took every touch to rotate, and on a phone it fills the middle of the selection panel (and of result pages), so most swipes scrolled nothing. A cover now passes swipes to the page; a tap on the view turns rotating on ("Tap to rotate"), Done turns it off. Mouse screens are unchanged.
 - **Web: the selection panel scrolls as one, on every screen.** Its name, 3D view and details took up to 55 % of the panel with a scroller of their own, leaving the tools (and their forms) a narrow strip below; they now scroll away with the tools, and the panel's head stays on top. (Phones got this for the bottom sheet first.)
 - **Web: Retrosynthesis is no longer offered for a complex.** It plans routes to one molecule, so on a complex it always failed ("the target must be one molecule").
 - **Web on phones: a calculation can be started again (network expansion included).** The selection's bottom sheet kept its name, 3D view and tabs pinned and gave the tools a ~130 px strip at its bottom, under the Calculations bar: a swipe on the sheet moved nothing, so tools such as Network expansion, and their Run button, were out of reach by touch. On phones the whole sheet now scrolls (its header stays on top).

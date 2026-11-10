@@ -56,6 +56,10 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   const loaded = useRef(null);  // the frames array / xyz string currently in the viewer
   const [env, setEnv] = useState('all');
   const [motion, setMotion] = useState(false);
+  // Touch screens: 3Dmol takes every touch on the view (to rotate), so a swipe that starts on it scrolled nothing,
+  // and on a phone the view fills the middle of the page. A cover passes swipes to the page; a tap turns rotating on.
+  const touch = useMemo(() => !!window.matchMedia?.('(pointer: coarse)').matches, []);
+  const [rotating, setRotating] = useState(false);
   const source = frames && frames.length ? frames : xyz;
   const first = source ? (Array.isArray(source) ? source[0] : source) : null;
   // No system given: recognize one by its atoms (live paths, trees, maps...).
@@ -208,6 +212,10 @@ export function Viewer3D({ xyz = null, frames = null, frame = 0, height = 260, l
   }
   return html`<div class="viewer-wrap">
     <div class="viewer" ref=${host} style=${{ height }}></div>
+    ${touch && !rotating && html`<button class="viewer-guard" style=${{ height }} onClick=${() => setRotating(true)}
+      aria-label="Rotate the molecule (a swipe here scrolls the page)"><span>Tap to rotate</span></button>`}
+    ${touch && rotating && html`<button class="btn small viewer-done" onClick=${() => setRotating(false)}
+      title="Back to scrolling the page with a swipe here">Done</button>`}
     ${qmmm && html`<div class="qmmm-bar small">
       <span class="qmmm-tag" title=${region.summary}>QM/MM</span>
       <span class="segmented mini">${ENV_MODES.map(([k, label]) => html`<button class=${env === k ? 'on' : ''}
