@@ -540,9 +540,16 @@ polarizing environment (an ion pair, a solvent) the real orbitals shift.
 
 The orbitals bar above shows a few orbitals at the frame on screen. To watch
 how every orbital near the HOMO–LUMO gap changes across a reaction, at a DFT
-level you choose, run **Orbitals along this path**. It sits under any path of
-a finished Transition state or Reaction channels result. It is a calculation
-of its own, and its page is the viewer.
+level you choose, run **Orbitals along this path**. It is a calculation of
+its own, and its page is the viewer. It sits:
+
+- under any path of a finished Transition state or Reaction channels result;
+- on a reaction in Explore (its panel, and its reaction page). For a step a
+  network expansion found, it follows that step's own IRC, the path the
+  reaction page plays, read from start to end, on the molecules the step ran
+  on. This works while the expansion is still running. For a reaction whose
+  barrier comes from a Transition state or Reaction channels run, it follows
+  that run's path.
 
 ### What it computes
 

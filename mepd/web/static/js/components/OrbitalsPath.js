@@ -8,7 +8,7 @@
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, prefs, state, useStore } from '../store.js';
-import { PHONE_QUERY } from '../util.js';
+import { edgeStatus, PHONE_QUERY } from '../util.js';
 import { drawOrbital, isoFor } from './Viewer3D.js';
 import { Why } from './Why.js';
 
@@ -570,13 +570,16 @@ export function OrbitalsPath({ job }) {
 
 const STATUS = { queued: 'queued', running: 'running', done: '', failed: 'failed', cancelled: 'cancelled', interrupted: 'stopped' };
 
-// Under a path of a TS search or channels run: "Orbitals along this path", its level, and the runs on it.
-export function PathOrbitalsLauncher({ job, entry }) {
+// Under a path of a TS search or channels run (`entry`), or on a reaction in Explore (`edgeId`: the step a
+// network expansion put there, its own IRC; `job` is that expansion): "Orbitals along this path", its level,
+// and the runs on it.
+export function PathOrbitalsLauncher({ job, entry = null, edgeId = null }) {
   const op = useStore((s) => s.operations.find((o) => o.key === 'orbitals'));
   const runsKey = useStore((s) => Object.values(s.jobs).filter((j) => j.op === 'orbitals' && j.source_job === job.id)
     .map((j) => `${j.id}:${j.status}`).join('|'));
-  const runs = useMemo(() => Object.values(state.jobs).filter((j) => j.op === 'orbitals' && j.source_job === job.id
-    && (j.params?.entry || '') === entry.id).sort((a, b) => b.created - a.created), [runsKey, entry.id]);
+  const mine = (j) => (edgeId ? (j.params?.edge || '') === edgeId : !j.params?.edge && (j.params?.entry || '') === (entry?.id || ''));
+  const runs = useMemo(() => Object.values(state.jobs).filter((j) => j.op === 'orbitals' && j.source_job === job.id && mine(j))
+    .sort((a, b) => b.created - a.created), [runsKey, entry?.id, edgeId]);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const props = op?.schema?.properties || {};
@@ -587,9 +590,13 @@ export function PathOrbitalsLauncher({ job, entry }) {
   const labelOf = (k, x) => props[k]?.labels?.[x] || x;
   const run = async () => {
     setBusy(true);
-    const what = (job.title || '').replace(/^(Transition state|TS|Reaction channels):\s*/, '');
+    const ws = state.workspace;
+    const e = edgeId && ws.edges?.[edgeId];
+    const what = e ? `${ws.structures?.[e.source]?.name || e.source} → ${ws.structures?.[e.target]?.name || e.target}`
+      : (job.title || '').replace(/^(Transition state|TS|Reaction channels):\s*/, '');
+    const where = edgeId ? { edge: edgeId } : { entry: entry?.id || '' };
     const out = await attempt(() => api.post('/api/jobs', { op: 'orbitals', source_job: job.id,
-      label: `Orbitals: ${what}`, params: { entry: entry.id, functional: v('functional'), basis: v('basis'), frames: v('frames') } }));
+      label: `Orbitals: ${what}`, params: { ...where, functional: v('functional'), basis: v('basis'), frames: v('frames') } }));
     setBusy(false);
     if (out?.length) openJob(out[0].id);
   };
@@ -612,4 +619,24 @@ export function PathOrbitalsLauncher({ job, entry }) {
       <span class="muted">DFT single points with linus; seconds to minutes for small molecules.</span>
     </div>`}
   </div>`;
+}
+
+// On a reaction (Explore's edge panel, the reaction page): orbitals along its own step when a network
+// expansion put it there (its IRC, as the player shows it), else along the path of the TS search or
+// channels run behind its barrier. Nothing when it has neither.
+export function EdgeOrbitalsLauncher({ edge }) {
+  const jobs = useStore((s) => s.jobs);
+  const op = useStore((s) => s.operations.find((o) => o.key === 'orbitals'));
+  if (!edge || !op) return null;
+  const o = edge.origin || {};
+  const stepJob = o.label && !o.proposed && !o.ts_below_ends && o.ts_kind !== 'path_peak' && !String(o.label).endsWith('_peak')
+    ? jobs[o.job] : null;
+  if (stepJob && (op.edge_step_sources || []).includes(stepJob.op) && !stepJob.qmmm) {
+    return html`<${PathOrbitalsLauncher} job=${stepJob} edgeId=${edge.id} />`;
+  }
+  const bj = jobs[edgeStatus(edge, jobs).barrierJob];
+  if (bj && bj.status === 'done' && (op.source_ops || []).includes(bj.op) && !bj.qmmm) {
+    return html`<${PathOrbitalsLauncher} job=${bj} />`;
+  }
+  return null;
 }

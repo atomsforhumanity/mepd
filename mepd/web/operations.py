@@ -782,6 +782,9 @@ class Operation:
     structure_role: Optional[str] = None
     # target "job": the operations whose finished output this follows up on.
     source_ops: tuple = ()
+    # target "job": also follows up on one step these operations put on an edge (params.edge, the step's own
+    # IRC), finished or still running; not offered on their pages.
+    edge_step_sources: tuple = ()
     # target "pair": runs from the edge's IRC-verified TS (so needs one).
     needs_route_ts: bool = False
     # The mepd command this runs (e.g. ("discovery", "vri")) and flags its
@@ -845,6 +848,7 @@ class Operation:
             "produces": self.produces,
             "structure_role": self.structure_role,
             "source_ops": list(self.source_ops),
+            "edge_step_sources": list(self.edge_step_sources),
             "needs_route_ts": self.needs_route_ts,
             "schema": _with_card_availability(self.params_model.model_json_schema()) if self.params_model else None,
             "family": self.family,
@@ -1927,6 +1931,9 @@ class OrbitalsParams(Params):
     """Orbitals along one path of a finished TS search or channels run (`mepd orbitals`)."""
     entry: str = P("", "Path", "Which path of the result, by its id. Empty: the lowest channel's (its IRC).",
                    kind="custom", advanced=True)
+    edge: str = P("", "Reaction", "A network expansion's step instead: the edge (Explore) whose own IRC to "
+                  "follow, read from its source's start to its end, on the molecules the step ran on.",
+                  kind="custom", advanced=True)
     functional: OrbitalFunctional = P("wb97x-d3bj", "Functional", "The DFT functional of the orbitals (linus). "
                                       "Range-separated hybrids (ωB97X) give the most reliable orbital energies; "
                                       "pure functionals (PBE) shrink the gap.", cli="--functional",
@@ -1962,19 +1969,39 @@ def _orbital_path_entry(src: dict, job_dir: Path, entry: str) -> dict:
                                      rank.get(x[1], 9), -len(x[0]["frames"])))[0]
 
 
+def _orbital_edge_entry(ctx: JobContext, src: dict, eid: str) -> tuple[dict, int, int]:
+    """A network expansion's step on edge `eid` as a path entry (its own IRC, source -> target, cut to the
+    molecules the step ran on), with that subsystem's charge and multiplicity."""
+    from mepd.web import step_check
+
+    try:
+        got = step_check.edge_step(ctx.ws.snapshot(), src, eid)
+    except step_check.NoStepPath as e:
+        raise WorkspaceError(f"no path to follow on that reaction: {e}")
+    cut = got["subsystem"]
+    frames = got["frames"] if cut is None else [step_check.subset_xyz(x, cut["atoms"]) for x in got["frames"]]
+    charge = (cut or {}).get("charge", src.get("charge") or 0)
+    mult = (cut or {}).get("multiplicity", src.get("multiplicity") or 1)
+    return {"id": f"edge:{eid}", "label": got["label"], "ts_index": got["ts_index"],
+            "frames": [{"xyz": x} for x in frames]}, charge, mult
+
+
 def _build_orbitals(ctx: JobContext, p: OrbitalsParams) -> list[str]:
     src = ctx.source
     if src is None:
         raise WorkspaceError("Orbitals along the path follow up on a finished TS search or channels run")
-    e = _orbital_path_entry(src, ctx.ws.jobs_dir / src["id"], p.entry)
+    charge, mult = src.get("charge") or 0, src.get("multiplicity") or 1
+    if p.edge:
+        e, charge, mult = _orbital_edge_entry(ctx, src, p.edge)
+    else:
+        e = _orbital_path_entry(src, ctx.ws.jobs_dir / src["id"], p.entry)
     path = ctx.job_dir / "inputs" / "path.xyz"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(f["xyz"] if f["xyz"].endswith("\n") else f["xyz"] + "\n" for f in e["frames"]))
     (ctx.job_dir / "inputs" / "entry.json").write_text(json.dumps({"id": e.get("id"), "label": e.get("label"),
                                                                    "ts_index": e.get("ts_index"),
-                                                                   "source": src["id"]}))
-    argv = ["orbitals", str(path), "--charge", str(src.get("charge") or 0), "--multiplicity",
-            str(src.get("multiplicity") or 1), *generic_flags(p)]
+                                                                   "source": src["id"], "edge": p.edge or None}))
+    argv = ["orbitals", str(path), "--charge", str(charge), "--multiplicity", str(mult), *generic_flags(p)]
     if e.get("ts_index") is not None:
         argv += ["--ts-frame", str(int(e["ts_index"]) + 1)]
     return argv + ["--output", str(ctx.output_dir)]
@@ -2360,6 +2387,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "path, at a DFT level you choose (linus), each followed from reactants through the TS to products by its "
         "overlap with the frame before: which orbitals rise, fall, cross, or turn into others. (`mepd orbitals`)",
         "job", FROM_TS, OrbitalsParams, _build_orbitals, source_ops=("ts", "channels"), cli_path=("orbitals",),
+        edge_step_sources=("graph-enumeration",),
         cli_extra_flags=("--charge", "--multiplicity", "--ts-frame", "--output"), own_output=True,
         available=_steering.linus_available(),
         unavailable_reason="needs linus (AFH's DFT; pip install afh-linus[qc]), which is in the web image",

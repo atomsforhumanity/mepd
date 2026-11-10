@@ -2965,46 +2965,22 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         from mepd.web import step_check
 
         snap = W().snapshot()
-        edge = snap["edges"].get(eid)
-        if edge is None:
-            raise HTTPException(404, "no such edge")
-        o = edge.get("origin") or {}
+        o = (snap["edges"].get(eid) or {}).get("origin") or {}
         job = J().jobs.get(o.get("job") or "")
-        if job is None or not o.get("label"):
-            raise HTTPException(404, "this edge has no step of its own")
-        if o.get("ts_below_ends"):
-            raise HTTPException(404, f"{o.get('headline')}. Its TS lies below one of the two species, so it is no "
-                                     "barrier between them and has no energy profile here.")
-        if o.get("ts_kind") == "path_peak" or o["label"].endswith("_peak"):
-            raise HTTPException(404, "No TS was found for this step: its barrier is the highest point of a path "
-                                     "between the two (an upper bound), so there is no path through a TS to play.")
-        got = step_check.path_frames(job, o["label"])
-        if got is None:
-            raise HTTPException(404, "Its IRC is not written yet.")
-        frames, energies = got
-        st = snap["structures"]
-        a, b = edge["source"], edge["target"]
-        v = step_check.check(job, o["label"], st.get(a, {}).get("smiles"), st.get(b, {}).get("smiles"))
-        if v is not None and v["reversed"]:            # the IRC runs target -> source
-            frames, energies = frames[::-1], energies[::-1]
-        if start == b:
-            frames, energies = frames[::-1], energies[::-1]
-            a, b = b, a
-        ref = st.get(a, {}).get("energy")
-        reference = "the start's node energy (its lowest structure found), electronic"
-        if ref is None:   # a start with no energy at this level gets the run's only when it ends: the run's own now
-            ref = step_check.seed_energy(job, a)
-            reference = "the run's own optimized start (its summary so far), electronic"
-        kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in energies]
-        ts = max(range(len(frames)), key=lambda k: energies[k] if energies[k] is not None else -1e30)
+        try:
+            got = step_check.edge_step(snap, job, eid, start)
+        except step_check.NoStepPath as e:
+            raise HTTPException(404, str(e))
+        frames, ref = got["frames"], got["reference"]
+        kcal = [None if e is None or ref is None else (e - ref) * 627.5094740631 for e in got["energies"]]
         # Only the molecules the step's path search ran on (the explorer's subsystem); energies stay the
         # whole system's.
-        cut = step_check.subsystem(job, o["label"])
+        cut = got["subsystem"]
         if cut is not None:
             frames = [step_check.subset_xyz(x, cut["atoms"]) for x in frames]
-        return {"label": o["label"], "job": job["id"], "start": a, "end": b, "checked": v is not None,
-                "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)], "ts_index": ts,
-                "subsystem": cut, "reference": reference}
+        return {"label": got["label"], "job": job["id"], "start": got["start"], "end": got["end"],
+                "checked": got["checked"], "frames": [{"xyz": x, "energy_kcal": y} for x, y in zip(frames, kcal)],
+                "ts_index": got["ts_index"], "subsystem": cut, "reference": got["reference_text"]}
 
     @app.get("/api/jobs/{jid}/mixture")
     def mixture_network(jid: str):

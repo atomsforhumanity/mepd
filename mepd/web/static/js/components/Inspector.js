@@ -10,6 +10,7 @@ import { MethodPane, methodJobFor } from './Method.js';
 import { QuestIcon } from '../icons.js';
 import { useMap } from '../quests.js';
 import { Viewer3D } from './Viewer3D.js';
+import { EdgeOrbitalsLauncher } from './OrbitalsPath.js';
 import { LevelChip } from './Library.js';
 import { ReactionCard, TsCell, noTsHint } from './Reactions.js';
 import { openAnalyze } from './Analyze.js';
@@ -285,6 +286,7 @@ function EdgeDetail({ edge }) {
       </div>`}
       ${st.warning && html`<p class="warn-box small">⚠ ${st.warning}</p>`}
       ${edge.origin?.kind === 'job' && html`<p class="small muted">From <a href="#" onClick=${(e) => { e.preventDefault(); openJob(edge.origin.job); }}>a job result</a>${edge.origin.headline ? ` · ${edge.origin.headline}` : ''}</p>`}
+      <${EdgeOrbitalsLauncher} edge=${edge} />
       <div class="segmented wide">
         <button class=${which === 0 ? 'on' : ''} onClick=${() => setWhich(0)}>${reaction ? 'Reactants' : 'Start'}</button>
         <button class=${which === 1 ? 'on' : ''} onClick=${() => setWhich(1)}>${reaction ? 'Products' : 'End'}</button>
@@ -481,6 +483,7 @@ export function Inspector() {
     const r = reactionOfEdge(workspace, sel.edges[0]);
     extras = designable(sel.edges[0]) ? [edgeToDesign(sel.edges[0])] : [];
     body = html`${openBtn(sel.edges[0])}<${ReactionCard} key=${r.id} r=${r} compact />
+      <${EdgeOrbitalsLauncher} edge=${edges[sel.edges[0]]} />
       <button class="btn-link danger small" onClick=${() => attempt(() => api.del(`/api/edges/${r.edge}`), 'Reaction removed')}>Remove reaction</button>`;
     moreCalcs = true;
   } else if (nE === 1 && !nS) {
