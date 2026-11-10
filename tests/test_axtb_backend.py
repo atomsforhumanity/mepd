@@ -156,6 +156,9 @@ def test_scf_failure_takes_the_retry_ladder(caplog):
 
 
 def _child_hessian(q):
+    from mepd.engines import axtb_backend
+
+    axtb_backend._HESSIANS.clear()      # (the parent's, inherited: the child computes its own)
     eng = GXTBCalculator(backend="axtb", n_parallel=1)
     q.put(float(np.asarray(eng._compute_hessian_result(_node(ETHANE)).results.freqs_wavenumber)[-1]))
 
@@ -205,3 +208,42 @@ def test_kept_orbitals_are_axtbs_and_count_as_gxtb(tmp_path, monkeypatch):
 
     a, b = homo(ax), homo(ref)
     assert np.abs(np.abs(a) - np.abs(b)).max() < 1e-3 * np.abs(b).max()
+
+
+def test_a_ts_s_frequency_check_and_its_thermal_correction_cost_one_hessian(tmp_path, monkeypatch):
+    """team30 (A5): a TS search's frequency check and the thermal correction of the same TS (read back from the
+    TS's file, in the same job) each computed a Hessian at one geometry. The second is now the first's
+    (axtb_backend keeps the last Hessians by molecule, settings and geometry to 1e-10 bohr): one Hessian, and the
+    same correction a fresh Hessian gives to 1e-8 kcal/mol (two fresh corrections differ by ~3.5e-9 kcal/mol here:
+    axtb's own call-to-call spread)."""
+    import mepd
+    from mepd.discovery.free_energy import FreeEnergies
+    from mepd.discovery.network_expansion import _open_structure
+    from mepd.engines import axtb_backend
+
+    logged = []
+    log = axtb_backend._log
+    monkeypatch.setattr(axtb_backend, "_log", lambda kind, *a, **k: (logged.append(kind), log(kind, *a, **k))[1])
+
+    def hessians():
+        n = logged.count("--hess")
+        logged.clear()
+        return n
+
+    eng = GXTBCalculator(backend="axtb", n_parallel=1)
+    node = _node(FORMAMIDE)
+    axtb_backend._HESSIANS.clear()
+    mepd.frequencies(node, eng)                                   # the TS search's check
+    mepd.write_xyz(tmp_path / "ts.xyz", node)
+    back = _open_structure(tmp_path / "ts.xyz")
+    free = FreeEnergies(eng, 1500.0)
+    kept = free._correction(back, False)                          # the thermal correction, as _ts_correction does
+    assert hessians() == 1
+    axtb_backend._HESSIANS.clear()
+    fresh = free._correction(back, False)
+    assert hessians() == 1
+    assert abs(kept - fresh) < 1e-8
+    moved = node.copy()
+    moved.structure = moved.structure.model_copy(update={"geometry": np.asarray(node.structure.geometry) + 1e-6})
+    mepd.frequencies(moved, eng)                                  # another geometry: computed
+    assert hessians() == 1

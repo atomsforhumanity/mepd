@@ -266,6 +266,10 @@ def hessian(node, *, threads: int = 1, conventions: str | None = None, settings:
     if solvation:
         settings.update(solvation_settings(solvation["solvent"], solvation.get("model", "alpb")))
     numbers, positions, charge, uhf = _molecule(node)
+    key = (numbers, charge, uhf, threads, conventions, tuple(sorted(settings.items())), method,
+           (np.round(positions, 10) + 0.0).tobytes())
+    if key in _HESSIANS:
+        return _copied(_HESSIANS[key])
     t0, c0 = time.time(), time.thread_time()
     try:
         calc = _calculator(numbers, positions, charge, uhf, threads, conventions, settings, method)
@@ -276,7 +280,22 @@ def hessian(node, *, threads: int = 1, conventions: str | None = None, settings:
     if solvation:
         _warn_rungs({"parts": res.get("hessian_parts")}, "g-xTB in solvent, Hessian")
     _log("--hess", t0, c0, True)
+    _HESSIANS[key] = _copied(res)
+    while len(_HESSIANS) > HESSIANS_KEPT:
+        _HESSIANS.pop(next(iter(_HESSIANS)))
     return res
+
+
+# The last Hessians this process computed, by molecule, settings and geometry (to 1e-10 bohr: a structure read
+# back from its xyz file, 17 digits, is the same one): a TS search's frequency check and the thermal correction of
+# the same TS, one after the other in one job, cost one Hessian (team30: ~3 per TS search, 13 % of a scoreboard
+# run's work in all).
+HESSIANS_KEPT = 8
+_HESSIANS: dict = {}
+
+
+def _copied(res: dict) -> dict:
+    return {k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v) for k, v in res.items()}
 
 
 # ------------------------------------------------------------ the GFN2-xTB solvation pair
