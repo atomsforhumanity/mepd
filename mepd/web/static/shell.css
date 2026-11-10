@@ -615,3 +615,11 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 @media (prefers-reduced-motion: reduce) { .ld-step.moved .ld-line, .ld-card.reref .ld-card-bg { animation: none; } }
 .ld-mixture > .ln-head { padding: 12px 20px 0; }
 .ld-lane-link.h0 { stroke: var(--ld-h0); } .ld-lane-link.h1 { stroke: var(--ld-h1); } .ld-lane-link.h2 { stroke: var(--ld-h2); }
+
+/* Touch screens: a cover over each 3D view lets a swipe that starts on it scroll the page (Viewer3D.js);
+   a tap turns rotating on, Done turns it off. */
+.viewer-guard { position: absolute; left: 0; right: 0; top: 0; z-index: 1; border: 0; padding: 6px; margin: 0;
+  background: transparent; touch-action: pan-y; display: flex; align-items: flex-end; justify-content: flex-end; cursor: pointer; }
+.viewer-guard span { font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--panel) 85%, transparent);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 8px; }
+.viewer-done { position: absolute; top: 6px; right: 6px; z-index: 2; }
