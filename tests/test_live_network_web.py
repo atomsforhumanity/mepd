@@ -417,3 +417,15 @@ def test_a_runs_timeline_says_how_its_numbers_were_made(tmp_path):
     assert (m["asked"], m["used"]) == ("free", "electronic")
     assert abs(m["searched_kcal"] - 69.8) < 1e-9 and m["margin_kcal"] == 10.0 and m["T"] == 1000.0
     assert ln.method_of(tmp_path, "free energy (1000 K, 1M)")["used"] == "free"
+
+
+def test_the_runs_own_record_of_its_energies_wins(tmp_path):
+    """A run that records what its kinetics ran on (steering.kinetics_energy_used) and the structures whose
+    free-energy correction failed (free_energy_gaps) is reported from that record."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({"steering": {"mode": "access", "kinetics_energy": "free",
+        "kinetics_energy_used": "free", "free_energy_gaps": [{"kind": "ts", "reason": "SCF", "closed_steps": ["ch_39_48_8"]}]}}))
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out)}))
+    m = ln.method_of(tmp_path, "electronic")
+    assert m["used"] == "free" and m["gaps"] == 1 and m["gaps_closed"] == 1

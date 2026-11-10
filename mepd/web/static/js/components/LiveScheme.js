@@ -789,6 +789,8 @@ function MethodNote({ m, cond, example = false }) {
           : html`The structures' own level, <b>${m.structures || 'as run'}</b> (no DFT steering).`}</dd>
         <dt>Rates</dt><dd>Transition-state theory (Eyring) from ${rates ? html`<b>${rates}</b>` : 'the energies above'}${m.asked && m.used && m.asked !== m.used ? ` (asked: ${m.asked})` : ''}; mass-action kinetics from the start alone${T ? ` at ${T} K` : ''}${t ? ` over ${fmtSpan(t)}` : ''}, ${where}.</dd>
         ${m.mode === 'access' && m.searched_kcal != null && html`<dt>Searched</dt><dd>Reactions out of species that hold material, with barriers up to${' '}<b>${m.searched_kcal.toFixed(0)} kcal/mol</b>: what crosses in that time at that temperature${m.margin_kcal ? ` (${m.cutoff_kcal.toFixed(0)} with a ${m.margin_kcal.toFixed(0)} kcal/mol margin for the method's error)` : ''}. Higher ones were never looked for.</dd>`}
+        ${m.gaps > 0 && html`<dt>Gaps</dt><dd>${m.gaps} structure${m.gaps === 1 ? '' : 's'} had no free-energy correction (frequencies that failed)${m.gaps_closed
+          ? `: ${m.gaps_closed} step${m.gaps_closed === 1 ? '' : 's'} through ${m.gaps === 1 ? 'it' : 'them'} closed` : ''}; the rest use free energies.</dd>`}
         ${m.threshold != null && html`<dt>Grown from</dt><dd>A species' own reactions are searched once ${(m.threshold * 100).toFixed(0)} % of the start has passed through it.</dd>`}
       </dl>
     </details>

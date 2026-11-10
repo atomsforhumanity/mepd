@@ -1095,7 +1095,13 @@ def method_of(job_dir: Path, used_basis: str = "", activity_: Optional[dict] = N
     steering = summary.get("steering") or {}
     level = (job.get("level") or {}).get("label") or job.get("profile") or ""
     asked = steering.get("kinetics_energy") or p.get("kinetics_energy") or ""
-    used = "free" if str(used_basis).startswith("free") else "electronic" if used_basis else ""
+    # What the kinetics ran on: the run's own record when it has one (steering.kinetics_energy_used), else
+    # read from the basis of its last frame.
+    used = steering.get("kinetics_energy_used") or (
+        "free" if str(used_basis).startswith("free") else "electronic" if used_basis else "")
+    # Structures whose free-energy correction failed (the explorer closes their steps, or, for the seed,
+    # runs the network electronic): [{kind, reason, closed_steps, ...}].
+    gaps = steering.get("free_energy_gaps") or []
     mode = steering.get("mode") or p.get("steer")
     cutoff = steering.get("cutoff_kcal")
     margin = steering.get("cutoff_margin_kcal", p.get("cutoff_margin", 10.0)) if mode == "access" and cutoff else None
@@ -1109,6 +1115,7 @@ def method_of(job_dir: Path, used_basis: str = "", activity_: Optional[dict] = N
         "searched_kcal": (cutoff - margin) if cutoff is not None and margin is not None else cutoff,
         "threshold": steering.get("flux_threshold") or p.get("flux_threshold"),
         "solvent": (job.get("level") or {}).get("solvent") or None,
+        "gaps": len(gaps), "gaps_closed": sum(len(g.get("closed_steps") or []) for g in gaps),
     }
 
 
