@@ -166,14 +166,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 # Only the wheel leaves this stage (the Rust toolchain and sources stay here).
+# The build directory is a cache mount: a new axtb commit recompiles only what changed.
 RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cache/cargo-target/axtb \
     set -e; mkdir -p /wheels; \
     if [ -z "$CARGO_BUILD_JOBS" ]; then unset CARGO_BUILD_JOBS; fi; \
     if [ -z "$AXTB_COMMIT" ]; then echo "AXTB_COMMIT is empty: building without axtb" >&2; exit 0; fi; \
     git clone -q "$AXTB_REPO" /src/axtb; \
     git -C /src/axtb checkout -q "$AXTB_COMMIT"; \
     curl -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain "$RUST_VERSION"; \
-    PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build --release \
+    CARGO_TARGET_DIR=/root/.cache/cargo-target/axtb PATH="/root/.cargo/bin:$PATH" \
+      uv tool run --from "maturin==$MATURIN_VERSION" maturin build --release \
       --auditwheel skip -m /src/axtb/crates/axtb-py/Cargo.toml -i "$(uv python find 3.12)" -o /wheels; \
     git -C /src/axtb rev-parse HEAD > /wheels/COMMIT; \
     ls /wheels/axtb-*.whl
@@ -201,6 +204,7 @@ COPY deploy/docker/linus-d4-axtb-main.patch /tmp/linus-d4-axtb-main.patch
 RUN --mount=type=secret,id=linus_deploy_key \
     --mount=type=secret,id=linus_token \
     --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cache/cargo-target/linus \
     set -e; mkdir -p /wheels; rm -f /wheels/*; \
     if [ -z "$CARGO_BUILD_JOBS" ]; then unset CARGO_BUILD_JOBS; fi; \
     if [ -z "$LINUS_COMMIT" ] || [ ! -d /src/axtb ] \
@@ -221,7 +225,7 @@ RUN --mount=type=secret,id=linus_deploy_key \
     printf "[patch.'https://github.com/atomsforhumanity/axtb.git']\naxtb-d4 = { path = '/src/axtb/crates/d4' }\n" \
       > /src/linus/.cargo/config.toml; \
     cd /src/linus/crates/linus-py; \
-    LINUS_DIST=1 PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build \
+    LINUS_DIST=1 CARGO_TARGET_DIR=/root/.cache/cargo-target/linus PATH="/root/.cargo/bin:$PATH" uv tool run --from "maturin==$MATURIN_VERSION" maturin build \
       --release --strip --auditwheel skip -i "$(uv python find 3.12)" -o /wheels; \
     git -C /src/linus rev-parse HEAD > /wheels/COMMIT; \
     ls /wheels/afh_linus-*.whl
@@ -337,9 +341,10 @@ print(load(['zinc', 'paroutes-n1', 'paroutes-n5']).describe())"
 
 # ------------------------------------------------------------------- runtime
 FROM ${UBUNTU_IMAGE} AS runtime
-ARG FAIRCHEM_MODELS
-ARG AXTB_COMMIT
-ARG LINUS_COMMIT
+# (FAIRCHEM_MODELS, AXTB_COMMIT and LINUS_COMMIT are declared further down, just
+# before the ENV that records them: a stage's build args are part of the cache key
+# of every RUN after them, so declared here a new axtb or linus commit rebuilt
+# every layer of the image, all ~18 GB exported and pushed again.)
 # Links the image to its repository on GHCR (and its access to the repo's).
 LABEL org.opencontainers.image.source=https://github.com/atomsforhumanity/mepd \
       org.opencontainers.image.description="mepd web app with its chemistry programs, models and data" \
@@ -386,6 +391,9 @@ RUN --mount=type=bind,from=linus,source=/wheels,target=/tmp/linus \
 RUN ln -s /opt/tools/bin/crest /opt/tools/bin/xtb /opt/tools/bin/packmol /usr/local/bin/
 COPY --chmod=755 deploy/docker/entrypoint.sh /usr/local/bin/mepd-entrypoint
 
+ARG FAIRCHEM_MODELS
+ARG AXTB_COMMIT
+ARG LINUS_COMMIT
 ENV PATH=/opt/mepd/venv/bin:/usr/local/bin:/usr/bin:/bin \
     HOME=/home/mepd \
     GXTB_EXECUTABLE=/opt/gxtb/bin/xtb \
