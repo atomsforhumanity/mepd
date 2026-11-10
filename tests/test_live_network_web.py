@@ -399,3 +399,21 @@ def test_a_finished_runs_frames_end_when_it_ended(tmp_path):
     tl = ln.from_job(tmp_path, t0=1000.0, t_end=1100.0)
     assert [f["t"] for f in tl["frames"]] == [0.0, 30.0, 100.0]
     assert [f["t"] for f in ln.from_job(tmp_path, running=True, t0=1000.0)["frames"]][-1] == 5000.0   # running: as recorded
+
+
+def test_a_runs_timeline_says_how_its_numbers_were_made(tmp_path):
+    """The page says how a network's numbers were made: structures' level, the DFT steering and its single
+    points, the energies asked for against those the kinetics used (an explorer missing one structure's
+    frequencies runs electronic), conditions and the barrier searched up to (the cutoff less its margin)."""
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "summary.json").write_text(json.dumps({"steering": {"mode": "access", "cutoff_kcal": 79.8, "temperature_K": 1000.0,
+                                                                "time_s": 60.0, "kinetics_energy": "free", "standard_state": "1M"}}))
+    (tmp_path / "job.json").write_text(json.dumps({"output_dir": str(out), "level": {"label": "gxtb"},
+                                                   "params": {"steer_profile": "linus · ωB97X-D3BJ/def2-TZVP (built in)",
+                                                              "flux_threshold": 0.01}}))
+    m = ln.method_of(tmp_path, "electronic", {"queue": {"finished": {"steer": {"done": 1421}}}})
+    assert m["structures"] == "g-xTB" and m["steer_points"] == 1421 and m["steering"].startswith("linus")
+    assert (m["asked"], m["used"]) == ("free", "electronic")
+    assert abs(m["searched_kcal"] - 69.8) < 1e-9 and m["margin_kcal"] == 10.0 and m["T"] == 1000.0
+    assert ln.method_of(tmp_path, "free energy (1000 K, 1M)")["used"] == "free"

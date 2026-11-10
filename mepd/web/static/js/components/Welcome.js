@@ -203,6 +203,8 @@ export function WelcomeView() {
         <a class="land-shot" href=${`#/network/example/${HERO.slug}`} onClick=${openHero} aria-label="Open glycine's finished network">
           <img src=${HERO.img} alt="mepd's network view of glycine's finished run: glycine on the left, the species it reaches in columns by reactions from the start, routes drawn by how fast they go, and what forms per glycine on the right" /></a>
         <p class="land-forms">What forms, per glycine: <b>methylcarbamic acid 0.81</b> · CO₂ + methylamine 0.15 · 0.6 % left as glycine.</p>
+        <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT, 1421 single points) · rates from <b>electronic energies</b>, gas phase.
+          Electronic energies leave out the entropy of splitting in two, which at 1000 K is worth tens of kcal/mol: CO₂ + methylamine is under-counted here.</p>
         <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 6 h on 2 workers).</p>
       </div>
     </section>

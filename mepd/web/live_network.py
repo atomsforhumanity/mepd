@@ -1069,6 +1069,49 @@ def conditions_of(job_dir: Path, basis: str = "") -> dict:
     return {"T": t, "time_s": opt("--time"), "budget_s": opt("--time-budget")}
 
 
+_LEVEL_NAMES = {"gxtb": "g-xTB", "gfn2": "GFN2-xTB", "xtb": "GFN2-xTB", "gfn1": "GFN1-xTB", "gfnff": "GFN-FF",
+                "axtb": "g-xTB", "uma": "UMA"}
+
+
+def method_of(job_dir: Path, used_basis: str = "", activity_: Optional[dict] = None) -> dict:
+    """How a network expansion's numbers were made, for the page to say so: the level of its structures
+    (geometries, TSs, IRCs), the energies its kinetics are steered to (DFT single points, how many), what
+    rates were asked from (free or electronic energies) and what the kinetics used (`used`: the basis of
+    its last frame; an explorer whose free energies are missing for one structure runs electronic), the
+    temperature, time and standard state, the barrier cutoff it searched up to (and the margin for the
+    method's error), and the share of material that gets a species expanded."""
+    try:
+        job = json.loads((Path(job_dir) / "job.json").read_text())
+    except (OSError, ValueError):
+        job = {}
+    summary = {}
+    for name in ("summary.json", "summary_partial.json"):
+        try:
+            summary = json.loads((Path(job.get("output_dir") or Path(job_dir) / "output") / name).read_text())
+            break
+        except (OSError, ValueError):
+            continue
+    p = job.get("params") or {}
+    steering = summary.get("steering") or {}
+    level = (job.get("level") or {}).get("label") or job.get("profile") or ""
+    asked = steering.get("kinetics_energy") or p.get("kinetics_energy") or ""
+    used = "free" if str(used_basis).startswith("free") else "electronic" if used_basis else ""
+    mode = steering.get("mode") or p.get("steer")
+    cutoff = steering.get("cutoff_kcal")
+    margin = steering.get("cutoff_margin_kcal", p.get("cutoff_margin", 10.0)) if mode == "access" and cutoff else None
+    steer_done = (((activity_ or {}).get("queue") or {}).get("finished") or {}).get("steer", {}).get("done")
+    return {
+        "structures": _LEVEL_NAMES.get(str(level).lower(), level) or None,
+        "steering": p.get("steer_profile") or None, "steer_points": steer_done,
+        "asked": asked or None, "used": used or None, "standard_state": steering.get("standard_state") or p.get("standard_state"),
+        "T": steering.get("temperature_K") or p.get("temperature"), "time_s": steering.get("time_s") or p.get("time_s"),
+        "mode": mode, "cutoff_kcal": cutoff, "margin_kcal": margin,
+        "searched_kcal": (cutoff - margin) if cutoff is not None and margin is not None else cutoff,
+        "threshold": steering.get("flux_threshold") or p.get("flux_threshold"),
+        "solvent": (job.get("level") or {}).get("solvent") or None,
+    }
+
+
 def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None, t_end: Optional[float] = None,
              since: Optional[int] = None) -> dict:
     """A job's timeline: its recorded frames, and while it runs the network as
@@ -1143,6 +1186,7 @@ def from_job(job_dir: Path, *, running: bool = False, t0: Optional[float] = None
     tl["explored"] = _explored(frames, lines)
     tl["activity"] = activity(job_dir)
     tl["conditions"] = conditions_of(job_dir, frames[-1].get("basis", "") if frames else "")
+    tl["method"] = method_of(job_dir, frames[-1].get("basis", "") if frames else "", tl["activity"])
     try:
         job = json.loads((Path(job_dir) / "job.json").read_text())
     except (OSError, ValueError):
