@@ -433,7 +433,11 @@ def _mass(formula: Optional[str]) -> Optional[float]:
 # material there, and (steer "access") only past barriers below its cutoff; hotter or longer kinetics cross
 # higher barriers, out of species it never expanded, into steps it never looked for.
 EXPLORE_OPS = ("graph-enumeration",)
-BEYOND_MARGIN_KCAL = 2.0   # crossing this much above what was searched past counts as beyond it
+# The access cutoff is the Eyring barrier at the run's (cutoff T, cutoff time) plus a margin for the low level's
+# barrier error (--cutoff-margin, 10 by default; summary.json doesn't record it yet). Only the Eyring part was
+# searched for sure: between it and the cutoff, a step was searched only if its low-level barrier came out low
+# enough. (The explorer team will provide this check in mepd/discovery, per expanded species; until then: here.)
+DEFAULT_CUTOFF_MARGIN_KCAL = 10.0
 
 
 def _exploration(job: dict) -> Optional[dict]:
@@ -459,20 +463,24 @@ def _exploration(job: dict) -> Optional[dict]:
         return None   # not steered by kinetics: no conditions to compare with
     from mepd.network_aware import eyring_cutoff_kcal
 
+    cutoff = steering.get("cutoff_kcal")
+    margin = steering.get("cutoff_margin_kcal", p.get("cutoff_margin", DEFAULT_CUTOFF_MARGIN_KCAL)) if mode == "access" else 0.0
     return {"job": job["id"], "title": job.get("title"), "status": job.get("status"), "mode": mode,
-            "temperature": float(T), "time_s": float(t), "cutoff_kcal": steering.get("cutoff_kcal"),
-            "reach_kcal": eyring_cutoff_kcal(float(T), float(t)),
+            "temperature": float(T), "time_s": float(t), "cutoff_kcal": float(cutoff) if cutoff is not None else None,
+            "margin_kcal": float(margin or 0.0),
+            "reach_kcal": (float(cutoff) - float(margin or 0.0)) if cutoff is not None else eyring_cutoff_kcal(float(T), float(t)),
             "threshold": float(steering.get("flux_threshold") or p.get("flux_threshold") or 0.01),
             "expanded": sorted(expanded), "nodes": set(nodes.values())}
 
 
 def coverage(snap: dict, jobs: dict, species: list, temperature: float, time_s: float, start: set) -> Optional[dict]:
     """How far these kinetics are from what explored the network: the explorations behind its species (their
-    conditions; the barrier their kinetics crossed in their time, `reach_kcal`, and the access cutoff they
-    searched up to), the barrier these conditions cross (`reach_kcal`), whether that is beyond what was searched
-    (`beyond`), and the `frontier`: species that hold material here (at their peak, at least the explorations'
+    conditions; `reach_kcal`, the barrier they searched past for sure, and `cutoff_kcal` with the margin), the
+    barrier these conditions cross (`reach_kcal`), `level` ("covered", "thin": within the margin only, "beyond":
+    past the cutoff), and the `frontier`: species that hold material here (at their peak, at least the explorations'
     threshold of the start) but that no exploration expanded, so what they do next was never searched, with
-    their share of the starting mass at the end. None when no kinetics-steered exploration made this network."""
+    their share of the starting mass at the end (threshold: the runs' flux_threshold of the start, for now;
+    the explorer's rule is changing to a share of the converted material). None when no kinetics-steered exploration made this network."""
     from mepd.network_aware import eyring_cutoff_kcal
 
     ids = {s["id"] for s in species}
@@ -482,7 +490,12 @@ def coverage(snap: dict, jobs: dict, species: list, temperature: float, time_s: 
     if not found:
         return None
     reach = eyring_cutoff_kcal(float(temperature), float(time_s))
-    searched = max((e["cutoff_kcal"] if e["cutoff_kcal"] is not None else e["reach_kcal"]) for e in found)
+    # covered: within what was searched for sure; thin: within the cutoff, its margin only (a step whose low-level
+    # barrier came out more than cutoff - reach too high was never searched); beyond: past the cutoff.
+    searched = max(e["reach_kcal"] for e in found)
+    cutoff = max((e["cutoff_kcal"] if e["cutoff_kcal"] is not None else e["reach_kcal"]) for e in found)
+    tol = 0.05   # recorded values are rounded: the run's own conditions are covered
+    level = "covered" if reach <= searched + tol else "thin" if reach <= cutoff + tol else "beyond"
     expanded = {sid for e in found for sid in e["expanded"]}
     # The explorer expands states: a mixture's ("ketene + water") molecules were expanded with it.
     structures = snap.get("structures") or {}
@@ -499,5 +512,6 @@ def coverage(snap: dict, jobs: dict, species: list, temperature: float, time_s: 
         frontier.append({"id": s["id"], "name": s["name"], "share": share, "peak": s["max"] / total_c0})
     frontier.sort(key=lambda f: -(f["share"] if f["share"] is not None else f["peak"]))
     return {"explorations": [{k: v for k, v in e.items() if k not in ("expanded", "nodes")} for e in found],
-            "reach_kcal": reach, "searched_kcal": searched, "beyond": reach > searched + BEYOND_MARGIN_KCAL,
+            "reach_kcal": reach, "searched_kcal": searched, "cutoff_kcal": cutoff, "level": level,
+            "beyond": level == "beyond",
             "frontier": frontier, "frontier_share": sum(f["share"] or 0 for f in frontier), "threshold": threshold}

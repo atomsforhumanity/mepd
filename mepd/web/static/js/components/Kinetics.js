@@ -251,15 +251,19 @@ export function CoverageWarning({ res, compact = false }) {
   const c = res?.coverage;
   if (!c) return null;
   const front = (c.frontier || []).filter((f) => (f.share ?? 0) >= 0.005);
-  if (!c.beyond && c.frontier_share < 0.01) return null;
+  const level = c.level || (c.beyond ? 'beyond' : 'covered');
+  if (level === 'covered' && c.frontier_share < 0.01) return null;
   const ex = c.explorations || [];
   const conds = [...new Set(ex.map((e) => `${+e.temperature.toPrecision(4)} K over ${fmtTime(e.time_s)}`))];
   const names = front.slice(0, 4).map((f) => `${f.name} ${fmtPct(f.share)}`).join(', ') + (front.length > 4 ? ', …' : '');
   return html`<div class="warn-box kn-coverage">
-    <p><b>Beyond what was explored: read these numbers with care.</b></p>
-    ${c.beyond && html`<p>${`The network was explored with kinetics at ${conds.join(' and ')}, searching past barriers up to ${c.searched_kcal.toFixed(0)} kcal/mol. `
-      + `At ${res.temperature} K over ${fmtTime(res.time_s)}, barriers up to ${c.reach_kcal.toFixed(0)} kcal/mol are crossed: steps between the two were never looked for, `
-      + 'so routes that matter here may be missing.'}</p>`}
+    <p><b>${level === 'thin' && c.frontier_share < 0.01 ? 'Near the edge of what was explored' : 'Beyond what was explored'}: read these numbers with care.</b></p>
+    ${level === 'beyond' && html`<p>${`The network was explored with kinetics at ${conds.join(' and ')}, searching past barriers up to ${c.searched_kcal.toFixed(0)} kcal/mol `
+      + `(${c.cutoff_kcal.toFixed(0)} with the margin for the method's error). At ${res.temperature} K over ${fmtTime(res.time_s)}, barriers up to ${c.reach_kcal.toFixed(0)} kcal/mol `
+      + 'are crossed: higher steps were never looked for, so routes that matter here may be missing.'}</p>`}
+    ${level === 'thin' && html`<p>${`The network was explored with kinetics at ${conds.join(' and ')}, searching past barriers up to ${c.searched_kcal.toFixed(0)} kcal/mol for sure. `
+      + `At ${res.temperature} K over ${fmtTime(res.time_s)}, barriers up to ${c.reach_kcal.toFixed(0)} kcal/mol are crossed: a step whose barrier the exploration's method `
+      + `overestimated by more than ${(c.cutoff_kcal - c.reach_kcal).toFixed(0)} kcal/mol was never searched.`}</p>`}
     ${c.frontier_share >= 0.01 && html`<p>${`${fmtPct(c.frontier_share)} of the starting mass ends in species no exploration expanded (${names}): `
       + `what ${front.length === 1 ? 'it does' : 'they do'} next was never searched.`}</p>`}
     ${!compact && html`<p class="small muted">${`To check: run Network expansion again at these conditions (cutoff temperature ${res.temperature} K)`
