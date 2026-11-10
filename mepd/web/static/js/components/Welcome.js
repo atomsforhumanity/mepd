@@ -205,7 +205,7 @@ export function WelcomeView() {
         <p class="land-forms">What forms, per glycine: <b>methylcarbamic acid 0.81</b> · CO₂ + methylamine 0.15 · 0.6 % left as glycine.</p>
         <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT, 1421 single points) · rates from <b>electronic energies</b>, gas phase.
           Electronic energies leave out the entropy of splitting in two, worth tens of kcal/mol at 1000 K, so CO₂ + methylamine is badly under-counted:
-          with free energies, this same network gives CO₂ + methylamine 0.93 and almost no methylcarbamic acid. A free-energy run replaces this one soon.</p>
+          recomputed on free energies from the same network (only the final kinetics, with a fix not yet released), CO₂ + methylamine is 0.93 and methylcarbamic acid almost none. A fresh free-energy run is pending.</p>
         <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 6 h on 2 workers).</p>
       </div>
     </section>
