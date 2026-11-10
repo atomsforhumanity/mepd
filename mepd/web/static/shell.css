@@ -83,14 +83,16 @@
   .drawer, .drawer-settings { width: 100%; }
   .ab-run, .ab-hint, .ab-units { display: none; }
   .canvas-tabs { padding: 0 var(--space-4); overflow-x: auto; }
-  /* The selection's bottom sheet scrolls as one: its name, 3D view and tabs stay above the tools only on wide
-     screens. Pinned on a phone they left the tools a strip of ~130 px at the bottom of the sheet, under the
-     Calculations bar, so a swipe on the sheet moved nothing and the tools' forms (Run) were out of reach. */
-  .inspector.has-selection:not(.collapsed) { overflow-y: auto; overscroll-behavior: contain; }
-  .inspector.has-selection > .pane-head { position: sticky; top: 0; z-index: 2; flex: none; background: var(--bg); }
-  .inspector.has-selection:not(.collapsed) > .insp-top { max-height: none; overflow: visible; }
-  .inspector.has-selection:not(.collapsed) > .inspector-scroll { flex: none; overflow: visible; padding-bottom: 72px; }
+  .inspector.has-selection > .pane-head { background: var(--bg); }
+  .inspector.has-selection:not(.collapsed) > .inspector-scroll { padding-bottom: 72px; }
 }
+/* The selection panel scrolls as one, on every screen: its name, 3D view and details scroll away with the tools
+   under them, and its head (name, close) stays on top. Pinned, they took up to 55 % of the panel with a scroller
+   of their own and left the tools a narrow strip (on a phone ~130 px under the Calculations bar, out of reach). */
+.inspector.has-selection:not(.collapsed) { overflow-y: auto; overscroll-behavior: contain; }
+.inspector.has-selection > .pane-head { position: sticky; top: 0; z-index: 2; flex: none; background: var(--panel); }
+.inspector.has-selection:not(.collapsed) > .insp-top { max-height: none; overflow: visible; }
+.inspector.has-selection:not(.collapsed) > .inspector-scroll { flex: none; overflow: visible; }
 
 /* the structure list's own add row */
 .lib-add-row { display: flex; gap: 6px; padding: 0 18px 10px; }
