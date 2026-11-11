@@ -614,9 +614,12 @@ def expand(
         "reach tau x the fraction of the seed converted)."),
     exact: bool = typer.Option(
         False, "--exact",
-        help="--steer access: keep the system exactly as given. By default the explorer starts from two copies of "
-        "it side by side (each molecule meets a copy of itself and of the others, and what one copy makes meets the "
-        "other's molecules), unless that box would exceed 50 atoms or the system is charged or open-shell."),
+        help="--steer access: keep the system exactly as given, whatever --copies says."),
+    n_copies: int = typer.Option(
+        1, "--copies",
+        help="--steer access: start from this many copies of the given system side by side, 1 (the default for now) "
+        "or 2 (each molecule meets a copy of itself and of the others, and what one copy makes meets the other's "
+        "molecules); one copy when two would exceed 50 atoms or the system is charged or open-shell."),
     concentration: float = typer.Option(
         1.0, "--concentration",
         help="--steer access: each of the seed's molecules' starting concentration, in the standard state's units "
@@ -862,7 +865,10 @@ def expand(
     if steer == "access":
         from mepd.discovery.molecules import seed_box
 
-        seed_structure, copies = seed_box(seed_structure, exact=exact is True)
+        n_copies = n_copies if isinstance(n_copies, int) else 1
+        if n_copies not in (1, 2):
+            raise typer.BadParameter("--copies takes 1 or 2")
+        seed_structure, copies = seed_box(seed_structure, exact=exact is True or n_copies == 1)
         typer.echo(f"Seed box: {'two copies of the given system side by side' if copies == 2 else 'the system as given'}"
                    f" ({len(seed_structure.symbols)} atoms{'; --exact keeps it as given' if copies == 2 else ''}).")
     seed = StructureNode(structure=seed_structure)

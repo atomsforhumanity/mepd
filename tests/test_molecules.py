@@ -168,7 +168,7 @@ def test_the_reactor_cap_counts_new_molecule_level_reactions():
     assert not _new_reaction(seed, [M.reaction_key(seed, one)])(other)   # a reaction the network has: none
 
 
-def test_discovery_expand_starts_from_two_copies_unless_exact(tmp_path, monkeypatch):
+def test_discovery_expand_starts_from_one_copy_unless_two_are_asked(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     import mepd.cli_common as cli_common
@@ -192,8 +192,9 @@ def test_discovery_expand_starts_from_two_copies_unless_exact(tmp_path, monkeypa
 
     monkeypatch.setattr(cli_common, "_open_run_inputs", run_inputs)
     monkeypatch.setattr(ne, "expand_network", expand)
-    for extra, atoms, copies in (([], 6, 2), (["--exact"], 3, 1)):
-        out = tmp_path / f"out{copies}"
+    for i, (extra, atoms, copies) in enumerate((([], 3, 1), (["--copies", "2"], 6, 2),
+                                                (["--copies", "2", "--exact"], 3, 1))):
+        out = tmp_path / f"out{i}"
         res = CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions", "--steer", "access",
                                        "--barrier-cutoff", "30", "--concentration", "0.5", "-o", str(out), *extra])
         assert res.exit_code == 0, res.output
