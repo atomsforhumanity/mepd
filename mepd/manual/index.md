@@ -10,6 +10,8 @@ change** at the bottom of the page.
 
 ## Pages
 
+- [Explore](explore): the network map, with one arrow per step, columns by
+  the easiest way in, a barrier filter, and each molecule's neighbourhood.
 - [Orbitals](orbitals): the whole system's HOMO and LUMO, and each
   molecule's own orbitals and how they overlap (fragment orbitals).
 - [Network expansion](network-expansion): growing a reaction network in four

@@ -3,7 +3,7 @@
 import { html, useEffect, useRef, useState } from '../lib.js';
 import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, isNew, openJob, openTab, prefs, select, set, state, useStore, openReaction } from '../store.js';
+import { clearSelection, isNew, openJob, openTab, prefs, select, set, setExploreView, state, useStore, openReaction } from '../store.js';
 import { complexNodes, complexOfStructure, depictUrl, edgeStatus, edgeStatusKey, isComplex, levelBarrierText, nodeOf, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
 import { SetupPanel, activeSetup, edgeUnderSetup, setupEdgeLabel, setupKey } from './Setups.js';
@@ -561,7 +561,7 @@ const TB = {
   del: svg(html`<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>`),
 };
 
-export function Graph() {
+export function Graph({ hidden = false }) {
   const host = useRef(null);
   const cy = useRef(null);
   const connectFrom = useRef(null);
@@ -1098,7 +1098,7 @@ export function Graph() {
   const empty = Object.keys(workspace.structures).length === 0;
 
   return html`
-    <div class=${`graph-wrap ${connectMode ? 'connecting' : ''} ${drag ? 'drag' : ''}`}
+    <div class=${`graph-wrap ${connectMode ? 'connecting' : ''} ${drag ? 'drag' : ''}`} hidden=${hidden}
       onDragOver=${(e) => { e.preventDefault(); setDrag(true); }}
       onDragLeave=${() => setDrag(false)}
       onDrop=${(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); }}>
@@ -1120,6 +1120,9 @@ export function Graph() {
           title="Experimental conditions: solvent, temperature, reaction time. See which steps run, and predict the outcome.">
           ${TB.conditions}${setup && html`<span>${setup.name}</span>`}</button>
         <${NetworkPicker} workspace=${workspace} network=${network} />
+        <span class="gt-sep"></span>
+        <button class="gt-btn" onClick=${() => { set({ connectMode: false }); setExploreView('map'); }} aria-label="Map"
+          title="Back to the network map: molecules by how hard they are to reach, one molecule's reactions at a time">Map</button>
         ${howToHidden && html`<button class="gt-btn" title="Show 'How it works'" aria-label="How it works"
           onClick=${() => { prefs.set('hideHowTo', false); set({ howToHidden: false }); }}>?</button>`}
         ${nSelected > 0 && html`<button class="gt-btn danger-text" onClick=${deleteSelection} aria-label=${`Delete ${nSelected}`}

@@ -2,6 +2,7 @@ import { html, render, useEffect } from './lib.js';
 import { connect, deleteSelection } from './api.js';
 import { clearSelection, set, state, upLevel, useStore } from './store.js';
 import { Graph } from './components/Graph.js';
+import { NetworkMap } from './components/NetworkMap.js';
 import { Inspector } from './components/Inspector.js';
 import { JobView } from './components/JobView.js';
 import { JobsView } from './components/Jobs.js';
@@ -32,6 +33,7 @@ function App() {
   const view = useStore((s) => s.view);
   const loaded = useStore((s) => s.loaded);
   const howToHidden = useStore((s) => s.howToHidden);
+  const exploreView = useStore((s) => s.exploreView);
   const theme = useStore((s) => s.theme);
   useStore((s) => s.selection);
   // The map: announce what just opened; visiting Explore completes its quest.
@@ -85,7 +87,8 @@ function App() {
         <section class="center">
           <${ModeBar} />
           <${CanvasHeader} />
-          <div class="center-view" hidden=${view.tab !== 'graph'}><${Graph} /></div>
+          <div class="center-view" hidden=${view.tab !== 'graph'}>
+            ${exploreView === 'map' && html`<${NetworkMap} />`}<${Graph} hidden=${exploreView === 'map'} /></div>
           ${view.tab === 'jobs' && html`<${JobsView} />`}
           ${view.tab === 'job' && html`<${JobView} jobId=${view.jobId} />`}
           ${view.tab === 'reaction' && html`<${ReactionFocus} edgeId=${view.edgeId} />`}
