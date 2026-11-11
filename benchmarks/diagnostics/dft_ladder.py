@@ -28,15 +28,10 @@ sys.path.insert(0, str(HERE))
 from explorer_level import HARTREE, load, xyz_text  # noqa: E402
 
 
-LOCAL_ORCA = "/home/user/.local/opt/orca-6.0.0/orca"
-
-
 def orca(cfg: dict):
-    import os
-
     from mepd.engines.orca import OrcaEngine
 
-    exe = cfg.get("executable") or os.environ.get("MEPD_ORCA") or (LOCAL_ORCA if Path(LOCAL_ORCA).exists() else None)
+    exe = cfg.get("executable")   # else OrcaEngine finds it: $MEPD_ORCA, /opt/orca/orca, `orca` on PATH
     return OrcaEngine(method=cfg["method"], basis=cfg["basis"], keywords=cfg.get("keywords", ""),
                       threads=int(cfg.get("threads", 1)), maxcore=int(cfg.get("maxcore", 3000)),
                       cpcm_solvent=cfg.get("cpcm_solvent"), **({"executable": exe} if exe else {}))
