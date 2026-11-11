@@ -1445,23 +1445,26 @@ def test_async_schedule_stops_on_a_budget_not_a_depth():
 
 
 def _settle_run(monkeypatch, product_ratio):
-    """An async run of ethanol whose live kinetics put the material in species 1 and 2 at `product_ratio(n)` to 1
-    at their n-th solve (the rest as computed), with the settle window cut to 2 kinetics and no wall time."""
-    from mepd.discovery import kinetics, network_expansion
+    """An async run of ethanol whose live kinetics put the material in two products at `product_ratio(n)` to 1 at
+    their n-th solve, with the settle window cut to 2 kinetics and no wall time. (steer="access": the molecule-level
+    kinetics, whose answer the settle rule watches: its first two products not of the seed.)"""
+    from mepd.discovery import molecules, network_expansion
 
     monkeypatch.setattr(network_expansion, "SETTLE_S", 0.0)
     monkeypatch.setattr(network_expansion, "SETTLE_UPDATES", 2)
-    simulate, calls = kinetics.simulate, [0]
+    simulate, calls, first = molecules.simulate, [0], []
 
-    def fixed(n, *args, **kw):
-        k = simulate(n, *args, **kw)
+    def fixed(net, *args, **kw):
+        k = simulate(net, *args, **kw)
         calls[0] += 1
-        if n > 2:
+        first.extend([key for i, key in enumerate(net.names) if i not in set(net.seed) and key not in first][:2 - len(first)])
+        if len(first) == 2:        # the first two products found, by key (indices move as molecules are added)
             r = product_ratio(calls[0])
-            k.final_concentration = [0.0, r / (1 + r), 1 / (1 + r)] + [0.0] * (len(k.final_concentration) - 3)
+            k.final = np.zeros(len(net.names))
+            k.final[net.names.index(first[0])], k.final[net.names.index(first[1])] = r / (1 + r), 1 / (1 + r)
         return k
 
-    monkeypatch.setattr(kinetics, "simulate", fixed)
+    monkeypatch.setattr(molecules, "simulate", fixed)
     return expand_network(_node("CCO"), _GraphEngine(), steer="access", settle_kcal=network_expansion.SETTLE_KCAL,
                           connect=_AsyncConnector(),
                           access_cutoff_kcal=60.0, max_products=20, kinetics={"threshold": 1e-6}, schedule="async")

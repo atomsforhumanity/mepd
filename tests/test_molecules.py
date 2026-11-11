@@ -41,12 +41,17 @@ def test_a_step_is_the_reaction_of_the_molecules_it_changes_the_rest_look_on():
     assert M.split(M.molecule_parts(a), M.molecule_parts(a), M.bonds_of(a), M.bonds_of(a)) == ("no_reaction",)
 
 
-def test_a_radical_pair_box_is_no_set_of_molecules():
-    # two H atoms beside N2: three molecules, two of them open-shell, in a singlet box: charges and spins unknown
+def test_a_radical_pair_is_one_species_a_complex_kept_together():
+    # two H atoms beside N2 in a singlet box: N2 a molecule; the two H atoms (their spins unknown) one complex
     box = _box(H_H_APART, N2)
-    assert M.molecule_parts(box) is None
+    parts = M.molecule_parts(box)
+    keys = sorted(k for _, k in parts)
+    (cx,) = [k for k in keys if M.complex_info(k)]
+    assert M.complex_info(cx)[0] == M.COMPLEX_OPEN and len(M.complex_info(cx)[1]) == 2
+    assert M.canonical("N#N") in keys
     a = _box(H2, N2)
-    assert M.split(M.molecule_parts(a), M.molecule_parts(box), M.bonds_of(a), M.bonds_of(box)) == ("open_shell_group",)
+    s = M.split(M.molecule_parts(a), parts, M.bonds_of(a), M.bonds_of(box))
+    assert s[0] == "ok" and s[1] == [M.canonical("[H][H]")] and s[2] == [cx]       # H2 -> 2 H, first order
 
 
 def _parts_net(boxes):
@@ -83,7 +88,7 @@ def test_twins_are_never_merged_and_a_box_above_its_molecules_leaves_the_fit():
     steps = [Step(0, 1, 10.0 / H, "s0", {}), Step(0, 2, 40.0 / H, "s1", {}), Step(0, 1, 10.0 / H, "s0 twin", {})]
     net = M.build(3, parts, bonds, steps, g, twin_of=[0], ts_info=lambda m: (None, True, True))
     assert net.g[1] - net.g[0] == pytest.approx(2.0)          # the product at its lowest
-    assert net.fit["left_out_boxes"] == 1
+    assert net.fit["above_their_molecules"] == 1
     # the twin of step 0 is kept beside it (two TSs); step 1, measured from its own box's energy, is 40 kcal/mol up
     assert sum(1 for x in net.reactions if x["step"] == 0) == 2 and any(x["twin"] for x in net.reactions)
 
@@ -156,18 +161,6 @@ def test_the_seed_box_is_two_copies_unless_exact_too_big_or_charged():
     assert M.seed_box(s.model_copy(update={"charge": 1, "multiplicity": 2}))[1] == 1
 
 
-def test_the_reactor_cap_counts_new_molecule_level_reactions():
-    from mepd.discovery.reactor_generator import _new_reaction
-
-    seed = _box(HCN, N2, HCN)
-    one = _box(HNC, N2, HCN)          # the first HCN turns into HNC
-    other = _box(HCN, N2, HNC)        # the second one: the same reaction beside other spectators
-    new = _new_reaction(seed, [])
-    assert new(one) and not new(other)                     # one slot for the two
-    assert new.seen == [M.reaction_key(seed, one)]
-    assert not _new_reaction(seed, [M.reaction_key(seed, one)])(other)   # a reaction the network has: none
-
-
 def test_discovery_expand_starts_from_one_copy_unless_two_are_asked(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
@@ -228,3 +221,137 @@ def test_a_step_whose_ts_search_failed_is_left_out():
     steps = [Step(0, 1, 10.0 / H, "peak", {"ts_kind": "path_peak"}), Step(0, 1, 12.0 / H, "ts", {})]
     net = M.build(2, parts, bonds, steps, [0.0, 2.0 / H], ts_info=lambda m: (None, True, True))
     assert [x["step"] for x in net.reactions] == [1] and net.counts["left_out_ts_search_failed"] == 1
+
+
+def test_the_fit_takes_each_molecule_at_its_lowest():
+    # the reviewer's toy: one molecule in six boxes (conformers), five at 0 and one at -3 kcal/mol: G = -3, not -0.5
+    A = np.ones((6, 1))
+    y = np.array([0.0, 0.0, 0.0, 0.0, 0.0, -3.0])
+    assert M.lowest(A, y)[0] == pytest.approx(-3.0)
+    # two molecules: each at its lowest, every box at or above its molecules' sum
+    A = np.array([[1, 0], [0, 1], [1, 1], [1, 0]], dtype=float)
+    y = np.array([0.0, 1.0, 0.5, -2.0])
+    G = M.lowest(A, y)
+    assert G[0] == pytest.approx(-2.0) and np.all(A @ G <= y + 1e-9)
+
+
+def _ions():
+    """[M+H]+-like: H3O+ (one molecule, charged), and a box of H2O + H+ ... as two boxes of one atom set: O, H, H,
+    H; plus a neutral spectator-free seed of OH- + H2O for scenario B."""
+    h3o = [("O", 0.0, 0.0, 0.0), ("H", 0.98, 0.0, 0.0), ("H", -0.33, 0.92, 0.0), ("H", -0.33, -0.46, 0.80)]
+    h2o_h = [("O", 0.0, 0.0, 0.0), ("H", 0.96, 0.0, 0.0), ("H", -0.24, 0.93, 0.0), ("H", -2.5, -2.5, 2.5)]
+    return h3o, h2o_h
+
+
+def test_scenario_a_a_charged_seed_keeps_its_fragmentation():
+    # a charged one-molecule seed (H3O+) and its fragmentation (H2O + H+): the products' box is charged and of two
+    # molecules, so one complex; the step A -> B + C at 10 kcal/mol stays, A -> D at 25 doesn't win
+    h3o, h2o_h = _ions()
+    a = _box(h3o).model_copy(update={"charge": 1})
+    b = _box(h2o_h).model_copy(update={"charge": 1})
+    pa, pb = M.molecule_parts(a), M.molecule_parts(b)
+    assert len(pa) == 1 and not M.complex_info(pa[0][1])
+    ((_, kb),) = pb
+    assert M.complex_info(kb)[0] == M.COMPLEX_OPEN and len(M.complex_info(kb)[1]) == 2
+    boxes = {0: a, 1: b}
+    d = [("O", 0.0, 0.0, 0.0), ("H", 1.5, 0.0, 0.0), ("H", -0.33, 0.92, 0.0), ("H", -0.33, -0.46, 0.80)]
+    boxes[2] = _box(d).model_copy(update={"charge": 1})          # "D": another arrangement of A's atoms
+    steps = [Step(0, 1, 10.0 / H, "frag", {}), Step(0, 2, 25.0 / H, "other", {})]
+    net = M.build(3, lambda k: M.molecule_parts(boxes[k]), lambda k: M.bonds_of(boxes[k]), steps,
+                  [0.0, -5.0 / H, -5.0 / H], ts_info=lambda m: (None, True, True))
+    assert net.counts["complexes"] >= 1 and len(net.reactions) >= 1
+    frag = next(x for x in net.reactions if x["step"] == 0)
+    assert len(frag["r"]) == 1 and len(frag["p"]) == 1                 # first order: A -> the complex
+    kin = M.simulate(net, net.c0(1.0), 298.15, 1.0)
+    assert kin.final[frag["p"][0]] > 0.9                              # the 10 kcal/mol fragmentation wins
+
+
+def test_scenario_b_a_charged_seed_of_several_molecules_is_one_complex_with_its_amount():
+    # OH- + H2O (charged, two molecules): the seed is one complex, at the concentration given
+    oh = [("O", 0.0, 0.0, 0.0), ("H", 0.97, 0.0, 0.0)]
+    h2o = [("O", 0.0, 0.0, 0.0), ("H", 0.96, 0.0, 0.0), ("H", -0.24, 0.93, 0.0)]
+    seed = _box(oh, h2o).model_copy(update={"charge": -1})
+    parts = M.molecule_parts(seed)
+    assert len(parts) == 1 and M.complex_info(parts[0][1])[0] == M.COMPLEX_OPEN
+    net = M.build(1, lambda k: parts, lambda k: M.bonds_of(seed), [], [0.0])
+    assert net.seed == [0] and net.c0(0.5)[0] == pytest.approx(0.5)
+
+
+def test_a_molecule_without_a_key_is_a_complex_of_its_own_with_its_reason(monkeypatch):
+    import mepd.discovery.mixture as mixture
+
+    monkeypatch.setattr(mixture, "molecule_key", lambda s: (_ for _ in ()).throw(ValueError("no key")))
+    ((_, key),) = M.molecule_parts(_box(N2))
+    assert M.complex_info(key)[0] == M.COMPLEX_KEY and M.complex_info(key)[1][0].startswith("N2#")
+
+
+def test_the_scoreboard_finds_a_radical_channel_through_its_complex():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
+    import score
+
+    pair = M.complex_key(M.COMPLEX_OPEN, [M.canonical("[CH3]"), M.canonical("[O]C=O")])
+    net = M.MoleculeNetwork([M.canonical("COC=O"), M.canonical("CO"), M.canonical("[C-]#[O+]"), pair],
+                            np.array([0.0, -5.0, -5.0, -5.0]),
+                            [{"r": [0], "p": [1, 2], "g_ts": 20.0, "step": 0, "twin": False},
+                             {"r": [0], "p": [3], "g_ts": 21.0, "step": 1, "twin": False}], [0])
+    rec = {**net.record(), "c0": list(net.c0(1.0)), "temperature_K": 500.0, "time_s": 1e-3}
+    sysdef = {"channels": {"methanol_co": {"products": ["CO", "[C-]#[O+]"]},
+                           "methyl_formyloxy": {"products": ["[CH3]", "[O]C=O"]}}}
+    out = score.molecule_channels(sysdef, rec)
+    assert out["found"] == {"methanol_co": True, "methyl_formyloxy": True} and all(out["connected"].values())
+    ratio = out["amounts"]["methanol_co"] / out["amounts"]["methyl_formyloxy"]
+    assert ratio == pytest.approx(math.exp(1.0 / (1.987204258640832e-3 * 500.0)), rel=1e-3)
+
+
+def test_qmmm_or_restrained_systems_keep_the_box_kinetics():
+    from mepd.discovery.network_expansion import expand_network
+    from tests.test_network_expansion import _AsyncConnector, _GraphEngine, _node
+
+    class Restrained(_GraphEngine):
+        restraints = [object()]
+
+    events = []
+    res = expand_network(_node("C#N"), Restrained(), connect=_AsyncConnector(), steer="access",
+                         access_cutoff_kcal=30.0, max_products=5, schedule="async", allow_zwitterions=True,
+                         kinetics={"threshold": 1e-6}, on_event=lambda e, p: events.append((e, p)))
+    assert res.kinetics_model == "box (QM/MM or restraints)"
+    assert "molecules" not in res.rounds[-1]["kinetics"]
+    assert any(e == "warning" and "kinetics: box (QM/MM or restraints)" in p["message"] for e, p in events)
+
+
+def test_the_options_say_what_they_do(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    import mepd.cli_common as cli_common
+    import mepd.discovery.network_expansion as ne
+    from mepd.cli import app
+    from tests.test_network_expansion import _filed_connector
+
+    real = ne.expand_network
+    monkeypatch.setattr(cli_common, "_open_run_inputs", lambda _p: _ri())
+    monkeypatch.setattr(ne, "expand_network", lambda *a, **kw: real(*a, **{**kw, "connect": _filed_connector(5.0, tmp_path),
+                                                                          "verify": None, "refine": None}))
+    run = lambda *extra: CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions",
+                                                  "--barrier-cutoff", "30", "-o", str(tmp_path / str(len(extra))),
+                                                  *extra])
+    bad = run("--steer", "access", "--concentration", "0")
+    assert bad.exit_code != 0 and "--concentration must be above 0" in bad.output
+    ignored = run("--steer", "window", "--copies", "2", "--concentration", "0.5")
+    assert "--copies, --concentration only act with --steer access" in ignored.output
+    charged = CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions", "--charge", "1",
+                                       "--multiplicity", "2", "--steer", "access", "--copies", "2",
+                                       "--barrier-cutoff", "30", "-o", str(tmp_path / "c")])
+    assert "--copies 2: one copy, as it is charged" in charged.output
+    ok = run("--steer", "access", "--concentration", "0.5")
+    assert ok.exit_code == 0, ok.output
+    assert "Answer (molecule-level kinetics" in ok.output
+    assert json.loads((tmp_path / "4" / "summary.json").read_text())["steering"]["kinetics"] == "molecules"
+
+
+def _ri():
+    from mepd.inputs import RunInputs
+    from tests.test_network_expansion import _ShiftEngine
+
+    ri = RunInputs()
+    ri.engine = _ShiftEngine()
+    return ri

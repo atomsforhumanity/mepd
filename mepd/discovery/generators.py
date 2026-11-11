@@ -52,9 +52,7 @@ class Generator:
     programs: tuple = ()       # executables that must be on PATH
     # Batched structures generators: `propose_batch(structure, *, max_products, options, state)` ->
     # (this batch's new products, state, done), so an async explorer takes each batch's products as it
-    # ends (None: one call proposes everything). The first batch's state is None, or {"known_reactions":
-    # [[reactant keys, product keys], ...]}: the molecule-level reactions the network has (the reactor's
-    # product cap counts only new ones)
+    # ends (None: one call proposes everything)
     propose_batch: Optional[Callable] = None
 
     def available(self) -> bool:

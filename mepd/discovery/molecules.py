@@ -6,9 +6,11 @@ pieces (free_energy.molecules), each keyed by its stereo SMILES (the explorer's 
 mirror image's key can be made); a step a -> b becomes the reaction of the molecules whose bonds change (with every
 molecule of either end those atoms are in, and a molecule whose key alone changed), the others being spectators.
 
-  * A box of several molecules that are not all closed-shell and neutral (a radical pair, an ion pair) is no set
-    of molecules: its molecules' spins and charges are not known without a calculation, and counting the pair as
-    one molecule would put it at one concentration. Every step touching it is left out (counted).
+  * What can't be counted as separate molecules is one species of its own, a complex kept together as in the box
+    model (molecule_parts, complex_key): a radical pair in a neutral singlet box, the whole of a charged or
+    open-shell box of several molecules (which one holds the charge or the spin is not known without a
+    calculation), a molecule whose key can't be made. It reacts like any species, first order where it is one,
+    at its box's free energy, and carries its molecules' keys (a channel's products are matched through them).
   * A step with spectators whose TS was computed on the whole box (no `<ts>_ends.xyz`: its subsystem's TS landed in
     a spectator's room, network_expansion.Subsystem.clashes) keeps the spectators it touches only when an IRC
     checked it (files["verified"] not False): they are then on both sides of the reaction (a neighbour taking
@@ -17,9 +19,9 @@ molecule of either end those atoms are in, and a molecule whose key alone change
   * A step whose TS search failed, kept at its path's highest image (files["ts_kind"] "path_peak"), is left out:
     that image is no saddle (a doubled formic acid run's one, 20 kcal/mol up at g-xTB for HCOOH-assisted
     dehydration, lies 2.5 kcal/mol above the two molecules apart at wB97X-D3BJ/def2-TZVP).
-  * Molecule free energies: least squares over the boxes, G(box) = sum of its molecules', each molecule at its
-    lowest (a box more than FIT_SLACK_KCAL above the sum leaves the fit while its molecules are in another box
-    that stays). A reaction's TS on this scale is the box TS with the spectators taken out.
+  * Molecule free energies: each molecule at its lowest over the boxes holding it (lowest: every box at or above
+    the sum of its molecules', a linear programme). A reaction's TS on this scale is the box TS with the
+    spectators taken out.
   * One reaction found in several boxes is one TS when its TS energies are within DEDUP_KCAL and the reacting atoms'
     sorted distances agree (mixture._same_distances); mirror-image twins are never merged with each other.
 
@@ -72,28 +74,83 @@ def _xyz(structure):
     return [str(s) for s in structure.symbols], np.asarray(structure.geometry, dtype=float) * BOHR_TO_ANGSTROM
 
 
-def molecule_parts(structure) -> Optional[list[tuple[frozenset, str]]]:
-    """[(atoms, key)] of a box's molecules; None when it holds several molecules that are not all closed-shell
-    and neutral (their charges and spins are unknown: no molecules), or a key can't be made."""
-    from mepd.discovery.free_energy import _electrons, molecules
+COMPLEX_OPEN = "charged/open-shell group"
+COMPLEX_KEY = "key failed"
+
+
+def complex_key(reason: str, keys: Sequence[str]) -> str:
+    """The key of a complex: several molecules kept together as one species (their charges and spins unknown
+    without a calculation), or one whose key can't be made; `keys`: its molecules' own keys."""
+    return "{" + reason + "}" + ".".join(sorted(keys))
+
+
+def complex_info(key: str) -> Optional[tuple[str, list]]:
+    """(reason, its molecules' keys) of a complex's key; None for a molecule's."""
+    if not key.startswith("{") or "}" not in key:
+        return None
+    reason, rest = key[1:].split("}", 1)
+    return reason, rest.split(".") if rest else []
+
+
+def _graph_key(symbols, atoms, bonds) -> str:
+    """A key for a molecule no SMILES can be made of: its formula and a hash of its bond graph."""
+    import hashlib
+    from collections import Counter
+
+    atoms = sorted(atoms)
+    nb = {i: sorted(symbols[j] for e in bonds if i in e for j in e if j != i) for i in atoms}
+    lab = {i: symbols[i] + "".join(nb[i]) for i in atoms}
+    for _ in range(3):
+        lab = {i: lab[i] + "(" + ",".join(sorted(lab[j] for e in bonds if i in e for j in e if j != i)) + ")"
+               for i in atoms}
+    formula = "".join(f"{s}{n}" for s, n in sorted(Counter(symbols[i] for i in atoms).items()))
+    return formula + "#" + hashlib.sha1("|".join(sorted(lab.values())).encode()).hexdigest()[:10]
+
+
+def molecule_parts(structure) -> list[tuple[frozenset, str]]:
+    """[(atoms, key)] of a box's species. Each closed-shell molecule is one. What can't be counted as separate
+    molecules stays together as one species, a complex (complex_key), as the box model keeps it: in a neutral
+    singlet box, its open-shell molecules (a radical pair; their spins are not known without a calculation); in a
+    charged or open-shell box of several molecules, the whole box (which one holds the charge or the spin is not
+    known); and a molecule whose key can't be made (reason COMPLEX_KEY). A complex reacts like any species, at
+    the free energy of its box."""
+    from mepd.discovery.free_energy import _electrons, bonds, molecules
     from mepd.discovery.mixture import _sub, molecule_key
 
     symbols, xyz = _xyz(structure)
     groups = molecules(symbols, xyz)
-    if len(groups) > 1 and (int(structure.charge) != 0 or int(structure.multiplicity) != 1
-                            or any(sum(_electrons(symbols[k]) for k in g) % 2 for g in groups)):
-        return None
-    out = []
-    for g in groups:
-        charge, mult = (int(structure.charge), int(structure.multiplicity)) if len(groups) == 1 else (0, 1)
+    charge, mult = int(structure.charge), int(structure.multiplicity)
+    b = None
+
+    def key_of(g, q, m):
+        nonlocal b
         try:
-            key = molecule_key(_sub(structure, g, charge, mult))
+            k = molecule_key(_sub(structure, g, q, m))
         except Exception:
-            return None
-        if not key:
-            return None
-        out.append((frozenset(g), canonical(key)))
-    return out
+            k = None
+        if k:
+            return canonical(k), True
+        if b is None:
+            b = bonds(symbols, xyz)
+        return _graph_key(symbols, g, b), False
+
+    if len(groups) == 1:
+        k, ok = key_of(groups[0], charge, mult)
+        return [(frozenset(groups[0]), k if ok else complex_key(COMPLEX_KEY, [k]))]
+    odd = [g for g in groups if sum(_electrons(symbols[i]) for i in g) % 2]
+    if charge != 0 or mult != 1:
+        keys = [key_of(g, 0, 2 if g in odd else 1)[0] for g in groups]
+        return [(frozenset(i for g in groups for i in g), complex_key(COMPLEX_OPEN, keys))]
+    out, held, failed = [], [], []
+    for g in groups:
+        if g in odd:
+            held.append((g, key_of(g, 0, 2)[0]))
+            continue
+        k, ok = key_of(g, 0, 1)
+        (out.append((frozenset(g), k)) if ok else failed.append((frozenset(g), complex_key(COMPLEX_KEY, [k]))))
+    if held:
+        out.append((frozenset(i for g, _ in held for i in g), complex_key(COMPLEX_OPEN, [k for _, k in held])))
+    return out + failed
 
 
 def bonds_of(structure) -> set:
@@ -106,8 +163,6 @@ def bonds_of(structure) -> set:
 def split(pa, pb, ba: set, bb: set) -> tuple:
     """A step's reaction from its ends' molecules (`pa`, `pb`: molecule_parts) and bonds (`ba`, `bb`):
     ("ok", reactant keys, product keys, reacting atoms, spectator atom sets) or (why not,)."""
-    if pa is None or pb is None:
-        return ("open_shell_group",)
     changed = set()
     for i, j in ba ^ bb:
         changed |= {i, j}
@@ -133,12 +188,6 @@ def split(pa, pb, ba: set, bb: set) -> tuple:
     if r == p:
         return ("no_reaction",)
     return ("ok", r, p, sorted(react), [atoms for _, atoms in spa])
-
-
-def reaction_key(source, product) -> Optional[tuple]:
-    """(reactant keys, product keys) of the reaction taking box `source` to box `product` (same atoms), or None."""
-    s = split(molecule_parts(source), molecule_parts(product), bonds_of(source), bonds_of(product))
-    return (tuple(s[1]), tuple(s[2])) if s[0] == "ok" else None
 
 
 @dataclass
@@ -232,7 +281,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
         if spectators and ts_info is not None:
             if m not in info_cache:
                 info_cache[m] = ts_info(m)
-            ts, has_ends, verified = info_cache[m]
+            ts, has_ends, verified = info_cache[m][:3]
             if not has_ends:
                 if not verified:
                     count("left_out_whole_box_ts_unchecked")
@@ -256,17 +305,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
         for _, key in parts_of(k):
             A[row, col[key]] += 1
     y0 = y[used.index(0)] if 0 in used else 0.0
-    keep = np.ones(len(used), dtype=bool)
-    G = np.zeros(len(names))
-    for _ in range(4 * len(used) + 1):
-        if len(names):
-            G, *_ = np.linalg.lstsq(A[keep], (y - y0)[keep], rcond=None)
-        resid = (y - y0) - A @ G
-        out_ = [i for i in np.argsort(-resid) if keep[i] and resid[i] > FIT_SLACK_KCAL
-                and all(A[keep & (np.arange(len(used)) != i), c].any() for c in np.nonzero(A[i])[0])]
-        if not out_:
-            break
-        keep[out_[0]] = False
+    G = lowest(A, y - y0)
     resid = (y - y0) - A @ G
     fit_box = dict(zip(used, A @ G))
     for x in found:
@@ -320,8 +359,9 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
                   "step": x["step"], "twin": x["twin"], **({"with_neighbours": True} if x.get("with_neighbours")
                                                           else {})} for x in kept]
     seed = [col[key] for _, key in (parts_of(0) or []) if key in col]
+    counts["complexes"] = sum(1 for key in names if complex_info(key) is not None)
     return MoleculeNetwork(names, np.asarray(G, dtype=float), reactions, seed, counts,
-                           {"boxes": len(used), "left_out_boxes": int((~keep).sum()),
+                           {"boxes": len(used), "above_their_molecules": int((resid > FIT_SLACK_KCAL).sum()),
                             "resid_max_kcal": float(np.abs(resid).max()) if len(resid) else 0.0})
 
 
@@ -432,20 +472,53 @@ def answer_with(net: MoleculeNetwork, c0, temperature: float, time_s: float, mov
     return {net.names[i]: rt * math.log(max(v / total if total > 0 else 0.0, 0.01)) for i, v in made.items()}
 
 
-def boxes_holding(parts: Sequence, molecules: Sequence[int], names: Sequence[str]) -> list:
-    """Indices of the boxes (`parts`: molecule_parts per box, None for none) that hold every molecule of
-    `molecules` (indices into `names`, repeats meaning copies), first found first."""
+def lowest(A: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Each molecule's free energy at its lowest: the largest G (summed) with every box at or above the sum of its
+    molecules', A G <= y (A: molecules per box, y: box free energies), a linear programme. A molecule alone in
+    several boxes (its conformers) takes the lowest of them; boxes above their molecules' sum hold a higher
+    conformer of one of them."""
+    from scipy.optimize import linprog
+
+    if A.size == 0:
+        return np.zeros(A.shape[1])
+    res = linprog(-A.sum(axis=0), A_ub=A, b_ub=y, bounds=[(None, None)] * A.shape[1], method="highs")
+    if res.status != 0:
+        return np.linalg.lstsq(A, y, rcond=None)[0]
+    return np.asarray(res.x, dtype=float)
+
+
+def box_index(parts: Sequence) -> dict:
+    """{molecule key: [(box, how many)]} of the boxes' molecules (`parts`: molecule_parts per box), for
+    boxes_holding: built once per kinetics refresh."""
     from collections import Counter
 
-    want = Counter(names[i] for i in molecules)
-    out = []
+    out: dict = {}
     for k, p in enumerate(parts):
-        if p is None:
-            continue
-        have = Counter(key for _, key in p)
-        if all(have[key] >= n for key, n in want.items()):
-            out.append(k)
+        for key, n in Counter(key for _, key in (p or [])).items():
+            out.setdefault(key, []).append((k, n))
     return out
+
+
+def boxes_holding(parts: Sequence, molecules: Sequence[int], names: Sequence[str], index: Optional[dict] = None) -> list:
+    """Indices of the boxes (`parts`: molecule_parts per box) that hold every molecule of `molecules` (indices into
+    `names`, repeats meaning copies), first found first; `index`: box_index(parts), else built here."""
+    from collections import Counter
+
+    index = box_index(parts) if index is None else index
+    want = Counter(names[i] for i in molecules)
+    sets = [{k for k, n in index.get(key, []) if n >= m} for key, m in want.items()]
+    return sorted(set.intersection(*sets)) if sets else []
+
+
+def one_copy_why(structure, max_atoms: int = MAX_BOX_ATOMS) -> Optional[str]:
+    """Why a system can't start as two copies (seed_box), or None."""
+    if 2 * len(structure.symbols) > int(max_atoms):
+        return f"two copies would hold {2 * len(structure.symbols)} atoms, more than {int(max_atoms)}"
+    if int(structure.charge) != 0:
+        return "it is charged (two copies would need a charge state of their own)"
+    if int(structure.multiplicity) != 1:
+        return "it is open-shell (two copies would need a spin state of their own)"
+    return None
 
 
 def seed_box(structure, exact: bool = False, max_atoms: int = MAX_BOX_ATOMS):
@@ -453,8 +526,7 @@ def seed_box(structure, exact: bool = False, max_atoms: int = MAX_BOX_ATOMS):
     (mixture.place: the given arrangement twice, closest atoms 4.5 A apart), unless `exact`, or the two copies
     would hold more than `max_atoms` atoms, or the given system is charged or open-shell (two copies would need
     a charge and spin state of their own). Returns (structure, copies)."""
-    if exact or 2 * len(structure.symbols) > int(max_atoms) or int(structure.charge) != 0 \
-            or int(structure.multiplicity) != 1:
+    if exact or one_copy_why(structure, max_atoms):
         return structure, 1
     from mepd.discovery.mixture import place
 

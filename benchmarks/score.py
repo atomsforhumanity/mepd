@@ -419,6 +419,10 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
 
     from mepd.discovery.molecules import MoleculeNetwork, simulate
 
+    from collections import Counter
+
+    from mepd.discovery.molecules import complex_info
+
     net = MoleculeNetwork.from_record(mrec)
     chans = sysdef["channels"]
 
@@ -430,8 +434,15 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
     def pid(p):
         return ("iso", _iso(p)) if _has_stereo(p) else ("canon", _canon(p))
 
-    cm = {(n, p): [i for i, k in enumerate(net.names) if matches(k, p, chans[n].get("racemic"))]
-          for n in chans for p in chans[n]["products"]}
+    # what each species holds of the channels' products: a molecule, itself; a complex (molecules kept together,
+    # e.g. methyl formate's CH3 + OCHO radical pair), each of its molecules
+    products = {pid(p): (p, chans[n].get("racemic")) for n in chans for p in chans[n]["products"]}
+    holds = []
+    for key in net.names:
+        info = complex_info(key)
+        inner = info[1] if info else [key]
+        holds.append(Counter(q for k in inner for q, (p, rac) in products.items() if matches(k, p, rac)))
+    cm = {(n, p): [i for i, h in enumerate(holds) if h[pid(p)]] for n in chans for p in chans[n]["products"]}
     reach, grow = set(net.seed), True
     while grow:
         grow = False
@@ -455,12 +466,9 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
     for c, n in enumerate(names):
         for p in chans[n]["products"]:
             A[pidx[pid(p)], c] += 1.0
-    seen = set()
-    for (n, p), idx in cm.items():
-        for i in idx:
-            if (i, pid(p)) not in seen:
-                seen.add((i, pid(p)))
-                b[pidx[pid(p)]] += kin.final[i]
+    for i, h in enumerate(holds):
+        for q, k in h.items():
+            b[pidx[q]] += k * kin.final[i]
     scale = max(float(b.max()) if len(b) else 0.0, 1e-300)
     nv, _ = nnls(A, b / scale) if len(b) else (np.zeros(len(names)), 0.0)
     return {"amounts": {n: float(v * scale) for n, v in zip(names, nv)}, "found": found, "connected": connected,
@@ -675,9 +683,18 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         sp = data.get("species") or []
         live = {s["index"] for s in sp if max(float(s.get("max_concentration", 0.0)), float(s.get("flux", 0.0))) > 1e-30}
 
-        if data.get("molecules") and final.get("molecule_conversion") is not None:
-            # a molecule-level run: each live kinetics carries its molecule network, solved again here
-            mol = molecule_channels(sysdef, data["molecules"])
+        if data.get("molecules") is not None and final.get("molecule_conversion") is not None:
+            # a molecule-level run: each live kinetics carries its molecule network, solved again here (none yet,
+            # or one the solver fails on: nothing found at that time)
+            try:
+                mol = molecule_channels(sysdef, data["molecules"])
+            except Exception:
+                mol = None
+            if mol is None:
+                series.append((t - t0, [None] * len(final_sel), {c: False for c in sysdef["channels"]},
+                               {c: False for c in sysdef["channels"]}, False, False))
+                basis["live"] += 1
+                continue
             found, conn = mol["found"], mol["connected"]
             rec_ok = all(found[c] and conn[c] for c in req)
             sels = []

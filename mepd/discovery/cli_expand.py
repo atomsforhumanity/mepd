@@ -862,13 +862,23 @@ def expand(
         serve(run_inputs.engine)
         typer.echo(f"Model server for {run_inputs.engine!r} started.")
     seed_structure, copies = _load_structure_from_smiles_or_xyz(structure, charge, multiplicity), 1
+    n_copies = n_copies if isinstance(n_copies, int) else 1
+    conc_given = concentration if isinstance(concentration, (int, float)) else 1.0
+    if n_copies not in (1, 2):
+        raise typer.BadParameter("--copies takes 1 or 2")
+    if conc_given <= 0:
+        raise typer.BadParameter("--concentration must be above 0")
+    if steer != "access":
+        asked = [o for o, given in (("--copies", n_copies != 1), ("--exact", exact is True),
+                                    ("--concentration", conc_given != 1.0)) if given]
+        if asked:
+            typer.echo(f"WARNING: {', '.join(asked)} only act with --steer access (here: --steer {steer}); ignored.")
     if steer == "access":
-        from mepd.discovery.molecules import seed_box
+        from mepd.discovery.molecules import one_copy_why, seed_box
 
-        n_copies = n_copies if isinstance(n_copies, int) else 1
-        if n_copies not in (1, 2):
-            raise typer.BadParameter("--copies takes 1 or 2")
         seed_structure, copies = seed_box(seed_structure, exact=exact is True or n_copies == 1)
+        if n_copies == 2 and copies == 1 and exact is not True:
+            typer.echo(f"WARNING: --copies 2: one copy, as {one_copy_why(seed_structure)}.")
         typer.echo(f"Seed box: {'two copies of the given system side by side' if copies == 2 else 'the system as given'}"
                    f" ({len(seed_structure.symbols)} atoms{'; --exact keeps it as given' if copies == 2 else ''}).")
     seed = StructureNode(structure=seed_structure)
@@ -1036,6 +1046,7 @@ def expand(
                          "standard_state": standard_state if isinstance(standard_state, str) else "1M",
                          "mirror_images": mirror_images is not False}
                         if steer in ("flux", "access") else {}),
+                     **({"kinetics": getattr(result, "kinetics_model", "box")} if steer == "access" else {}),
                      **({"copies": copies, "concentration": float(concentration) if isinstance(concentration, (int, float))
                          else 1.0} if steer == "access" else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
@@ -1121,6 +1132,20 @@ def expand(
         except Exception as exc:
             typer.echo(f"Energy refinement failed: {type(exc).__name__}: {exc}")
 
+    mol = (next((r["kinetics"] for r in reversed(result.rounds) if r.get("kinetics")), None) or {}).get("molecules") \
+        if steer == "access" else None
+    if mol and mol.get("names"):
+        # the answer: the molecule-level kinetics' (summary.json's species concentrations are the boxes')
+        seed_keys = {mol["names"][i] for i in mol["seed"]}
+        made = sorted(((c, key) for key, c in zip(mol["names"], mol["final"]) if key not in seed_keys), reverse=True)
+        tot = sum(c for c, _ in made)
+        typer.echo(f"Answer (molecule-level kinetics, {mol['temperature_K']:g} K, {mol['time_s']:g} s; "
+                   f"{100 * mol['conversion']:.3g} % of the seed converted"
+                   + (f"; {mol['counts']['complexes']} complex(es) kept together" if mol["counts"].get("complexes")
+                      else "") + "):")
+        for c, key in made[:8]:
+            if tot > 0 and c / tot >= 0.001:
+                typer.echo(f"  {key}: {100 * c / tot:.3g} % of the converted material ({c:.3g})")
     console.print(f"[bold green]{len(result.species) - 1} new species[/bold green] from "
                   f"{len(result.edges)} proposed reactions ({', '.join(f'{v} {k}' for k, v in sorted(counts.items()))}); "
                   f"{len(result.connections())} distinct reactions to connect{network_note}. Results in {output}/",

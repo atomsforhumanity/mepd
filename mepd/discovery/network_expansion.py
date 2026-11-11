@@ -1714,7 +1714,15 @@ def expand_network(
     live_kin = {"n_steps": -1, "hot": set(), "version": 0}
     # steer="access": the decisions read molecule-level kinetics (mepd.discovery.molecules): what to expand from the
     # molecules' net flux and their encounters' c_max products, the populated boxes from their molecules
-    molecular = steer == "access"
+    # ... except for a QM/MM system or one under restraints: their engines number the whole system's atoms, so no
+    # step is computed on its reacting molecules alone (subsystem) and a protein is no molecule at a concentration
+    boxed = getattr(engine, "region", None) is not None or bool(getattr(engine, "restraints", None))
+    molecular = steer == "access" and not boxed
+    result.kinetics_model = ("molecules" if molecular else "box (QM/MM or restraints)" if steer == "access" and boxed
+                             else "box")
+    if steer == "access" and boxed:
+        _emit(on_event, "warning", message="kinetics: box (QM/MM or restraints): the molecule-level kinetics need "
+                                           "steps computed on their reacting molecules alone")
     mol_cache: dict = {}
     settle_hist: list = []   # (time, product shares) of each live kinetics once the seed's proposals are back
     live_steer = [None]   # schedule async: queues a steering single point (the live kinetics are steered too)
@@ -1833,7 +1841,16 @@ def expand_network(
                 live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
             _show_kinetics(k, basis)
             if schedule == "async" and 0 in expanded:
-                settle_hist.append((time.monotonic(), _product_shares(k.final_concentration, len(result.species))))
+                if molecular:     # the answer the settle rule watches: the molecules' (keys, not box indices)
+                    net, mk = live_kin["molecules"]
+                    seed_keys = {net.names[i] for i in net.seed}
+                    made = {key: float(c) for key, c in zip(net.names, mk.final) if key not in seed_keys}
+                    tot = sum(made.values())
+                    settle_hist.append((time.monotonic(), {key: c / tot for key, c in made.items()
+                                                           if tot > 0 and c / tot >= SETTLE_SHARE / 10}))
+                else:
+                    settle_hist.append((time.monotonic(),
+                                        _product_shares(k.final_concentration, len(result.species))))
             live_kin["n_steps"] = (len(result.steps), live_kin["version"])
             live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         return live_kin["hot"]
@@ -1849,14 +1866,14 @@ def expand_network(
         idx = {key: i for i, key in enumerate(net.names)}
         pop = M.populated(net, mk, tau)
         parts = [_mol_parts(i) for i in range(len(result.species))]
-        seed = sorted(key for _, key in (parts[0] or []))
+        seed = sorted(key for _, key in parts[0])
         # (another box of the seed's own molecules -- a conformer of the seed -- holds nothing the seed doesn't)
         live_kin["hot"] = {0} | {i for i, p in enumerate(parts)
-                                 if p is not None and all(idx.get(key) in pop for _, key in p)
-                                 and sorted(key for _, key in p) != seed}
+                                 if all(idx.get(key) in pop for _, key in p) and sorted(key for _, key in p) != seed}
         want = M.expansion(net, mk, tau)
         items = [((m,), v) for m, v in want["molecules"].items()] + [(pair, v) for pair, v in want["pairs"].items()]
-        live_kin["items"] = [(item, v, M.boxes_holding(parts, item, net.names)) for item, v in items]
+        index = M.box_index(parts)
+        live_kin["items"] = [(item, v, M.boxes_holding(parts, item, net.names, index)) for item, v in items]
         live_kin["molecules"] = (net, mk)
         live_kin["hot_of"] = k
         live_kin["mol_live"] = _molecule_record(net, mk, pop)
@@ -2922,6 +2939,15 @@ def expand_network(
                     pick = next((b for b in boxes if reach(b)), None)
                     if pick is not None:
                         picks.append(pick)
+                        continue
+                    # nothing to run it from: said once per item (the round's "not_probed"), not skipped silently
+                    net = live_kin["molecules"][0]
+                    what = " + ".join(net.names[i] for i in item)
+                    why = "no box holds it" if not boxes else "no box holding it is within reach of the cutoff"
+                    rec = result.rounds[-1].setdefault("not_probed", {})
+                    if rec.get(what) != why:
+                        rec[what] = why
+                        _emit(on_event, "warning", message=f"{what}: to probe, but {why}")
                 return picks
             load = live_kin.get("load", {})
             picks = [k for k in hot if k not in expanded and k not in expanding and reach(k)]
@@ -2976,11 +3002,6 @@ def expand_network(
 
         def _submit_propose(k, gen_opts, batch_state=None) -> None:
             known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
-            if molecular and batch_state is None and gen_obj.propose_batch is not None and "molecules" in live_kin:
-                # the reactions the network has take no slot of the reactor's product cap
-                net = live_kin["molecules"][0]
-                batch_state = {"known_reactions": [[sorted(net.names[i] for i in x["r"]),
-                                                    sorted(net.names[i] for i in x["p"])] for x in net.reactions]}
             batch = int((batch_state or {}).get("batch") or 0)
             label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None and k != 0 else "")
             connect.submit("propose", (k, result.species[k].node.structure, known_smiles, gen_opts, batch_state),
