@@ -199,14 +199,12 @@ export function WelcomeView() {
           ${hero && html`<a href=${`#/network/example/${HERO.slug}`} onClick=${openHero}>Open it ›</a>`}
         </div>
         <div class="land-card-title"><span class="land-serif">Glycine</span><span class="muted">1000 K · 1 min simulated</span>
-          <span class="land-count"><b>400</b> species <b>1543</b> reactions</span></div>
+          <span class="land-count"><b>400</b> species <b>1556</b> reactions</span></div>
         <a class="land-shot" href=${`#/network/example/${HERO.slug}`} onClick=${openHero} aria-label="Open glycine's finished network">
           <img src=${HERO.img} alt="mepd's network view of glycine's finished run: glycine on the left, the species it reaches in columns by reactions from the start, routes drawn by how fast they go, and what forms per glycine on the right" /></a>
-        <p class="land-forms">What forms, per glycine: <b>methylcarbamic acid 0.81</b> · CO₂ + methylamine 0.15 · 0.6 % left as glycine.</p>
-        <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT, 1421 single points) · rates from <b>electronic energies</b>, gas phase.
-          Electronic energies leave out the entropy of splitting in two, worth tens of kcal/mol at 1000 K, so CO₂ + methylamine is badly under-counted:
-          recomputed on free energies from the same network (only the final kinetics), CO₂ + methylamine is 0.93 and methylcarbamic acid almost none. A fresh free-energy run is pending.</p>
-        <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 6 h on 2 workers).</p>
+        <p class="land-forms">What forms, per glycine: <b>CO₂ + methylamine 0.99</b> · the rest (CO + formaldehyde + ammonia, methyl isocyanate + water) under 0.01 · glycine all used up.</p>
+        <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT single points on all 1084 structures) · rates from <b>free energies</b> (1 M), gas phase.</p>
+        <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 2.5 h on 16 workers).</p>
       </div>
     </section>
     ${ex.length > 0 && html`<section class="land-examples" aria-label="Finished networks">

@@ -138,7 +138,7 @@
 .land-shot:hover { border-color: var(--accent); }
 .land-forms { margin: 2px 0 0; font-size: 16px; line-height: 1.45; color: var(--heading); }
 .land-card .land-note { margin: 0; font-size: 14px; }
-.land-method { margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--warn-soft); font-size: 14px; line-height: 1.5; color: var(--text); }
+.land-method { margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--panel-2); font-size: 14px; line-height: 1.5; color: var(--text); }
 .land-method b { color: var(--heading); }
 .land-examples { grid-area: ex; display: flex; align-items: center; gap: 14px; min-width: 0; }
 .land-examples .land-label { color: var(--muted); white-space: nowrap; }

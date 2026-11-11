@@ -1,7 +1,7 @@
 {
  "slug": "glycine-live",
  "title": "Glycine",
- "tag": "Live network \u00b7 heated, 1000 K",
- "blurb": "Glycine alone at 1000 K: 400 species found; most of it becomes methylcarbamic acid, the rest CO2 + methylamine. A 6-hour run on 2 workers, energies from linus DFT (\u03c9B97X-D3BJ/def2-TZVP).",
+ "tag": "Live network · heated, 1000 K",
+ "blurb": "Glycine alone at 1000 K: 400 species found; almost all of it becomes CO2 + methylamine. A 2.5-hour run on 16 workers, rates from free energies with linus DFT (ωB97X-D3BJ/def2-TZVP) on every structure.",
  "kind": "replay"
 }
