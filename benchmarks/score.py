@@ -421,14 +421,14 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
 
     from collections import Counter
 
-    from mepd.discovery.molecules import RADICAL, complex_info, smiles_graph_key
+    from mepd.discovery.molecules import RADICAL, complex_info, radical_graph, smiles_graph_key
 
     net = MoleculeNetwork.from_record(mrec)
     chans = sysdef["channels"]
 
     def matches(key, p, racemic):
-        if key.startswith(RADICAL):     # a radical's key is its bond graph (molecules.radical_key)
-            return key == RADICAL + (smiles_graph_key(p) or "")
+        if key.startswith(RADICAL):     # a radical's key is its bond graph and its stereo (molecules.radical_key)
+            return radical_graph(key) == (smiles_graph_key(p) or "") and not _has_stereo(p)
         if _has_stereo(p):
             return key in {_iso(p)} | ({_iso(p, mirror=True)} if racemic else set())
         return _canon(key) == _canon(p)
@@ -448,7 +448,7 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
         if info:
             whole = [Counter(pid(p) for p in chans[n]["products"]) for n in chans]
             full = [want for want in whole if all(c[q] >= m for q, m in want.items())]
-            c = full[0] if full else Counter()
+            c = sum(full, Counter())        # each channel whose whole product set it holds (charged systems only)
         holds.append(c)
     cm = {(n, p): [i for i, h in enumerate(holds) if h[pid(p)]] for n in chans for p in chans[n]["products"]}
     reach, grow = set(net.seed), True

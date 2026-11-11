@@ -93,33 +93,97 @@ def complex_info(key: str) -> Optional[tuple[str, list]]:
     return reason, rest.split(".") if rest else []
 
 
-def _graph_key(symbols, atoms, bonds) -> str:
-    """A key for a molecule no SMILES can be made of: its formula and a hash of its bond graph."""
-    import hashlib
-    from collections import Counter
+def _graph_mol(symbols, atoms, bonds):
+    """An RDKit molecule of a bond graph alone: every atom explicit (hydrogens too), every bond single, no charges or
+    radicals; and the map from `atoms` to its atom indices."""
+    from rdkit import Chem
 
     atoms = sorted(atoms)
-    nb = {i: sorted(symbols[j] for e in bonds if i in e for j in e if j != i) for i in atoms}
-    lab = {i: symbols[i] + "".join(nb[i]) for i in atoms}
-    for _ in range(3):
-        lab = {i: lab[i] + "(" + ",".join(sorted(lab[j] for e in bonds if i in e for j in e if j != i)) + ")"
-               for i in atoms}
-    formula = "".join(f"{s}{n}" for s, n in sorted(Counter(symbols[i] for i in atoms).items()))
-    return formula + "#" + hashlib.sha1("|".join(sorted(lab.values())).encode()).hexdigest()[:10]
+    idx = {a: k for k, a in enumerate(atoms)}
+    m = Chem.RWMol()
+    for a in atoms:
+        at = Chem.Atom(str(symbols[a]))
+        at.SetNoImplicit(True)
+        m.AddAtom(at)
+    for i, j in bonds:
+        if i in idx and j in idx:
+            m.AddBond(idx[i], idx[j], Chem.BondType.SINGLE)
+    m = m.GetMol()
+    m.UpdatePropertyCache(strict=False)
+    Chem.FastFindRings(m)
+    return m, idx
+
+
+def _graph_key(symbols, atoms, bonds) -> str:
+    """An exact key of a molecule's bond graph: the canonical SMILES of _graph_mol (two graphs share it only when
+    they are the same graph; decalin and bicyclopentyl differ)."""
+    from rdkit import Chem
+
+    m, _ = _graph_mol(symbols, atoms, bonds)
+    return Chem.MolToSmiles(m, canonical=True, allHsExplicit=True)
+
+
+DOUBLE_LIKE = 0.94   # x the covalent radii sum: a bond this short between two trigonal atoms can carry E/Z
+PLANAR_COS = 0.8     # |cos| of its dihedral: planar enough to be cis or trans
+
+
+def _graph_stereo(symbols, atoms, bonds, xyz) -> str:
+    """The stereo of a molecule from its 3D geometry, on its bond graph's canonical ranks (no bond orders, which a
+    radical's geometry doesn't fix): each atom with four neighbours of distinct rank, the sign of their signed
+    volume in rank order; each bond between two trigonal atoms, each with two other neighbours of distinct rank,
+    short (DOUBLE_LIKE) and planar (PLANAR_COS), cis or trans of the two higher-ranked ones. "" when there is none."""
+    from rdkit import Chem
+
+    m, idx = _graph_mol(symbols, atoms, bonds)
+    rank = list(Chem.CanonicalRankAtoms(m, breakTies=False))
+    back = {k: a for a, k in idx.items()}
+    nb = {k: [n.GetIdx() for n in m.GetAtomWithIdx(k).GetNeighbors()] for k in range(m.GetNumAtoms())}
+    table = Chem.GetPeriodicTable()
+    X = lambda k: np.asarray(xyz[back[k]], dtype=float)
+    out = []
+    for k in range(m.GetNumAtoms()):
+        n = nb[k]
+        if len(n) == 4 and len({rank[j] for j in n}) == 4:
+            a, b, c, d = sorted(n, key=lambda j: rank[j])
+            v = np.dot(np.cross(X(b) - X(a), X(c) - X(a)), X(d) - X(a))
+            out.append(f"t{rank[k]}{'+' if v > 0 else '-'}")
+    for bd in m.GetBonds():
+        i, j = bd.GetBeginAtomIdx(), bd.GetEndAtomIdx()
+        oi, oj = [x for x in nb[i] if x != j], [x for x in nb[j] if x != i]
+        if len(nb[i]) != 3 or len(nb[j]) != 3 or len({rank[x] for x in oi}) != 2 or len({rank[x] for x in oj}) != 2:
+            continue
+        rsum = table.GetRcovalent(m.GetAtomWithIdx(i).GetSymbol()) + table.GetRcovalent(m.GetAtomWithIdx(j).GetSymbol())
+        if np.linalg.norm(X(i) - X(j)) > DOUBLE_LIKE * rsum:
+            continue
+        p, q = max(oi, key=lambda x: rank[x]), max(oj, key=lambda x: rank[x])
+        b1, b2, b3 = X(i) - X(p), X(j) - X(i), X(q) - X(j)
+        n1, n2 = np.cross(b1, b2), np.cross(b2, b3)
+        cos = float(np.dot(n1, n2) / max(np.linalg.norm(n1) * np.linalg.norm(n2), 1e-12))
+        if abs(cos) >= PLANAR_COS:
+            lo, hi = sorted((rank[i], rank[j]))
+            out.append(f"b{lo}-{hi}{'c' if cos > 0 else 't'}")
+    return ",".join(sorted(out))
 
 
 RADICAL = "radical:"
 
 
-def radical_key(symbols, atoms, bonds) -> str:
-    """A neutral open-shell molecule's key: its bond graph alone (RADICAL + _graph_key), as no bond orders can be
-    read from its geometry reliably (formyloxy came out [O][CH][O] at every C-O length tried, never [O]C=O)."""
-    return RADICAL + _graph_key(symbols, atoms, bonds)
+def radical_key(symbols, atoms, bonds, xyz=None) -> str:
+    """A neutral open-shell molecule's key: its bond graph (_graph_key, exact) and, with its geometry `xyz`
+    (Angstrom), its stereo on the graph (_graph_stereo: E/Z, and the handedness of a centre); no bond orders, which
+    can't be read from a radical's geometry reliably (formyloxy came out [O][CH][O] at every C-O length tried)."""
+    st = _graph_stereo(symbols, atoms, bonds, xyz) if xyz is not None else ""
+    return RADICAL + _graph_key(symbols, atoms, bonds) + (f"|{st}" if st else "")
+
+
+def radical_graph(key: str) -> str:
+    """A radical key's bond graph part (without its stereo)."""
+    return key[len(RADICAL):].split("|", 1)[0] if key.startswith(RADICAL) else key
 
 
 def smiles_graph_key(smiles: str) -> Optional[str]:
-    """The graph key (_graph_key) of a SMILES' molecule, hydrogens added: what a geometry's radical_key is for it
-    (a channel's radical product matched without bond orders); None if it can't be read."""
+    """The graph key (_graph_key) of a SMILES' molecule, hydrogens added: what a geometry's radical_key is for it,
+    without stereo (a channel's radical product matched without bond orders); None if it can't be read."""
     from rdkit import Chem, RDLogger
 
     RDLogger.DisableLog("rdApp.*")
@@ -152,7 +216,7 @@ def molecule_parts(structure) -> list[tuple[frozenset, str]]:
 
     def key_of(g, q, m):
         if q == 0 and odd(g):
-            return radical_key(symbols, g, b), True
+            return radical_key(symbols, g, b, xyz), True
         try:
             k = molecule_key(_sub(structure, g, q, m))
         except Exception:
@@ -326,7 +390,8 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
         for _, key in parts_of(k):
             A[row, col[key]] += 1
     y0 = y[used.index(0)] if 0 in used else 0.0
-    G = lowest(A, y - y0)
+    fit_info: dict = {}
+    G = lowest(A, y - y0, fit_info)
     resid = (y - y0) - A @ G
     fit_box = dict(zip(used, A @ G))
     for x in found:
@@ -383,6 +448,9 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
     counts["complexes"] = sum(1 for key in names if complex_info(key) is not None)
     return MoleculeNetwork(names, np.asarray(G, dtype=float), reactions, seed, counts,
                            {"boxes": len(used), "above_their_molecules": int((resid > FIT_SLACK_KCAL).sum()),
+                            **({"fallback": "the fit's second stage failed its checks: the LP vertex, which "
+                                            "depends on the order of boxes and molecules"}
+                               if fit_info.get("fallback") else {}),
                             "resid_max_kcal": float(np.abs(resid).max()) if len(resid) else 0.0})
 
 
@@ -493,14 +561,19 @@ def answer_with(net: MoleculeNetwork, c0, temperature: float, time_s: float, mov
     return {net.names[i]: rt * math.log(max(v / total if total > 0 else 0.0, 0.01)) for i, v in made.items()}
 
 
-def lowest(A: np.ndarray, y: np.ndarray) -> np.ndarray:
+def lowest(A: np.ndarray, y: np.ndarray, info: Optional[dict] = None) -> np.ndarray:
     """Each molecule's free energy at its lowest: the largest G (summed over the boxes) with every box at or above
     the sum of its molecules', A G <= y (A: molecules per box, y: box free energies), a linear programme; then,
     among its optima (many when the boxes don't pin every molecule down), the one whose boxes lie closest to
     their own free energies (least squares on y - A G, strictly convex in A G): so the fitted boxes, and every
     reaction free energy, don't depend on the order of the boxes or molecules. G itself is fixed up to the
-    directions A d = 0, which no reaction sees; the smallest such G is returned."""
-    from scipy.optimize import linprog, minimize
+    directions A d = 0, which no reaction sees; the smallest such G is returned.
+    The optimal face is narrowed first: a box whose LP dual is positive is tight at every optimum (complementary
+    slackness), so G = G0 + Z t over the null space Z of those boxes' rows; every such point within the other boxes
+    is an optimum, and the least squares on t alone (most often none or a few directions) is solved exactly as a
+    least distance programme (NNLS). `info` (a dict): "fallback" set True when that second stage fails its
+    checks and the LP vertex (which depends on the order) is returned instead."""
+    from scipy.optimize import linprog
 
     n = A.shape[1]
     if A.size == 0:
@@ -508,19 +581,69 @@ def lowest(A: np.ndarray, y: np.ndarray) -> np.ndarray:
     w = A.sum(axis=0)
     res = linprog(-w, A_ub=A, b_ub=y, bounds=[(None, None)] * n, method="highs")
     if res.status != 0:
+        if info is not None:
+            info["fallback"] = True
         return np.linalg.lstsq(A, y, rcond=None)[0]
     best = float(w @ res.x)
-    # the optimal face: A G <= y, w.G >= best; the point of it with y - A G smallest (A G unique), G minimal-norm
-    tol = 1e-9 * max(1.0, abs(best))
-    cons = [{"type": "ineq", "fun": lambda g: y - A @ g, "jac": lambda g: -A},
-            {"type": "ineq", "fun": lambda g: np.array([w @ g - best + tol]), "jac": lambda g: w[None, :]}]
-    f = lambda g: float(np.sum((y - A @ g) ** 2) + 1e-9 * g @ g)
-    jac = lambda g: -2.0 * A.T @ (y - A @ g) + 2e-9 * g
-    sol = minimize(f, res.x, jac=jac, constraints=cons, method="SLSQP", options={"ftol": 1e-14, "maxiter": 500})
-    # (SLSQP may report its line search stalling at the optimum: what counts is that the point is on the face)
-    ok = np.all(A @ sol.x <= y + 1e-6) and w @ sol.x >= best - 1e-6
-    g = sol.x if ok and f(sol.x) <= f(res.x) + 1e-12 else res.x
-    return np.asarray(g, dtype=float)
+    scale = max(1.0, float(np.abs(y).max()))
+    dual = -np.asarray(res.ineqlin.marginals, dtype=float)
+    tight = dual > 1e-9 * max(1.0, float(dual.max(initial=0.0)))
+    G0 = np.asarray(res.x, dtype=float)
+    Z = _null_space(A[tight]) if tight.any() else np.eye(n)
+    if Z.shape[1]:      # only the directions that move some box
+        from scipy.linalg import qr
+
+        Q, R, _ = qr(A @ Z, mode="economic", pivoting=True)
+        r = int(np.sum(np.abs(np.diag(R)) > 1e-9 * max(1.0, float(np.abs(R).max(initial=0.0)))))
+        # a basis of the directions of Z that A sees: Z's components along A Z's range, made orthonormal
+        Z = np.linalg.qr(Z @ np.linalg.lstsq(A @ Z, Q[:, :r], rcond=None)[0])[0] if r else Z[:, :0]
+    g = G0
+    if Z.shape[1]:
+        # min |s0 - B t|^2 with B t <= s0 (every point of this face is an LP optimum: complementary slackness with
+        # the same duals), exactly: Lawson & Hanson's least distance programming by NNLS (Solving Least Squares
+        # Problems, 1974, ch. 23), B = Q R of full column rank
+        from scipy.optimize import nnls
+
+        B, s0 = A @ Z, y - A @ G0
+        B[np.abs(B) < 1e-12] = 0.0
+        s0[np.abs(s0) < 1e-10 * scale] = 0.0
+        Q, R = np.linalg.qr(B)
+        d1 = Q.T @ s0
+        Rinv = np.linalg.inv(R)
+        Gc, h = -B @ Rinv, -s0 - (-B @ Rinv) @ d1                 # constraints G u >= h on u = R t - d1
+        clean = lambda v: np.where(np.abs(v) < 1e-10 * scale, 0.0, v)   # rounding noise sends NNLS to 1e15
+        Gc, h = clean(Gc), clean(h)
+        E = np.vstack([Gc.T, h[None, :]])
+        f = np.zeros(E.shape[0])
+        f[-1] = 1.0
+        try:
+            z, _ = nnls(E, f, maxiter=50 * E.shape[1])
+            r = E @ z - f
+            ok = abs(r[-1]) > 1e-12
+        except Exception:       # (scipy's NNLS can stop at its iteration limit)
+            ok = False
+        if ok:
+            u = -r[:-1] / r[-1]
+            g = G0 + Z @ (Rinv @ (u + d1))
+            ok = bool(np.all(A @ g <= y + 1e-6 * scale) and w @ g >= best - 1e-6 * scale)
+        if not ok:
+            if info is not None:
+                info["fallback"] = True
+            return G0
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.linalg import lsqr
+
+    # the smallest G with these boxes (min-norm over A d = 0; LSQR from 0 converges to it)
+    return lsqr(csr_matrix(A), A @ g, atol=1e-14, btol=1e-14, iter_lim=20 * max(A.shape))[0]
+
+
+def _null_space(M: np.ndarray) -> np.ndarray:
+    """An orthonormal basis of M's null space (columns), from a pivoted QR of M^T."""
+    from scipy.linalg import qr
+
+    Q, R, _ = qr(M.T, mode="full", pivoting=True)
+    r = int(np.sum(np.abs(np.diag(R)) > 1e-9 * max(1.0, float(np.abs(R).max(initial=0.0)))))
+    return Q[:, r:]
 
 
 def box_index(parts: Sequence) -> dict:

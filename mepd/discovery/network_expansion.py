@@ -1799,6 +1799,8 @@ def expand_network(
         kin["concentration"] each (the standard state's units) per copy of the given system (kin["copies"])."""
         from mepd.discovery import molecules as M
 
+        if live_kin.get("view", (None,))[0] is k:      # one build per box kinetics
+            return live_kin["view"][1]
         all_steps, all_energies, rec = k.extended
         rec = rec or {}
 
@@ -1812,7 +1814,13 @@ def expand_network(
                       [v["mirror_of"] for v in rec.get("virtual_species", [])],
                       [t["step"] for t in rec.get("added_twins", [])], rec.get("found_twins", []), ts_info)
         c0 = net.c0(float(kin.get("concentration", 1.0)), int(kin.get("copies", 1)))
-        return net, M.simulate(net, c0, kin["temperature"], kin["time_s"])
+        view = net, M.simulate(net, c0, kin["temperature"], kin["time_s"])
+        live_kin["view"] = (k, view)
+        if net.fit.get("fallback") and not live_kin.get("fit_warned"):
+            live_kin["fit_warned"] = True
+            _emit(on_event, "warning", message=f"molecule free energies: {net.fit['fallback']} (said once; "
+                                               "kinetics.molecules.fit records each time)")
+        return view
 
     def _live_hot(final: bool = False) -> set:
         """The species populated (max concentration or flux >= threshold) in the kinetics of the network

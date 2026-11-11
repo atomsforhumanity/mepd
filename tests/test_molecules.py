@@ -335,7 +335,7 @@ def test_a_molecule_without_a_key_is_a_complex_of_its_own_with_its_reason(monkey
 
     monkeypatch.setattr(mixture, "molecule_key", lambda s: (_ for _ in ()).throw(ValueError("no key")))
     ((_, key),) = M.molecule_parts(_box(N2))
-    assert M.complex_info(key)[0] == M.COMPLEX_KEY and M.complex_info(key)[1][0].startswith("N2#")
+    assert M.complex_info(key)[0] == M.COMPLEX_KEY and M.complex_info(key)[1][0] == "[N][N]"
 
 
 def test_the_scoreboard_finds_a_radical_channel_from_real_geometries_and_never_from_part_of_one():
@@ -418,3 +418,70 @@ def _ri():
     ri = RunInputs()
     ri.engine = _ShiftEngine()
     return ri
+
+
+def _embedded(smiles, seed=3):
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    m = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(m, randomSeed=seed)
+    AllChem.MMFFOptimizeMolecule(m) if AllChem.MMFFHasAllMoleculeParams(m) else AllChem.UFFOptimizeMolecule(m)
+    x = m.GetConformer().GetPositions()
+    unpaired = sum(a.GetNumRadicalElectrons() for a in m.GetAtoms())
+    return Structure(symbols=[a.GetSymbol() for a in m.GetAtoms()], geometry=x * A2B, charge=0,
+                     multiplicity=1 + unpaired)
+
+
+def test_a_radical_s_key_carries_its_stereo():
+    # E- and Z-crotyl, from real geometries: two species; each the same key from another embedding
+    e1, e2 = (M.molecule_parts(_embedded("C/C=C/[CH2]", s))[0][1] for s in (3, 11))
+    z1 = M.molecule_parts(_embedded("C/C=C\\[CH2]"))[0][1]
+    assert e1 == e2 and e1 != z1 and M.radical_graph(e1) == M.radical_graph(z1)
+    # a chiral radical's two enantiomers
+    r = M.molecule_parts(_embedded("C[C@H](Cl)[CH2]"))[0][1]
+    s = M.molecule_parts(_embedded("C[C@@H](Cl)[CH2]"))[0][1]
+    assert r != s and M.radical_graph(r) == M.radical_graph(s)
+
+
+def test_graph_keys_are_exact():
+    assert M.smiles_graph_key("C1CCC2CCCCC2C1") != M.smiles_graph_key("C1CCC(C1)C1CCCC1")      # decalin, bicyclopentyl
+    assert M.smiles_graph_key("CC(C)CCC") != M.smiles_graph_key("CCC(C)CC")                     # a methyl moved along
+
+
+def test_the_fit_is_exact_fast_and_says_when_it_falls_back(monkeypatch):
+    import time
+
+    import scipy.optimize
+
+    rng = np.random.default_rng(1)
+    A = np.zeros((1200, 600))
+    for r in range(1200):
+        A[r, rng.choice(600, size=rng.integers(1, 4), replace=False)] = 1
+    y = A @ rng.normal(0, 20, 600) + rng.normal(0, 2, 1200)
+    M.lowest(A[:10], y[:10])                                   # (imports)
+    t0 = time.monotonic()
+    g = M.lowest(A, y)
+    assert time.monotonic() - t0 < 2.0                         # (< 1 s on the reference machine; slack for load)
+    s = y - A @ g
+    assert s.min() > -1e-8
+    # its point: the LP's total slack, and no feasible point of that face closer to the boxes (a random direction
+    # along the face never lowers |s|^2)
+    perm = rng.permutation(1200)
+    g2 = M.lowest(A[perm], y[perm])
+    assert np.allclose(A @ g, A @ g2, atol=1e-6)
+    # forced to fail: the LP vertex, said
+    def broken(*a, **k):
+        raise RuntimeError("iteration limit")
+
+    monkeypatch.setattr(scipy.optimize, "nnls", broken)
+    info = {}
+    A4 = np.array([[1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1], [1, 0, 0, 1]], dtype=float)
+    M.lowest(A4, np.array([0.0, 5.0, 3.0, 2.0]), info)
+    assert info.get("fallback") is True
+    boxes = [[((0, 1), "A"), ((2,), "B")], [((0, 1), "A="), ((2,), "B")], [((0, 1), "A="), ((2,), "B=")],
+             [((0, 1), "A"), ((2,), "B=")]]
+    parts, bonds = _parts_net(boxes)
+    steps = [Step(a, b, 9.0 / H, f"s{a}{b}", {}) for a, b in ((0, 1), (0, 3), (1, 2), (3, 2))]
+    net = M.build(4, parts, bonds, steps, [0.0, 5.0 / H, 3.0 / H, 2.0 / H], ts_info=lambda m: (None, True, True))
+    assert "fallback" in net.fit and "fallback" in net.record()["fit"]
