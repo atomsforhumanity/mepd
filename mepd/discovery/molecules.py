@@ -355,8 +355,11 @@ def simulate(net: MoleculeNetwork, c0, temperature: float, time_s: float,
     res = mk_simulate(mk, c0, temperature, time_s)
     kf, kr = mk.rate_constants(temperature)
     r = np.array([np.subtract(*_rates(c, kf, kr, mk.steps)) for c in res.c])     # [time, step]
-    integral = np.trapezoid(np.abs(r), res.times, axis=0) if hasattr(np, "trapezoid") else \
-        np.trapz(np.abs(r), res.times, axis=0)
+    trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    # |the integrated net rate| (the solver's own extent: exact) plus what the net rate's sign changes add, read off
+    # the output times (zero when a step runs one way throughout)
+    integral = np.abs(res.extent) + np.maximum(trapz(np.abs(r), res.times, axis=0)
+                                               - np.abs(trapz(r, res.times, axis=0)), 0.0)
     gross = np.zeros((len(net.names), len(mk.steps)))
     for j, st in enumerate(mk.steps):
         for i in st.reactants:
@@ -372,9 +375,10 @@ def simulate(net: MoleculeNetwork, c0, temperature: float, time_s: float,
     return MoleculeKinetics(final, np.asarray(res.c).max(axis=0), flux, conv, total0)
 
 
-def expansion(net: MoleculeNetwork, kin: MoleculeKinetics, tau: float, floor: float = FLOOR) -> dict:
+def expansion(net: MoleculeNetwork, kin: MoleculeKinetics, tau: float, floor: Optional[float] = None) -> dict:
     """What to probe next: {"molecules": {i: net flux fraction}, "pairs": {(i, j): c_max product}} (fractions
     of the starting amount), each at least tau x conversion and the floor; the seed's molecules always."""
+    floor = FLOOR if floor is None else float(floor)
     total = max(kin.total0, 1e-300)
     x = max(kin.conversion, floor)
     seed = set(net.seed)
@@ -390,8 +394,9 @@ def expansion(net: MoleculeNetwork, kin: MoleculeKinetics, tau: float, floor: fl
     return {"molecules": uni, "pairs": pairs, "conversion": float(kin.conversion)}
 
 
-def populated(net: MoleculeNetwork, kin: MoleculeKinetics, tau: float, floor: float = FLOOR) -> set:
+def populated(net: MoleculeNetwork, kin: MoleculeKinetics, tau: float, floor: Optional[float] = None) -> set:
     """Molecules holding material: c_max or net flux at least tau x conversion (and the floor), the seed's."""
+    floor = FLOOR if floor is None else float(floor)
     total = max(kin.total0, 1e-300)
     x = max(kin.conversion, floor)
     lim = max(tau * x, floor)

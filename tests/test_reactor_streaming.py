@@ -23,7 +23,7 @@ def _batched(log, connector, converge_after=3):
     hcn = _hcn_reactor([])
 
     def batch(structure, *, max_products, options, state=None):
-        st = dict(state or {"batch": 0, "proposed": [], "seen": 0})
+        st = {"batch": 0, "proposed": [], "seen": 0, **(state or {})}   # (a first state may carry known_reactions)
         b = st["batch"]
         on = _h_on(structure)
         log.append({"species": "HCN" if on == "C" else "HNC", "batch": b, "seen": st["seen"],

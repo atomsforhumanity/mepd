@@ -107,6 +107,21 @@ HARNESS = {
 SUITE_SOURCE = "benchmarks/systems.yaml"
 
 
+def _concentration(c: dict) -> float:
+    """Each reactant's starting concentration in the standard state's units, for the molecule-level kinetics
+    (discovery expand --concentration): a gas (1atm) at mole fraction x (a range: its midpoint) and the score
+    pressure P is x P atm; a solution, its concentration_M; neither given: 1 (the explorer's default)."""
+    if c.get("standard_state") == "1atm" and c.get("reactant_mole_fraction") is not None:
+        x = c["reactant_mole_fraction"]
+        x = sum(map(float, x)) / len(x) if isinstance(x, list) else float(x)
+        p = c.get("pressure_atm")
+        p = float(p["score"]) if isinstance(p, dict) else float(p or 1.0)
+        return x * p
+    if c.get("concentration_M") is not None:
+        return float(c["concentration_M"])
+    return 1.0
+
+
 def load_systems(fp: Path | None = None) -> dict:
     """The suite: the curator's benchmarks/systems.yaml (schema_version 1) plus HARNESS, as
     {id: {seed, profile, charge, multiplicity, conditions{temperature_K, time_s, standard_state},
@@ -133,7 +148,8 @@ def load_systems(fp: Path | None = None) -> dict:
                     "conditions": {"temperature_K": float(c["score_temperature_K"]),
                                    "time_s": float(c["score_time_s"] if c.get("score_time_s") is not None
                                                    else HARNESS[sid]["time_s"]),
-                                   "standard_state": c["standard_state"]},
+                                   "standard_state": c["standard_state"],
+                                   "concentration": _concentration(c)},
                     # a side channel of other reactants (F0007's Cp dimerization) can't form from the seed: not scored
                     "channels": {k: {"products": v["products"], "racemic": bool(v.get("racemic"))}
                                  for k, v in sd["channels"].items() if not v.get("reactants")},
@@ -386,6 +402,71 @@ def first_passage_amounts(summary: dict, channel_set: set, only_steps: set | Non
     return {"how": how, "absorbing": run(set(channel_set)), "as_run": run(set()) if as_run else None}
 
 
+def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
+    """The scored quantities of a molecule-level kinetics record (summary.json rounds[-1].kinetics.molecules, or
+    the live kinetics' "molecules"; mepd.discovery.molecules): {"amounts": {channel: first-passage amount},
+    "found": {channel: bool}, "connected": {channel: bool}}. First passage as for the boxes: every channel product
+    molecule absorbing (1 Hartree deeper), the network solved again from the record's c0 at its temperature and
+    time. A channel's amount: the non-negative least-squares split of the product molecules' amounts into the
+    channels' product sets (a molecule two channels make is not counted twice); a product with stereo is matched
+    by stereo SMILES (or its mirror image's, when racemic), else by connectivity. Found: every product of the
+    channel is a molecule of the network; connected: each is reached from the seed's molecules through its
+    reactions (either way). None without a record."""
+    if not mrec or not mrec.get("names"):
+        return None
+    import numpy as np
+    from scipy.optimize import nnls
+
+    from mepd.discovery.molecules import MoleculeNetwork, simulate
+
+    net = MoleculeNetwork.from_record(mrec)
+    chans = sysdef["channels"]
+
+    def matches(key, p, racemic):
+        if _has_stereo(p):
+            return key in {_iso(p)} | ({_iso(p, mirror=True)} if racemic else set())
+        return _canon(key) == _canon(p)
+
+    def pid(p):
+        return ("iso", _iso(p)) if _has_stereo(p) else ("canon", _canon(p))
+
+    cm = {(n, p): [i for i, k in enumerate(net.names) if matches(k, p, chans[n].get("racemic"))]
+          for n in chans for p in chans[n]["products"]}
+    reach, grow = set(net.seed), True
+    while grow:
+        grow = False
+        for x in net.reactions:
+            for a, b in ((x["r"], x["p"]), (x["p"], x["r"])):
+                if set(a) <= reach and not set(b) <= reach:
+                    reach |= set(b)
+                    grow = True
+    found = {n: all(cm[(n, p)] for p in chans[n]["products"]) for n in chans}
+    connected = {n: found[n] and all(any(i in reach for i in cm[(n, p)]) for p in chans[n]["products"]) for n in chans}
+    absorbing = sorted({i for v in cm.values() for i in v} - set(net.seed))
+    kin = simulate(net, np.asarray(mrec["c0"], dtype=float), float(mrec["temperature_K"]), float(mrec["time_s"]),
+                   absorbing)
+    pidx: dict = {}
+    for n in chans:
+        for p in chans[n]["products"]:
+            pidx.setdefault(pid(p), len(pidx))
+    names = list(chans)
+    A = np.zeros((len(pidx), len(names)))
+    b = np.zeros(len(pidx))
+    for c, n in enumerate(names):
+        for p in chans[n]["products"]:
+            A[pidx[pid(p)], c] += 1.0
+    seen = set()
+    for (n, p), idx in cm.items():
+        for i in idx:
+            if (i, pid(p)) not in seen:
+                seen.add((i, pid(p)))
+                b[pidx[pid(p)]] += kin.final[i]
+    scale = max(float(b.max()) if len(b) else 0.0, 1e-300)
+    nv, _ = nnls(A, b / scale) if len(b) else (np.zeros(len(names)), 0.0)
+    return {"amounts": {n: float(v * scale) for n, v in zip(names, nv)}, "found": found, "connected": connected,
+            "conversion": float(kin.conversion)}
+
+
 def partial_steps(summary: dict, labels: set) -> set:
     """The final summary's step indices a partial network had (by label), with the mirror-image twin of each:
     a pair the final record lists as found twins (mirror_images.found_twins) had a virtual twin in the live
@@ -594,6 +675,21 @@ def settle(sysdef: dict, run_dir: Path, snap_dir: Path, summary: dict, final: di
         sp = data.get("species") or []
         live = {s["index"] for s in sp if max(float(s.get("max_concentration", 0.0)), float(s.get("flux", 0.0))) > 1e-30}
 
+        if data.get("molecules") and final.get("molecule_conversion") is not None:
+            # a molecule-level run: each live kinetics carries its molecule network, solved again here
+            mol = molecule_channels(sysdef, data["molecules"])
+            found, conn = mol["found"], mol["connected"]
+            rec_ok = all(found[c] and conn[c] for c in req)
+            sels = []
+            for tg in sysdef["targets"]:
+                a = sum(mol["amounts"][c] for c in tg["num"])
+                b = sum(mol["amounts"][c] for c in tg["den"])
+                sels.append(a / b if b > 0 else (math.inf if a > 0 else None))
+            sels_p = sels
+            basis["live"] += 1
+            ok = rec_ok and all(_within(x, f, temp) for x, f in zip(sels, final_sel))
+            series.append((t - t0, sels, found, conn, ok, ok))
+            continue
         chans = channel_species(sysdef, [s.get("smiles") or "" for s in sp], species_file)
         chan_set = {k for ks in chans.values() for k in ks}
         reach = reach_at(t)
@@ -921,13 +1017,28 @@ def score_run(sysdef: dict, run_dir: Path, result: dict | None = None, snap_dir:
                         "error_final_amounts_kcal": error_kcal(sel_f, lo, hi, temp) if amounts else None,
                         # |RT ln| between the rebuilt kinetics (not absorbing) and the run's recorded final ratio
                         "rebuild_check_kcal": check})
+    mol = molecule_channels(sysdef, ((s.get("rounds") or [{}])[-1].get("kinetics") or {}).get("molecules"))
+    if mol is not None:
+        # a molecule-level run (mepd.discovery.molecules): its answer is the molecules' first passage; the boxes'
+        # stay beside it (box_*). A box of several copies never is exactly a channel's product set.
+        rec = {**rec, "box_found": rec["found"], "box_connected": rec["connected"], "found": mol["found"],
+               "connected": mol["connected"]}
+        for j, (t, x) in enumerate(zip(sysdef["targets"], targets)):
+            a = sum(mol["amounts"][c] for c in t["num"])
+            b = sum(mol["amounts"][c] for c in t["den"])
+            sel = a / b if b > 0 else (math.inf if a > 0 else None)
+            lo, hi = t["range"]
+            x.update({"box_selectivity": x["selectivity"], "box_error_kcal": x["error_kcal"], "selectivity": sel,
+                      "num_amount": a, "den_amount": b, "error_kcal": error_kcal(sel, lo, hi, temp)})
     errs = [x["error_kcal"] for x in targets]
     worst = None if any(e is None for e in errs) or not errs else max(errs, key=abs)
     errs_f = [x["error_final_amounts_kcal"] for x in targets]
     worst_f = None if any(e is None for e in errs_f) or not errs_f else max(errs_f, key=abs)
     kin = (s.get("rounds") or [{}])[-1]
     out = {"species": len(sp), "steps": len(steps), "recall": rec,
-           "selectivity_measure": "first passage (channel products absorbing)",
+           "selectivity_measure": "first passage (channel products absorbing)"
+                                  + ("; molecule-level kinetics" if mol is not None else ""),
+           **({"molecule_conversion": mol["conversion"]} if mol is not None else {}),
            "first_passage_from": (fp or {}).get("how") if fp_ok else None,
            "first_passage_error": (fp or {}).get("error") if fp and not fp_ok else None,
            "required": req, "full_recall": all(rec["found"][c] and rec["connected"][c] for c in req),

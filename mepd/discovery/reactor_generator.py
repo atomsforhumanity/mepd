@@ -309,13 +309,14 @@ def reactor_products(structure, *, max_products: int = 20, temperature: float = 
     # the products the seed reached most often first (fewest steps, most often), then the earliest
     count = Counter(k for r in runs for k, *_ in r["keys"])
     pooled = sorted((-first[k], -count[k], f, s, k, x) for s, r in enumerate(runs) for f, k, x in r["states"])
-    out, seen = [], set()
+    out, seen, new = [], set(), _new_reaction(structure, ())
     for *_, key, x in pooled:
         if key in seen:
             continue
         seen.add(key)
-        if len(out) < int(max_products):
-            out.append(structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR}))
+        product = structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR})
+        if len(out) < int(max_products) and new(product):
+            out.append(product)
     _report_end(len(out), len(runs), sum(r["events"] for r in runs), sum(r["torn"] for r in runs), time_ps,
                 temperature, errors)
     return out
@@ -334,8 +335,8 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
     The batches, their seeds, the convergence rule and the cap of `max_products` in all are
     reactor_products'; only the pooled ordering across batches is not (each batch's products go out
     as it ends, so a later batch's more frequent product can't come before an earlier one's)."""
-    st = dict(state or {"batch": 0, "first": {}, "count": {}, "states": [], "proposed": [], "runs": 0,
-                        "events": 0, "torn": 0, "errors": []})
+    st = {"batch": 0, "first": {}, "count": {}, "states": [], "proposed": [], "runs": 0, "events": 0, "torn": 0,
+          "errors": [], "reactions": [], **(state or {})}
     width = max(1, int(parallel) or available_cpus())
     n = max(1, int(n_seeds) or width)
     options = _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs, k, intra_hops, workdir,
@@ -349,15 +350,22 @@ def reactor_batch(structure, state: Optional[dict] = None, *, max_products: int 
     done = converged or batch + 1 >= max(1, int(max_batches))
     proposed = list(st["proposed"])
     taken = set(proposed)
+    reactions = [tuple(map(tuple, r)) for r in st["reactions"]]
+    new = _new_reaction(structure, [tuple(map(tuple, r)) for r in st.get("known_reactions") or ()] + reactions)
     pooled = sorted((-first[k], -count[k], f, s, k, x) for s, r in enumerate(runs) for f, k, x in r["states"])
     out = []
     for *_, key, x in pooled:
         if key in taken or len(proposed) >= int(max_products):
             continue
         taken.add(key)
+        product = structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR})
+        if not new(product):
+            continue
         proposed.append(key)
-        out.append(structure.model_copy(update={"geometry": np.asarray(x) * ANGSTROM_TO_BOHR}))
+        out.append(product)
+    reactions = [list(map(list, r)) for r in new.seen]
     st.update(batch=batch + 1, first=dict(first), count=dict(count), states=sorted(states), proposed=proposed,
+              reactions=reactions,
               runs=st["runs"] + len(runs), events=st["events"] + sum(r["events"] for r in runs),
               torn=st["torn"] + sum(r["torn"] for r in runs), errors=list(st["errors"]) + errors)
     if done:
@@ -373,6 +381,43 @@ def _md_options(temperature, time_ps, compress, period_ps, duty, pull_fs, gap_fs
                 period_ps=float(period_ps), duty=float(duty), pull_fs=float(pull_fs), gap_fs=float(gap_fs),
                 k=float(k), intra_hops=int(intra_hops), workdir=str(workdir or ""), md_method=str(md_method),
                 md_server=md_server, forces=",".join(forces_of(forces)), anchors=parse_anchors(anchors))
+
+
+def _new_reaction(structure, known) -> "callable":
+    """A test of whether a product of `structure` is a molecule-level reaction (its reacting molecules, spectators
+    out: molecules.reaction_key) not in `known` nor proposed before through this test: two states of a box of
+    several molecules that are one reaction (the same adduct beside different spectators) take one slot of the
+    product cap, and a reaction the network has already takes none. A product whose reaction can't be read (an
+    open-shell group of molecules, or none at all) always counts as new. `.seen`: the reactions taken, `known`'s
+    first."""
+    from mepd.discovery.molecules import bonds_of, molecule_parts, split
+
+    def read(s):
+        try:
+            return molecule_parts(s), bonds_of(s)
+        except Exception:
+            return None, None
+
+    src = read(structure)
+    seen = list(known)
+    have = {r for r in seen} | {(r[1], r[0]) for r in seen}
+
+    def new(product) -> bool:
+        parts, bonds = read(product)
+        if src[0] is None or parts is None:
+            return True
+        s = split(src[0], parts, src[1], bonds)
+        if s[0] != "ok":
+            return True
+        key = (tuple(s[1]), tuple(s[2]))
+        if key in have:
+            return False
+        have.update({key, key[::-1]})
+        seen.append(key)
+        return True
+
+    new.seen = seen
+    return new
 
 
 def _run_batch(structure, batch: int, n: int, width: int, max_products, seed, options) -> tuple:

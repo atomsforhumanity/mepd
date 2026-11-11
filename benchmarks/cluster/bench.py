@@ -84,12 +84,24 @@ def _config(spec: str) -> tuple[str, list]:
     return name, list(CONFIGS[name])
 
 
-def system_argv(name: str, sysdef: dict, budget: float) -> list:
+def system_argv(name: str, sysdef: dict, budget: float, concentration: bool = False) -> list:
+    """`concentration`: the code has --concentration (molecule-level kinetics): the system's starting
+    concentration (score._concentration) is passed."""
     c = sysdef["conditions"]
     return ["--charge", str(sysdef.get("charge", 0)), "--multiplicity", str(sysdef.get("multiplicity", 1)), *COMMON,
             "--inputs", "{RUN_DIR}/inputs/" + Path(sysdef["profile"]).name, "--standard-state", c["standard_state"],
             "--cutoff-temperature", f"{c['temperature_K']:g}", "--cutoff-time", f"{c['time_s']:g}",
-            "--temperature", f"{c['temperature_K']:g}", "--time", f"{c['time_s']:g}", "--time-budget", f"{budget:g}"]
+            "--temperature", f"{c['temperature_K']:g}", "--time", f"{c['time_s']:g}", "--time-budget", f"{budget:g}",
+            *(["--concentration", f"{c['concentration']:g}"] if concentration and c.get("concentration") is not None
+              else [])]
+
+
+def _has_concentration(commit: str) -> bool:
+    """Whether `commit`'s discovery expand takes --concentration."""
+    try:
+        return '"--concentration"' in _git("show", f"{commit}:mepd/discovery/cli_expand.py")
+    except subprocess.CalledProcessError:
+        return False
 
 
 def with_config(argv: list, cargs: list) -> list:
@@ -154,12 +166,14 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
                  for r in range(g_reps or replicates) for name in g_systems for c in g_configs]
     # more replicates of an earlier run: numbered (and seeded, 1000 x r) from first_replicate on
     order = [(r + first_replicate, name, c, g) for r, name, c, g in order]
+    conc = {c: _has_concentration(c) for c in {sha, *shas.values()}}
     for r, name, (cname, cargs), g_commit in order:
         seeds, sargs = seed_argv(r)
         tasks.append({"id": f"{name}-{cname}-r{r}", "system": name, "config": cname, "replicate": r,
                       "seeds": seeds, "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                       "hard_timeout": hard_factor * budget,
-                      "argv": with_config(system_argv(name, suite[name], budget), cargs) + sargs,
+                      "argv": with_config(system_argv(name, suite[name], budget,
+                                                      conc[shas[g_commit] if g_commit else sha]), cargs) + sargs,
                       "harness_commit": harness,
                       **({"code": f"code-{shas[g_commit][:7]}"} if g_commit else {})})
     if control:   # replicate 0 again: what the seeds don't fix (queue timing); the first group, last in order
@@ -171,7 +185,8 @@ def build(run: str, commit: str, groups: list, replicates: int, budget: float, t
                           "control_of": f"{name}-{cname}-r0", "seeds": seeds,
                           "seed_xyz": f"inputs/{Path(suite[name]['seed']).name}", "budget": budget,
                           "hard_timeout": hard_factor * budget,
-                          "argv": with_config(system_argv(name, suite[name], budget), cargs) + sargs, "harness_commit": harness})
+                          "argv": with_config(system_argv(name, suite[name], budget, conc[sha]), cargs) + sargs,
+                          "harness_commit": harness})
     for t in tasks:     # input files a configuration names ({RUN_DIR}/inputs/X): from benchmarks/ or cluster/suite/
         for a in t["argv"]:
             if a.startswith("{RUN_DIR}/inputs/") and not (d / "inputs" / a.split("/")[-1]).is_file():

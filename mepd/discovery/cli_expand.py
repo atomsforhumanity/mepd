@@ -609,7 +609,18 @@ def expand(
     flux_threshold: float = typer.Option(
         0.01, "--flux-threshold",
         help="--steer flux: expand a species once the material that flowed into it (fraction of the seed) "
-        "reaches this."),
+        "reaches this. --steer access: tau of the molecule-level criteria, relative to the conversion (a molecule's "
+        "own reactions once its net flux, an encounter once its two molecules' peak concentrations multiplied, "
+        "reach tau x the fraction of the seed converted)."),
+    exact: bool = typer.Option(
+        False, "--exact",
+        help="--steer access: keep the system exactly as given. By default the explorer starts from two copies of "
+        "it side by side (each molecule meets a copy of itself and of the others, and what one copy makes meets the "
+        "other's molecules), unless that box would exceed 50 atoms or the system is charged or open-shell."),
+    concentration: float = typer.Option(
+        1.0, "--concentration",
+        help="--steer access: each of the seed's molecules' starting concentration, in the standard state's units "
+        "(M for 1M, atm for 1atm), for the molecule-level mass-action kinetics."),
     n_break: int = typer.Option(2, "--n-break", help="Most bonds broken in one proposed step."),
     n_form: int = typer.Option(2, "--n-form", help="Most bonds formed in one proposed step."),
     form_distance: float = typer.Option(
@@ -847,7 +858,14 @@ def expand(
 
         serve(run_inputs.engine)
         typer.echo(f"Model server for {run_inputs.engine!r} started.")
-    seed = StructureNode(structure=_load_structure_from_smiles_or_xyz(structure, charge, multiplicity))
+    seed_structure, copies = _load_structure_from_smiles_or_xyz(structure, charge, multiplicity), 1
+    if steer == "access":
+        from mepd.discovery.molecules import seed_box
+
+        seed_structure, copies = seed_box(seed_structure, exact=exact is True)
+        typer.echo(f"Seed box: {'two copies of the given system side by side' if copies == 2 else 'the system as given'}"
+                   f" ({len(seed_structure.symbols)} atoms{'; --exact keeps it as given' if copies == 2 else ''}).")
+    seed = StructureNode(structure=seed_structure)
     target_node = (StructureNode(structure=_load_structure_from_smiles_or_xyz(target, charge, multiplicity))
                    if isinstance(target, str) and target else None)
     # A plain line after the settings table: what runs next (the live view
@@ -944,7 +962,9 @@ def expand(
                           "free_energy": str(kinetics_energy).lower() == "free" if isinstance(kinetics_energy, str)
                           else True,
                           "standard_state": standard_state if isinstance(standard_state, str) else "1M",
-                          "mirror_images": mirror_images is not False},
+                          "mirror_images": mirror_images is not False,
+                          "concentration": float(concentration) if isinstance(concentration, (int, float)) else 1.0,
+                          "copies": copies},
                 steer_engine=steer_engine if steer in ("flux", "access") else None,
                 steer_save_dir=output / "steer_single_points",
                 state_file=output / "expand_state.pkl", resume=resume is True, known=known_spec,
@@ -1009,7 +1029,9 @@ def expand(
                      **({"kinetics_energy": str(kinetics_energy).lower() if isinstance(kinetics_energy, str) else "free",
                          "standard_state": standard_state if isinstance(standard_state, str) else "1M",
                          "mirror_images": mirror_images is not False}
-                        if steer in ("flux", "access") else {})},
+                        if steer in ("flux", "access") else {}),
+                     **({"copies": copies, "concentration": float(concentration) if isinstance(concentration, (int, float))
+                         else 1.0} if steer == "access" else {})},
         # barrier_kcal: as computed (a negative one is a problem, flagged in `warning`);
         # kinetics_barrier_kcal: what the rates used (the TS never below an end); null for a step out of the
         # kinetics' reach (closed: no rate).

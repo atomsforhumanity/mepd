@@ -1703,7 +1703,10 @@ def test_async_channel_sampling_is_queued_lowest_step_first():
         assert p() == pytest.approx(height[pair_of(kind, label)])
     floor = lambda a, b: (max(res.species[a].node.energy, res.species[b].node.energy) - e0) * 627.509474
     queued = [(label, p) for kind, label, p in connect.at_submit if kind == "channels"]
-    assert queued and all(p == pytest.approx(floor(*pair_of("channels", label))) for label, p in queued)
+    # queued before a TS between them: the floor; after one (the molecule-level kinetics populate a box once all its
+    # molecules hold material, which can come after its first TS): that TS's height, never below the floor
+    assert queued and all(p >= floor(*pair_of("channels", label)) - 1e-9 for label, p in queued)
+    assert any(p == pytest.approx(floor(*pair_of("channels", label))) for label, p in queued)
 
 def test_async_a_species_first_found_as_an_irc_end_is_connected_from_the_species_asked(monkeypatch, tmp_path):
     """The seed's single TS towards HNC turns out, by its IRC, to join HNC and H + CN, a species no proposal made.

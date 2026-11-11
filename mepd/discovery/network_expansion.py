@@ -1712,6 +1712,10 @@ def expand_network(
         return superimposable(list(map(str, other.symbols)), _angstrom(other), _angstrom(ts_structure)) is not False
 
     live_kin = {"n_steps": -1, "hot": set(), "version": 0}
+    # steer="access": the decisions read molecule-level kinetics (mepd.discovery.molecules): what to expand from the
+    # molecules' net flux and their encounters' c_max products, the populated boxes from their molecules
+    molecular = steer == "access"
+    mol_cache: dict = {}
     settle_hist: list = []   # (time, product shares) of each live kinetics once the seed's proposals are back
     live_steer = [None]   # schedule async: queues a steering single point (the live kinetics are steered too)
     known_end: dict = {}
@@ -1740,7 +1744,9 @@ def expand_network(
 
         n = len(result.species)
         if mirror_finder is None or not steps:
-            return simulate(n, steps, energies, temperature=kin["temperature"], time_s=kin["time_s"])
+            k = simulate(n, steps, energies, temperature=kin["temperature"], time_s=kin["time_s"])
+            k.extended = (list(steps), list(energies), None)
+            return k
 
         def parts(structure):
             from mepd.discovery.mirror import _key
@@ -1760,7 +1766,45 @@ def expand_network(
         n_all, all_steps, all_energies = mirrors.extend(steps, energies, kin["temperature"])
         k = simulate(n_all, all_steps, all_energies, temperature=kin["temperature"], time_s=kin["time_s"])
         k.n_found, k.mirrors = n, mirrors.record()
+        k.extended = (all_steps, all_energies, k.mirrors)   # what the molecule view reads (_molecule_view)
         return k
+
+    def _mol_parts(i):
+        """Species i's molecules (molecules.molecule_parts), kept per node (a lower conformer adopted is a new one)."""
+        from mepd.discovery.molecules import molecule_parts
+
+        node = result.species[i].node
+        hit = mol_cache.get(i)
+        if hit is None or hit[0] is not node:
+            from mepd.discovery.molecules import bonds_of
+
+            hit = mol_cache[i] = (node, molecule_parts(node.structure), bonds_of(node.structure))
+        return hit[1]
+
+    def _mol_bonds(i):
+        _mol_parts(i)
+        return mol_cache[i][2]
+
+    def _molecule_view(k):
+        """(molecule network, its kinetics) of box kinetics `k` (_simulate): the steps read as reactions of the
+        molecules they change, at real concentrations (mepd.discovery.molecules). The seed's molecules start at
+        kin["concentration"] each (the standard state's units) per copy of the given system (kin["copies"])."""
+        from mepd.discovery import molecules as M
+
+        all_steps, all_energies, rec = k.extended
+        rec = rec or {}
+
+        def ts_info(m):
+            st = result.steps[m]
+            fp = (st.files or {}).get("ts")
+            has_ends = bool(fp) and Path(fp).with_name(f"{Path(fp).stem}_ends.xyz").exists()
+            return _ts_structure(st), has_ends, (st.files or {}).get("verified") is not False
+
+        net = M.build(len(result.species), _mol_parts, _mol_bonds, all_steps, all_energies,
+                      [v["mirror_of"] for v in rec.get("virtual_species", [])],
+                      [t["step"] for t in rec.get("added_twins", [])], rec.get("found_twins", []), ts_info)
+        c0 = net.c0(float(kin.get("concentration", 1.0)), int(kin.get("copies", 1)))
+        return net, M.simulate(net, c0, kin["temperature"], kin["time_s"])
 
     def _live_hot(final: bool = False) -> set:
         """The species populated (max concentration or flux >= threshold) in the kinetics of the network
@@ -1781,15 +1825,57 @@ def expand_network(
             k = _simulate(steps, g, basis.startswith("free"))
             live_kin["k"] = k
             tau = float(kin["threshold"])
-            live_kin["hot"] = {0} | {i for i in range(len(result.species))
-                                     if k.max_concentration[i] >= tau or k.flux[i] >= tau}
-            live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
+            if molecular:
+                _molecule_decisions(k, tau)
+            else:
+                live_kin["hot"] = {0} | {i for i in range(len(result.species))
+                                         if k.max_concentration[i] >= tau or k.flux[i] >= tau}
+                live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
             _show_kinetics(k, basis)
             if schedule == "async" and 0 in expanded:
                 settle_hist.append((time.monotonic(), _product_shares(k.final_concentration, len(result.species))))
             live_kin["n_steps"] = (len(result.steps), live_kin["version"])
             live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         return live_kin["hot"]
+
+    def _molecule_decisions(k, tau: float) -> None:
+        """live_kin from the molecule view of box kinetics `k`: "hot", the boxes whose molecules all hold material
+        (what IRC checks, waiting path pieces and steering serve), the seed and not its conformers; "items", what to probe -- each molecule whose net
+        flux and each pair whose c_max product reach tau x conversion (molecules.expansion), with the boxes that
+        hold it, first found first (a reactor run from one of them probes it: its molecules meet there)."""
+        from mepd.discovery import molecules as M
+
+        net, mk = _molecule_view(k)
+        idx = {key: i for i, key in enumerate(net.names)}
+        pop = M.populated(net, mk, tau)
+        parts = [_mol_parts(i) for i in range(len(result.species))]
+        seed = sorted(key for _, key in (parts[0] or []))
+        # (another box of the seed's own molecules -- a conformer of the seed -- holds nothing the seed doesn't)
+        live_kin["hot"] = {0} | {i for i, p in enumerate(parts)
+                                 if p is not None and all(idx.get(key) in pop for _, key in p)
+                                 and sorted(key for _, key in p) != seed}
+        want = M.expansion(net, mk, tau)
+        items = [((m,), v) for m, v in want["molecules"].items()] + [(pair, v) for pair, v in want["pairs"].items()]
+        live_kin["items"] = [(item, v, M.boxes_holding(parts, item, net.names)) for item, v in items]
+        live_kin["molecules"] = (net, mk)
+        live_kin["hot_of"] = k
+        live_kin["mol_live"] = _molecule_record(net, mk, pop)
+
+    def _molecule_record(net, mk, pop=None) -> dict:
+        """The molecule network and its kinetics as summary.json (rounds[-1].kinetics.molecules) and the live
+        kinetics (live/kinetics.json: "molecules") carry them: enough to solve it again (benchmarks/score.py)."""
+        conc, copies = float(kin.get("concentration", 1.0)), int(kin.get("copies", 1))
+        return {**net.record(), "concentration": conc, "copies": copies, "temperature_K": float(kin["temperature"]),
+                "time_s": float(kin["time_s"]), "standard_state": kin.get("standard_state", "1M"),
+                "c0": [float(x) for x in net.c0(conc, copies)], "final": [float(x) for x in mk.final],
+                "max": [float(x) for x in mk.c_max], "net_flux": [float(x) for x in mk.net_flux],
+                "conversion": float(mk.conversion), **({"populated": sorted(pop)} if pop is not None else {})}
+
+    def _populated_boxes(k, tau: float) -> set:
+        """The boxes the molecule view of box kinetics `k` populates (_molecule_decisions' "hot"), the seed's."""
+        if live_kin.get("hot_of") is not k:
+            _molecule_decisions(k, tau)
+        return set(live_kin["hot"])
 
     def _show_kinetics(k, basis: str) -> None:
         """The live kinetics as the web's live view shows them: each species' population, which ones are
@@ -1803,8 +1889,10 @@ def expand_network(
             "species": [{"index": i, "smiles": sp.smiles, "rel_kcal": sp.rel_energy_kcal,
                          "max_concentration": float(k.max_concentration[i]), "flux": float(k.flux[i]),
                          "final": float(k.final_concentration[i]), "expanded": i in expanded,
-                         "populated": i == 0 or k.max_concentration[i] >= tau or k.flux[i] >= tau}
-                        for i, sp in enumerate(result.species)]})
+                         "populated": (i in live_kin["hot"]) if molecular
+                         else (i == 0 or k.max_concentration[i] >= tau or k.flux[i] >= tau)}
+                        for i, sp in enumerate(result.species)],
+            **({"molecules": live_kin["mol_live"]} if molecular and "mol_live" in live_kin else {})})
 
     def _piece_relevant(chain, final: bool = False):
         """Run a waiting piece of a path search only if material reaches one of its ends: a known species
@@ -1888,6 +1976,11 @@ def expand_network(
             "energy_basis": "free" if basis.startswith("free") else "electronic",
             **({"free_energy_gaps": [dict(g) for g in free_gaps]} if free is not None else {}),
             **({"mirror_images": kinetic.mirrors} if kinetic.mirrors is not None else {})}
+        if molecular:
+            # the answer at molecule level: the network read as reactions between molecules, mass action from the
+            # seed's molecules (the box arrays above stay for the views that read them)
+            net, mk = _molecule_view(kinetic)
+            result.rounds[-1]["kinetics"]["molecules"] = _molecule_record(net, mk)
         return kinetic
 
     def _ts_structure(st):
@@ -2160,8 +2253,9 @@ def expand_network(
         if verify is None:
             return 0
         tau = float(kin["threshold"])
-        hot = {k for k in range(min(len(kinetic.flux), len(result.species)))
-               if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
+        hot = _populated_boxes(kinetic, tau) if molecular else \
+            {k for k in range(min(len(kinetic.flux), len(result.species)))
+             if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
         items = [(n, st.files.get("ts")) for n, st in enumerate(result.steps)
                  if st.files.get("verified") is False and st.files.get("ts") and (st.a in hot or st.b in hot)]
         if not items:
@@ -2251,8 +2345,9 @@ def expand_network(
         else:
             reach = set(range(len(result.species)))
         tau = float(kin["threshold"])
-        hot = {0} | {k for k in range(min(len(kinetic.flux), len(result.species)))
-                     if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
+        hot = _populated_boxes(kinetic, tau) if molecular else \
+            {0} | {k for k in range(min(len(kinetic.flux), len(result.species)))
+                   if kinetic.max_concentration[k] >= tau or kinetic.flux[k] >= tau}
         todo = []
         for st in result.steps:
             key = frozenset((st.a, st.b))
@@ -2814,9 +2909,22 @@ def expand_network(
 
             hot = _live_hot(final)
             acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
+            reach = lambda k: k < len(result.species) and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))
+            if molecular:
+                # each molecule or encounter to probe that no box expanded (or expanding) holds: the first box
+                # within reach holding it, the largest first, at most max_expand_per_round at once
+                picks = [] if 0 in expanded or 0 in expanding else [0]
+                for item, _, boxes in sorted(live_kin.get("items", []), key=lambda x: -x[1]):
+                    if len(picks) >= max(1, int(max_expand_per_round)):
+                        break
+                    if any(b in expanded or b in expanding or b in picks for b in boxes):
+                        continue
+                    pick = next((b for b in boxes if reach(b)), None)
+                    if pick is not None:
+                        picks.append(pick)
+                return picks
             load = live_kin.get("load", {})
-            picks = [k for k in hot if k not in expanded and k not in expanding and k < len(result.species)
-                     and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))]
+            picks = [k for k in hot if k not in expanded and k not in expanding and reach(k)]
             return sorted(picks, key=lambda k: -load.get(k, 1.0))
 
         def _proposed(src, out, final: bool = True) -> None:
@@ -2868,6 +2976,11 @@ def expand_network(
 
         def _submit_propose(k, gen_opts, batch_state=None) -> None:
             known_smiles = frozenset(sp.smiles for sp in result.species if sp.smiles)
+            if molecular and batch_state is None and gen_obj.propose_batch is not None and "molecules" in live_kin:
+                # the reactions the network has take no slot of the reactor's product cap
+                net = live_kin["molecules"][0]
+                batch_state = {"known_reactions": [[sorted(net.names[i] for i in x["r"]),
+                                                    sorted(net.names[i] for i in x["p"])] for x in net.reactions]}
             batch = int((batch_state or {}).get("batch") or 0)
             label = f"species {k}" + (f" · batch {batch + 1}" if gen_obj.propose_batch is not None and k != 0 else "")
             connect.submit("propose", (k, result.species[k].node.structure, known_smiles, gen_opts, batch_state),
