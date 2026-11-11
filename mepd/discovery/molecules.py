@@ -14,6 +14,9 @@ molecule of either end those atoms are in, and a molecule whose key alone change
     checked it (files["verified"] not False): they are then on both sides of the reaction (a neighbour taking
     part); unchecked, it is left out (the rule of mixture.settle's fix: a TS that fails without its neighbours keeps
     them only if it connects).
+  * A step whose TS search failed, kept at its path's highest image (files["ts_kind"] "path_peak"), is left out:
+    that image is no saddle (a doubled formic acid run's one, 20 kcal/mol up at g-xTB for HCOOH-assisted
+    dehydration, lies 2.5 kcal/mol above the two molecules apart at wB97X-D3BJ/def2-TZVP).
   * Molecule free energies: least squares over the boxes, G(box) = sum of its molecules', each molecule at its
     lowest (a box more than FIT_SLACK_KCAL above the sum leaves the fit while its molecules are in another box
     that stays). A reaction's TS on this scale is the box TS with the spectators taken out.
@@ -214,6 +217,10 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
         if (st.files or {}).get("closed") or float(st.ts_energy) - max(e_a, e_b) > CLOSED_HARTREE:
             continue
         count("open_box_steps")
+        if (steps[orig_of[j]].files or {}).get("ts_kind") == "path_peak":
+            # its TS search failed (kept at its path's highest image): no saddle, no barrier to give a rate
+            count("left_out_ts_search_failed")
+            continue
         s = split(parts_of(st.a), parts_of(st.b), bonds(box(st.a)), bonds(box(st.b)))
         if s[0] != "ok":
             count("left_out_" + s[0])

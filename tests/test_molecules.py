@@ -219,3 +219,11 @@ def test_the_scoreboard_scores_the_molecules_first_passage():
     assert out["found"] == {"dehydration": True, "decarboxylation": True} and all(out["connected"].values())
     ratio = out["amounts"]["dehydration"] / out["amounts"]["decarboxylation"]
     assert ratio == pytest.approx(math.exp(1.0 / (1.987204258640832e-3 * 500.0)), rel=1e-3)
+
+
+def test_a_step_whose_ts_search_failed_is_left_out():
+    boxes = [[((0, 1), "C")], [((0, 1), "C=")]]
+    parts, bonds = _parts_net(boxes)
+    steps = [Step(0, 1, 10.0 / H, "peak", {"ts_kind": "path_peak"}), Step(0, 1, 12.0 / H, "ts", {})]
+    net = M.build(2, parts, bonds, steps, [0.0, 2.0 / H], ts_info=lambda m: (None, True, True))
+    assert [x["step"] for x in net.reactions] == [1] and net.counts["left_out_ts_search_failed"] == 1
