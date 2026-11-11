@@ -41,6 +41,7 @@ export const state = {
   // The old Settings ('profiles') and References ('refs') pages open as drawers (see `set`).
   view: { tab: 'graph', jobId: null, drawer: null },
   connectMode: false,
+  exploreView: _pref('exploreView', 'map'),   // Explore's canvas: 'map' (NetworkMap.js) or 'graph' (the editable Graph.js)
   network: '',           // which network Explore shows: '' the parent, else a variant id (mepd.web.variants)
   toasts: [],
   modal: null,           // {kind, ...}
@@ -366,6 +367,12 @@ export async function openTab(tab) {
 export async function closeDrawer() {
   if (state.view.drawer === 'settings' && !(await confirmProfileEdits())) return;
   set({ view: { ...state.view, drawer: null } });
+}
+
+// Explore shows the network map or the editable graph; the choice stays per browser.
+export function setExploreView(v) {
+  try { localStorage.setItem('mepd:exploreView', JSON.stringify(v)); } catch { /* private mode */ }
+  set({ exploreView: v });
 }
 
 // ---- per-viewer conveniences (never required for correctness) ----------
