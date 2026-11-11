@@ -6,11 +6,12 @@ pieces (free_energy.molecules), each keyed by its stereo SMILES (the explorer's 
 mirror image's key can be made); a step a -> b becomes the reaction of the molecules whose bonds change (with every
 molecule of either end those atoms are in, and a molecule whose key alone changed), the others being spectators.
 
-  * What can't be counted as separate molecules is one species of its own, a complex kept together as in the box
-    model (molecule_parts, complex_key): a radical pair in a neutral singlet box, the whole of a charged or
-    open-shell box of several molecules (which one holds the charge or the spin is not known without a
-    calculation), a molecule whose key can't be made. It reacts like any species, first order where it is one,
-    at its box's free energy, and carries its molecules' keys (a channel's products are matched through them).
+  * In a neutral box every molecule is a species, a radical too (keyed by its bond graph: molecule_parts). What
+    can't be counted as separate molecules is one species of its own, a complex kept together as in the box model
+    (complex_key): the whole of a charged box of several molecules (which one holds the charge is not known
+    without a calculation), a molecule whose key can't be made. A complex reacts first order where it is one, at
+    its box's free energy, without its molecules' dilution (a limitation for ion pairs), and carries its
+    molecules' keys (a channel is credited from it only when it holds the channel's whole product set).
   * A step with spectators whose TS was computed on the whole box (no `<ts>_ends.xyz`: its subsystem's TS landed in
     a spectator's room, network_expansion.Subsystem.clashes) keeps the spectators it touches only when an IRC
     checked it (files["verified"] not False): they are then on both sides of the reaction (a neighbour taking
@@ -74,7 +75,7 @@ def _xyz(structure):
     return [str(s) for s in structure.symbols], np.asarray(structure.geometry, dtype=float) * BOHR_TO_ANGSTROM
 
 
-COMPLEX_OPEN = "charged/open-shell group"
+COMPLEX_CHARGED = "charged group"
 COMPLEX_KEY = "key failed"
 
 
@@ -107,49 +108,69 @@ def _graph_key(symbols, atoms, bonds) -> str:
     return formula + "#" + hashlib.sha1("|".join(sorted(lab.values())).encode()).hexdigest()[:10]
 
 
+RADICAL = "radical:"
+
+
+def radical_key(symbols, atoms, bonds) -> str:
+    """A neutral open-shell molecule's key: its bond graph alone (RADICAL + _graph_key), as no bond orders can be
+    read from its geometry reliably (formyloxy came out [O][CH][O] at every C-O length tried, never [O]C=O)."""
+    return RADICAL + _graph_key(symbols, atoms, bonds)
+
+
+def smiles_graph_key(smiles: str) -> Optional[str]:
+    """The graph key (_graph_key) of a SMILES' molecule, hydrogens added: what a geometry's radical_key is for it
+    (a channel's radical product matched without bond orders); None if it can't be read."""
+    from rdkit import Chem, RDLogger
+
+    RDLogger.DisableLog("rdApp.*")
+    m = Chem.MolFromSmiles(smiles)
+    if m is None:
+        return None
+    m = Chem.AddHs(m)
+    symbols = [a.GetSymbol() for a in m.GetAtoms()]
+    bonds = {(max(b.GetBeginAtomIdx(), b.GetEndAtomIdx()), min(b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
+             for b in m.GetBonds()}
+    return _graph_key(symbols, range(len(symbols)), bonds)
+
+
 def molecule_parts(structure) -> list[tuple[frozenset, str]]:
-    """[(atoms, key)] of a box's species. Each closed-shell molecule is one. What can't be counted as separate
-    molecules stays together as one species, a complex (complex_key), as the box model keeps it: in a neutral
-    singlet box, its open-shell molecules (a radical pair; their spins are not known without a calculation); in a
-    charged or open-shell box of several molecules, the whole box (which one holds the charge or the spin is not
-    known); and a molecule whose key can't be made (reason COMPLEX_KEY). A complex reacts like any species, at
-    the free energy of its box."""
+    """[(atoms, key)] of a box's species. In a neutral box each molecule is one: a closed-shell one keyed by its
+    stereo SMILES, an open-shell one (a radical; odd electron count) by its bond graph (radical_key). The box's
+    free energy is fitted over boxes, not computed per molecule, so a radical's own spin state never enters, and
+    each radical is diluted and recombines second order as any molecule does. What can't be counted as separate
+    molecules stays together as one species, a complex (complex_key), as the box model keeps it: the whole of a
+    charged box of several molecules (which one holds the charge is not known without a calculation, and an ion
+    pair doesn't separate freely in the gas phase), and a molecule whose key can't be made (reason COMPLEX_KEY)."""
     from mepd.discovery.free_energy import _electrons, bonds, molecules
     from mepd.discovery.mixture import _sub, molecule_key
 
     symbols, xyz = _xyz(structure)
     groups = molecules(symbols, xyz)
     charge, mult = int(structure.charge), int(structure.multiplicity)
-    b = None
+    b = bonds(symbols, xyz)
+    odd = lambda g: sum(_electrons(symbols[i]) for i in g) % 2 == 1
 
     def key_of(g, q, m):
-        nonlocal b
+        if q == 0 and odd(g):
+            return radical_key(symbols, g, b), True
         try:
             k = molecule_key(_sub(structure, g, q, m))
         except Exception:
             k = None
         if k:
             return canonical(k), True
-        if b is None:
-            b = bonds(symbols, xyz)
         return _graph_key(symbols, g, b), False
 
     if len(groups) == 1:
         k, ok = key_of(groups[0], charge, mult)
         return [(frozenset(groups[0]), k if ok else complex_key(COMPLEX_KEY, [k]))]
-    odd = [g for g in groups if sum(_electrons(symbols[i]) for i in g) % 2]
-    if charge != 0 or mult != 1:
-        keys = [key_of(g, 0, 2 if g in odd else 1)[0] for g in groups]
-        return [(frozenset(i for g in groups for i in g), complex_key(COMPLEX_OPEN, keys))]
-    out, held, failed = [], [], []
+    if charge != 0:
+        keys = [key_of(g, 0, 2 if odd(g) else 1)[0] for g in groups]
+        return [(frozenset(i for g in groups for i in g), complex_key(COMPLEX_CHARGED, keys))]
+    out, failed = [], []
     for g in groups:
-        if g in odd:
-            held.append((g, key_of(g, 0, 2)[0]))
-            continue
-        k, ok = key_of(g, 0, 1)
+        k, ok = key_of(g, 0, 2 if odd(g) else 1)
         (out.append((frozenset(g), k)) if ok else failed.append((frozenset(g), complex_key(COMPLEX_KEY, [k]))))
-    if held:
-        out.append((frozenset(i for g, _ in held for i in g), complex_key(COMPLEX_OPEN, [k for _, k in held])))
     return out + failed
 
 
@@ -473,18 +494,33 @@ def answer_with(net: MoleculeNetwork, c0, temperature: float, time_s: float, mov
 
 
 def lowest(A: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Each molecule's free energy at its lowest: the largest G (summed) with every box at or above the sum of its
-    molecules', A G <= y (A: molecules per box, y: box free energies), a linear programme. A molecule alone in
-    several boxes (its conformers) takes the lowest of them; boxes above their molecules' sum hold a higher
-    conformer of one of them."""
-    from scipy.optimize import linprog
+    """Each molecule's free energy at its lowest: the largest G (summed over the boxes) with every box at or above
+    the sum of its molecules', A G <= y (A: molecules per box, y: box free energies), a linear programme; then,
+    among its optima (many when the boxes don't pin every molecule down), the one whose boxes lie closest to
+    their own free energies (least squares on y - A G, strictly convex in A G): so the fitted boxes, and every
+    reaction free energy, don't depend on the order of the boxes or molecules. G itself is fixed up to the
+    directions A d = 0, which no reaction sees; the smallest such G is returned."""
+    from scipy.optimize import linprog, minimize
 
+    n = A.shape[1]
     if A.size == 0:
-        return np.zeros(A.shape[1])
-    res = linprog(-A.sum(axis=0), A_ub=A, b_ub=y, bounds=[(None, None)] * A.shape[1], method="highs")
+        return np.zeros(n)
+    w = A.sum(axis=0)
+    res = linprog(-w, A_ub=A, b_ub=y, bounds=[(None, None)] * n, method="highs")
     if res.status != 0:
         return np.linalg.lstsq(A, y, rcond=None)[0]
-    return np.asarray(res.x, dtype=float)
+    best = float(w @ res.x)
+    # the optimal face: A G <= y, w.G >= best; the point of it with y - A G smallest (A G unique), G minimal-norm
+    tol = 1e-9 * max(1.0, abs(best))
+    cons = [{"type": "ineq", "fun": lambda g: y - A @ g, "jac": lambda g: -A},
+            {"type": "ineq", "fun": lambda g: np.array([w @ g - best + tol]), "jac": lambda g: w[None, :]}]
+    f = lambda g: float(np.sum((y - A @ g) ** 2) + 1e-9 * g @ g)
+    jac = lambda g: -2.0 * A.T @ (y - A @ g) + 2e-9 * g
+    sol = minimize(f, res.x, jac=jac, constraints=cons, method="SLSQP", options={"ftol": 1e-14, "maxiter": 500})
+    # (SLSQP may report its line search stalling at the optimum: what counts is that the point is on the face)
+    ok = np.all(A @ sol.x <= y + 1e-6) and w @ sol.x >= best - 1e-6
+    g = sol.x if ok and f(sol.x) <= f(res.x) + 1e-12 else res.x
+    return np.asarray(g, dtype=float)
 
 
 def box_index(parts: Sequence) -> dict:

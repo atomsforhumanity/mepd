@@ -3,6 +3,7 @@ graph rules (see mepd.discovery.network_expansion)."""
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -866,8 +867,8 @@ def expand(
     conc_given = concentration if isinstance(concentration, (int, float)) else 1.0
     if n_copies not in (1, 2):
         raise typer.BadParameter("--copies takes 1 or 2")
-    if conc_given <= 0:
-        raise typer.BadParameter("--concentration must be above 0")
+    if not math.isfinite(conc_given) or conc_given <= 0:
+        raise typer.BadParameter("--concentration must be a number above 0")
     if steer != "access":
         asked = [o for o, given in (("--copies", n_copies != 1), ("--exact", exact is True),
                                     ("--concentration", conc_given != 1.0)) if given]
@@ -876,9 +877,13 @@ def expand(
     if steer == "access":
         from mepd.discovery.molecules import one_copy_why, seed_box
 
-        seed_structure, copies = seed_box(seed_structure, exact=exact is True or n_copies == 1)
+        eng = run_inputs.engine
+        boxed = getattr(eng, "region", None) is not None or bool(getattr(eng, "restraints", None))
+        seed_structure, copies = seed_box(seed_structure, exact=exact is True or n_copies == 1 or boxed)
         if n_copies == 2 and copies == 1 and exact is not True:
-            typer.echo(f"WARNING: --copies 2: one copy, as {one_copy_why(seed_structure)}.")
+            why = ("its engine is QM/MM or restrained (they number the given system's atoms)" if boxed
+                   else one_copy_why(seed_structure))
+            typer.echo(f"WARNING: --copies 2: one copy, as {why}.")
         typer.echo(f"Seed box: {'two copies of the given system side by side' if copies == 2 else 'the system as given'}"
                    f" ({len(seed_structure.symbols)} atoms{'; --exact keeps it as given' if copies == 2 else ''}).")
     seed = StructureNode(structure=seed_structure)

@@ -421,12 +421,14 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
 
     from collections import Counter
 
-    from mepd.discovery.molecules import complex_info
+    from mepd.discovery.molecules import RADICAL, complex_info, smiles_graph_key
 
     net = MoleculeNetwork.from_record(mrec)
     chans = sysdef["channels"]
 
     def matches(key, p, racemic):
+        if key.startswith(RADICAL):     # a radical's key is its bond graph (molecules.radical_key)
+            return key == RADICAL + (smiles_graph_key(p) or "")
         if _has_stereo(p):
             return key in {_iso(p)} | ({_iso(p, mirror=True)} if racemic else set())
         return _canon(key) == _canon(p)
@@ -434,14 +436,20 @@ def molecule_channels(sysdef: dict, mrec: dict) -> dict | None:
     def pid(p):
         return ("iso", _iso(p)) if _has_stereo(p) else ("canon", _canon(p))
 
-    # what each species holds of the channels' products: a molecule, itself; a complex (molecules kept together,
-    # e.g. methyl formate's CH3 + OCHO radical pair), each of its molecules
+    # what each species holds of the channels' products: a molecule, itself; a complex (molecules kept together: a
+    # charged group), a channel's whole product set when it holds it, else nothing (a part of a channel's products
+    # beside other molecules is no channel, as for the boxes)
     products = {pid(p): (p, chans[n].get("racemic")) for n in chans for p in chans[n]["products"]}
     holds = []
     for key in net.names:
         info = complex_info(key)
         inner = info[1] if info else [key]
-        holds.append(Counter(q for k in inner for q, (p, rac) in products.items() if matches(k, p, rac)))
+        c = Counter(q for k in inner for q, (p, rac) in products.items() if matches(k, p, rac))
+        if info:
+            whole = [Counter(pid(p) for p in chans[n]["products"]) for n in chans]
+            full = [want for want in whole if all(c[q] >= m for q, m in want.items())]
+            c = full[0] if full else Counter()
+        holds.append(c)
     cm = {(n, p): [i for i, h in enumerate(holds) if h[pid(p)]] for n in chans for p in chans[n]["products"]}
     reach, grow = set(net.seed), True
     while grow:

@@ -41,17 +41,57 @@ def test_a_step_is_the_reaction_of_the_molecules_it_changes_the_rest_look_on():
     assert M.split(M.molecule_parts(a), M.molecule_parts(a), M.bonds_of(a), M.bonds_of(a)) == ("no_reaction",)
 
 
-def test_a_radical_pair_is_one_species_a_complex_kept_together():
-    # two H atoms beside N2 in a singlet box: N2 a molecule; the two H atoms (their spins unknown) one complex
+def test_in_a_neutral_box_each_radical_is_a_species_of_its_own():
+    # two H atoms beside N2 in a singlet box: three species, the H atoms radicals keyed by their bond graph
     box = _box(H_H_APART, N2)
-    parts = M.molecule_parts(box)
-    keys = sorted(k for _, k in parts)
-    (cx,) = [k for k in keys if M.complex_info(k)]
-    assert M.complex_info(cx)[0] == M.COMPLEX_OPEN and len(M.complex_info(cx)[1]) == 2
-    assert M.canonical("N#N") in keys
+    keys = sorted(k for _, k in M.molecule_parts(box))
+    assert keys.count(M.RADICAL + M.smiles_graph_key("[H]")) == 2 and M.canonical("N#N") in keys
     a = _box(H2, N2)
-    s = M.split(M.molecule_parts(a), parts, M.bonds_of(a), M.bonds_of(box))
-    assert s[0] == "ok" and s[1] == [M.canonical("[H][H]")] and s[2] == [cx]       # H2 -> 2 H, first order
+    s = M.split(M.molecule_parts(a), M.molecule_parts(box), M.bonds_of(a), M.bonds_of(box))
+    assert s[0] == "ok" and s[1] == [M.canonical("[H][H]")] and s[2] == [M.RADICAL + M.smiles_graph_key("[H]")] * 2
+
+
+def test_b2_a_homolysis_beside_radicals_is_first_order():
+    # {H2, H, H} -> {H, H, H, H}: H2 -> 2 H, the radicals already there look on
+    a, b = _box(H2, H_H_APART, shift=8), _box(H_H_APART, H_H_APART, shift=8)
+    s = M.split(M.molecule_parts(a), M.molecule_parts(b), M.bonds_of(a), M.bonds_of(b))
+    h = M.RADICAL + M.smiles_graph_key("[H]")
+    assert s[0] == "ok" and s[1] == [M.canonical("[H][H]")] and s[2] == [h, h]
+
+
+def _ch3_ocho(r1=1.25, r2=1.25, ang=125.0):
+    t = np.radians(ang / 2)
+    ch3 = [("C", 0, 0, 0), ("H", 1.08, 0, 0), ("H", -0.54, 0.935, 0), ("H", -0.54, -0.935, 0)]
+    ocho = [("C", 0, 0, 0), ("H", -1.10, 0, 0), ("O", r1 * np.cos(t), r1 * np.sin(t), 0),
+            ("O", r2 * np.cos(t), -r2 * np.sin(t), 0)]
+    return _box(ch3, ocho, shift=7.0)
+
+
+def test_b1_a_radical_channel_is_diluted_as_a_molecular_one():
+    # M -> CH3 + OCHO (two radicals, from a real geometry) against M -> C + D with the same free energies: the same
+    # ratio at any concentration (a complex would run first order, undiluted: 6:1 at 1 M, 226:1 at 0.005)
+    pair = sorted(k for _, k in M.molecule_parts(_ch3_ocho()))
+    assert len(pair) == 2 and all(k.startswith(M.RADICAL) for k in pair)
+    net = M.MoleculeNetwork(["M", *pair, "C", "D"], np.array([0.0, 5.0, 5.0, 5.0, 5.0]),
+                            [{"r": [0], "p": [1, 2], "g_ts": 40.0, "step": 0, "twin": False},
+                             {"r": [0], "p": [3, 4], "g_ts": 40.0, "step": 1, "twin": False}], [0])
+    for c in (1.0, 0.005):
+        k = M.simulate(net, net.c0(c), 1500.0, 2e-3)
+        assert k.final[1] / k.final[3] == pytest.approx(1.0, rel=1e-6)
+
+
+def test_a_radical_s_key_does_not_depend_on_its_geometry():
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    keys = {k for r1, r2 in ((1.25, 1.25), (1.20, 1.33), (1.19, 1.36)) for _, k in M.molecule_parts(_ch3_ocho(r1, r2))}
+    m = Chem.AddHs(Chem.MolFromSmiles("[O]C=O"))
+    AllChem.EmbedMolecule(m, randomSeed=7)
+    x = m.GetConformer().GetPositions()
+    s = Structure(symbols=[a.GetSymbol() for a in m.GetAtoms()], geometry=x * A2B, charge=0, multiplicity=2)
+    ((_, embedded),) = M.molecule_parts(s)
+    assert keys == {M.RADICAL + M.smiles_graph_key("[CH3]"), M.RADICAL + M.smiles_graph_key("[O]C=O")}
+    assert embedded == M.RADICAL + M.smiles_graph_key("[O]C=O")
 
 
 def _parts_net(boxes):
@@ -228,6 +268,19 @@ def test_the_fit_takes_each_molecule_at_its_lowest():
     A = np.ones((6, 1))
     y = np.array([0.0, 0.0, 0.0, 0.0, 0.0, -3.0])
     assert M.lowest(A, y)[0] == pytest.approx(-3.0)
+    # unique and order-independent: boxes {A,B}=0, {A2,B}=5, {A2,B2}=3, {A,B2}=2 in every order of boxes and keys
+    import itertools
+
+    A4 = np.array([[1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1], [1, 0, 0, 1]], dtype=float)
+    y4 = np.array([0.0, 5.0, 3.0, 2.0])
+    fits = set()
+    for rp in itertools.permutations(range(4)):
+        for cp in itertools.permutations(range(4)):
+            g = M.lowest(A4[list(rp)][:, list(cp)], y4[list(rp)])
+            G = np.zeros(4)
+            G[list(cp)] = g
+            fits.add(tuple(np.round(A4 @ G, 6) + 0.0))
+    assert len(fits) == 1
     # two molecules: each at its lowest, every box at or above its molecules' sum
     A = np.array([[1, 0], [0, 1], [1, 1], [1, 0]], dtype=float)
     y = np.array([0.0, 1.0, 0.5, -2.0])
@@ -252,7 +305,7 @@ def test_scenario_a_a_charged_seed_keeps_its_fragmentation():
     pa, pb = M.molecule_parts(a), M.molecule_parts(b)
     assert len(pa) == 1 and not M.complex_info(pa[0][1])
     ((_, kb),) = pb
-    assert M.complex_info(kb)[0] == M.COMPLEX_OPEN and len(M.complex_info(kb)[1]) == 2
+    assert M.complex_info(kb)[0] == M.COMPLEX_CHARGED and len(M.complex_info(kb)[1]) == 2
     boxes = {0: a, 1: b}
     d = [("O", 0.0, 0.0, 0.0), ("H", 1.5, 0.0, 0.0), ("H", -0.33, 0.92, 0.0), ("H", -0.33, -0.46, 0.80)]
     boxes[2] = _box(d).model_copy(update={"charge": 1})          # "D": another arrangement of A's atoms
@@ -272,7 +325,7 @@ def test_scenario_b_a_charged_seed_of_several_molecules_is_one_complex_with_its_
     h2o = [("O", 0.0, 0.0, 0.0), ("H", 0.96, 0.0, 0.0), ("H", -0.24, 0.93, 0.0)]
     seed = _box(oh, h2o).model_copy(update={"charge": -1})
     parts = M.molecule_parts(seed)
-    assert len(parts) == 1 and M.complex_info(parts[0][1])[0] == M.COMPLEX_OPEN
+    assert len(parts) == 1 and M.complex_info(parts[0][1])[0] == M.COMPLEX_CHARGED
     net = M.build(1, lambda k: parts, lambda k: M.bonds_of(seed), [], [0.0])
     assert net.seed == [0] and net.c0(0.5)[0] == pytest.approx(0.5)
 
@@ -285,23 +338,24 @@ def test_a_molecule_without_a_key_is_a_complex_of_its_own_with_its_reason(monkey
     assert M.complex_info(key)[0] == M.COMPLEX_KEY and M.complex_info(key)[1][0].startswith("N2#")
 
 
-def test_the_scoreboard_finds_a_radical_channel_through_its_complex():
+def test_the_scoreboard_finds_a_radical_channel_from_real_geometries_and_never_from_part_of_one():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
     import score
 
-    pair = M.complex_key(M.COMPLEX_OPEN, [M.canonical("[CH3]"), M.canonical("[O]C=O")])
-    net = M.MoleculeNetwork([M.canonical("COC=O"), M.canonical("CO"), M.canonical("[C-]#[O+]"), pair],
-                            np.array([0.0, -5.0, -5.0, -5.0]),
+    ch3, ocho = sorted(k for _, k in M.molecule_parts(_ch3_ocho(1.20, 1.33)))
+    partial = M.complex_key(M.COMPLEX_CHARGED, [ch3, M.canonical("O=C=O")])     # CH3 beside CO2: no channel
+    net = M.MoleculeNetwork([M.canonical("COC=O"), M.canonical("CO"), M.canonical("[C-]#[O+]"), ch3, ocho, partial],
+                            np.array([0.0, -5.0, -5.0, -2.5, -2.5, -5.0]),
                             [{"r": [0], "p": [1, 2], "g_ts": 20.0, "step": 0, "twin": False},
-                             {"r": [0], "p": [3], "g_ts": 21.0, "step": 1, "twin": False}], [0])
+                             {"r": [0], "p": [3, 4], "g_ts": 21.0, "step": 1, "twin": False},
+                             {"r": [0], "p": [5], "g_ts": 19.0, "step": 2, "twin": False}], [0])
     rec = {**net.record(), "c0": list(net.c0(1.0)), "temperature_K": 500.0, "time_s": 1e-3}
     sysdef = {"channels": {"methanol_co": {"products": ["CO", "[C-]#[O+]"]},
                            "methyl_formyloxy": {"products": ["[CH3]", "[O]C=O"]}}}
     out = score.molecule_channels(sysdef, rec)
     assert out["found"] == {"methanol_co": True, "methyl_formyloxy": True} and all(out["connected"].values())
     ratio = out["amounts"]["methanol_co"] / out["amounts"]["methyl_formyloxy"]
-    assert ratio == pytest.approx(math.exp(1.0 / (1.987204258640832e-3 * 500.0)), rel=1e-3)
-
+    assert ratio == pytest.approx(math.exp(1.0 / (1.987204258640832e-3 * 500.0)), rel=1e-3)   # the partial: none
 
 def test_qmmm_or_restrained_systems_keep_the_box_kinetics():
     from mepd.discovery.network_expansion import expand_network
@@ -335,13 +389,22 @@ def test_the_options_say_what_they_do(tmp_path, monkeypatch):
                                                   "--barrier-cutoff", "30", "-o", str(tmp_path / str(len(extra))),
                                                   *extra])
     bad = run("--steer", "access", "--concentration", "0")
-    assert bad.exit_code != 0 and "--concentration must be above 0" in bad.output
+    assert bad.exit_code != 0 and "--concentration must be a number above 0" in bad.output
+    nan = run("--steer", "access", "--concentration", "nan")
+    assert nan.exit_code != 0 and "--concentration must be a number above 0" in nan.output
     ignored = run("--steer", "window", "--copies", "2", "--concentration", "0.5")
     assert "--copies, --concentration only act with --steer access" in ignored.output
     charged = CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions", "--charge", "1",
                                        "--multiplicity", "2", "--steer", "access", "--copies", "2",
                                        "--barrier-cutoff", "30", "-o", str(tmp_path / "c")])
     assert "--copies 2: one copy, as it is charged" in charged.output
+    restrained = _ri()
+    restrained.engine.restraints = [object()]
+    monkeypatch.setattr(cli_common, "_open_run_inputs", lambda _p: restrained)
+    held = CliRunner().invoke(app, ["discovery", "expand", "C#N", "--allow-zwitterions", "--steer", "access",
+                                    "--copies", "2", "--barrier-cutoff", "30", "-o", str(tmp_path / "r")])
+    assert "--copies 2: one copy, as its engine is QM/MM or restrained" in held.output
+    monkeypatch.setattr(cli_common, "_open_run_inputs", lambda _p: _ri())
     ok = run("--steer", "access", "--concentration", "0.5")
     assert ok.exit_code == 0, ok.output
     assert "Answer (molecule-level kinetics" in ok.output
