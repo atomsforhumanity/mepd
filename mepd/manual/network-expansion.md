@@ -7,6 +7,18 @@ from next, and repeats. In the web app each of those is a stage you choose on
 its own. Choices that cannot run together are greyed out with the reason, and a
 stage moves to the nearest allowed choice when another rules it out.
 
+## Several molecules together
+
+Select several molecules (in the map or the graph) and run Network expansion
+once: it grows one network in which they can react with each other, not one
+network per molecule. The run starts from their complex: the one already in
+Explore if you built it (Molecule › Complex, e.g. docked), else the molecules
+are packed side by side at random orientations (`mepd.complexes.packed`), and
+that complex is added to Explore as the seed. The explorer minimizes its seed
+first. The complex's charge is the molecules' sum; its spin is the lowest
+(singlet or doublet), so two radicals start as a singlet. Hessian sampling and
+basin hopping still run once per selected structure.
+
 ## Grow
 
 How each species' possible products are proposed. Everything after that

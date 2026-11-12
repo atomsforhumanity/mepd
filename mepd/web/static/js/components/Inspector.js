@@ -182,7 +182,8 @@ function StructureDetail({ rec }) {
         ${rec.energy != null && html`<dt>Energy</dt><dd class="mono">${rec.energy.toFixed(6)} Eh</dd>`}
         <dt>Source</dt><dd>${rec.origin?.kind === 'job'
           ? html`<a href="#" onClick=${(e) => { e.preventDefault(); openJob(rec.origin.job); }}>${rec.origin.label} · ${originJob?.title || 'job'}</a>`
-          : rec.origin?.kind === 'smiles' ? html`SMILES <code>${rec.origin.input}</code>` : 'XYZ'}</dd>
+          : rec.origin?.kind === 'smiles' ? html`SMILES <code>${rec.origin.input}</code>`
+          : rec.origin?.kind === 'seed' ? rec.origin.label : 'XYZ'}</dd>
       </dl>
       <div class="row-actions">
         ${!isSpecies(rec) || rec.qmmm ? html`<button class="btn small" title="Open this structure (the conformer shown) in the Design tab to edit it"

@@ -1942,3 +1942,33 @@ def test_the_demo_no_longer_caps_compute_but_still_guards_the_server():
         policy.check_profile('engine_name = "gxtb"\n[gxtb_engine_kwds]\nexecutable = "/bin/sh"\n')
     with pytest.raises(WorkspaceError):
         policy.check_profile('engine_name = "ase"\n')
+
+
+def test_network_expansion_of_several_molecules_grows_one_network_from_their_complex(client, tmp_path):
+    (w,) = _add(client, "O water")
+    (f,) = _add(client, "C=O formaldehyde")
+    body = {"op": "graph-enumeration", "structures": [w["id"], f["id"]], "profile": "default"}
+    # A preview: one job, seeded with both molecules packed together, and nothing added.
+    r = client.post("/api/jobs", json={**body, "dry_run": True})
+    assert r.status_code == 200, r.text
+    (job,) = r.json()
+    assert job["argv"][:2] == ["discovery", "expand"] and job["argv"][2].endswith("inputs/seed.xyz")
+    st = client.get("/api/state").json()
+    assert st["jobs"] == [] and len(st["workspace"]["structures"]) == 2
+    assert not list(tmp_path.rglob(".seed-preview-*"))
+    # Submitted: the complex of the two is the seed (a node of Explore, its molecules the two selected).
+    r = client.post("/api/jobs", json=body)
+    assert r.status_code == 200, r.text
+    (job,) = r.json()
+    client.post(f"/api/jobs/{job['id']}/cancel")
+    structures = client.get("/api/state").json()["workspace"]["structures"]
+    (seed,) = [s for s in structures.values() if s["role"] == "complex"]
+    assert job["targets"]["structures"] == [seed["id"]]
+    assert sorted(seed["members"]) == sorted([w["id"], f["id"]]) and len(structures) == 3
+    assert seed["natoms"] == 7 and seed["charge"] == 0 and seed["multiplicity"] == 1
+    # Again: the same complex, not another one.
+    (again,) = client.post("/api/jobs", json={**body, "dry_run": True}).json()
+    assert again["targets"]["structures"] == [seed["id"]]
+    # The Hessian methods still sample each structure alone.
+    per = client.post("/api/jobs", json={**body, "op": "hessian-sample", "dry_run": True}).json()
+    assert [j["targets"]["structures"] for j in per] == [[w["id"]], [f["id"]]]

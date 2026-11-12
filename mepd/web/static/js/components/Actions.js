@@ -24,6 +24,8 @@ const SCALE_OF = {
 };
 // The operations that build surroundings: on the switch, not tiles.
 const SWITCH_OPS = new Set(['qmmm-build', 'qmmm-protein-sites', 'qmmm-reaction']);
+// Ops that run once on several selected molecules together (jobs.py TOGETHER_OPS), not once per molecule.
+const TOGETHER_OPS = new Set(['graph-enumeration']);
 const TILE = {
   optimize: ['optimize', 'Optimize'], tsopt: ['barrier', 'TS from a guess'], conformers: ['shapes', 'Conformers'],
   retrosynthesis: ['retro', 'Retrosynthesis'], nanoreactor: ['reactor', 'Nanoreactor'], 'network-splits': ['network', 'Paths between isomers'],
@@ -88,9 +90,16 @@ export function applicability(op, sel) {
     if (op.key === 'retrosynthesis' && sel.structures.some((id) => isComplex(state.workspace.structures[id])
       && (state.workspace.structures[id].members || []).length > 1)) return null;
     const fit = { n: nS, what: nS === 1 ? 'this structure' : `${nS} structures` };
-    // Several molecules selected: one run each, alone. Growing them together is a complex's expansion.
-    if (nS > 1 && op.family?.key === 'network') {
-      fit.note = 'One expansion per molecule, each alone. To let them react with each other, make them a complex (Molecule › Complex) and expand the complex.';
+    // Several molecules selected: Network expansion grows one network from all of them together
+    // (the server seeds it with their complex); the Hessian methods sample each structure alone.
+    if (nS > 1 && TOGETHER_OPS.has(op.key)) {
+      if (sel.structures.some((id) => isTs(state.workspace.structures[id]))) {
+        fit.disabled = 'Grows from molecules: deselect the transition state, or expand it alone.';
+      }
+      Object.assign(fit, { n: 1, what: `these ${nS} together`, together: true,
+        note: 'One network from all of them together: the run starts from their complex (the one in Explore if you built it, else they are packed side by side and minimized).' });
+    } else if (nS > 1 && op.family?.key === 'network') {
+      fit.note = 'One run per structure, each alone.';
     }
     return fit;
   }
@@ -102,7 +111,7 @@ export function applicability(op, sel) {
       const recs = sel.structures.map((id) => state.workspace.structures[id]).filter(Boolean);
       const key = (r) => `${r.formula}|${r.charge}|${r.multiplicity}`;
       if (new Set(recs.map(key)).size > 1) {
-        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. For molecules with different atoms, make them a complex and grow it with Network expansion.';
+        fit.disabled = 'Needs isomers: the selected structures differ in atoms, charge or spin. To let molecules with different atoms react, grow them together with Network expansion.';
       }
     }
     return fit;
@@ -311,7 +320,7 @@ function OperationCard({ op, sel, fit, open, onToggle, fixed = null, embedded = 
   const nChanged = Object.entries(clean(values)).filter(([k, v]) => k in props && JSON.stringify(v ?? null) !== JSON.stringify(props[k].default ?? null)).length;
   const names = (ends ? ends.filter(Boolean).map((r) => r.name) : targetIds.map((id) => structures[id]?.name).filter(Boolean));
   const what = op.target === 'pair' && names.length === 2 ? html`from <b>${names[0]}</b> to <b>${names[1]}</b>`
-    : names.length ? html`for ${op.target === 'structure' && names.length > 1 ? 'each of ' : ''}<b>${names.length > 2 ? `${names.length} structures` : names.join(' and ')}</b>` : null;
+    : names.length ? html`for ${op.target === 'structure' && names.length > 1 && !fit.together ? 'each of ' : ''}<b>${names.length > 2 ? `${names.length} structures` : names.join(' and ')}</b>${fit.together ? ' together' : ''}` : null;
   const took = Object.values(state.jobs).filter((j) => j.op === op.key && j.status === 'done' && j.finished && j.started)
     .map((j) => j.finished - j.started).sort((a, b) => a - b);
   const usual = took.length ? took[Math.floor(took.length / 2)] : null;
