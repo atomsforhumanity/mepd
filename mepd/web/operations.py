@@ -677,7 +677,8 @@ class JobContext:
         dst.parent.mkdir(parents=True, exist_ok=True)
         # A chosen conformer (the edge's, or the caller's), else the node's
         # lowest-energy one.
-        src = self.ws.conformer_path(rec["id"], rec["conformer_id"]) if rec.get("conformer_id") \
+        src = Path(rec["xyz_path"]) if rec.get("xyz_path") \
+            else self.ws.conformer_path(rec["id"], rec["conformer_id"]) if rec.get("conformer_id") \
             else self.ws.structure_path(rec["id"])
         shutil.copyfile(src, dst)
         return dst

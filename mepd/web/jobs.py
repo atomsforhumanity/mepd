@@ -212,6 +212,12 @@ def explore_limit(job: dict) -> Optional[float]:
     return None
 
 
+# Operations that grow one network from several selected molecules together (from a complex of them all),
+# not one run per molecule. Hessian sampling and basin hopping stay per structure: they displace the
+# seed as given, and a freshly packed complex is not a minimum.
+TOGETHER_OPS = frozenset({"graph-enumeration"})
+
+
 class JobManager:
     def __init__(self, ws: Workspace, broadcaster: Broadcaster, *, max_concurrent: int = 2,
                  on_finished: Optional[Callable[[dict], Any]] = None,
@@ -367,6 +373,57 @@ class JobManager:
             raise WorkspaceError(f"{op.title} needs at least {op.min_structures} structures")
         return [(list(structure_ids), [])]
 
+    def _seed_complex(self, structure_ids: list[str], conformers, dry_run: bool) -> dict:
+        """The one seed for growing several structures' network together: the
+        complex of exactly their molecules if the workspace has one (its lowest
+        conformer, e.g. a docked one), else their geometries packed together
+        (mepd.complexes.packed), added to the workspace as a complex node.
+        The expansion minimizes its seed first. A preview (`dry_run`) adds
+        nothing: it gets a stand-in record whose geometry is a temporary file."""
+        from mepd.complexes import packed
+        from mepd.web.workspace import complex_name
+
+        known = self.ws.snapshot()["structures"]
+        recs = [self.ws.structure(s) for s in structure_ids]
+        for r in recs:
+            if r.get("role") == "ts":
+                raise WorkspaceError(f"{r['name']} is a transition state: a network grown from several "
+                                     "structures starts from their molecules together")
+            if r.get("status") == "optimizing":
+                raise WorkspaceError(f"{r['name']} is still being optimized; run this once it is done")
+        members = sorted(self.ws._flat_members(structure_ids))
+        for rec in known.values():
+            if rec.get("role") == "complex" and sorted(rec.get("members") or []) == members:
+                return rec
+        picks = conformers if isinstance(conformers, dict) else \
+            dict(zip(structure_ids, conformers)) if isinstance(conformers, list) else {}
+        parts = []
+        for sid in structure_ids:
+            s = self.ws.load_structure(sid)
+            if picks.get(sid):
+                from qcdata import Structure
+
+                geo = Structure.open(str(self.ws.conformer_path(sid, picks[sid])))
+                s = s.model_copy(update={"geometry": geo.geometry})
+            parts.append(s)
+        try:
+            together = packed(parts)
+        except RuntimeError as exc:
+            raise WorkspaceError(f"could not place these molecules together ({exc}): build their complex first "
+                                 "(Molecule › Complex) and grow that") from None
+        name = complex_name(members, known)
+        if dry_run:
+            self.ws.jobs_dir.mkdir(parents=True, exist_ok=True)
+            fp = self.ws.jobs_dir / f".seed-preview-{new_id('p_')}.xyz"
+            together.save(str(fp))
+            return {"id": "seed-preview", "stand_in": True, "xyz_path": str(fp), "name": name,
+                    "charge": int(together.charge), "multiplicity": int(together.multiplicity),
+                    "natoms": len(together.symbols), "status": "ready", "role": "complex", "members": members}
+        got = self.ws.add_or_merge(together, origin={"kind": "seed", "label": "molecules packed together to grow "
+                                                     "their network"}, optimized=False)
+        self.bus.publish("workspace", self.ws.snapshot())
+        return {**got["rec"], "_new": not got["merged"]}
+
     def submit(self, op_key: str, *, structure_ids: list[str], edge_ids: list[str],
                params: Optional[dict], profile: Optional[str], label: str = "",
                dry_run: bool = False, source_job_id: Optional[str] = None,
@@ -421,6 +478,16 @@ class JobManager:
                 issues = [i for i in issues if i not in pf["path_issues"]]
             if issues:
                 raise WorkspaceError(f"profile {profile!r} is incomplete: " + " ".join(issues))
+        stand_in = {}   # a preview's seed complex that is not in the workspace (yet)
+        new_seed = None  # a seed complex made for this submission: gone again if it fails
+        if op.key in TOGETHER_OPS and op.target == "structure" and source is None and len(set(structure_ids)) > 1:
+            # Several molecules grow one network together, from a complex of them all.
+            seed = self._seed_complex(list(dict.fromkeys(structure_ids)), conformers, dry_run)
+            if seed.get("stand_in"):
+                stand_in[seed["id"]] = seed
+            elif seed.pop("_new", False):
+                new_seed = seed["id"]
+            structure_ids, conformers = [seed["id"]], None
         if op.target == "design":
             if not self.ws.design:
                 raise WorkspaceError("there is no design")
@@ -451,7 +518,7 @@ class JobManager:
                             chosen.pop(k, None)
                 picks = [(conformers[i] if isinstance(conformers, list) and i < len(conformers) else None)
                          or chosen.get(s) for i, s in enumerate(sids)]
-                recs = [self.ws.structure_view(s, c) for s, c in zip(sids, picks)]
+                recs = [stand_in.get(s) or self.ws.structure_view(s, c) for s, c in zip(sids, picks)]
                 if isinstance(conformers, dict) and eids and not dry_run and op.target == "pair":
                     # The edge remembers the endpoint conformers chosen for it.
                     self.ws.update_edge(eids[0], conformers={s: conformers.get(s) for s in sids if s in conformers})
@@ -518,7 +585,13 @@ class JobManager:
         except Exception:
             for d in dirs:
                 remove_tree(d)
+            if new_seed:
+                self.ws.delete_structure(new_seed)
+                self.bus.publish("workspace", self.ws.snapshot())
             raise
+        finally:
+            for r in stand_in.values():
+                Path(r["xyz_path"]).unlink(missing_ok=True)
         if dry_run:
             for d in dirs:
                 remove_tree(d)
