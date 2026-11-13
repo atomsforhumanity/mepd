@@ -56,7 +56,7 @@ jobs:
       # records what it holds (MEPD_AXTB_COMMIT, MEPD_LINUS_COMMIT). linus is
       # private: read through the deploy key in LINUS_DEPLOY_KEY, else the image
       # is built without it.
-      - name: Resolve axtb and linus main
+      - name: Resolve axtb and linus main (or linus's pin)
         id: deps
         env:
           LINUS_DEPLOY_KEY: ${{ secrets.LINUS_DEPLOY_KEY }}
@@ -80,6 +80,14 @@ jobs:
             linus=$(git -c "http.extraHeader=$auth" ls-remote https://github.com/atomsforhumanity/linus.git refs/heads/main | cut -f1)
             [ -n "$linus" ] || { echo "::error::LINUS_TOKEN is set but linus main could not be read"; exit 1; }
             echo "linus_token=1" >> "$GITHUB_OUTPUT"
+          fi
+          # A pinned linus commit instead of main, while main breaks the image's tests. Empty: follow main.
+          # 2026-11-13: e464f5d (the last commit deployed, 2026-11-11); linus main's closed-shell stability
+          # check no longer finds H2's broken-symmetry solution (atomsforhumanity/linus issue). Unpin when fixed.
+          linus_pin=e464f5db0e1ec696713222f7cd5d5f2970e94fda
+          if [ -n "$linus" ] && [ -n "$linus_pin" ]; then
+            echo "linus main: $linus (not used: pinned)" >> "$GITHUB_STEP_SUMMARY"
+            linus=$linus_pin
           fi
           echo "linus=$linus" >> "$GITHUB_OUTPUT"
           echo "linus: ${linus:-not built (no LINUS_DEPLOY_KEY or LINUS_TOKEN)}" >> "$GITHUB_STEP_SUMMARY"
