@@ -1,6 +1,6 @@
 """Gate: does a candidate (commit, configuration) do at least as well as a base one, per system?
 
-    P=/home/user/astera/mepd/.venv/bin/python
+    P=python
     $P benchmarks/cluster/gate.py BASE_RUN:CONFIG CAND_RUN:CONFIG [--only sys1,sys2] [--spread-from RESULT] [--json OUT]
         [--settle-basis partial]   (settle on the partial basis for both sides: a run without the live network
                                     against one with it; score.py settle)
@@ -34,10 +34,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
-RESULTS = Path("/home/user/astera/data/runs/explorer-team/scoreboard/results")
+RESULTS = Path(os.environ.get("MEPD_SCOREBOARD") or Path(__file__).resolve().parents[2] / "scoreboard") / "results"   # as bench.py
 FLOOR_KCAL = 0.5
 SETTLE_GROWTH_FRAC = 0.2     # settle may grow by max(20 %, 2 x the same-seed rerun spread, 60 s) (coordinator)
 SETTLE_FLOOR_S = 60.0

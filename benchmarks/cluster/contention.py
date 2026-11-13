@@ -6,11 +6,12 @@ tasks (default 8 = 256 threads) of mine ran.
     python benchmarks/cluster/contention.py [--cap 8] RUN [RUN ...]
 """
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-AFH = Path("/home/user/astera/data/runs/explorer-team/scoreboard/afh")
+AFH = Path(os.environ.get("MEPD_SCOREBOARD") or Path(__file__).resolve().parents[2] / "scoreboard") / "afh"   # as bench.py
 
 
 def main(argv: list) -> int:

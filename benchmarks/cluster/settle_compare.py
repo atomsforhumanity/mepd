@@ -8,13 +8,14 @@ max |RT ln(sel/final)|, time > 0.5 kcal/mol off), median and IQR over the runs, 
 """
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.stats import mannwhitneyu
 
-RESULTS = Path("/home/user/astera/data/runs/explorer-team/scoreboard/results")
+RESULTS = Path(os.environ.get("MEPD_SCOREBOARD") or Path(__file__).resolve().parents[2] / "scoreboard") / "results"   # as bench.py
 
 
 def runs(result: str, system: str, config: str) -> list:

@@ -6,11 +6,12 @@
 # which counts ALL of jan's committed pods on the cluster (any run, any agent); it goes ahead only if those plus
 # NEXT's new total stay <= 8 (256 threads), else this script waits and asks again.
 # Usage: follow_branch.sh "FIRST..." "OTHER..." NEXT CAP FIRST_CAP    (log on stdout); SUBMIT_FLAGS for bench.py submit
+# Environment: HARNESS, PY, MEPD_SCOREBOARD (defaults below).
 set -u
 firsts=$1; others=$2; next=$3; cap=$4; first_cap=$5
-HARNESS=/home/user/astera/data/worktrees/team-scoreboard
-PY=/home/user/astera/mepd/.venv/bin/python
-dir=/home/user/astera/data/runs/explorer-team/scoreboard/afh/$next
+HARNESS=${HARNESS:-$(cd "$(dirname "$0")/../.." && pwd)}   # the checkout whose bench.py submits
+PY=${PY:-python}
+dir=${MEPD_SCOREBOARD:-$HARNESS/scoreboard}/afh/$next
 par=0
 pods() { afh ssh "kubectl -n jobs get pods -l afh/run=$1 --no-headers -o custom-columns=P:.status.phase 2>/dev/null" | grep -cE "Running|Pending"; }
 while true; do

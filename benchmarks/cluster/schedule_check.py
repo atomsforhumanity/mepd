@@ -5,12 +5,13 @@ how many have the keys "forces" and "pulls", and the distinct values of "forces"
     python benchmarks/cluster/schedule_check.py AFH_RUN [AFH_RUN ...]
 """
 import json
+import os
 import re
 import sys
 import tarfile
 from pathlib import Path
 
-AFH = Path("/home/user/astera/data/runs/explorer-team/scoreboard/afh")
+AFH = Path(os.environ.get("MEPD_SCOREBOARD") or Path(__file__).resolve().parents[2] / "scoreboard") / "afh"   # as bench.py
 
 
 def main(argv: list) -> int:

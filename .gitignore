@@ -21,3 +21,5 @@ site/
 mepd_output/
 mepd_workspace/
 examples/
+# benchmark runs and scores (benchmarks/cluster/bench.py, when MEPD_SCOREBOARD is unset)
+/scoreboard/

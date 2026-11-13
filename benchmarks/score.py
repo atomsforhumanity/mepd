@@ -1,6 +1,6 @@
 """Scoring `mepd discovery expand` runs against experiment (explorer team, phase 0: the scoreboard).
 
-    P=/home/user/astera/mepd/.venv/bin/python
+    P=python
     $P benchmarks/score.py score SYSTEM RUNDIR [--start EPOCH]   # score one run folder (prints, writes nothing)
     $P benchmarks/score.py systems                                # the suite as loaded
 

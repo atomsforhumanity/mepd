@@ -1,6 +1,6 @@
 """The --known follow-up benchmark on the AFH cluster (F0007 with the scoreboard's settings).
 
-    P=/home/user/astera/mepd/.venv/bin/python; K=benchmarks/known/afh_known.py
+    P=python; K=benchmarks/known/afh_known.py
     $P $K stage1 RUN_DIR                    # the seed (Cp + methyl acrylate complex), budget 1800 s
     $P $K stage2 RUN_DIR STAGE1_TASK_OUTPUT # two follow-ups from stage 1's endo adduct, same RNG seeds:
                                             #   kn-plain (no --known) and kn-known (--known <stage 1's run folder>)
@@ -14,6 +14,7 @@ expand` with bench.py's F0007 arguments (COMMON + system_argv + replicate 0's se
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,10 +23,10 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SCOREBOARD = Path("/home/user/astera/data/worktrees/team-scoreboard")
+SCOREBOARD = Path(os.environ.get("MEPD_SCOREBOARD_REPO") or REPO)   # a checkout that has the two commits below
 SCOREBOARD_COMMIT = "4b257f5"   # its pod wrapper and inputs, as stage 1 ran them
 SCORE_COMMIT = "104c1e6"        # its score.py (channel matching), exported from git, not the live worktree
-BIN = Path("/home/user/astera/data/runs/explorer-team/bin")
+BIN = Path(os.environ.get("MEPD_RECORDER_DIR") or ".")   # the folder with recorded.py and manifest.py
 IMAGE = "192.168.8.6:5000/mepd-orca-uma-axtb:2026-11-05"
 BUDGET = 1800.0
 THREADS = 32

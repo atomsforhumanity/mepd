@@ -5,10 +5,10 @@
 #   rerun_f0008.sh import SYS ORACLE   the ceiling from the cluster's sp_done.json
 # SYS is a folder under $F (made by oracle_inputs.py); ORACLE is gxtb, gfn2 or uma (uma on the local GPU).
 set -eo pipefail
-F=${F:-/home/user/astera/data/runs/explorer-team/findings-reruns/F0008}
+F=${F:?set F to the rerun folder}
 W=$(cd "$(dirname "$0")/../.." && pwd)
-P=${P:-/home/user/astera/mepd/.venv/bin/python}
-REC=/home/user/astera/data/runs/explorer-team/bin/recorded.py
+P=${P:-python}
+REC=${REC:?set REC to the recorder script (recorded.py)}
 export PYTHONPATH=$W OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 mode=$1; sys=$2; K=$3
 D=$F/$sys; O=$D/oracle_$K

@@ -9,10 +9,11 @@ emitters) from a real change.
 """
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
-RESULTS = Path("/home/user/astera/data/runs/explorer-team/scoreboard/results")
+RESULTS = Path(os.environ.get("MEPD_SCOREBOARD") or Path(__file__).resolve().parents[2] / "scoreboard") / "results"   # as bench.py
 R_KCAL = 1.987204e-3
 
 

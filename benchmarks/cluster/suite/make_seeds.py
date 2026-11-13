@@ -1,6 +1,6 @@
 """Seeds for the suite systems that had none (run once; output committed beside this file).
 
-    /home/user/astera/mepd/.venv/bin/python benchmarks/cluster/suite/make_seeds.py
+    python benchmarks/cluster/suite/make_seeds.py
 
 - acetic_acid.xyz: RDKit ETKDG (seed 7) + MMFF, the syn conformer (H-O-C=O dihedral 0, the lower one).
 - cp_mbl_start_complex.xyz: the F0007 start complex with methyl acrylate replaced by

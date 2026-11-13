@@ -19,13 +19,14 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import sys
 from pathlib import Path
 
 HARTREE = 627.5094740631
 R_KCAL = 1.987204259e-3
-FINDING = Path("/home/user/astera/data/repos/mepd-findings-worktrees/explorer/findings/"
-               "F0007-cp-methyl-acrylate-endo-exo/data/orca_free_energies.csv")
+# the F0007 Finding's data/orca_free_energies.csv
+FINDING = Path(os.environ.get("MEPD_F0007_FREE_ENERGIES") or "orca_free_energies.csv")
 TS = ["ts_endo_scis", "ts_endo_strans", "ts_exo_scis", "ts_exo_strans"]
 FIND_ROW = {"ts_endo_scis": "0->34", "ts_endo_strans": "58->0", "ts_exo_scis": "61->0"}
 

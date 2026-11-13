@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PY = "/home/user/astera/mepd/.venv/bin/python"
+PY = sys.executable
 
 
 def code(commit: str, dst: Path) -> Path:

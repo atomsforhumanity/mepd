@@ -1,6 +1,6 @@
 """Benchmark runs of `mepd discovery expand` on the AFH cluster: build, submit, pull, score.
 
-    P=/home/user/astera/mepd/.venv/bin/python; B=benchmarks/cluster/bench.py
+    P=python; B=benchmarks/cluster/bench.py
     $P $B build  RUN --commit SHA [--config NAME[=ARGS]]... [--systems a,b] [--replicates 5]
                  [--group 'a,b:default,T1800' --group 'c,d:default'] (instead of --systems/--config)
                  [--budget 1800] [--threads 32] [--parallelism 8] [--memory 64Gi] [--control]
@@ -37,6 +37,7 @@ configuration to measure that.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -46,7 +47,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 BENCH = HERE.parent
 REPO = BENCH.parent
-TEAM = Path("/home/user/astera/data/runs/explorer-team/scoreboard")
+# where runs are built (afh/) and scored (results/): $MEPD_SCOREBOARD, or scoreboard/ in the repository
+TEAM = Path(os.environ.get("MEPD_SCOREBOARD") or REPO / "scoreboard")
 AFH_DIR, RESULTS = TEAM / "afh", TEAM / "results"
 IMAGE = "192.168.8.6:5000/mepd-orca-uma-axtb:2026-11-05"   # mepd-orca-uma + axtb (g-xTB in process, develop 37250d5)
 
@@ -221,7 +223,6 @@ def local(run: str, threads: int) -> None:
     """Run RUN's pending tasks one at a time on this machine with the pod wrapper (NTHREADS = `threads`),
     filed like the cluster's: afh/RUN/output/<id> (exit 0) or errors/<id>, with a _meta.json. For checks of
     the pipeline at a few cores; not the 32-core "quick" definition."""
-    import os
     import socket
     import tempfile
     import time

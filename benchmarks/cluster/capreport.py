@@ -7,7 +7,8 @@ seconds, and the audit's closed_with_barrier / negative_barrier counts.
 import glob, json, os, statistics as st, sys
 from collections import defaultdict
 
-RES = "/home/user/astera/data/runs/explorer-team/scoreboard/results"
+RES = os.path.join(os.environ.get("MEPD_SCOREBOARD") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scoreboard"),
+                   "results")   # as bench.py
 arms = [a.split("=") for a in sys.argv[1:]]          # label=run/glob-pattern-of-task-dirs
 med = lambda xs: round(st.median(xs)) if xs else None
 for label, pat in arms:
