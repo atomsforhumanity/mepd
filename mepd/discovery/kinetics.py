@@ -42,6 +42,9 @@ class Step:
     ts_energy: float  # Hartree
     label: str = ""
     files: dict = field(default_factory=dict)
+    # recording only (summary.json; docs/network-expansion.md, "What a run records"): when the step was found and
+    # first used, its IRC's outcome, why it is a path peak. No decision reads it.
+    rec: dict = field(default_factory=dict)
 
 
 @dataclass

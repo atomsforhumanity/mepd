@@ -99,6 +99,18 @@ def _emit(on_event: OnEvent, event: str, **payload) -> None:
         on_event(event, payload)
 
 
+def _now() -> float:
+    """The wall time of a record (epoch seconds, as the event log's "t")."""
+    import time
+
+    return round(time.time(), 2)
+
+
+def _rec(step) -> dict:
+    """A step's record (kinetics.Step.rec: recording only); a step saved before steps had one gets it."""
+    return step.__dict__.setdefault("rec", {})
+
+
 def _edge(i: int, j: int) -> Edge:
     return (i, j) if i < j else (j, i)
 
@@ -116,6 +128,7 @@ class Proposal:
     smiles: str
     structure: object = None  # guess geometry (qcdata Structure), reactant atom order
     frames: Optional[list] = field(default=None, repr=False)  # live view: source-to-guess animation
+    key: Optional[str] = None  # recording only: a structures generator's product as it meant it (its stereo SMILES)
 
     @property
     def label(self) -> str:
@@ -819,6 +832,7 @@ class Species:
     validation: Optional[dict] = None
     loose: bool = False   # minimized only to the proposals' loose threshold so far
     known: Optional[str] = None   # the earlier run's folder it was taken from (--known), not found here
+    t_found: float = field(default_factory=_now)   # recording only: when it joined the network
 
 
 @dataclass
@@ -829,6 +843,11 @@ class ProposedEdge:
     target: Optional[int] = None  # species index it optimized to
     intended: Optional[bool] = None  # landed on the proposed connectivity
     error: str = ""
+    # recording only (summary.json, reactions[*]): when its outcome was known, its generator batch (a batched
+    # generator's, counted from 1), and why its pair got no search ({"reason", "value_kcal", "cutoff_kcal", ...})
+    t: float = field(default_factory=_now)
+    batch: Optional[int] = None
+    not_searched: Optional[dict] = None
 
 
 @dataclass
@@ -842,6 +861,10 @@ class ExpansionResult:
     channels_log: list = field(default_factory=list)  # each sampled step's TSs before and after channel sampling
     # earlier runs taken as known (`known`): {"used", "skipped", "reused"}; None without any
     known: Optional[dict] = None
+    # recording only (docs/network-expansion.md, "What a run records"): every TS found that is no step of the
+    # network, with why; and what the final kinetics rest on per species and step (expand_network._final_record)
+    steps_removed: list = field(default_factory=list)
+    record: Optional[dict] = None
 
     def connections(self) -> list[tuple[int, int]]:
         """Distinct (source, product) species pairs to connect by path search."""
@@ -1593,6 +1616,10 @@ def expand_network(
         for e in round_edges:
             if e.target is not None and e.target != e.source:
                 if max_rel_kcal is not None and result.species[e.target].rel_energy_kcal > max_rel_kcal:
+                    e.not_searched = {"reason": "product_above_cutoff",
+                                      "energy_used": "electronic, explorer level: the product above the seed",
+                                      "value_kcal": result.species[e.target].rel_energy_kcal,
+                                      "cutoff_kcal": max_rel_kcal}
                     continue   # no route reaches a product this high within the cutoff
                 pair = (e.source, e.target)
                 if pair not in connected and pair[::-1] not in connected and pair not in pairs:
@@ -1646,6 +1673,15 @@ def expand_network(
     # its single TS found
     proposed_pairs: set = set()
 
+    def _left(label, a, b, reason, **why) -> None:
+        """Recording only: a TS found that is no step of the network, or stops being one (summary.json's
+        steps_removed, and the event log as it happens)."""
+        from mepd.network_aware import log_event
+
+        rec = {"t": _now(), "label": label, "a": a, "b": b, "reason": reason, **why}
+        result.__dict__.setdefault("steps_removed", []).append(rec)
+        log_event({"event": "step_removed", **{k: v for k, v in rec.items() if k != "t"}})
+
     def _add_found(found) -> None:
         """One TS found: its ends as species (an IRC end no known species is a new intermediate), the step."""
         from mepd.discovery.kinetics import Step
@@ -1662,6 +1698,7 @@ def expand_network(
                 live._event(ProposedEdge(parent, Proposal(parent, (), (), result.species[idx].smiles),
                                          "new_species", idx, None), result.species)
         if a == b or a < 0 or b < 0:
+            _left(found.get("label", ""), a, b, "end_not_a_species" if a < 0 or b < 0 else "ends_one_species")
             return
         if found.get("peak") is not None and found.get("label"):
             peak_fallback[found["label"]] = (a, b, found["peak"], found["files"]["peak"])
@@ -1669,21 +1706,31 @@ def expand_network(
         # Two path searches can find the same TS; counting it twice would
         # double that channel's rate. Distinct TSs between the same pair
         # stay (parallel channels).
-        if any({st.a, st.b} == {a, b} and _same_ts(st, ts_e, found["ts"].structure) for st in result.steps):
+        twin = next((st for st in result.steps
+                     if {st.a, st.b} == {a, b} and _same_ts(st, ts_e, found["ts"].structure)), None)
+        if twin is not None:
+            _left(found.get("label", ""), a, b, "same_ts", of=twin.label)
             return
         # A path's highest image (no TS found) only bounds a barrier: a pair keeps one, and only while it
         # lies under every other step of the pair (a lower step makes the bound say nothing).
         same = [n for n, st in enumerate(result.steps) if {st.a, st.b} == {a, b}]
         if (found.get("files") or {}).get("ts_kind") == "path_peak":
             if any(result.steps[n].ts_energy <= ts_e for n in same):
+                _left(found.get("label", ""), a, b, "path_peak_not_lowest",
+                      placeholder_reason=found.get("placeholder_reason"))
                 return
             drop = {n for n in same if result.steps[n].files.get("ts_kind") == "path_peak"}
         else:
             drop = {n for n in same if result.steps[n].files.get("ts_kind") == "path_peak"
                     and result.steps[n].ts_energy >= ts_e}
         if drop:
+            for n in sorted(drop):
+                _left(result.steps[n].label, result.steps[n].a, result.steps[n].b, "path_peak_superseded",
+                      by=found.get("label", ""))
             result.steps[:] = [st for n, st in enumerate(result.steps) if n not in drop]
         result.steps.append(Step(a, b, ts_e, found.get("label", ""), dict(found.get("files") or {})))
+        result.steps[-1].rec.update(t_found=_now(), **({"placeholder_reason": found["placeholder_reason"]}
+                                                       if found.get("placeholder_reason") else {}))
         if live.enabled:   # the web graph fills that edge in (barrier, TS, IRC) as it happens
             from mepd.discovery.kinetics import negative_barrier_warning, raw_barriers
 
@@ -1738,6 +1785,11 @@ def expand_network(
     # the structures within reach the last free-energy view had no thermal correction for (_explorer_view)
     free_gaps: list = []
     free_said: set = set()
+    # recording only: what the latest energy view (_explorer_view, _free_energy_view) decided and from which terms
+    # (the gate's energies, reach, open steps, thermal corrections, steering shifts), for _final_record
+    view_rec: dict = {}
+    steer_why: dict = {}     # steering single point key -> why it failed
+    last_view: list = []     # the recorded kinetics' inputs (_kinetics_record), for _final_record
 
     def _mirror_of():
         """Each species' mirror image in the network (-1: not found), or None without mirror images."""
@@ -1847,6 +1899,7 @@ def expand_network(
                 live_kin["hot"] = {0} | {i for i in range(len(result.species))
                                          if k.max_concentration[i] >= tau or k.flux[i] >= tau}
                 live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
+            _stamp_opened(steps, live_kin["molecules"][0] if molecular else None)
             _show_kinetics(k, basis)
             if schedule == "async" and 0 in expanded:
                 if molecular:     # the answer the settle rule watches: the molecules' (keys, not box indices)
@@ -1862,6 +1915,16 @@ def expand_network(
             live_kin["n_steps"] = (len(result.steps), live_kin["version"])
             live_kin["at"], live_kin["took"] = time.monotonic(), time.monotonic() - t0
         return live_kin["hot"]
+
+    def _stamp_opened(steps, net=None) -> None:
+        """Recording only: when each step first took part in a kinetics, live or recorded (rec["t_opened"]): open
+        in the box kinetics (`steps`: an energy view of result.steps) and, with a molecule network, a reaction of
+        it."""
+        used = None if net is None else {x["step"] for x in net.reactions}
+        now = _now()
+        for m, (st, k) in enumerate(zip(result.steps, steps)):
+            if not k.files.get("closed") and (used is None or m in used):
+                _rec(st).setdefault("t_opened", now)
 
     def _molecule_decisions(k, tau: float) -> None:
         """live_kin from the molecule view of box kinetics `k`: "hot", the boxes whose molecules all hold material
@@ -1977,6 +2040,7 @@ def expand_network(
 
         energies = [float(s.node.energy) for s in result.species]
         k_energies, k_steps, basis = _free_energy_view(energies)
+        beyond = []
         if verified_only:
             k_steps, beyond = _left_out_unverified(k_steps)
             left = [m for m, st in enumerate(result.steps) if "left_out_of_final_kinetics" in st.files]
@@ -2006,6 +2070,9 @@ def expand_network(
             # seed's molecules (the box arrays above stay for the views that read them)
             net, mk = _molecule_view(kinetic)
             result.rounds[-1]["kinetics"]["molecules"] = _molecule_record(net, mk)
+        _stamp_opened(k_steps, net if molecular else None)
+        last_view[:] = [(list(k_steps), kinetic, list(beyond), dict(view_rec), [dict(g) for g in free_gaps],
+                         verified_only, net if molecular else None)]
         return kinetic
 
     def _ts_structure(st):
@@ -2058,6 +2125,7 @@ def expand_network(
                 continue
             parts = [s] if free is None and not is_ts else _fragments(s, splitter.parts(s, is_ts, ends))
             todo[key] = Item("ts" if is_ts else "species", 0, s, parts)
+        view_rec["steer_keys"] = keys
         if todo and queue is not None:
             for key, item in todo.items():
                 queue(key, item)
@@ -2088,6 +2156,7 @@ def expand_network(
                 if isinstance(r, str):
                     _emit(on_event, "warning", message=f"steering single point failed ({r}): explorer energy used")
                     steer_delta[key] = None
+                    steer_why[key] = r
                     continue
                 steer_saved.put("single_points", key, r)
                 steer_delta[key] = r["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
@@ -2108,11 +2177,13 @@ def expand_network(
                                           access_cutoff_kcal, _mirror_of())
         sp_idx = sorted(reach)
         ts = {m: _ts_structure(result.steps[m]) for m in open_steps}
+        view_rec["steer_no_ts"] = [m for m in open_steps if ts[m] is None]
         open_steps = [m for m in open_steps if ts[m] is not None]
         ends = {m: _ts_ends(result.steps[m]) for m in open_steps}
         d = _steer_shifts([(result.species[k].node.structure, False, None) for k in sp_idx]
                           + [(ts[m], True, ends[m]) for m in open_steps], queue)
         d_sp, d_ts = dict(zip(sp_idx, d[:len(sp_idx)])), dict(zip(open_steps, d[len(sp_idx):]))
+        view_rec["steer"] = (sp_idx, open_steps, d, d_sp.get(0) is not None)   # (asked, asked, shifts, used)
         if d_sp.get(0) is None and queue is not None:
             return g, steps, basis     # the seed's single point is still running
         if d_sp.get(0) is None:
@@ -2135,6 +2206,7 @@ def expand_network(
         from mepd.discovery.kinetics import Step
 
         free_gaps.clear()
+        view_rec.clear()
         if free is None or not result.steps:
             return energies, result.steps, "electronic"
         # Only the part of the network some route reaches within the cutoff gets Hessians: the rest carries
@@ -2142,6 +2214,7 @@ def expand_network(
         from mepd.discovery.energy_refine import kinetic_reach
 
         reach, open_steps = kinetic_reach(result.steps, energies, e0, access_cutoff_kcal, _mirror_of())
+        view_rec["e_gate"] = energies
         _tighten(sorted(reach))   # their Hessians need true minima
         energies = [float(s.node.energy) for s in result.species]
         ts_structs, ts_steps = [], []
@@ -2194,6 +2267,7 @@ def expand_network(
                  for m, st in enumerate(result.steps)]
         closed = len(result.steps) - len(open_steps)
         gap_closed = len(open_steps) - len(open_)
+        view_rec.update(reach=reach, open_steps=set(open_steps), open=open_, sp_corr=sp_corr, ts_corr=ts_corr)
         for gap in free_gaps:
             gap["closed_steps"] = 1 if gap["kind"] == "ts" else sum(
                 1 for m in open_steps if gap["index"] in (result.steps[m].a, result.steps[m].b))
@@ -2201,6 +2275,169 @@ def expand_network(
                           + (f"; {closed} step(s) out of reach closed" if closed else "")
                           + (f"; {len(free_gaps)} structure(s) without a correction, {gap_closed} step(s) they are "
                              "in closed" if free_gaps else ""))
+
+    def _final_record(k_steps, kinetic, beyond, view, gaps, verified_only, net) -> dict:
+        """Recording only: what summary.json says of each species and step beside the kinetics' own numbers
+        (docs/network-expansion.md, "What a run records"), from the last recorded kinetics (_kinetics_record's
+        steps `k_steps`, result `kinetic`, the energy view's decisions `view` and `gaps`, molecule network `net`):
+        the terms of each energy the kinetics used, each step's free-energy barrier on the kinetics' basis (None,
+        with what the run never computed, where it has none), why the final kinetics leave a step out and the
+        numbers compared, the molecules that react in it, the TSs counted as one with it. Nothing is computed
+        that the run did not compute: caches are read (for a closed step whose ends have their terms, its TS
+        file, once)."""
+        from mepd.discovery import molecules as M
+        from mepd.network_aware import accessibility
+
+        if len(k_steps) != len(result.steps):
+            raise RuntimeError("the network changed after its last recorded kinetics")
+        H = HARTREE_TO_KCAL_PER_MOL
+        all_steps, all_g, _ = kinetic.extended
+        free_on = "sp_corr" in view
+        sp_corr, ts_corr = view.get("sp_corr", {}), view.get("ts_corr", {})
+        sp_idx, ts_idx, d, steered = view.get("steer") or ([], [], [], False)
+        keys = view.get("steer_keys") or []
+        d_sp, d_ts = dict(zip(sp_idx, d)), dict(zip(ts_idx, d[len(sp_idx):]))
+        key_of = {("species", k): key for k, key in zip(sp_idx, keys)}
+        key_of.update({("ts", m): key for m, key in zip(ts_idx, keys[len(sp_idx):])})
+
+        def steer_terms(kind, i, table, key=None) -> dict:
+            """How structure i's energy was moved onto the steering level: its single point's shift relative to
+            the seed's, or why it has none (the explorer's energy was used)."""
+            if steer_engine is None:
+                return {"steer": None, "steer_shift_kcal": None}
+            if not steered:
+                return {"steer": "seed_failed" if view.get("steer") else "not_asked", "steer_shift_kcal": None}
+            key = key_of.get((kind, i), key)
+            if i in table:
+                v = table[i]
+            elif key is not None and key in steer_delta:
+                v = steer_delta[key]     # asked for by an earlier kinetics
+            else:
+                return {"steer": "not_asked", "steer_shift_kcal": None}
+            if v is None:
+                return {"steer": "failed", "steer_shift_kcal": None, "steer_error": steer_why.get(key)}
+            return {"steer": "single_point", "steer_shift_kcal": (v - d_sp[0]) * H}
+
+        species = []
+        for k in range(len(result.species)):
+            rec = {"energy_terms": {"thermal_correction_kcal": sp_corr.get(k), **steer_terms("species", k, d_sp)},
+                   "molecules": None}
+            if molecular:
+                rec["molecules"] = [{"key": key, "atoms": sorted(int(i) for i in atoms)} for atoms, key in _mol_parts(k)]
+            species.append(rec)
+        # the structures the kinetics use whose steering single point is missing: the explorer's energy stands in
+        fallbacks = []
+        if view.get("steer") and not steered:
+            fallbacks.append({"kind": "all", "why": "the seed's steering single point failed: the kinetics rest on "
+                                                    "the explorer's energies"})
+        elif steered:
+            fallbacks += [{"kind": "species", "index": k, "why": steer_why.get(key_of.get(("species", k)))}
+                          for k in sp_idx if d_sp[k] is None]
+            fallbacks += [{"kind": "ts", "step": m, "label": result.steps[m].label,
+                           "why": steer_why.get(key_of.get(("ts", m)))} for m in ts_idx if d_ts[m] is None]
+            fallbacks += [{"kind": "ts", "step": m, "label": result.steps[m].label, "why": "no TS geometry file"}
+                          for m in view.get("steer_no_ts", [])]
+        # the routes the reach test measured (kinetic_reach, on the energies it was given)
+        acc = accessibility(result.steps, view["e_gate"], e0) if free_on and access_cutoff_kcal is not None else {}
+        left = (getattr(net, "left_out", None) or {}) if net is not None else {}
+        near = {x["step"] for x in net.reactions if x.get("with_neighbours")} if net is not None else set()
+        # TSs the kinetics count as one: mirror-image twins both found, one reaction found in several boxes
+        group = list(range(len(result.steps)))
+
+        def root(i):
+            while group[i] != i:
+                i = group[i]
+            return i
+
+        same = [tuple(p) for p in (kinetic.mirrors or {}).get("found_twins", [])]
+        same += [(m, why["of"]) for m, why in left.items() if why.get("reason") == "duplicate"]
+        for m, o in same:
+            lo, hi = sorted((root(int(m)), root(int(o))))
+            group[hi] = lo
+        steps = []
+        for m, st in enumerate(result.steps):
+            a, b = st.a, st.b
+            box_closed = bool(k_steps[m].files.get("closed"))
+            closed = None
+            if box_closed:
+                closed = {"reason": "unknown", "by": "box kinetics", "energy_used": None, "value_kcal": None,
+                          "cutoff_kcal": None}
+                far = [k for k in (a, b) if k not in view["reach"]] if free_on else []
+                if far:
+                    closed.update(reason="end_out_of_reach", species=far[0], cutoff_kcal=access_cutoff_kcal,
+                                  energy_used="electronic, explorer level: the largest climb out of a well on the "
+                                              "best route from the seed (null: no route)",
+                                  value_kcal=acc[far[0]].span if far[0] in acc else None,
+                                  ts_above_seed_kcal=(st.ts_energy - e0) * H)
+                elif free_on and m not in view["open_steps"]:
+                    closed.update(reason="ts_above_cutoff", cutoff_kcal=access_cutoff_kcal,
+                                  energy_used="electronic, explorer level: the TS above the seed",
+                                  value_kcal=(st.ts_energy - e0) * H, ts_above_seed_kcal=(st.ts_energy - e0) * H)
+                elif free_on and m not in view["open"]:
+                    k = next((k for k in (a, b) if k not in sp_corr), None)
+                    gap = next((g for g in gaps
+                                if ((g["kind"] == "ts" and g.get("step") == st.label and (g.get("a"), g.get("b")) == (a, b))
+                                    if m not in ts_corr else (g["kind"] == "species" and g.get("index") == k))), None)
+                    closed.update(reason="no_thermal_correction", of="ts" if m not in ts_corr else f"species {k}",
+                                  why=gap["reason"] if gap else None)
+                elif verified_only and st.files.get("verified") is False:
+                    closed.update(reason="no_irc_check")
+                elif m in beyond:
+                    closed.update(reason="reached_only_through_unchecked_steps")
+            elif m in left:
+                closed = {"by": "molecule kinetics", "energy_used": None, "value_kcal": None, "cutoff_kcal": None,
+                          **left[m]}
+            terms = {"thermal_correction_kcal": ts_corr.get(m), **steer_terms("ts", m, d_ts)}
+            barrier, missing = None, None
+            if not box_closed:
+                g_ts = float(all_steps[m].ts_energy)
+                barrier = [(g_ts - float(all_g[a])) * H, (g_ts - float(all_g[b])) * H]
+            else:
+                # closed: its barrier on the kinetics' basis only if the run computed every term of it
+                missing = [f"thermal correction of species {k}" for k in (a, b) if free_on and k not in sp_corr]
+                missing += [f"steering single point of species {k}" for k in (a, b) if steered and k not in d_sp]
+                ts = _ts_structure(st) if not missing else None
+                if not missing and ts is None:
+                    missing.append("TS geometry file")
+                if not missing:
+                    ends = _ts_ends(st)
+                    g_ts = float(st.ts_energy)
+                    if free_on:
+                        c = ts_corr.get(m)
+                        if c is None:
+                            v = free._cache.get(free._key(ts, True, ends))
+                            c = None if v is None or isinstance(v, str) else float(min(v) if isinstance(v, tuple) else v)
+                        terms["thermal_correction_kcal"] = c
+                        if c is None:
+                            missing.append("thermal correction of the TS")
+                        else:
+                            g_ts += c / H
+                    if steered:
+                        terms.update(steer_terms("ts", m, d_ts, _steer_key(ts, True, ends)))
+                        if terms["steer"] == "not_asked":
+                            missing.append("steering single point of the TS")
+                        elif terms["steer_shift_kcal"] is not None:
+                            g_ts += terms["steer_shift_kcal"] / H
+                    if not missing:
+                        barrier = [(g_ts - float(all_g[a])) * H, (g_ts - float(all_g[b])) * H]
+                missing = missing or None
+            reacting = None
+            if molecular:
+                s = M.split(_mol_parts(a), _mol_parts(b), _mol_bonds(a), _mol_bonds(b))
+                if s[0] != "ok":
+                    reacting = {"unreadable": s[0]}
+                else:
+                    react = set(s[3])
+                    reacting = {"atoms": [int(i) for i in s[3]], "reactants": list(s[1]), "products": list(s[2]),
+                                "spectators": [{"key": key, "atoms": sorted(int(i) for i in atoms)}
+                                               for atoms, key in _mol_parts(a) if not atoms <= react],
+                                **({"with_neighbours": True} if m in near else {})}
+            rec = _rec(st)
+            steps.append({"free_energy_barrier_kcal": barrier, "free_energy_barrier_missing": missing,
+                          "closed": closed, "ts_energy_terms": terms, "reacting": reacting, "ts_group": root(m),
+                          "t_found": rec.get("t_found"), "t_opened": rec.get("t_opened"), "irc": rec.get("irc"),
+                          "placeholder_reason": rec.get("placeholder_reason")})
+        return {"species": species, "steps": steps, "steer_fallbacks": fallbacks}
 
     def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.discovery.kinetics import select_for_expansion
@@ -2298,11 +2535,16 @@ def expand_network(
         piece = (st.a, st.b)
         dropped = start is None
         duplicate = False
+        # recording only: the IRC's outcome (the step's rec["irc"], or its steps_removed record)
+        irc = {"t": _now(), "ok": not dropped, "asked": list(asked) or None, "searched_between": list(piece)}
+        same = None
         if dropped:
             missed = asked
+            irc["why"] = _irc_why(st)
         else:
             a, new_a = _species_for(start)
             b, new_b = _species_for(end)
+            irc.update(ends=[a, b], new_species=[k for k, new in ((a, new_a), (b, new_b)) if new])
             # A species no proposal made, found as this IRC's end: a product of the species the search was asked
             # from, with no route to it but this step (F0007: an adduct as the end of a TS between two other
             # species, 48-81 kcal/mol up, in 11 of the 16 baseline cases of a channel found but not connected)
@@ -2317,8 +2559,10 @@ def expand_network(
                 st.a, st.b = a, b
                 st.files["verified"] = True
                 # its real ends may be those of a step with this very TS (found from another pair): one channel
-                duplicate = any(o is not st and {o.a, o.b} == {a, b} and _same_ts(o, st.ts_energy, _ts_structure(st))
-                                for o in result.steps)
+                same = next((o for o in result.steps
+                             if o is not st and {o.a, o.b} == {a, b} and _same_ts(o, st.ts_energy, _ts_structure(st))),
+                            None)
+                duplicate = same is not None
                 irc_fp = Path(st.files["ts"]).with_name(f"{Path(st.files['ts']).stem}_irc.xyz") \
                     if st.files.get("ts") else None
                 if irc_fp is not None and irc_fp.exists() and not st.files.get("irc"):
@@ -2329,8 +2573,18 @@ def expand_network(
         # path search -- the steps between them, intermediates included. (Not a rotamer's: its pair has its TS.)
         if len(missed) == 2 and tuple(missed) not in searched and not st.files.get("rotamer_of"):
             retry.append(tuple(missed))
+            irc["path_search_asked_for"] = list(missed)
         if dropped or duplicate:
             result.steps[:] = [x for x in result.steps if x is not st]
+            _left(st.label, piece[0], piece[1],
+                  "irc_failed" if start is None else "same_ts_after_irc" if duplicate
+                  else "irc_ends_one_species" if irc["ends"][0] == irc["ends"][1] and irc["ends"][0] >= 0
+                  else "irc_end_not_a_species", irc=irc, **({"of": same.label} if duplicate else {}))
+        else:
+            from mepd.network_aware import log_event
+
+            _rec(st)["irc"] = irc
+            log_event({"event": "irc", "label": st.label, **{k: v for k, v in irc.items() if k != "t"}})
         # A path-search piece whose TS turned out to belong to another motion (both IRC ends one
         # species, or other species) keeps its path's highest image, as when no TS is found at all.
         fb = peak_fallback.pop(st.label, None)
@@ -2340,7 +2594,18 @@ def expand_network(
             sample_more.add(frozenset(piece))
             fa, fb_, peak, fp = fb
             _add_found({"pair": (fa, fb_), "ts": peak, "label": f"{Path(fp).stem}",
-                        "files": {"ts": fp, "verified": True, "ts_kind": "path_peak"}})
+                        "files": {"ts": fp, "verified": True, "ts_kind": "path_peak"},
+                        "placeholder_reason": {"why": "leaf_ts_irc_failed" if start is None
+                                               else "leaf_ts_irc_went_elsewhere", "ts": st.label,
+                                               "irc_ends": irc.get("ends"), "error": irc.get("why")}})
+
+    def _irc_why(st) -> Optional[str]:
+        """Recording only: why step `st`'s IRC failed, as its job left it beside the TS (<stem>_irc.failed)."""
+        try:
+            fp = Path(st.files["ts"])
+            return fp.with_name(f"{fp.stem}_irc.failed").read_text().strip()[:500]
+        except Exception:
+            return None
 
     def _verify_and_search(kinetic) -> int:
         """IRC-check the steps the kinetics need; pairs a single TS didn't
@@ -2466,6 +2731,8 @@ def expand_network(
             before = [st for st in result.steps if frozenset((st.a, st.b)) == key]
             if out.get("direct"):
                 # sampled TSs of this step supersede the single one (counting both would double its rate)
+                for st in before:
+                    _left(st.label, st.a, st.b, "superseded_by_channel_sampling")
                 result.steps[:] = [st for st in result.steps if frozenset((st.a, st.b)) != key]
             for rec in out.get("direct", []) + out.get("other", []):
                 _add_found(rec)
@@ -2881,6 +3148,12 @@ def expand_network(
                     source=src)
                 props = view.keep(props)
                 _build_guesses(props, node, coords, SimpleNamespace(enabled=False), width, view)
+            if gen_obj.kind == "structures":
+                # recording only: each product as its generator meant it, before it is minimized at this level
+                from mepd.discovery.nanoreactor_generator import stereo_key
+
+                for p in props:
+                    p.key = stereo_key(p.structure)
             todo = [k for k, p in enumerate(props) if p.smiles not in known_smiles]
             eng = connect.job_inputs.engine
             phase("minimize", total=len(todo))
@@ -2961,7 +3234,7 @@ def expand_network(
             picks = [k for k in hot if k not in expanded and k not in expanding and reach(k)]
             return sorted(picks, key=lambda k: -load.get(k, 1.0))
 
-        def _proposed(src, out, final: bool = True) -> None:
+        def _proposed(src, out, final: bool = True, batch: Optional[int] = None) -> None:
             """A species' proposals are back: species and edges as in a round; pairs to new products join
             the running queue at once. `final` False: one batch of a batched generator, more to come (the
             species stays being expanded)."""
@@ -2994,6 +3267,7 @@ def expand_network(
                     edge = _classify(p, StructureNode(structure=p.structure), opt, record)
                 edges.append(edge)
             for edge in edges:
+                edge.batch = batch
                 result.edges.append(edge)
                 live.finish(edge, result.species)
                 if edge.outcome == "new_species":
@@ -3024,7 +3298,8 @@ def expand_network(
                 return
             props, res, meta = out
             more = not meta["done"] and not _out_of_budget()
-            _proposed(k, (props, res), final=not more)
+            _proposed(k, (props, res), final=not more,
+                      batch=meta["state"].get("batch") if isinstance(meta.get("state"), dict) else None)
             if more:
                 _submit_propose(k, gen_opts, meta["state"])
 
@@ -3188,6 +3463,7 @@ def expand_network(
                 if r is None or isinstance(r, str):
                     _emit(on_event, "warning", message=f"steering single point failed ({r}): explorer energy used")
                     steer_delta[key] = None
+                    steer_why[key] = str(r)
                 else:
                     steer_saved.put("single_points", key, r)
                     steer_delta[key] = r["delta_kcal"] / HARTREE_TO_KCAL_PER_MOL
@@ -3530,6 +3806,12 @@ def expand_network(
         rnd = result.rounds[-1]["round"]
         if _refine_steps(result.kinetics if result.kinetics is not None else _kinetics_record([])):
             _kinetics_record([])
+    if last_view:
+        try:
+            result.record = _final_record(*last_view[0])
+        except Exception as exc:    # a record that can't be made never costs the run its result (said)
+            result.record = {"error": f"{type(exc).__name__}: {exc}"}
+            _emit(on_event, "warning", message=f"the run's record of its steps could not be made ({exc})")
     _save(force=True)
     live.close()
     if steer_pool[0] is not None:

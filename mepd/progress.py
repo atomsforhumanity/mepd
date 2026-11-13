@@ -445,7 +445,7 @@ def append_live_event(event: dict) -> None:
         return
     try:
         fp.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(event, default=str) + "\n"
+        line = json.dumps({"t": round(time.time(), 2), **event}, default=str) + "\n"
         # One write on an O_APPEND file: a reader never sees half a line
         # from us, only possibly a line still being written (no newline yet).
         fd = os.open(fp.with_suffix(".jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)

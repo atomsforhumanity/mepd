@@ -283,6 +283,8 @@ class MoleculeNetwork:
     seed: list                     # the seed box's molecules (indices, with repeats)
     counts: dict = field(default_factory=dict)
     fit: dict = field(default_factory=dict)
+    # recording only: {found step: {"reason", ...}} of the open box steps that are no reaction here (`build`)
+    left_out: dict = field(default_factory=dict)
 
     def network(self, absorbing: Sequence[int] = ()):
         from mepd.microkinetics import Network, Step
@@ -346,18 +348,29 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
 
     found = []
     info_cache: dict = {}
+    left_out: dict = {}
+
+    def left(j, reason, **kw):   # recording only (a twin is left out with the step it mirrors)
+        if j < n_orig:
+            left_out[j] = {"reason": reason, **kw}
+
     for j, st in enumerate(steps):
         e_a, e_b = float(energies[st.a]), float(energies[st.b])
         if (st.files or {}).get("closed") or float(st.ts_energy) - max(e_a, e_b) > CLOSED_HARTREE:
+            if not (st.files or {}).get("closed"):
+                left(j, "ts_above_closed_threshold", value_kcal=(float(st.ts_energy) - max(e_a, e_b)) * H_KCAL,
+                     cutoff_kcal=CLOSED_HARTREE * H_KCAL)
             continue
         count("open_box_steps")
         if (steps[orig_of[j]].files or {}).get("ts_kind") == "path_peak":
             # its TS search failed (kept at its path's highest image): no saddle, no barrier to give a rate
             count("left_out_ts_search_failed")
+            left(j, "path_peak")
             continue
         s = split(parts_of(st.a), parts_of(st.b), bonds(box(st.a)), bonds(box(st.b)))
         if s[0] != "ok":
             count("left_out_" + s[0])
+            left(j, s[0])
             continue
         _, r, p, react, spectators = s
         m = orig_of[j]
@@ -370,6 +383,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
             if not has_ends:
                 if not verified:
                     count("left_out_whole_box_ts_unchecked")
+                    left(j, "whole_box_ts_unchecked")
                     continue
                 near = _neighbours(ts, react, spectators) if ts is not None else []
                 if near:
@@ -430,6 +444,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
                 break
         if dup:
             count("merged_duplicates")
+            left(x["step"], "duplicate", of=y_["step"])
             continue
         groups.setdefault(key, []).append(x)
         kept.append(x)
@@ -451,7 +466,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
                             **({"fallback": "the fit's second stage failed its checks: the LP vertex, which "
                                             "depends on the order of boxes and molecules"}
                                if fit_info.get("fallback") else {}),
-                            "resid_max_kcal": float(np.abs(resid).max()) if len(resid) else 0.0})
+                            "resid_max_kcal": float(np.abs(resid).max()) if len(resid) else 0.0}, left_out)
 
 
 def _neighbours(ts, react, spectators) -> list:

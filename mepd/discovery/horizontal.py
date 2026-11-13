@@ -689,6 +689,9 @@ class HorizontalConnector:
                                                   "pair": [i, j]}})
                             else:
                                 counts["fast_failed"] += 1
+                                # recording only: why its fast TS failed (a path peak's record, below)
+                                self.__dict__.setdefault("_fast_why", {})[pair] = (
+                                    None if exc is None else f"{type(exc).__name__}: {exc}"[:500])
                                 start_search(pair, *args[2:4])   # from the structures it was given
                         elif kind == "piece":
                             if out is None:
@@ -724,7 +727,12 @@ class HorizontalConnector:
                                     counts["path_peak"] += 1
                                     record({"start": ends[0], "end": ends[1], "ts": peak, "label": label,
                                             "files": {"ts": str(self.ts_dir / f"{label}.xyz"), "verified": True,
-                                                      "ts_kind": "path_peak"}})
+                                                      "ts_kind": "path_peak"},
+                                            # recording only (summary.json, steps[*].placeholder_reason)
+                                            "placeholder_reason": {
+                                                "why": "leaf_ts_failed",
+                                                "error": None if exc is None else f"{type(exc).__name__}: {exc}"[:500],
+                                                "fast_ts_error": getattr(self, "_fast_why", {}).get(pair)}})
                                 continue
                             counts["leaf_ts_ok"] += 1
                             minimized = None

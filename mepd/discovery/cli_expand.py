@@ -934,9 +934,11 @@ def expand(
             e0 = float(res.species[0].node.energy)
             part = {"partial": True, "seed_energy": e0, "rounds": res.rounds,
                     "species": [{"index": k, "smiles": sp.smiles, "round": sp.round, "energy": float(sp.node.energy),
-                                 "rel_energy_kcal": sp.rel_energy_kcal} for k, sp in enumerate(res.species)],
-                    "steps": [{"a": st.a, "b": st.b, "ts_energy": st.ts_energy, "label": st.label, "files": st.files}
-                              for st in res.steps]}
+                                 "rel_energy_kcal": sp.rel_energy_kcal, "t_found": getattr(sp, "t_found", None)}
+                                for k, sp in enumerate(res.species)],
+                    # (t_found, t_opened, irc, placeholder_reason: each step's record so far)
+                    "steps": [{"a": st.a, "b": st.b, "ts_energy": st.ts_energy, "label": st.label, "files": st.files,
+                               **getattr(st, "rec", {})} for st in res.steps]}
             output.mkdir(parents=True, exist_ok=True)
             tmp = output / "summary_partial.json.tmp"
             tmp.write_text(json.dumps(part, default=str))
@@ -1034,7 +1036,11 @@ def expand(
                     for k, s in enumerate(result.species)],
         "reactions": [{"source": e.source, "target": e.target, "outcome": e.outcome, "proposed_smiles": e.proposal.smiles,
                        "broken": [list(b) for b in e.proposal.broken], "formed": [list(f) for f in e.proposal.formed],
-                       "landed_as_proposed": e.intended, "error": e.error or None} for e in result.edges],
+                       "landed_as_proposed": e.intended, "error": e.error or None,
+                       # recorded for the measuring instruments (docs/network-expansion.md, "What a run records")
+                       "t": getattr(e, "t", None), "batch": getattr(e, "batch", None),
+                       "proposed_key": getattr(e.proposal, "key", None),
+                       "not_searched": getattr(e, "not_searched", None)} for e in result.edges],
         # A named generator swaps in its own enumeration reference; imported
         # products and custom generators only share the animation.
         "methods": {**({k: v for k, v in REFERENCES.items() if k != "kinetics"}
@@ -1069,6 +1075,30 @@ def expand(
         "channels_log": getattr(result, "channels_log", []),
         "output_files": files,
     }
+    # What the run recorded for the measuring instruments (docs/network-expansion.md, "What a run records")
+    record = getattr(result, "record", None) or {}
+    for k, row in enumerate(summary["species"]):
+        row["t_found"] = getattr(result.species[k], "t_found", None)
+        row.update(record["species"][k] if k < len(record.get("species", ())) else {})
+    for m, row in enumerate(summary["steps"]):
+        row.update(record["steps"][m] if m < len(record.get("steps", ())) else {})
+    summary["steps_removed"] = getattr(result, "steps_removed", [])
+    if "error" in record:
+        summary["record_error"] = record["error"]
+    if steer in ("flux", "access"):
+        from mepd.discovery.energy_refine import _level
+
+        def level(engine, profile):
+            import hashlib
+
+            return {"engine": type(engine).__name__, "key": _level(engine),
+                    "profile_sha256": hashlib.sha256(Path(profile).read_bytes()).hexdigest() if profile else None}
+
+        summary["steering"]["level"] = {
+            "explorer": level(run_inputs.engine, inputs),
+            "steer": level(steer_engine, steer_with if steer_engine is not high_engine else refine_energies)
+            if steer_engine is not None else None}
+        summary["steering"]["steer_fallbacks"] = record.get("steer_fallbacks")
     if getattr(result, "known", None) is not None:
         # the earlier runs given as --known: used (and how much was taken from each) or skipped, and why
         summary["known"] = result.known
