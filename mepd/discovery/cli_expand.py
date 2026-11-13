@@ -1091,8 +1091,9 @@ def expand(
         def level(engine, profile):
             import hashlib
 
+            known = isinstance(profile, (str, Path)) and Path(profile).is_file()   # (None: built-in defaults)
             return {"engine": type(engine).__name__, "key": _level(engine),
-                    "profile_sha256": hashlib.sha256(Path(profile).read_bytes()).hexdigest() if profile else None}
+                    "profile_sha256": hashlib.sha256(Path(profile).read_bytes()).hexdigest() if known else None}
 
         summary["steering"]["level"] = {
             "explorer": level(run_inputs.engine, inputs),
