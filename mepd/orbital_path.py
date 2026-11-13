@@ -86,6 +86,24 @@ def pick_frames(frames: list, count: int, ts_index: Optional[int] = None) -> lis
 
 # ------------------------------------------------------------------ one frame's orbitals
 
+def _linus_spin_keywords(restricted: Optional[bool], stability: bool) -> dict:
+    """The determinant and stability settings as the installed linus names them: since its settings rework
+    (2026-11-12) `reference` ("restricted"/"unrestricted") and `scf.stability` "always"; before, `restricted`
+    (a bool) and `scf.stability` True."""
+    try:
+        from linus._qc import KEYWORDS
+    except Exception:
+        KEYWORDS = frozenset({"reference"})
+    new = "reference" in KEYWORDS or "restricted" not in KEYWORDS
+    out: dict = {}
+    if restricted is not None:
+        out.update({"reference": "restricted" if restricted else "unrestricted"} if new
+                   else {"restricted": bool(restricted)})
+    if stability:
+        out["scf"] = {"stability": "always" if new else True}
+    return out
+
+
 def linus_molden(symbols: list, coords_A: np.ndarray, charge: int, multiplicity: int, functional: str,
                  basis: str, threads: int = 4, previous=None, *, restricted: Optional[bool] = None,
                  stability: bool = False):
@@ -102,8 +120,7 @@ def linus_molden(symbols: list, coords_A: np.ndarray, charge: int, multiplicity:
     inp = ProgramInput(program="linus", structure=s, calctype="energy",
                        model={"method": functional, "basis": basis},
                        keywords={"jk": "df", "threads": int(threads), "molden": True,
-                                 **({"restricted": bool(restricted)} if restricted is not None else {}),
-                                 **({"scf": {"stability": True}} if stability else {})})
+                                 **_linus_spin_keywords(restricted, stability)})
     if previous is not None:
         inp = propagate_wfn(previous, inp)
     out = linus.compute(inp, raise_exc=False)
