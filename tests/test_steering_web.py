@@ -53,7 +53,7 @@ def test_the_builtin_profile_is_the_job_steer_toml(tmp_path, monkeypatch):
     toml = argv[argv.index("--steer-energies") + 1]
     assert toml == str(tmp_path / "inputs" / "steer.toml")
     text = (tmp_path / "inputs" / "steer.toml").read_text()
-    assert text == steering.LINUS_TOML and 'grid = "linus:2"' in text and "orca" not in text.split("[program_kwds]")[1]
+    assert text == steering.linus_toml() and 'grid = "linus:2"' in text and "orca" not in text.split("[program_kwds]")[1]
     # a saved profile still works, and none steers with nothing
     argv = _expand(tmp_path, steer="access", steer_profile="my dft")
     assert "psi4" in (tmp_path / "inputs" / "steer.toml").read_text()
@@ -68,7 +68,7 @@ def test_the_builtin_profile_loads_as_steer_energies_does():
     eng = steering.builtin_profile_engine()
     assert type(eng).__name__ == "QCComputeEngine" and eng.program == "linus"
     kw = eng.program_args.keywords
-    assert kw["jk"] == "df" and kw["grid"] == "linus:2" and kw["threads"] == 1 and kw["memory_gb"] == 1.5
+    assert kw["jk"] == "df" and kw["grid"] == "linus:2" and kw["threads"] == 1 and kw[steering._linus_memory_key()] == 1.5
     assert eng.program_args.model.method == "wb97x-d3bj" and eng.program_args.model.basis == "def2-tzvp"
 
 
@@ -94,7 +94,17 @@ def test_steering_is_in_the_main_form_and_its_profile_on_the_profiles_page(tmp_p
 
     monkeypatch.setattr(steering, "linus_available", lambda: True)
     with TestClient(create_app(tmp_path / "ws")) as c:
-        assert c.get("/api/state").json()["builtin_profiles"] == {steering.LINUS: steering.LINUS_TOML}
+        assert c.get("/api/state").json()["builtin_profiles"] == {steering.LINUS: steering.linus_toml()}
     monkeypatch.setattr(steering, "linus_available", lambda: False)
     with TestClient(create_app(tmp_path / "ws2")) as c:
         assert c.get("/api/state").json()["builtin_profiles"] == {}
+
+
+@pytest.mark.skipif(not steering.linus_available(), reason="needs linus")
+def test_the_memory_keyword_is_the_installed_linus_s(monkeypatch):
+    import linus._qc as qc
+
+    monkeypatch.setattr(qc, "KEYWORDS", frozenset({"jk", "grid", "threads", "memory_gib"}))
+    assert "memory_gib = 1.5}" in steering.linus_toml()
+    monkeypatch.setattr(qc, "KEYWORDS", frozenset({"jk", "grid", "threads", "memory_gb"}))
+    assert "memory_gb = 1.5}" in steering.linus_toml()

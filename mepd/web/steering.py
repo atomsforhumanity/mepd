@@ -14,15 +14,16 @@ LINUS = "linus · ωB97X-D3BJ/def2-TZVP (built in)"
 # RIJCOSX, 5-8x faster per point) except the grid: linus's own linus:2 instead of orca:2, whose ORCA-measured
 # data linus keeps out of its releases. On the isoprene + methyl acrylate box the two grids differ by
 # 0.004 kcal/mol; on 42 benchmark species and TSs both give TS-TS energies within 0.11 kcal/mol of ORCA.
-# memory_gb 1.5: a worker peaks near 1.4 GB at 25 atoms.
-LINUS_TOML = """\
+# Memory 1.5: a worker peaks near 1.4 GB at 25 atoms. linus calls it memory_gib since its settings rework
+# (2026-11-12) and memory_gb before; the profile names it as the installed linus does (linus_toml).
+_LINUS_TEMPLATE = """\
 # Built in (mepd.web.steering): wB97X-D3BJ/def2-TZVP single points with linus, in process through qccompute.
-# RI-JK (def2-universal-jkfit), linus's own DefGrid2-sized grid, 1 thread, 1.5 GB per point.
+# RI-JK (def2-universal-jkfit), linus's own DefGrid2-sized grid, 1 thread, 1.5 GiB per point.
 engine_name = "qccompute"
 program = "linus"
 [program_kwds]
 model = {method = "wb97x-d3bj", basis = "def2-tzvp"}
-keywords = {jk = "df", grid = "linus:2", threads = 1, memory_gb = 1.5}
+keywords = {jk = "df", grid = "linus:2", threads = 1, MEMORY = 1.5}
 """
 
 
@@ -30,9 +31,23 @@ def linus_available() -> bool:
     return importlib.util.find_spec("linus") is not None and importlib.util.find_spec("qccompute") is not None
 
 
+def _linus_memory_key() -> str:
+    """The installed linus's name for its memory budget: memory_gib, or memory_gb before 2026-11-12."""
+    try:
+        from linus._qc import KEYWORDS
+    except Exception:
+        return "memory_gib"
+    return "memory_gb" if "memory_gb" in KEYWORDS and "memory_gib" not in KEYWORDS else "memory_gib"
+
+
+def linus_toml() -> str:
+    """The built-in linus steering profile, in the installed linus's keywords."""
+    return _LINUS_TEMPLATE.replace("MEMORY = ", f"{_linus_memory_key()} = ")
+
+
 def builtin_profiles() -> dict[str, str]:
     """{name: profile TOML} of the built-in steering profiles this install can run."""
-    return {LINUS: LINUS_TOML} if linus_available() else {}
+    return {LINUS: linus_toml()} if linus_available() else {}
 
 
 def default_steer_profile() -> str:
@@ -44,7 +59,7 @@ def builtin_profile_engine(name: str = LINUS):
     """The engine a built-in profile gives, loaded as `--steer-energies` loads it (the image's self-check)."""
     from mepd.cli_common import _open_run_inputs
 
-    text = {LINUS: LINUS_TOML}[name]
+    text = {LINUS: linus_toml()}[name]
     with tempfile.TemporaryDirectory(prefix="mepd-steer-") as tmp:
         path = Path(tmp) / "steer.toml"
         path.write_text(text)
