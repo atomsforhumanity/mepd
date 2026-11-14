@@ -717,9 +717,9 @@ def expand(
     procedure: str = typer.Option(
         "classic", "--procedure",
         help="--steer access --schedule async with --kinetics-energy free: 'classic' (default), or 'staged': the "
-        "access cutoff is applied to the explorer's own free energies (the kinetics' scale) wherever it gates the "
-        "exploration, a structure without a Hessian yet being closed only provisionally, 15 kcal/mol above the "
-        "cutoff on its electronic energy; and steering single points go only to the transition states that decide "
+        "access cutoff is applied to the explorer's own free energies (the kinetics' scale) where a thermal "
+        "correction exists or is computed, a structure without one being closed only provisionally, 15 kcal/mol "
+        "above the cutoff on its electronic energy; and steering single points go only to the transition states that decide "
         "each populated species' outflow and their ends. Manual: Network expansion › The staged procedure."),
     resume: bool = typer.Option(
         False, "--resume",

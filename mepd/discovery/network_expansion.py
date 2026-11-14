@@ -1226,7 +1226,8 @@ def deciding_window(steps, g, populated, temperature: float, margin_kcal: float 
 def lent_shifts(known: dict, neighbours: dict) -> dict:
     """procedure="staged": a steering shift for each structure that has none of its own (the keys of
     `neighbours`): the median of the shifts of its neighbours that have one (`known`: structure -> shift), else
-    of every known shift, else 0 -- never 0 beside shifted neighbours."""
+    of every known shift, else 0. Shifts are relative to the seed, so a structure whose only shifted neighbour
+    is the seed is lent exactly 0."""
     import statistics
 
     everything = statistics.median(known.values()) if known else 0.0
@@ -1476,9 +1477,11 @@ def expand_network(
     not count towards `max_species`. `result.known` records what was used, skipped and why, and how much.
 
     `procedure="staged"` (schedule="async", free-energy kinetics; "classic", the default, is everything above):
-    every comparison with `access_cutoff_kcal` -- reach, open steps, the pairs connected, channel and rotamer
-    triggers, queue priorities, the reactor's cutoff -- is made on the explorer's own free energy (electronic
-    energy + the kinetics' thermal correction) above the seed's, the scale the kinetics run on. A structure
+    the comparisons with `access_cutoff_kcal` -- reach, open steps, the proposed pairs connected, channel and
+    rotamer triggers, queue priorities -- are made on the explorer's own free energy (electronic energy + the
+    kinetics' thermal correction) above the seed's, the scale the kinetics run on, wherever a thermal correction
+    exists or is computed; IRC-end species and the reactor's cutoff are judged on the electronic energy against
+    the cutoff + PROVISIONAL_MARGIN_KCAL. A structure
     whose thermal correction is not known yet is not closed for that: within PROVISIONAL_MARGIN_KCAL of the
     cutoff on its electronic energy its Hessian is computed and the free energy decides; above that it is
     closed provisionally (recorded: `closed.provisional`, `not_searched.provisional`). A proposed product
