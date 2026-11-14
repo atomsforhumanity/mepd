@@ -227,27 +227,40 @@ These plug in in place of the built-in generator:
 --schedule async --connect-mode fast --kinetics-energy free`; `procedure="staged"` in `expand_network`) changes
 two things. No other option belongs to it.
 
-**1. One scale for every gate.** The access cutoff is a free-energy barrier (Eyring, at `--cutoff-temperature`
-over `--cutoff-time`, plus `--cutoff-margin`). The classic procedure compares it with electronic energies. The
-staged one compares it with the explorer's own free energy, electronic energy plus the kinetics' quasi-RRHO
-thermal correction, above the seed's: for which species are within reach and which steps are open, which proposed
-products are connected, which steps get channel sampling and rotamers, the order of those jobs, and what is left of
-the cutoff for the reactor generator. The cutoff's value is the same.
+**1. The gates on free energy, where a thermal correction exists.** The access cutoff is a free-energy barrier
+(Eyring, at `--cutoff-temperature` over `--cutoff-time`, plus `--cutoff-margin`). The classic procedure compares it
+with electronic energies. The staged one compares it with the explorer's own free energy, electronic energy plus
+the kinetics' quasi-RRHO thermal correction, above the seed's, wherever the structure has a thermal correction or
+gets one: for which species are within reach and which steps are open, which proposed products are connected,
+which steps get channel sampling and rotamers, and the order of those jobs. The cutoff's value is the same.
 
-A structure whose thermal correction is not known yet is never closed for that. While its electronic height above
-the seed is at most the cutoff + 15 kcal/mol (`PROVISIONAL_MARGIN_KCAL`), its Hessian is computed when the reach
-test needs it (the species within reach, the TS of every step that touches the reach, the far end of such a step
-unless its TS closes it) and the free energy decides. Above that it is closed *provisionally*, and the summary says
-so (`closed.provisional`, `not_searched.provisional`, `steering.provisional_closures`). A proposed product
-within that margin gets its Hessian first, as a job of the queue (a tight minimization and the thermal correction,
-at its pair's rank): only if its free energy is within the cutoff is its pair searched and its channels sampled;
-otherwise the reaction is recorded as not searched (`not_searched`, with the free energy compared). Structures no
-Hessian can exist for, the images of a path search and the reactor generator's products, are judged on their
-electronic height against the cutoff + 15.
+A structure whose thermal correction is not known yet is never closed for that alone. While its electronic height
+above the seed is at most the cutoff + 15 kcal/mol (`PROVISIONAL_MARGIN_KCAL`), its Hessian is computed when the
+reach test needs it (the species within reach, the TS of every step that touches the reach, the far end of such a
+step unless its TS closes it) and the free energy decides. A proposed product within that margin gets its Hessian
+first, as a job of the queue (a tight minimization and the thermal correction, at its pair's rank): only if its
+free energy is within the cutoff is its pair searched and its channels sampled; otherwise the reaction is recorded
+as not searched (`not_searched`, with the free energy compared).
+
+Where no thermal correction is computed, the comparison is not a free-energy one. These are the limits of "one
+scale":
+- **Above the cutoff + 15 on its electronic energy** a structure is closed, or its pair not searched, without a
+  Hessian: *provisionally*, and the summary says so (`closed.provisional`, `not_searched.provisional`,
+  `steering.provisional_closures`). The margin is one number at every temperature. A structure whose free energy
+  would pass can be closed this way (possible for a product of several molecules at high temperature, whose free
+  energy lies far below its electronic energy). The rule is never stricter than the classic gate.
+- **A species first found as the end of an IRC**, beside the pair that was asked for, is connected to the species
+  the search was asked from on its electronic height against the cutoff + 15, without a Hessian job: 15 kcal/mol
+  looser than classic. The step's `irc.connected_provisionally` lists such species. (The reach test computes its
+  Hessian once a step reaches it.)
+- **The images of a path search and the reactor generator's products** have no Hessian: path searches prune at
+  the cutoff + 15 on electronic energies, and the reactor counts products up to the cutoff + 15 minus the
+  species' electronic height above the seed.
 
 In `summary.json`, `closed.energy_used` names the energy compared, and `closed.reason` reads: `ts_above_cutoff`
 (the TS's free energy above the seed's, or provisionally its electronic one), `end_out_of_reach` (`species`; the
-climb on free energies), `no_thermal_correction` (a failed Hessian).
+climb on free energies; for a species without a Hessian, provisional, `value_kcal` is its electronic height above
+the seed, not a free energy, as `energy_used` says), `no_thermal_correction` (a failed Hessian).
 
 **2. Higher-level single points only where they decide.** With `--steer-energies`, the classic procedure computes
 a single point for every species within reach and the TS of every open step. The staged one computes them for the
@@ -259,20 +272,35 @@ energies. Its single points are the queue's first jobs, queued when the TS's IRC
 computed for an earlier window is used. At the end of a run the points the last window still lacks are computed
 before the final kinetics, as the classic procedure computes all of its missing ones.
 
-Every other structure the kinetics use keeps its free energy at the explorer's level plus a *lent* shift, so that
-no structure stands unshifted beside shifted ones: a TS gets the median shift of the refined TSs of the steps that
-share a species with it, a species the median shift of the refined species it has a step to (failing those, the
-median of all refined TSs or species). `summary.json` flags them: `steps[*].shift_lent` (true for an open step on
-a lent shift, null for a closed step), `ts_energy_terms.steer: "lent"` with `shift_lent: true` (also on
-`species[*].energy_terms`), `steps[*].deciding_window` (`width_kcal` and, per populated species whose window
-holds the step, `species`, `barrier_kcal`, `lowest_kcal`; null outside every window), and under `steering`:
-`level_margin_kcal`, `deciding_window_steps`, `single_points` (`species` and `ts` the final kinetics use,
-`computed` in all) and `shift_lent` (the species and steps on a lent shift). `steps[*].end_shift_lent` lists the end species of an
-open step that are on a lent shift (empty: none; null for a closed step): the step's barrier from that end, and so
-its reverse rate, rests on it. A path's highest image standing in for a TS (`files.ts_kind: "path_peak"`) and a
-step no IRC checked are never in a window, so an open one is always on a lent shift. The window is read on the
-populated set of the same kinetics (when they change it, the window and the kinetics are made once more). A step
-on a lent shift that carries flux is a sign the window was too narrow.
+Every other structure the kinetics use keeps its free energy at the explorer's level plus a *lent* shift. Shifts
+are relative to the seed's (the seed's own is 0 by definition). A TS is lent the median shift of the refined TSs of
+the open steps that share a species with it; a species the median shift of the refined species it has a step to;
+failing those, the median over all refined TSs, or species; with none refined, 0. Known limits of that rule:
+- a species whose only refined neighbour is the seed is lent exactly 0, while a refined species beside it carries
+  its own shift (`end_shift_lent` flags the steps it is an end of);
+- a TS whose single point failed, with no other refined TS, stays at 0 (`shift_lent`, `steer: "failed"`);
+- during a run the live kinetics can hold a window's TS on a lent shift, 0 included, while its single point is
+  out; the final kinetics compute the window's missing points first.
+
+`summary.json` flags lent shifts: `steps[*].shift_lent` (true for an open step whose TS is on a lent shift, null
+for a closed step), `steps[*].end_shift_lent` (the end species of an open step that are on a lent shift; empty:
+none; null for a closed step: the step's barrier from that end, and so its reverse rate, rests on it),
+`ts_energy_terms.steer: "lent"` with `shift_lent: true` (also on `species[*].energy_terms`),
+`steps[*].deciding_window` (`width_kcal` and, per populated species whose window holds the step, `species`,
+`barrier_kcal`, `lowest_kcal`; null outside every window), and under `steering`: `level_margin_kcal`,
+`deciding_window_steps`, `single_points` (`species` and `ts` the final kinetics use, `computed` in all) and
+`shift_lent` (the species and steps on a lent shift). `steering.shift_lent.steps` and the count in
+`steering.kinetics_energy_basis` are taken before the final kinetics leave out the steps no IRC checked, so they
+can include such steps; `steps[*].shift_lent` is null for those.
+
+A path's highest image standing in for a TS (`files.ts_kind: "path_peak"`) and a step no IRC checked are never in
+a window, so an open one is always on a lent shift. The window is read on the populated set of the same kinetics:
+when the live kinetics change the set, the window and the kinetics are made once more. The final kinetics do the
+same only for molecule-level kinetics (`steering.kinetics: "molecules"`); with a QM/MM or restrained engine
+(box kinetics) they use the populated set of the last live kinetics. A step on a lent shift that carries flux is
+a sign the window was too narrow.
+
+A staged run ends as a classic one does (converged, settled, or a budget, `--max-species` included).
 
 **What was measured, and on which code.** The switch is off by default. It was compared with the classic
 procedure on the eight benchmark systems (three runs each, and ten per procedure for isoprene + methyl acrylate),
@@ -288,7 +316,6 @@ without them.
   gate opens many more steps than the classic one.
 - One acetic acid transition state's thermal correction was not the same in every run, so a gate decision next
   to the cutoff can differ between runs.
-- A staged run ends as a classic one does (converged, settled, or a budget, `--max-species` included).
 
 ## What a run records
 
@@ -302,7 +329,7 @@ Per species (`species[*]`):
 | field | type | meaning | null when |
 |---|---|---|---|
 | `t_found` | number | when the species joined the network | a run resumed from a state saved before this field existed |
-| `energy_terms` | object | what the final kinetics added to its electronic `energy`: `thermal_correction_kcal`; `steer_shift_kcal` (the steering level's single point minus the explorer's, relative to the seed's); `steer`: `"single_point"`, `"failed"` (with `steer_error`; the explorer's energy was used), `"not_asked"` (out of the kinetics' reach), `"seed_failed"` (the seed's single point failed: no shift is used anywhere) | no kinetics ran; `thermal_correction_kcal` null: not computed (out of reach, or electronic kinetics) or failed (`steering.free_energy_gaps`); `steer` null: no steering level |
+| `energy_terms` | object | what the final kinetics added to its electronic `energy`: `thermal_correction_kcal`; `steer_shift_kcal` (the steering level's single point minus the explorer's, relative to the seed's); `steer`: `"single_point"`, `"lent"` (`--procedure staged`: no single point of its own, `steer_shift_kcal` is a lent shift, `shift_lent: true`), `"failed"` (with `steer_error`; the explorer's energy was used; staged: a lent shift, `shift_lent: true`), `"not_asked"` (out of the kinetics' reach), `"seed_failed"` (the seed's single point failed: no shift is used anywhere) | no kinetics ran; `thermal_correction_kcal` null: not computed (out of reach, or electronic kinetics) or failed (`steering.free_energy_gaps`); `steer` null: no steering level |
 | `molecules` | list of `{key, atoms}` | the box's molecules as the molecule-level kinetics name them (stereo SMILES; a radical's bond graph; a complex's key), with their atoms | the kinetics are not molecule-level (`steering.kinetics`) |
 
 Per step (`steps[*]`):

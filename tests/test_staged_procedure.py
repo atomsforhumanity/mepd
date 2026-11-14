@@ -334,6 +334,8 @@ def test_the_window_is_read_on_the_populated_set_of_the_same_kinetics(monkeypatc
     # the seed's window, the kinetics that populate HNC, then at once: the window on {0, 1} (it moved) and the
     # view made again with it, before the next kinetics
     assert n == 1 and calls[first - 2:first + 3] == [(1, {0}), "kinetics", (1, {0, 1}), (1, {0, 1}), "kinetics"]
+    # the recorded (final) kinetics too look at the window again on the populated set they leave
+    assert calls[-2:] == ["kinetics", (1, {0, 1})]
 
 
 def test_an_irc_check_makes_the_kinetics_look_again_so_the_window_gets_its_single_points(monkeypatch, tmp_path):
@@ -407,3 +409,79 @@ def test_a_product_over_the_cutoff_on_its_electronic_energy_but_within_the_margi
     (edge,) = [e for e in res.edges if e.target == 1]
     assert edge.not_searched["energy_used"].startswith("free") and "provisional" not in edge.not_searched
     assert edge.not_searched["cutoff_kcal"] == -5.0 and connect.pairs == []
+
+
+def _verified_run(monkeypatch, tmp_path, procedure, ts_kcal=0.0, irc_end=None, rotamers=False, **kw):
+    """HCN -> HNC through the queue with IRC checks (each TS joins its pair, or `irc_end`[label]) and a channel
+    sampling that gives no conformer pair; `rotamers`: every TS has one rotamer guess. Thermal corrections:
+    `ts_kcal` for a TS, 0 for a species. (result, the queue)"""
+    import time
+    from pathlib import Path
+
+    from mepd.nodes.node import StructureNode
+
+    _thermal(monkeypatch, ts_kcal)
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0)     # (no live kinetics held back for coming too soon)
+    connect = _VerifyingQueue(tmp_path)
+
+    def verify(items):
+        out = []
+        for idx, fp in items:
+            start, end = connect.ends.get(fp) or next(iter(connect.ends.values()))
+            end = (irc_end or {}).get(Path(fp).stem, end)
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [start, end])
+            out.append((idx, start.copy(), end.copy()))
+        return out
+
+    def find_ts(node, engine, **kw):
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.002 + 6.0 / KCAL
+        return ts
+
+    if rotamers:
+        monkeypatch.setattr(NE, "ts_rotamer_guesses", lambda ts, ends: (
+            [(ts.model_copy(update={"geometry": np.asarray(ts.geometry) + [0.0, 0.0, 1.0]}), "turned")], []))
+        monkeypatch.setattr(mepd, "find_ts", find_ts)
+    refine = lambda items: []
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 1
+    res = expand_network(_node("C#N"), _GraphEngine(), connect=connect, verify=verify, refine=refine, steer="access",
+                         access_cutoff_kcal=30.0, max_products=5, schedule="async", allow_zwitterions=True,
+                         kinetics={"threshold": 1e-6, "free_energy": True}, procedure=procedure, **kw)
+    return res, connect
+
+
+def test_rotamers_and_the_order_of_sampling_follow_the_free_energy(monkeypatch, tmp_path):
+    """A TS 5 kcal/mol up on electronic energy, cutoff 30. Thermal correction +40: over the cutoff on free energy,
+    so staged searches no rotamer of it (classic does). Correction -3: its rotamer is searched and both the
+    rotamer job and the pair's sampling are ordered by the free height, 2, not the electronic 5."""
+    jobs = lambda connect, kind: [(label, p() if callable(p) else p) for k, label, p in connect.priorities if k == kind]
+    for name, procedure, ts_kcal in (("closed", "staged", 40.0), ("classic", "classic", 40.0), ("open", "staged", -3.0)):
+        (tmp_path / name).mkdir()
+        res, connect = _verified_run(monkeypatch, tmp_path / name, procedure, ts_kcal, rotamers=True)
+        rot, ch = jobs(connect, "rotamer"), jobs(connect, "channels")
+        if name == "closed":
+            assert rot == [] and res.record["steps"][0]["closed"]["reason"] == "ts_above_cutoff"
+        elif name == "classic":
+            assert len(rot) == 1 and rot[0][1] == pytest.approx(5.0, abs=1e-3)
+            assert ch[0][1] == pytest.approx(5.0, abs=1e-3)
+        else:
+            assert len(rot) == 1 and rot[0][1] == pytest.approx(2.0, abs=1e-3)
+            assert ch[0][1] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_a_species_first_found_as_an_irc_end_is_connected_on_the_provisional_rule_and_marked(monkeypatch, tmp_path):
+    """The IRC of the HCN -> HNC TS ends in a third species (H far from CN) that has no Hessian: it is connected
+    to HCN on its electronic height (within the cutoff + 15), and the step's IRC record says so."""
+    from mepd.nodes.node import StructureNode
+
+    seed = _node("C#N")
+    xyz = np.asarray(seed.coords).copy()
+    xyz[[str(x) for x in seed.structure.symbols].index("H")] += [0.0, 0.0, 30.0]
+    far = StructureNode(structure=seed.structure.model_copy(update={"geometry": xyz}))
+    res, connect = _verified_run(monkeypatch, tmp_path, "staged", irc_end={"fast_0_1": far})
+    step = next(st for st in res.steps if st.label == "fast_0_1")
+    assert (step.a, step.b) == (0, 2) and step.rec["irc"]["connected_provisionally"] == [2]
+    assert (0, 2) in connect.pairs                      # ... and searched from the species it was asked from
+    (tmp_path / "c").mkdir()
+    res, connect = _verified_run(monkeypatch, tmp_path / "c", "classic", irc_end={"fast_0_1": far})
+    assert "connected_provisionally" not in next(st for st in res.steps if st.label == "fast_0_1").rec["irc"]

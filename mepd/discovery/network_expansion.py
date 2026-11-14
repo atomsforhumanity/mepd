@@ -2373,7 +2373,9 @@ def expand_network(
 
     # procedure="staged": the access cutoff on the explorer's free energies
     gate: dict = {}       # the latest gate (_staged_view): "reach", the species within reach of the cutoff
-    ts_memo: dict = {}    # id(step) -> (step, its files as read, TS structure, ends, thermal-correction cache key)
+    # id(step) -> (step, its files as read, TS structure, ends, thermal-correction cache key, the two end nodes
+    # kept alive, {"steer": its steering key})
+    ts_memo: dict = {}
     sp_memo: dict = {}    # species index -> (node, thermal-correction cache key)
 
     def _ts_terms(st) -> tuple:
