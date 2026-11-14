@@ -86,6 +86,22 @@ REFERENCES = {
 }
 Edge = tuple[int, int]
 
+# procedure="staged" (docs/network-expansion.md, "The staged procedure"). A structure with no thermal correction
+# yet is closed by the access cutoff only when its electronic height above the seed exceeds the cutoff by more
+# than this (kcal/mol), provisionally: the summary says so.
+PROVISIONAL_MARGIN_KCAL = 15.0
+# ... and a higher-level (steering) single point goes only to the deciding window: of each populated species, the
+# IRC-verified open steps whose free barrier (explorer level) lies within RT ln 100 + this of the lowest one out
+# of it. Source: recorded benchmark runs (a 4.78 kcal/mol margin kept 78 % of the TSs the steering
+# level keeps in the worst system; 6 is that, rounded up).
+LEVEL_MARGIN_KCAL = 6.0
+# what a staged gate compared (summary.json: closed.energy_used, not_searched.energy_used)
+GATE_ENERGY = {
+    "free": "free, explorer level: electronic energy + thermal correction, above the seed's",
+    "electronic": "electronic, explorer level, above the seed (no thermal correction yet): against the cutoff + "
+                  f"{PROVISIONAL_MARGIN_KCAL:g} kcal/mol",
+}
+
 # (min, max) number of bonded neighbours an atom may have in a proposed
 # product (neutral atoms; a charged system widens these by one).
 COORDINATION = {
@@ -1186,6 +1202,41 @@ def _generator_cutoff(generator, options: dict, access_cutoff_kcal, species) -> 
     return {**options, "cutoff_kcal": float(access_cutoff_kcal) - float(species.rel_energy_kcal)}
 
 
+def deciding_window(steps, g, populated, temperature: float, margin_kcal: float = LEVEL_MARGIN_KCAL) -> dict:
+    """procedure="staged": the steps that decide where each populated species' material goes. `steps`: (index,
+    a, b, TS free energy) of the IRC-verified open steps; `g`: the species' free energies (Hartree, the
+    explorer's own level). Of each species in `populated`, the steps out of it whose barrier lies within
+    RT ln 100 + `margin_kcal` of the lowest one out of it (RT ln 100: a step that far up carries 1 % of the
+    lowest's rate; the margin: how far the steering level moves one TS against another).
+    {step index: {"width_kcal", "of": [{"species", "barrier_kcal", "lowest_kcal"}]}}."""
+    import math
+
+    width = 1.987204259e-3 * float(temperature) * math.log(100.0) + float(margin_kcal)
+    out: dict = {}
+    for s in sorted(populated):
+        mine = [(m, (float(g_ts) - float(g[s])) * HARTREE_TO_KCAL_PER_MOL) for m, a, b, g_ts in steps if s in (a, b)]
+        low = min((b for _, b in mine), default=None)
+        for m, b in mine:
+            if b - low <= width:
+                out.setdefault(m, {"width_kcal": width, "of": []})["of"].append(
+                    {"species": s, "barrier_kcal": b, "lowest_kcal": low})
+    return out
+
+
+def lent_shifts(known: dict, neighbours: dict) -> dict:
+    """procedure="staged": a steering shift for each structure that has none of its own (the keys of
+    `neighbours`): the median of the shifts of its neighbours that have one (`known`: structure -> shift), else
+    of every known shift, else 0 -- never 0 beside shifted neighbours."""
+    import statistics
+
+    everything = statistics.median(known.values()) if known else 0.0
+    out = {}
+    for i, near in neighbours.items():
+        got = [known[j] for j in near if j in known]
+        out[i] = statistics.median(got) if got else everything
+    return out
+
+
 def _propose_structures_at_once(frontier, result, generator, generator_options, products_file, view,
                                 max_products, workers, access_cutoff_kcal=None) -> dict:
     """A structures generator's products for every frontier species, run concurrently.
@@ -1292,7 +1343,7 @@ def _load_state(fp: Optional[Path], fingerprint: dict) -> dict:
     if state.get("version") != _STATE_VERSION:
         raise ValueError(f"{fp} was saved by another version of mepd (state version {state.get('version')}, "
                          f"this one reads {_STATE_VERSION}); it can't be resumed.")
-    keys = list(fingerprint) + [k for k in ("known",) if k in state["fingerprint"] and k not in fingerprint]
+    keys = list(fingerprint) + [k for k in ("known", "procedure") if k in state["fingerprint"] and k not in fingerprint]
     differ = [k for k in keys if state["fingerprint"].get(k) != fingerprint.get(k)]
     if differ:
         raise ValueError("The saved exploration was made with other settings; resume it with the ones it was "
@@ -1315,6 +1366,7 @@ def expand_network(
     steer_engine=None, steer_save_dir: Optional[Path] = None,
     state_file: Optional[Path] = None, resume: bool = False, schedule: str = "rounds",
     time_budget_s: Optional[float] = None, known: Optional[dict] = None, settle_kcal: Optional[float] = None,
+    procedure: str = "classic",
 ) -> ExpansionResult:
     """Breadth-first network expansion from `seed`. Each round proposes
     products of every species found in the previous round (within
@@ -1421,7 +1473,20 @@ def expand_network(
     new TS or path search), its channel-sampled pairs as sampled and the species its generator ran on, but the
     seed, as expanded. Its steering single points (when the steering level is this run's) and Hessian
     corrections (at this run's temperature and standard state) are taken by their cache keys. Its species do
-    not count towards `max_species`. `result.known` records what was used, skipped and why, and how much."""
+    not count towards `max_species`. `result.known` records what was used, skipped and why, and how much.
+
+    `procedure="staged"` (schedule="async", free-energy kinetics; "classic", the default, is everything above):
+    every comparison with `access_cutoff_kcal` -- reach, open steps, the pairs connected, channel and rotamer
+    triggers, queue priorities, the reactor's cutoff -- is made on the explorer's own free energy (electronic
+    energy + the kinetics' thermal correction) above the seed's, the scale the kinetics run on. A structure
+    whose thermal correction is not known yet is not closed for that: within PROVISIONAL_MARGIN_KCAL of the
+    cutoff on its electronic energy its Hessian is computed and the free energy decides; above that it is
+    closed provisionally (recorded: `closed.provisional`, `not_searched.provisional`). A proposed product
+    within the margin gets its Hessian as a job of the queue before its pair is searched: its free energy
+    decides whether the pair is searched and sampled at all."""
+    if procedure not in ("classic", "staged"):
+        raise ValueError(f"procedure must be 'classic' or 'staged', got {procedure!r}.")
+    staged = procedure == "staged"
     if schedule not in ("rounds", "async"):
         raise ValueError(f"schedule must be 'rounds' or 'async', got {schedule!r}.")
     if schedule == "async":
@@ -1441,6 +1506,9 @@ def expand_network(
     if steer == "access" and access_cutoff_kcal is None:
         raise ValueError("steer='access' needs access_cutoff_kcal.")
     kin = {"temperature": 298.15, "time_s": 3600.0, "threshold": 0.01, **(kinetics or {})}
+    if staged and (schedule != "async" or not kin.get("free_energy")):
+        raise ValueError("procedure='staged' needs schedule='async' and free-energy kinetics "
+                         "(kinetics={'free_energy': True}): its gates are on the kinetics' free energies.")
     # kinetics on free energies (kin["free_energy"]): thermal corrections from the engine's own Hessians
     free = None
     if kin.get("free_energy"):
@@ -1472,6 +1540,8 @@ def expand_network(
                                      generator_options, products_file) if state_file is not None else None
     if fingerprint is not None and schedule != "rounds":
         fingerprint["schedule"] = schedule
+    if fingerprint is not None and staged:
+        fingerprint["procedure"] = procedure
     known_runs = list((known or {}).get("runs") or [])
     if fingerprint is not None and known:   # a resume must be given the same earlier runs, unchanged
         from mepd.discovery.known import fingerprint as known_fingerprint
@@ -1615,7 +1685,14 @@ def expand_network(
         pairs = []
         for e in round_edges:
             if e.target is not None and e.target != e.source:
-                if max_rel_kcal is not None and result.species[e.target].rel_energy_kcal > max_rel_kcal:
+                if max_rel_kcal is not None and staged:
+                    within, value, basis, limit = _species_gated(e.target)
+                    if not within:
+                        e.not_searched = {"reason": "product_above_cutoff", "energy_used": GATE_ENERGY[basis],
+                                          "value_kcal": value, "cutoff_kcal": limit,
+                                          **({"provisional": True} if basis == "electronic" else {})}
+                        continue
+                elif max_rel_kcal is not None and result.species[e.target].rel_energy_kcal > max_rel_kcal:
                     e.not_searched = {"reason": "product_above_cutoff",
                                       "energy_used": "electronic, explorer level: the product above the seed",
                                       "value_kcal": result.species[e.target].rel_energy_kcal,
@@ -1888,17 +1965,25 @@ def expand_network(
         if stale and (final or time.monotonic() - live_kin.get("at", 0.0) >= 3.0 * live_kin.get("took", 0.0)):
             t0 = time.monotonic()
             energies = [float(s.node.energy) for s in result.species]
-            g, steps, basis = (_free_energy_view(energies, live_steer[0]) if live_steer[0] is not None
-                               else _explorer_view(energies))
-            k = _simulate(steps, g, basis.startswith("free"))
-            live_kin["k"] = k
             tau = float(kin["threshold"])
-            if molecular:
-                _molecule_decisions(k, tau)
-            else:
-                live_kin["hot"] = {0} | {i for i in range(len(result.species))
-                                         if k.max_concentration[i] >= tau or k.flux[i] >= tau}
-                live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
+
+            def solve():
+                g, steps, basis = (_free_energy_view(energies, live_steer[0]) if live_steer[0] is not None
+                                   else _explorer_view(energies))
+                k = _simulate(steps, g, basis.startswith("free"))
+                live_kin["k"] = k
+                if molecular:
+                    _molecule_decisions(k, tau)
+                else:
+                    live_kin["hot"] = {0} | {i for i in range(len(result.species))
+                                             if k.max_concentration[i] >= tau or k.flux[i] >= tau}
+                    live_kin["load"] = {i: max(k.max_concentration[i], k.flux[i]) for i in range(len(result.species))}
+                return k, steps, basis
+
+            k, steps, basis = solve()
+            if staged and _window_moved():
+                # the deciding window was read on the populated set of the kinetics before: once more, on this one
+                k, steps, basis = solve()
             _stamp_opened(steps, live_kin["molecules"][0] if molecular else None)
             _show_kinetics(k, basis)
             if schedule == "async" and 0 in expanded:
@@ -2038,17 +2123,23 @@ def expand_network(
         stay in the network."""
         from mepd.discovery.kinetics import negative_barrier_warnings
 
-        energies = [float(s.node.energy) for s in result.species]
-        k_energies, k_steps, basis = _free_energy_view(energies)
-        beyond = []
-        if verified_only:
-            k_steps, beyond = _left_out_unverified(k_steps)
-            left = [m for m, st in enumerate(result.steps) if "left_out_of_final_kinetics" in st.files]
-            if left:
-                basis += f"; {len(left)} step(s) no IRC checked left out" + (
-                    f", {len(beyond)} only they reached closed" if beyond else "")
-        energies = [float(s.node.energy) for s in result.species]   # tightened species
-        kinetic = _simulate(k_steps, k_energies, basis.startswith("free"))
+        for again in (staged and molecular, False):
+            energies = [float(s.node.energy) for s in result.species]
+            k_energies, k_steps, basis = _free_energy_view(energies)
+            beyond = []
+            if verified_only:
+                k_steps, beyond = _left_out_unverified(k_steps)
+                left = [m for m, st in enumerate(result.steps) if "left_out_of_final_kinetics" in st.files]
+                if left:
+                    basis += f"; {len(left)} step(s) no IRC checked left out" + (
+                        f", {len(beyond)} only they reached closed" if beyond else "")
+            energies = [float(s.node.energy) for s in result.species]   # tightened species
+            kinetic = _simulate(k_steps, k_energies, basis.startswith("free"))
+            if not again:
+                break
+            _molecule_decisions(kinetic, float(kin["threshold"]))   # staged: the window on these kinetics' populated set
+            if not _window_moved():
+                break
         # a step closed out of reach has no barrier of its own (its TS + 1 Hartree only stops its rate)
         kinetic.barriers_kcal = [None if m < len(k_steps) and k_steps[m].files.get("closed") else b
                                  for m, b in enumerate(kinetic.barriers_kcal)]
@@ -2171,6 +2262,8 @@ def expand_network(
         g, steps, basis = _explorer_view(energies)
         if steer_engine is None or not result.steps:
             return g, steps, basis
+        if staged:
+            return _staged_steer_view(g, steps, basis, queue) if view_rec.get("staged") else (g, steps, basis)
         from mepd.discovery.energy_refine import kinetic_reach
 
         reach, open_steps = kinetic_reach(result.steps, [float(s.node.energy) for s in result.species], e0,
@@ -2209,6 +2302,8 @@ def expand_network(
         view_rec.clear()
         if free is None or not result.steps:
             return energies, result.steps, "electronic"
+        if staged:
+            return _staged_view()
         # Only the part of the network some route reaches within the cutoff gets Hessians: the rest carries
         # no flux. Its steps are closed (TS + 1 Hartree), its species keep their electronic energy.
         from mepd.discovery.energy_refine import kinetic_reach
@@ -2276,6 +2371,278 @@ def expand_network(
                           + (f"; {len(free_gaps)} structure(s) without a correction, {gap_closed} step(s) they are "
                              "in closed" if free_gaps else ""))
 
+    # procedure="staged": the access cutoff on the explorer's free energies
+    gate: dict = {}       # the latest gate (_staged_view): "reach", the species within reach of the cutoff
+    ts_memo: dict = {}    # id(step) -> (step, its files as read, TS structure, ends, thermal-correction cache key)
+    sp_memo: dict = {}    # species index -> (node, thermal-correction cache key)
+
+    def _ts_terms(st) -> tuple:
+        """(structure, ends, thermal-correction cache key) of step `st`'s TS -- (None, None, None) without a TS
+        file -- read once per version of the step (the gate is asked after almost every job)."""
+        files = st.files or {}
+        sig = (files.get("ts"), files.get("irc"), st.a, st.b, id(result.species[st.a].node),
+               id(result.species[st.b].node))
+        hit = ts_memo.get(id(st))
+        if hit is None or hit[0] is not st or hit[1] != sig:
+            ts = _ts_structure(st)
+            ends = _ts_ends(st) if ts is not None else None
+            hit = ts_memo[id(st)] = (st, sig, ts, ends, free._key(ts, True, ends) if ts is not None else None,
+                                     result.species[st.a].node, result.species[st.b].node, {})
+        return hit[2:5]
+
+    def _steer_key_of(kind: str, i) -> Optional[str]:
+        """The steering single point's cache key of species `i` or of step `i`'s TS (None without a TS file),
+        made once per version of the structure."""
+        if kind == "ts":
+            ts, ends, _ = _ts_terms(i)
+            memo = ts_memo[id(i)][7]
+            if "steer" not in memo:
+                memo["steer"] = _steer_key(ts, True, ends) if ts is not None else None
+            return memo["steer"]
+        node = result.species[i].node
+        hit = sp_memo.get(("steer", i))
+        if hit is None or hit[0] is not node:
+            hit = sp_memo[("steer", i)] = (node, _steer_key(node.structure, False, None))
+        return hit[1]
+
+    def _species_key(k: int) -> str:
+        node = result.species[k].node
+        hit = sp_memo.get(k)
+        if hit is None or hit[0] is not node:
+            hit = sp_memo[k] = (node, free._key(node.structure, False))
+        return hit[1]
+
+    def _thermal(key):
+        """The thermal correction (kcal/mol) under cache key `key`: a number; "failed" (its Hessian failed, or the
+        structure has no file); None (not computed yet)."""
+        if key is None:
+            return "failed"
+        v = free._cache.get(key)
+        if v is None or isinstance(v, str):
+            return v if v is None else "failed"
+        return float(min(v) if isinstance(v, tuple) else v)
+
+    def _gated(energy: float, key) -> tuple:
+        """How a structure (electronic energy, Hartree; thermal-correction cache key) stands against the access
+        cutoff: (within, height above the seed in kcal/mol, "free" or "electronic", the limit compared with).
+        Free energy against the cutoff when its and the seed's corrections are known; else its electronic height
+        against the cutoff + PROVISIONAL_MARGIN_KCAL (closed provisionally above that)."""
+        seed = result.species[0].node
+        h = (float(energy) - float(seed.energy)) * HARTREE_TO_KCAL_PER_MOL
+        c, c0 = _thermal(key), _thermal(_species_key(0))
+        if isinstance(c, float) and isinstance(c0, float):
+            return h + c - c0 <= access_cutoff_kcal, h + c - c0, "free", access_cutoff_kcal
+        limit = access_cutoff_kcal + PROVISIONAL_MARGIN_KCAL
+        return h <= limit, h, "electronic", limit
+
+    def _ts_gated(st) -> tuple:
+        return _gated(st.ts_energy, _ts_terms(st)[2])
+
+    def _species_gated(k: int) -> tuple:
+        return _gated(float(result.species[k].node.energy), _species_key(k))
+
+    def _window_moved() -> bool:
+        """staged: whether the deciding window of the latest view is another on the populated set as it is now
+        (the view read the set of the kinetics before it)."""
+        if "window_in" not in view_rec:
+            return False
+        populated = {k for k in set(live_kin.get("hot") or ()) | {0} if k < len(result.species)}
+        now = deciding_window(*view_rec["window_in"], populated, kin["temperature"])
+        which = lambda w: {m: [x["species"] for x in v["of"]] for m, v in w.items()}
+        return which(now) != which(view_rec["window"])
+
+    def _staged_view():
+        """_explorer_view for procedure="staged": (species energies, steps, basis) with the reach test on free
+        energies (the kinetics' own: electronic + thermal correction, above the seed's). Hessians are computed
+        for what the test needs, outwards from the seed: the species within reach, the TS of every step that
+        touches the reach, and the far end of such a step whose TS is not closed -- each only while its
+        electronic height is within the cutoff + PROVISIONAL_MARGIN_KCAL; above that it is closed provisionally
+        (view_rec["closed_why"], "provisional"). A failed Hessian closes only its own steps, as in the classic
+        view. `gate` keeps the reach for the decisions between two views."""
+        from mepd.discovery.energy_refine import kinetic_reach
+        from mepd.discovery.kinetics import Step
+
+        H = HARTREE_TO_KCAL_PER_MOL
+        limit = access_cutoff_kcal + PROVISIONAL_MARGIN_KCAL
+        mirror = _mirror_of()
+        _tighten([0])
+        want_sp, want_ts = {0} if _thermal(_species_key(0)) is None else set(), set()
+        while True:
+            if want_sp or want_ts:
+                _tighten(sorted(want_sp))
+                sp, ts = sorted(want_sp), sorted(want_ts)
+                terms = [_ts_terms(result.steps[m]) for m in ts]
+                free.corrections([result.species[k].node.structure for k in sp] + [t[0] for t in terms],
+                                 [False] * len(sp) + [True] * len(ts), [None] * len(sp) + [t[1] for t in terms],
+                                 [None] * len(sp) + [result.steps[m].ts_energy for m in ts])
+                for note in dict.fromkeys(free.notes):
+                    _emit(on_event, "warning", message=f"free energies: {note}")
+                free.notes.clear()
+            energies = [float(s.node.energy) for s in result.species]
+            sp_c = [_thermal(_species_key(k)) for k in range(len(energies))]
+            ts_c = [_thermal(_ts_terms(st)[2]) for st in result.steps]
+            if not isinstance(sp_c[0], float):
+                free_gaps.append({"kind": "species", "index": 0, "smiles": result.species[0].smiles,
+                                  "reason": "thermal correction failed", "closed_steps": len(result.steps)})
+                if "seed" not in free_said:
+                    free_said.add("seed")
+                    _emit(on_event, "warning", message="free energies: no correction for the seed; kinetics on "
+                                                       "electronic energies")
+                gate.clear()
+                return energies, result.steps, "electronic; the seed has no free-energy correction"
+            known = [isinstance(c, float) for c in sp_c]
+            # a structure without its correction lies out of reach (1 Hartree up) until it has one
+            g = [e + (c / H if ok else 1.0) for e, c, ok in zip(energies, sp_c, known)]
+            g_steps = [Step(st.a, st.b, st.ts_energy + (c / H if isinstance(c, float) and known[st.a] and known[st.b]
+                                                        else 1.0), st.label, st.files)
+                       for st, c in zip(result.steps, ts_c)]
+            reach, open_steps = kinetic_reach(g_steps, g, g[0], access_cutoff_kcal, mirror)
+            h_el = lambda e: (e - energies[0]) * H
+            want_sp = {k for k in reach if sp_c[k] is None and h_el(energies[k]) <= limit}
+            want_ts = set()
+            for m, st in enumerate(result.steps):
+                if st.a not in reach and st.b not in reach:
+                    continue
+                c = ts_c[m]
+                if c is None and h_el(st.ts_energy) <= limit:
+                    want_ts.add(m)
+                elif not isinstance(c, float) or h_el(st.ts_energy) + c - sp_c[0] > access_cutoff_kcal:
+                    continue    # closed by its own TS: its far end is not asked for
+                want_sp |= {k for k in (st.a, st.b) if sp_c[k] is None and h_el(energies[k]) <= limit}
+            if not want_sp and not want_ts:
+                break
+        open_ = set(open_steps)
+        sp_corr = {k: c for k, c in enumerate(sp_c) if isinstance(c, float)}
+        ts_corr = {m: c for m, c in enumerate(ts_c) if isinstance(c, float)}
+
+        def failed(key) -> str:
+            v = free._cache.get(key) if key is not None else None
+            return (f"thermal correction failed ({v[:300]})" if isinstance(v, str)
+                    else "no TS geometry file" if key is None else "thermal correction failed")
+
+        # why each step the gate closes is closed, as summary.json says it (steps[*].closed)
+        closed_why, gaps = {}, {}
+        for m, st in enumerate(result.steps):
+            if m in open_:
+                continue
+            far = next((k for k in (st.a, st.b) if k not in reach), None)
+            c = ts_c[m]
+            ts_h = h_el(st.ts_energy) + (c - sp_c[0] if isinstance(c, float) else 0.0)
+            ts_basis = "free" if isinstance(c, float) else "electronic"
+            if isinstance(c, float) and ts_h > access_cutoff_kcal:
+                why = {"reason": "ts_above_cutoff", "energy_used": GATE_ENERGY["free"], "value_kcal": ts_h,
+                       "cutoff_kcal": access_cutoff_kcal, "ts_above_seed_kcal": ts_h}
+            elif c is None and ts_h > limit:
+                why = {"reason": "ts_above_cutoff", "provisional": True, "energy_used": GATE_ENERGY["electronic"],
+                       "value_kcal": ts_h, "cutoff_kcal": limit, "ts_above_seed_kcal": ts_h}
+            elif c == "failed":
+                why = {"reason": "no_thermal_correction", "of": "ts", "why": failed(_ts_terms(st)[2])}
+                gaps[("ts", m)] = why["why"]
+            else:     # its TS is within the cutoff (or was never asked for: nothing reaches the step): an end is not
+                k = far if far is not None else st.a if not known[st.a] else st.b
+                why = {"reason": "end_out_of_reach", "species": k, "ts_above_seed_kcal": ts_h,
+                       "ts_energy_used": GATE_ENERGY[ts_basis]}
+                if sp_c[k] is None and h_el(energies[k]) > limit:
+                    why.update(provisional=True, energy_used=GATE_ENERGY["electronic"],
+                               value_kcal=h_el(energies[k]), cutoff_kcal=limit)
+                elif sp_c[k] == "failed":
+                    why = {"reason": "no_thermal_correction", "of": f"species {k}", "why": failed(_species_key(k))}
+                    gaps[("species", k)] = why["why"]
+                else:
+                    why.update(energy_used="free, explorer level: the largest climb out of a well on the best "
+                                           "route from the seed (null: no route)", cutoff_kcal=access_cutoff_kcal)
+            closed_why[m] = why
+        for (kind, i), reason in gaps.items():
+            st = result.steps[i] if kind == "ts" else None
+            free_gaps.append({"kind": "ts", "step": st.label, "a": st.a, "b": st.b, "reason": reason, "closed_steps": 1}
+                             if kind == "ts" else
+                             {"kind": "species", "index": i, "smiles": result.species[i].smiles, "reason": reason,
+                              "closed_steps": sum(1 for x in result.steps if i in (x.a, x.b))})
+        for gap in free_gaps:
+            said = f"{gap['kind']} {gap.get('step', gap.get('index'))}: {gap['reason']}"
+            if said not in free_said:
+                free_said.add(said)
+                _emit(on_event, "warning", message=f"free energies: no correction for {said}; its step(s) closed")
+        provisional = sorted(m for m, why in closed_why.items() if why.get("provisional"))
+        gate.clear()
+        gate.update(reach=set(reach))
+        view_rec.update(staged=True, reach=set(reach), open_steps=open_, open=open_, sp_corr=sp_corr, ts_corr=ts_corr,
+                        closed_why=closed_why, gate_steps=g_steps, gate_g=g, provisional=provisional)
+        out = [e + sp_corr.get(k, 0.0) / H for k, e in enumerate(energies)]
+        steps = [Step(st.a, st.b, st.ts_energy + ts_corr[m] / H, st.label, st.files) if m in open_
+                 else Step(st.a, st.b, st.ts_energy + 1.0, st.label, {**st.files, "closed": True})
+                 for m, st in enumerate(result.steps)]
+        # the deciding window (`deciding_window`), on these free energies: where the steering single points go
+        # (_staged_steer_view)
+        populated = {k for k in set(live_kin.get("hot") or ()) | {0} if k < len(result.species)}
+        window = deciding_window(
+            [(m, result.steps[m].a, result.steps[m].b, steps[m].ts_energy) for m in sorted(open_)
+             if result.steps[m].files.get("verified") is True and result.steps[m].files.get("ts_kind") != "path_peak"],
+            out, populated, kin["temperature"])
+        view_rec["window"] = window
+        view_rec["window_in"] = ([(m, result.steps[m].a, result.steps[m].b, steps[m].ts_energy) for m in sorted(open_)
+                                  if result.steps[m].files.get("verified") is True
+                                  and result.steps[m].files.get("ts_kind") != "path_peak"], out)
+        closed = len(result.steps) - len(open_)
+        return out, steps, (f"free energy ({kin['temperature']:g} K, {kin.get('standard_state', '1M')}); access "
+                            "cutoff on free energies"
+                            + (f"; {closed} step(s) out of reach closed" if closed else "")
+                            + (f", {len(provisional)} of them provisionally (no Hessian: electronic height over the "
+                               f"cutoff + {PROVISIONAL_MARGIN_KCAL:g})" if provisional else "")
+                            + (f"; {len(free_gaps)} structure(s) without a correction" if free_gaps else ""))
+
+    def _staged_steer_view(g, steps, basis, queue):
+        """_free_energy_view for procedure="staged": steering single points for the seed and the deciding window
+        only (_staged_view's, on its free energies `g`, `steps`: each populated species' IRC-verified open
+        steps near its lowest barrier, their TSs and both their ends). Every other
+        structure the kinetics use keeps its free energy at the explorer's level plus a lent shift (`lent_shifts`:
+        a TS the median shift of the refined TSs of the steps that share a species with it, a species that of
+        the refined species it has a step to), recorded (view_rec["lent"]; summary: shift_lent). A single point
+        computed for an earlier window is used. `queue`: as _steer_shifts'."""
+        from mepd.discovery.kinetics import Step
+
+        open_ = sorted(view_rec["open"])
+        window = view_rec["window"]
+        sp_ask = sorted({0} | {k for m in window for k in (result.steps[m].a, result.steps[m].b)})
+        ts_ask = sorted(window)
+        terms = [_ts_terms(result.steps[m]) for m in ts_ask]
+        asked = _steer_shifts([(result.species[k].node.structure, False, None) for k in sp_ask]
+                              + [(t[0], True, t[1]) for t in terms], queue)
+        keys = list(view_rec.get("steer_keys") or [])
+        # every single point there is, asked for now or for an earlier window
+        d_sp = {k: steer_delta.get(_steer_key_of("species", k)) for k in range(len(result.species))}
+        d_ts = {m: steer_delta.get(_steer_key_of("ts", result.steps[m])) for m in open_}
+        d_sp.update(zip(sp_ask, asked[:len(sp_ask)]))
+        d_ts.update(zip(ts_ask, asked[len(sp_ask):]))
+        sp_idx = sorted(k for k in d_sp if d_sp[k] is not None or k in sp_ask)
+        ts_idx = sorted(m for m in d_ts if d_ts[m] is not None or m in ts_ask)
+        key_of = dict(zip([("species", k) for k in sp_ask] + [("ts", m) for m in ts_ask], keys))
+        view_rec["steer_keys"] = ([key_of.get(("species", k), _steer_key_of("species", k)) for k in sp_idx]
+                                  + [key_of.get(("ts", m), _steer_key_of("ts", result.steps[m])) for m in ts_idx])
+        view_rec["steer"] = (sp_idx, ts_idx, [d_sp[k] for k in sp_idx] + [d_ts[m] for m in ts_idx],
+                             d_sp.get(0) is not None)
+        view_rec["steer_no_ts"] = []
+        if d_sp.get(0) is None:
+            if queue is None:
+                _emit(on_event, "warning", message="the seed's steering single point failed: kinetics at the "
+                                                   "explorer's level")
+            return g, steps, basis     # (live: the seed's single point is still running)
+        rel_sp = {k: d - d_sp[0] for k, d in d_sp.items() if d is not None}
+        rel_ts = {m: d - d_sp[0] for m, d in d_ts.items() if d is not None}
+        ends_of = {m: {result.steps[m].a, result.steps[m].b} for m in open_}
+        lent_ts = lent_shifts(rel_ts, {m: [o for o in open_ if o != m and ends_of[o] & ends_of[m]]
+                                       for m in open_ if m not in rel_ts})
+        used = sorted(view_rec["reach"] | {k for m in open_ for k in ends_of[m]})
+        lent_sp = lent_shifts(rel_sp, {k: [j for m in open_ if k in ends_of[m] for j in ends_of[m] - {k}]
+                                       for k in used if k not in rel_sp})
+        view_rec["lent"] = {"species": lent_sp, "ts": lent_ts}
+        g = [e + rel_sp.get(k, lent_sp.get(k, 0.0)) for k, e in enumerate(g)]
+        steps = [Step(st.a, st.b, st.ts_energy + rel_ts.get(m, lent_ts.get(m, 0.0)), st.label, st.files)
+                 for m, st in enumerate(steps)]
+        return g, steps, (f"{basis}; {type(steer_engine).__name__} single points on {len(rel_sp)} species and "
+                          f"{len(rel_ts)} TS(s) of the deciding windows ({len(window)} step(s)); {len(lent_ts)} open "
+                          f"step(s) and {len(lent_sp)} species on a lent shift")
+
     def _final_record(k_steps, kinetic, beyond, view, gaps, verified_only, net) -> dict:
         """Recording only: what summary.json says of each species and step beside the kinetics' own numbers
         (docs/network-expansion.md, "What a run records"), from the last recorded kinetics (_kinetics_record's
@@ -2305,6 +2672,12 @@ def expand_network(
             the seed's, or why it has none (the explorer's energy was used)."""
             if steer_engine is None:
                 return {"steer": None, "steer_shift_kcal": None}
+            lent = (view.get("lent") or {}).get(kind, {})
+            if steered and i in lent:      # staged: outside the deciding window (or its single point failed)
+                k_ = key_of.get((kind, i), key)
+                failed = k_ is not None and k_ in steer_delta and steer_delta[k_] is None
+                return {"steer": "failed" if failed else "lent", "steer_shift_kcal": lent[i] * H, "shift_lent": True,
+                        **({"steer_error": steer_why.get(k_)} if failed else {})}
             if not steered:
                 return {"steer": "seed_failed" if view.get("steer") else "not_asked", "steer_shift_kcal": None}
             key = key_of.get((kind, i), key)
@@ -2338,7 +2711,10 @@ def expand_network(
             fallbacks += [{"kind": "ts", "step": m, "label": result.steps[m].label, "why": "no TS geometry file"}
                           for m in view.get("steer_no_ts", [])]
         # the routes the reach test measured (kinetic_reach, on the energies it was given)
-        acc = accessibility(result.steps, view["e_gate"], e0) if free_on and access_cutoff_kcal is not None else {}
+        if view.get("staged"):    # the routes on the gate's free energies
+            acc = accessibility(view["gate_steps"], view["gate_g"], view["gate_g"][0])
+        else:
+            acc = accessibility(result.steps, view["e_gate"], e0) if free_on and access_cutoff_kcal is not None else {}
         left = (getattr(net, "left_out", None) or {}) if net is not None else {}
         near = {x["step"] for x in net.reactions if x.get("with_neighbours")} if net is not None else set()
         # TSs the kinetics count as one: mirror-image twins both found, one reaction found in several boxes
@@ -2363,7 +2739,16 @@ def expand_network(
                 closed = {"reason": "unknown", "by": "box kinetics", "energy_used": None, "value_kcal": None,
                           "cutoff_kcal": None}
                 far = [k for k in (a, b) if k not in view["reach"]] if free_on else []
-                if far:
+                if view.get("staged") and m in view["closed_why"]:
+                    closed.update(view["closed_why"][m])
+                    if closed["reason"] == "end_out_of_reach" and "value_kcal" not in view["closed_why"][m]:
+                        closed["value_kcal"] = acc[closed["species"]].span if closed["species"] in acc else None
+                elif view.get("staged"):
+                    if verified_only and st.files.get("verified") is False:
+                        closed.update(reason="no_irc_check")
+                    elif m in beyond:
+                        closed.update(reason="reached_only_through_unchecked_steps")
+                elif far:
                     closed.update(reason="end_out_of_reach", species=far[0], cutoff_kcal=access_cutoff_kcal,
                                   energy_used="electronic, explorer level: the largest climb out of a well on the "
                                               "best route from the seed (null: no route)",
@@ -2433,11 +2818,41 @@ def expand_network(
                                                for atoms, key in _mol_parts(a) if not atoms <= react],
                                 **({"with_neighbours": True} if m in near else {})}
             rec = _rec(st)
-            steps.append({"free_energy_barrier_kcal": barrier, "free_energy_barrier_missing": missing,
+            staged_rec = {}
+            if view.get("staged"):
+                # staged: whether the step is in a deciding window, and whether the kinetics use it on a lent shift
+                staged_rec = {"deciding_window": (view.get("window") or {}).get(m)}
+                if steer_engine is not None:
+                    lent = view.get("lent") or {}
+                    staged_rec["shift_lent"] = None if box_closed or not steered else m in lent.get("ts", {})
+                    # ... or with an end species on one (its barrier from that end, and its reverse rate)
+                    staged_rec["end_shift_lent"] = (None if box_closed or not steered
+                                                    else [k for k in (a, b) if k in lent.get("species", {})])
+            steps.append({**staged_rec,
+                          "free_energy_barrier_kcal": barrier, "free_energy_barrier_missing": missing,
                           "closed": closed, "ts_energy_terms": terms, "reacting": reacting, "ts_group": root(m),
                           "t_found": rec.get("t_found"), "t_opened": rec.get("t_opened"), "irc": rec.get("irc"),
                           "placeholder_reason": rec.get("placeholder_reason")})
-        return {"species": species, "steps": steps, "steer_fallbacks": fallbacks}
+        out = {"species": species, "steps": steps, "steer_fallbacks": fallbacks}
+        if view.get("staged"):
+            out["staged"] = {
+                "cutoff_energy": GATE_ENERGY["free"], "provisional_margin_kcal": PROVISIONAL_MARGIN_KCAL,
+                "level_margin_kcal": LEVEL_MARGIN_KCAL,
+                "deciding_window_steps": [result.steps[m].label for m in sorted(view.get("window") or {})],
+                **({"single_points": {"species": sum(1 for r in species if r["energy_terms"]["steer"] == "single_point"),
+                                      "ts": sum(1 for r in steps if r["ts_energy_terms"]["steer"] == "single_point"),
+                                      "computed": sum(v is not None for v in steer_delta.values())},
+                    "shift_lent": {"species": sorted((view.get("lent") or {}).get("species", {})),
+                                   "steps": [result.steps[m].label
+                                             for m in sorted((view.get("lent") or {}).get("ts", {}))]}}
+                   if steer_engine is not None else {}),
+                # closed without a Hessian, on the electronic energy alone (steps[*].closed.provisional, and
+                # reactions[*].not_searched.provisional)
+                "provisional_closures": {
+                    "steps": [result.steps[m].label for m in view["provisional"]],
+                    "products_not_searched": sum(1 for e in result.edges
+                                                 if (getattr(e, "not_searched", None) or {}).get("provisional"))}}
+        return out
 
     def _steer_by_flux(round_edges: list[ProposedEdge]) -> list[int]:
         from mepd.discovery.kinetics import select_for_expansion
@@ -2550,9 +2965,11 @@ def expand_network(
             # species, 48-81 kcal/mol up, in 11 of the 16 baseline cases of a channel found but not connected)
             if asked:
                 for k, new in ((a, new_a), (b, new_b)):
-                    if new and k not in asked and result.species[k].rel_energy_kcal <= (
-                            access_cutoff_kcal if access_cutoff_kcal is not None else float("inf")):
+                    if new and k not in asked and (_species_gated(k)[0] if staged else result.species[k].rel_energy_kcal <= (
+                            access_cutoff_kcal if access_cutoff_kcal is not None else float("inf"))):
                         irc_products.append((int(asked[0]), k))
+                        if staged and _species_gated(k)[2] == "electronic":   # no Hessian yet: the provisional rule
+                            irc.setdefault("connected_provisionally", []).append(k)
             if a < 0 or b < 0 or a == b:
                 dropped = True
             else:
@@ -2629,7 +3046,9 @@ def expand_network(
         from mepd.network_aware import accessibility
 
         energies = [float(sp.node.energy) for sp in result.species]
-        if access_cutoff_kcal is not None:
+        if staged:
+            reach = set(gate.get("reach", ())) | {0}
+        elif access_cutoff_kcal is not None:
             acc = accessibility(result.steps, energies, e0)
             reach = {k for k, st in acc.items() if st.span <= access_cutoff_kcal} | {0}
         else:
@@ -2643,7 +3062,8 @@ def expand_network(
             key = frozenset((st.a, st.b))
             if key in refined or key in {k for k, _, _ in todo}:
                 continue
-            open_ = access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal
+            open_ = _ts_gated(st)[0] if staged else (
+                access_cutoff_kcal is None or (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal)
             if st.a in reach and st.b in reach and open_ and (st.a in hot or st.b in hot or key in sample_more):
                 todo.append((key, st.a, st.b))
         # a proposed product of a populated species, whatever its single TS found: that one guess can land on
@@ -2858,6 +3278,7 @@ def expand_network(
         log_event({"event": "phase", "phase": name, **kw})
 
     connected: set[tuple[int, int]] = set()
+    thermo_wait: dict = {}    # staged: product species -> [its node, the proposed pairs waiting for its Hessian]
     deferred_iced: list = []                # channel-search pieces no material reached yet (_search_deferred)
     retry: list = []                        # pairs whose single TS turned out to belong elsewhere
     irc_products: list = []                 # (asked source, species first found as an IRC end): connected (async)
@@ -2883,6 +3304,7 @@ def expand_network(
             "expanded": expanded, "frontier": frontier, "t_idx": t_idx, "refined": refined,
             "sample_more": sample_more, "peak_fallback": peak_fallback, "steer_delta": steer_delta,
             "proposed_pairs": proposed_pairs,
+            **({"thermo_wait": {k: list(v[1:]) for k, v in thermo_wait.items()}} if staged else {}),
             "free_cache": dict(free._cache) if free is not None else {},
             "deferred_iced": deferred_iced, "pending": sorted(pending) if schedule == "async" else [],
             "queue": connect.queue_state() if hasattr(connect, "queue_state") else None})
@@ -3206,8 +3628,11 @@ def expand_network(
             from mepd.network_aware import accessibility
 
             hot = _live_hot(final)
-            acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
-            reach = lambda k: k < len(result.species) and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))
+            if staged:    # the reach of the live kinetics' gate (_staged_view)
+                reach = lambda k: k < len(result.species) and (k == 0 or k in gate.get("reach", ()))
+            else:
+                acc = accessibility(result.steps, [float(sp.node.energy) for sp in result.species], e0)
+                reach = lambda k: k < len(result.species) and (k == 0 or (k in acc and acc[k].span <= access_cutoff_kcal))
             if molecular:
                 # each molecule or encounter to probe that no box expanded (or expanding) holds: the first box
                 # within reach holding it, the largest first, at most max_expand_per_round at once
@@ -3273,12 +3698,94 @@ def expand_network(
                 if edge.outcome == "new_species":
                     rec["new_species"].append(edge.target)
             pairs = _new_pairs(edges, max_rel_kcal=access_cutoff_kcal)
+            if staged:
+                pairs = _await_thermo(pairs)    # a product without its Hessian yet: its pair waits for it
             proposed_pairs.update(map(frozenset, pairs))
             connected.update(pairs)
             pending.update(pairs)
             _phase("proposed", round=rnd, source=src, proposals=len(props), pairs=len(pairs))
             if pairs:
                 connect.add_pairs(pairs)
+            _save()
+            _follow_up()
+
+        def _thermo_job(structure):
+            """In a worker (staged): a proposed product minimized tightly, with its thermal correction as the
+            kinetics compute it: (minimum, cache key, the correction or why it failed)."""
+            opt = _optimize(connect.job_inputs.engine, [StructureNode(structure=structure)], maxiter, None)[0]
+            if isinstance(opt, Exception):
+                raise opt
+            if not _connectivity_matches(opt, StructureNode(structure=structure)):
+                return opt, None, None      # another species' minimum: no Hessian of this one to take
+            try:
+                corr = free._correction(opt.structure, False)
+            except Exception as exc:
+                corr = f"{type(exc).__name__}: {exc}"
+            return opt, free._key(opt.structure, False), corr
+
+        def _await_thermo(pairs: list) -> list:
+            """staged: of the pairs the provisional rule lets through, those to search now. A pair whose product
+            has no thermal correction yet waits for one (a job of the queue, at its pair's rank): its free energy
+            decides whether the pair is searched and sampled (`_thermo_back`)."""
+            go = []
+            for pair in pairs:
+                k = pair[1]
+                if _thermal(_species_key(k)) is not None:
+                    go.append(pair)
+                    continue
+                connected.add(pair)     # (not proposed again, and the run not settled, while it waits)
+                pending.add(pair)
+                thermo_wait.setdefault(k, [result.species[k].node]).append(pair)
+                if len(thermo_wait[k]) == 2:
+                    # (a seed pair's product: its Hessian at the rank of the seed's own reactions)
+                    connect.submit("thermo_seed" if 0 in pair else "thermo", (result.species[k].node.structure,),
+                                   lambda out, k=k: _thermo_back(k, out), label=f"species {k}")
+            return go
+
+        def _resume_thermo() -> None:
+            """A resumed staged run: the pairs that waited for their product's Hessian wait for it again."""
+            waiting = [tuple(p) for ps in (saved or {}).get("thermo_wait", {}).values() for p in ps]
+            connected.difference_update(waiting)
+            go = _await_thermo(waiting)
+            proposed_pairs.update(map(frozenset, go))
+            connected.update(go)
+            pending.update(go)
+            if go:
+                connect.add_pairs(go)
+
+        def _thermo_back(k, out) -> None:
+            """A product's Hessian is back (None: its minimization failed, and its pairs are searched): the
+            species takes the tight minimum, and each waiting pair is searched if the product's free energy is
+            within the cutoff, else recorded as not searched."""
+            sp = result.species[k]
+            node, *waiting = thermo_wait.pop(k)
+            if out is not None and sp.node is node:     # (not if a lower conformer was adopted meanwhile)
+                opt, key, corr = out
+                if key is not None and _connectivity_matches(opt, sp.node):
+                    sp.loose = False
+                    sp.node = opt.copy()
+                    sp.rel_energy_kcal = (float(opt.energy) - e0) * HARTREE_TO_KCAL_PER_MOL
+                    free._cache.setdefault(key, corr)
+                else:   # it stays loosely minimized, without a Hessian: judged by the provisional rule
+                    _emit(on_event, "warning", message=f"species {k}: its tight minimization changed its "
+                                                       "connectivity; no Hessian taken, its pairs are judged on "
+                                                       "its electronic energy")
+            if _thermal(_species_key(0)) is None:       # (no kinetics yet: the seed's own, which it is measured from)
+                _tighten([0])
+                free.corrections([result.species[0].node.structure], [False])
+            within, value, basis, limit = _species_gated(k)
+            for pair in waiting:
+                if within:
+                    proposed_pairs.add(frozenset(pair))
+                    connect.add_pairs([pair])
+                    continue
+                connected.discard(pair)
+                pending.discard(pair)
+                for e in result.edges:
+                    if (e.source, e.target) == pair and getattr(e, "not_searched", None) is None:
+                        e.not_searched = {"reason": "product_above_cutoff", "energy_used": GATE_ENERGY[basis],
+                                          "value_kcal": value, "cutoff_kcal": limit,
+                                          **({"provisional": True} if basis == "electronic" else {})}
             _save()
             _follow_up()
 
@@ -3307,7 +3814,9 @@ def expand_network(
             picks = _expandable(final)
             for k in picks:
                 expanding.add(k)
-                _submit_propose(k, _generator_cutoff(generator, dict(job_opts), access_cutoff_kcal,
+                # (staged: its products have no thermal correction: the provisional rule on electronic heights)
+                _submit_propose(k, _generator_cutoff(generator, dict(job_opts),
+                                                     access_cutoff_kcal + (PROVISIONAL_MARGIN_KCAL if staged else 0.0),
                                                      result.species[k]))
             if picks:
                 _emit(on_event, "expanding", round=rnd, species=picks)
@@ -3378,6 +3887,11 @@ def expand_network(
             except Exception as exc:
                 return f"{type(exc).__name__}: {exc}"
 
+        if staged:
+            from mepd.discovery.horizontal import SEED_RANK as _seed_rank
+
+            connect.register("thermo", _thermo_job, rank=2)     # (as a TS search; a seed pair's: at the seed's rank)
+            connect.register("thermo_seed", _thermo_job, rank=_seed_rank)
         if verify is not None:
             connect.register("irc", _irc_job, rank=1)
         if refine is not None:
@@ -3389,7 +3903,11 @@ def expand_network(
         if steer_engine is not None and not getattr(steer_engine, "holds_torch_model", False):
             from mepd.discovery.energy_refine import _single_point
 
-            connect.register("steer", _steer_job, slots=int(getattr(steer_engine, "threads", 1) or 1), rank=0)
+            from mepd.discovery.horizontal import SEED_RANK
+
+            # (staged: the deciding window's single points start before anything else, the seed's own jobs too)
+            connect.register("steer", _steer_job, slots=int(getattr(steer_engine, "threads", 1) or 1),
+                             rank=SEED_RANK - 2 if staged else 0)
             live_steer[0] = lambda key, item: _queue_steer(key, item)
         queued_irc: set = set()       # TS files whose IRC is queued or done
         queued_channels: set = set()  # species pairs whose sampling is queued or done
@@ -3406,6 +3924,16 @@ def expand_network(
             waited 4-12 minutes behind the conformer pairs of 35-42 steps that carry no flux, all queued with the
             seed's proposals before any of their TSs was found; an exo adduct whose single TS's IRC went
             elsewhere waited 12 minutes more when a pair without a TS came last."""
+            if staged:    # on the gate's heights: free energies where the thermal corrections are known
+                stamp = (len(result.steps), len(free._cache))
+                if lowest_ts["steps"] != stamp:
+                    pairs = {}
+                    for st in result.steps:
+                        k, h = frozenset((st.a, st.b)), _ts_gated(st)[1]
+                        pairs[k] = min(pairs.get(k, h), h)
+                    lowest_ts.update(steps=stamp, pairs=pairs)
+                h = lowest_ts["pairs"].get(key)
+                return h if h is not None else max(_species_gated(k)[1] for k in key)
             if lowest_ts["steps"] != len(result.steps):
                 pairs: dict = {}
                 for st in result.steps:
@@ -3439,7 +3967,7 @@ def expand_network(
                                            ends, ts),
                                lambda out, a=st.a, b=st.b: _rotamer_back(a, b, stem, out),
                                label=f"{st.a}→{st.b} · {stem} turned {what}",
-                               priority=(st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
+                               priority=_ts_gated(st)[1] if staged else (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
             return len(guesses)
 
         def _rotamer_back(a, b, parent, out) -> None:
@@ -3480,6 +4008,8 @@ def expand_network(
                     premin[id(start)], premin[id(end)] = (start, opts[0]), (end, opts[1])
                 _irc_checked(st, start, end)
                 result.rounds[-1]["irc_verified"] = result.rounds[-1].get("irc_verified", 0) + 1
+                if staged:
+                    live_kin["version"] += 1    # a verified step may join a deciding window: the kinetics look again
             _save()
             _follow_up()
 
@@ -3550,7 +4080,8 @@ def expand_network(
                     if (fp and st.files.get("verified") is True and st.files.get("irc") and fp not in queued_rotamers
                             and "rotamer_of" not in st.files and st.files.get("ts_kind") != "path_peak"
                             and (st.a in hot or st.b in hot)
-                            and (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal):
+                            and (_ts_gated(st)[0] if staged
+                                 else (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL <= access_cutoff_kcal)):
                         queued_rotamers.add(fp)
                         n += _queue_rotamers(st)
             return _expand_now(final) or n > 0
@@ -3610,9 +4141,16 @@ def expand_network(
                               "new_species": [], "expanded_next": [], "generator_stats": []})
         pos.update(round=cycle, stage="async", ctx={}, current=None, inflight=None)
         _phase("cycle_start", round=cycle)
-        connect(sorted(pending), _SpeciesNodes(), on_found=_found_async, relevant=_piece_relevant,
+        resumed_waiting = {tuple(p) for ps in (saved or {}).get("thermo_wait", {}).values() for p in ps} if staged else set()
+
+        def _start():
+            if resumed_waiting:
+                _resume_thermo()
+            return _follow_up()
+
+        connect(sorted(pending - resumed_waiting), _SpeciesNodes(), on_found=_found_async, relevant=_piece_relevant,
                 on_pair_done=_pair_done_async, free_cache=free._cache if free is not None else None,
-                start=_follow_up, on_drain=lambda: _follow_up(final=True))
+                start=_start if staged else _follow_up, on_drain=lambda: _follow_up(final=True))
         result.rounds[-1]["iced_pieces"] = len(connect.iced)
         # why it ended: "converged" (the kinetics asked for nothing more), "settled", or the budget that ran out
         result.rounds[-1]["stopped"] = stopped[0] or "converged"

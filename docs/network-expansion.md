@@ -221,6 +221,75 @@ These plug in in place of the built-in generator:
 | `summary.json` | the methods and references used; the species (SMILES, round, energy relative to the seed, Hessian record); one record per proposed reaction (source, target, bonds broken and formed, outcome, whether it landed on the proposed connectivity); rounds; `connections` |
 | `pairs/`, `network.json` | with `--connect`: one MSMEP tree per reaction, and the network built from them (as in `mepd network-splits`) |
 
+## The staged procedure (`--procedure staged`)
+
+`--procedure classic` (the default) is the explorer as described above. `--procedure staged` (with `--steer access
+--schedule async --connect-mode fast --kinetics-energy free`; `procedure="staged"` in `expand_network`) changes
+two things. No other option belongs to it.
+
+**1. One scale for every gate.** The access cutoff is a free-energy barrier (Eyring, at `--cutoff-temperature`
+over `--cutoff-time`, plus `--cutoff-margin`). The classic procedure compares it with electronic energies. The
+staged one compares it with the explorer's own free energy, electronic energy plus the kinetics' quasi-RRHO
+thermal correction, above the seed's: for which species are within reach and which steps are open, which proposed
+products are connected, which steps get channel sampling and rotamers, the order of those jobs, and what is left of
+the cutoff for the reactor generator. The cutoff's value is the same.
+
+A structure whose thermal correction is not known yet is never closed for that. While its electronic height above
+the seed is at most the cutoff + 15 kcal/mol (`PROVISIONAL_MARGIN_KCAL`), its Hessian is computed when the reach
+test needs it (the species within reach, the TS of every step that touches the reach, the far end of such a step
+unless its TS closes it) and the free energy decides. Above that it is closed *provisionally*, and the summary says
+so (`closed.provisional`, `not_searched.provisional`, `steering.provisional_closures`). A proposed product
+within that margin gets its Hessian first, as a job of the queue (a tight minimization and the thermal correction,
+at its pair's rank): only if its free energy is within the cutoff is its pair searched and its channels sampled;
+otherwise the reaction is recorded as not searched (`not_searched`, with the free energy compared). Structures no
+Hessian can exist for, the images of a path search and the reactor generator's products, are judged on their
+electronic height against the cutoff + 15.
+
+In `summary.json`, `closed.energy_used` names the energy compared, and `closed.reason` reads: `ts_above_cutoff`
+(the TS's free energy above the seed's, or provisionally its electronic one), `end_out_of_reach` (`species`; the
+climb on free energies), `no_thermal_correction` (a failed Hessian).
+
+**2. Higher-level single points only where they decide.** With `--steer-energies`, the classic procedure computes
+a single point for every species within reach and the TS of every open step. The staged one computes them for the
+seed and for the *deciding window*: of each populated species, the IRC-verified open steps whose free barrier at
+the explorer's level lies within RT ln 100 + 6 kcal/mol (`LEVEL_MARGIN_KCAL`) of the lowest such barrier out of
+that species, with the TS and both ends of each. RT ln 100 is where a step carries 1 % of the lowest one's rate; the
+6 covers how far the higher level moves one TS against another. The window is always read on the explorer's free
+energies. Its single points are the queue's first jobs, queued when the TS's IRC check is back; a single point
+computed for an earlier window is used. At the end of a run the points the last window still lacks are computed
+before the final kinetics, as the classic procedure computes all of its missing ones.
+
+Every other structure the kinetics use keeps its free energy at the explorer's level plus a *lent* shift, so that
+no structure stands unshifted beside shifted ones: a TS gets the median shift of the refined TSs of the steps that
+share a species with it, a species the median shift of the refined species it has a step to (failing those, the
+median of all refined TSs or species). `summary.json` flags them: `steps[*].shift_lent` (true for an open step on
+a lent shift, null for a closed step), `ts_energy_terms.steer: "lent"` with `shift_lent: true` (also on
+`species[*].energy_terms`), `steps[*].deciding_window` (`width_kcal` and, per populated species whose window
+holds the step, `species`, `barrier_kcal`, `lowest_kcal`; null outside every window), and under `steering`:
+`level_margin_kcal`, `deciding_window_steps`, `single_points` (`species` and `ts` the final kinetics use,
+`computed` in all) and `shift_lent` (the species and steps on a lent shift). `steps[*].end_shift_lent` lists the end species of an
+open step that are on a lent shift (empty: none; null for a closed step): the step's barrier from that end, and so
+its reverse rate, rests on it. A path's highest image standing in for a TS (`files.ts_kind: "path_peak"`) and a
+step no IRC checked are never in a window, so an open one is always on a lent shift. The window is read on the
+populated set of the same kinetics (when they change it, the window and the kinetics are made once more). A step
+on a lent shift that carries flux is a sign the window was too narrow.
+
+**What was measured, and on which code.** The switch is off by default. It was compared with the classic
+procedure on the eight benchmark systems (three runs each, and ten per procedure for isoprene + methyl acrylate),
+with a development version that also sampled the deciding pairs' channels again in further rounds. Those rounds
+are not in mepd: in no run did they alone find a transition state inside a window. The measurements therefore
+describe code that differs from this one by the removed rounds, and the same comparison has not been repeated
+without them.
+- The free-energy gate opens acetic acid's decarboxylation, which the classic gate closes on its electronic
+  energy.
+- On the five solution-phase systems the window cut the steering single points by 60-90 % with the same
+  answers. At 1500 K the window (RT ln 100 + 6 = 19.7 kcal/mol) holds nearly every open step and saves none.
+- Methyl formate is slower under the switch and no longer converges within 1800 s: at 1500 K the free-energy
+  gate opens many more steps than the classic one.
+- One acetic acid transition state's thermal correction was not the same in every run, so a gate decision next
+  to the cutoff can differ between runs.
+- A staged run ends as a classic one does (converged, settled, or a budget, `--max-species` included).
+
 ## What a run records
 
 Beside its results, `summary.json` records why each number is what it is, for whoever measures the explorer

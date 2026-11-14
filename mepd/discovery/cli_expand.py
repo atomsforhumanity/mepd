@@ -714,6 +714,13 @@ def expand(
         "state) are taken as known, and the kinetics start from its network. The seed must be one of its species "
         "(its atoms are mapped onto the seed's); a folder at another level, or one that can't be mapped, is said "
         "and skipped. Species it took from them don't count towards --max-species."),
+    procedure: str = typer.Option(
+        "classic", "--procedure",
+        help="--steer access --schedule async with --kinetics-energy free: 'classic' (default), or 'staged': the "
+        "access cutoff is applied to the explorer's own free energies (the kinetics' scale) wherever it gates the "
+        "exploration, a structure without a Hessian yet being closed only provisionally, 15 kcal/mol above the "
+        "cutoff on its electronic energy; and steering single points go only to the transition states that decide "
+        "each populated species' outflow and their ends. Manual: Network expansion › The staged procedure."),
     resume: bool = typer.Option(
         False, "--resume",
         help="Carry on an exploration that stopped (a time limit, a crash) from what it saved in --output "
@@ -837,6 +844,9 @@ def expand(
         pmi.cutoff_time_s = num(cutoff_time, 86400.0)
         pmi.cutoff_margin_kcal = num(cutoff_margin, 10.0)
     access_cutoff = resolve_cutoff(pmi)
+    procedure = str(procedure).strip().lower() if isinstance(procedure, str) else "classic"
+    if procedure not in ("classic", "staged"):
+        raise typer.BadParameter("--procedure must be classic or staged.")
     if steer == "auto":
         steer = "access" if access_cutoff is not None else ("flux" if rounds > 1 else "window")
     if steer == "access" and access_cutoff is None:
@@ -845,6 +855,15 @@ def expand(
         temperature, time_s = num(cutoff_temperature), num(cutoff_time, 86400.0)   # the kinetics report's conditions
     if steer in ("flux", "access") and (temperature <= 0 or time_s <= 0 or flux_threshold <= 0):
         raise typer.BadParameter("--temperature, --time and --flux-threshold must be positive.")
+    if procedure == "staged":
+        if not (steer == "access" and str(schedule).lower() == "async" and str(connect_mode).lower() == "fast"
+                and str(kinetics_energy).lower() == "free"):
+            raise typer.BadParameter("--procedure staged needs --steer access, --schedule async, --connect-mode "
+                                     "fast and --kinetics-energy free.")
+        from mepd.discovery.network_expansion import PROVISIONAL_MARGIN_KCAL
+
+        # a path search prunes on electronic energies, which have no thermal correction: the provisional rule
+        pmi.barrier_cutoff_kcal = access_cutoff + PROVISIONAL_MARGIN_KCAL
     if access_cutoff is not None:
         os.environ.setdefault("MEPD_NETWORK_AWARE_LOG", str(Path(output) / "network_aware.jsonl"))
         Path(output).mkdir(parents=True, exist_ok=True)
@@ -991,6 +1010,7 @@ def expand(
                 steer_engine=steer_engine if steer in ("flux", "access") else None,
                 steer_save_dir=output / "steer_single_points",
                 state_file=output / "expand_state.pkl", resume=resume is True, known=known_spec,
+                procedure=procedure,
                 validate_minima={"frequency_cutoff": validation["hessian_minimum_frequency_cutoff"],
                                  "rescue_displacement": validation["hessian_minima_rescue_displacement"]}
                 if validation else None,
@@ -1100,6 +1120,9 @@ def expand(
             "steer": level(steer_engine, steer_with if steer_engine is not high_engine else refine_energies)
             if steer_engine is not None else None}
         summary["steering"]["steer_fallbacks"] = record.get("steer_fallbacks")
+        if procedure == "staged":
+            summary["steering"]["procedure"] = procedure
+            summary["steering"].update(record.get("staged") or {})
     if getattr(result, "known", None) is not None:
         # the earlier runs given as --known: used (and how much was taken from each) or skipped, and why
         summary["known"] = result.known
