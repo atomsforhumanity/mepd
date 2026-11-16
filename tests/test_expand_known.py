@@ -230,3 +230,18 @@ def test_saved_steering_points_are_reused_with_other_thread_counts(tmp_path):
     _Saved(tmp_path, level).put("single_points", "k", {"delta_kcal": 1.0})
     assert _Saved(tmp_path, level.replace("'8'", "'32'")).get("single_points", "k") == {"delta_kcal": 1.0}
     assert _Saved(tmp_path, level.replace("def2-TZVP", "def2-SVP")).get("single_points", "k") is None
+
+
+def test_a_known_step_s_links_to_other_steps_are_relabelled_with_them(tmp_path):
+    """An imported step is `known<f>_<label>`. What its files say of other steps of that run by label -- the TS it
+    is a rotamer of, the whole-box TS it is the subsystem TS of -- must name them as imported too: the molecule
+    kinetics find a whole-box TS's subsystem TS by that label, and unlinked both carry flux."""
+    folder, first = _first_run(tmp_path)
+    summary = json.loads((folder / "summary.json").read_text())
+    summary["steps"][0]["files"].update(rotamer_of="parent", subsystem_of="parent")
+    (folder / "summary.json").write_text(json.dumps(summary))
+    hnc = StructureNode(structure=first.species[1].node.structure)
+    res, _, _, _ = _follow_up(tmp_path, hnc, [folder])
+    (st,) = res.steps
+    assert st.label.startswith("known0_")
+    assert st.files["rotamer_of"] == "known0_parent" and st.files["subsystem_of"] == "known0_parent"

@@ -2010,3 +2010,302 @@ def test_summary_says_which_energies_the_kinetics_rested_on(tmp_path, monkeypatc
             assert [g["kind"] for g in steering["free_energy_gaps"]] == ["species"] and fell_back
         else:
             assert steering["free_energy_gaps"] == [] and not fell_back
+
+
+@pytest.mark.parametrize("free_energy", [True, False])
+def test_async_a_whole_box_ts_with_a_molecule_that_takes_no_part_also_gets_a_ts_on_the_others(monkeypatch, tmp_path,
+                                                                                              free_energy):
+    """A TS optimized on the whole box counts as one molecule (free_energy.counted_as), a molecule's entropy above
+    the same TS without the bystander. Once its IRC is there and its two ends leave a molecule as it was, the
+    queue optimizes it once more on the other atoms (the rotamer job, the TS itself the guess): one more TS of
+    the step, its file saying what it was optimized on, IRC-checked like any. Both stay.
+    Only with free-energy kinetics, where the count is: on electronic energies the two would be one reaction
+    twice at one height, and the run is what it was before the files said what they were optimized on."""
+    import mepd
+    from mepd.discovery import generators
+    from mepd.discovery.free_energy import optimized_on, optimized_on_comment
+
+    reactant = _node("C=CO.O")                                 # vinyl alcohol beside a water
+    symbols = [str(s) for s in reactant.structure.symbols]
+    edges0 = graph_edges(reactant)
+    oh = next((i, j) for i, j in sorted(edges0) if {symbols[i], symbols[j]} == {"O", "H"} and 2 in (i, j))
+    h = oh[0] if symbols[oh[0]] == "H" else oh[1]
+    edges = (edges0 - {oh}) | {(0, h)}                         # the hydroxyl H onto the far carbon: acetaldehyde
+    product = StructureNode(structure=_structure_with(reactant.structure, embed_product(symbols, _ang(reactant), edges)))
+    assert graph_edges(product) == edges
+    water = sorted(i for i in range(len(symbols)) if i == 3 or (3, i) in edges0 or (i, 3) in edges0)
+
+    def tautomer(structure, *, max_products, options):
+        return [product.structure] if graph_edges(StructureNode(structure=structure)) == edges0 else []
+
+    def find_ts(node, engine, **kw):
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.004
+        return ts
+
+    def verify(items):
+        for idx, fp in items:
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [reactant, product])
+        return [(idx, reactant.copy(), product.copy()) for idx, _ in items]
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    class WholeBox(_TSFileAsyncConnector):                     # its fast TSs: optimized on the whole box, and said
+        def _found(self, i, j, nodes):
+            rec = super()._found(i, j, nodes)
+            mepd.write_xyz(rec["files"]["ts"], rec["ts"],
+                           comments=[f"E={rec['ts'].energy:.10f} {optimized_on_comment()}"])
+            return rec
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", tautomer, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    from pathlib import Path
+
+    from mepd.discovery.free_energy import FreeEnergies
+
+    monkeypatch.setattr(FreeEnergies, "corrections",
+                        lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "_correction", lambda self, *a, **k: 0.0)
+    def run(connect, **kw):
+        return expand_network(reactant.copy(), _GraphEngine(), connect=connect, verify=verify, refine=refine,
+                              steer="access", access_cutoff_kcal=30.0, max_products=5,
+                              kinetics={"threshold": 1e-6, "free_energy": free_energy}, schedule="async",
+                              generator="reactor", generator_options={"n_seeds": 1},
+                              state_file=tmp_path / "state.pkl", **kw)
+
+    forked = WholeBox(tmp_path)
+    try:
+        res = run(forked)
+    finally:
+        forked.close()
+    whole = [st for st in res.steps if st.label == "fast_0_1"]
+    sub = [st for st in res.steps if st.label == "fast_0_1_sub"]
+    if not free_energy:      # as on the code before the record: one step, no job of the queue about it
+        assert len(whole) == 1 and not sub and len(res.steps) == 1
+        assert not [label for kind, label, _ in forked.priorities if kind == "rotamer"]
+        return
+    assert len(whole) == 1 and len(sub) == 1 and (sub[0].a, sub[0].b) == (whole[0].a, whole[0].b)
+    n = len(symbols)
+    assert optimized_on(mepd.load(whole[0].files["ts"]).structure) == list(range(n))
+    assert optimized_on(mepd.load(sub[0].files["ts"]).structure) == [i for i in range(n) if i not in water]
+    assert sub[0].files["verified"] is True and sub[0].files["rotamer_of"] == "fast_0_1"
+    assert not [st for st in res.steps if st.label.endswith("_sub_sub")]      # once: its own file says subsystem
+    assert sub[0].files["subsystem_of"] == "fast_0_1"                         # the explicit link to its parent
+    # resumed, the run knows which whole-box TSs it has paired: no job for them again, the step there once
+    written = Path(sub[0].files["ts"]).stat().st_mtime_ns
+    again = WholeBox(tmp_path)
+    try:
+        res2 = run(again, resume=True)
+    finally:
+        again.close()
+    assert not [label for kind, label, _ in again.priorities if kind == "rotamer" and "reacting molecules" in label]
+    assert [st.label for st in res2.steps].count("fast_0_1_sub") == 1
+    assert Path(sub[0].files["ts"]).stat().st_mtime_ns == written
+
+
+def test_async_a_pairing_job_the_run_stopped_under_is_asked_again_on_resume(monkeypatch, tmp_path):
+    """The run stops (its budget, a kill) while a whole-box TS's subsystem job waits or runs: no `_sub` yet. On
+    --resume the job is asked again -- a TS is marked as paired when its job comes back, not when it is queued
+    -- and the TS it writes gets its own IRC check, not a file an earlier life left beside it."""
+    import mepd
+    from mepd.discovery import generators
+    from mepd.discovery.free_energy import FreeEnergies, optimized_on_comment
+
+    reactant = _node("C=CO.O")
+    symbols = [str(s) for s in reactant.structure.symbols]
+    edges0 = graph_edges(reactant)
+    oh = next((i, j) for i, j in sorted(edges0) if {symbols[i], symbols[j]} == {"O", "H"} and 2 in (i, j))
+    h = oh[0] if symbols[oh[0]] == "H" else oh[1]
+    edges = (edges0 - {oh}) | {(0, h)}
+    product = StructureNode(structure=_structure_with(reactant.structure, embed_product(symbols, _ang(reactant), edges)))
+
+    def tautomer(structure, *, max_products, options):
+        return [product.structure] if graph_edges(StructureNode(structure=structure)) == edges0 else []
+
+    def find_ts(node, engine, **kw):
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.004
+        return ts
+
+    def verify(items):                            # as the real check: an IRC file that is there is taken
+        for idx, fp in items:
+            irc = Path(fp).with_name(f"{Path(fp).stem}_irc.xyz")
+            if not irc.exists():
+                mepd.write_xyz(irc, [reactant, product])
+        return [(idx, reactant.copy(), product.copy()) for idx, _ in items]
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    class WholeBox(_TSFileAsyncConnector):
+        def _found(self, i, j, nodes):
+            rec = super()._found(i, j, nodes)
+            mepd.write_xyz(rec["files"]["ts"], rec["ts"],
+                           comments=[f"E={rec['ts'].energy:.10f} {optimized_on_comment()}"])
+            return rec
+
+    class Stopped(WholeBox):                      # the queue stops with the pairing job waiting: it never returns
+        def submit(self, kind, args, on_done, label="", priority=0.0):
+            if kind != "rotamer":
+                super().submit(kind, args, on_done, label, priority)
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", tautomer, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    monkeypatch.setattr(FreeEnergies, "corrections",
+                        lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "_correction", lambda self, *a, **k: 0.0)
+    from pathlib import Path
+
+    def run(connect, **kw):
+        try:
+            return expand_network(reactant.copy(), _GraphEngine(), connect=connect, verify=verify, refine=refine,
+                                  steer="access", access_cutoff_kcal=30.0, max_products=5,
+                                  kinetics={"threshold": 1e-6, "free_energy": True}, schedule="async",
+                                  generator="reactor", generator_options={"n_seeds": 1},
+                                  state_file=tmp_path / "state.pkl", **kw)
+        finally:
+            connect.close()
+
+    first = run(Stopped(tmp_path))
+    assert [st.label for st in first.steps] == ["fast_0_1"]
+    mepd.write_xyz(tmp_path / "fast_0_1_sub_irc.xyz", [reactant, reactant])    # left by a life that got further
+    again = WholeBox(tmp_path)
+    res = run(again, resume=True)
+    assert [label for kind, label, _ in again.priorities if kind == "rotamer" and "reacting molecules" in label]
+    assert sorted(st.label for st in res.steps) == ["fast_0_1", "fast_0_1_sub"]
+    ends = mepd.read_frames(tmp_path / "fast_0_1_sub_irc.xyz")                 # its own IRC check: to the product
+    assert graph_edges(ends[-1]) == edges
+
+
+@pytest.mark.parametrize("free_energy", [False, True])
+def test_async_a_resume_leaves_the_irc_files_of_its_verified_rotamers(monkeypatch, tmp_path, free_energy):
+    """Which rotamers were asked is not saved, so a resumed run asks them again; each comes back as the same TS as
+    the step already there and is dropped, with no new IRC check. The files that step names (its IRC) must then
+    still be there: nothing a rotamer job does removes them."""
+    import mepd
+    from mepd.discovery import generators
+    from mepd.discovery.free_energy import FreeEnergies
+
+    reactant, adduct = _butadiene_acrylate()
+
+    def diels_alder(structure, *, max_products, options):
+        return [adduct.structure] if len(graph_edges(StructureNode(structure=structure))) == 20 else []
+
+    def find_ts(node, engine, **kw):
+        ts = StructureNode(structure=node.structure)
+        ts._cached_energy = -0.012 + 1e-3 * (float(np.abs(np.asarray(node.structure.geometry)).sum()) % 1.0)
+        return ts
+
+    def verify(items):
+        for idx, fp in items:
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [reactant, adduct])
+        return [(idx, reactant.copy(), adduct.copy()) for idx, _ in items]
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", diels_alder, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    monkeypatch.setattr(FreeEnergies, "corrections",
+                        lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "_correction", lambda self, *a, **k: 0.0)
+    from pathlib import Path
+
+    def run(resume):
+        connect = _TSFileAsyncConnector(tmp_path)
+        try:
+            return connect, expand_network(
+                reactant.copy(), _GraphEngine(), connect=connect, verify=verify, refine=refine, steer="access",
+                access_cutoff_kcal=30.0, max_products=5, kinetics={"threshold": 1e-6, "free_energy": free_energy},
+                schedule="async", generator="reactor", generator_options={"n_seeds": 1},
+                state_file=tmp_path / "state.pkl", resume=resume)
+        finally:
+            connect.close()
+
+    _, first = run(False)
+    rotamers = [st for st in first.steps if st.files.get("rotamer_of")]
+    assert len(rotamers) == 3 and all(Path(st.files["irc"]).exists() for st in first.steps)
+    connect, res = run(True)
+    assert [kind for kind, _, _ in connect.priorities].count("rotamer") == 3        # asked again
+    assert sorted(st.label for st in res.steps) == sorted(st.label for st in first.steps)
+    assert all(Path(st.files["irc"]).exists() for st in res.steps)
+
+
+@pytest.mark.parametrize("how", ["fails", "core moves"])
+def test_async_a_pairing_job_that_keeps_nothing_leaves_its_reason_in_the_record(monkeypatch, tmp_path, how):
+    """A whole-box TS whose subsystem job keeps nothing has no `_sub` step; steps_removed says why for the label
+    it would have had: the TS optimization on the subsystem failed, or the reacting core moved (which distance,
+    by how much: without the bystander it is another TS)."""
+    import mepd
+    from mepd.discovery import generators
+    from mepd.discovery.free_energy import FreeEnergies, optimized_on_comment
+    from mepd.errors import ConvergenceError
+
+    reactant = _node("C=CO.O")
+    symbols = [str(s) for s in reactant.structure.symbols]
+    n = len(symbols)
+    edges0 = graph_edges(reactant)
+    oh = next((i, j) for i, j in sorted(edges0) if {symbols[i], symbols[j]} == {"O", "H"} and 2 in (i, j))
+    h = oh[0] if symbols[oh[0]] == "H" else oh[1]
+    edges = (edges0 - {oh}) | {(0, h)}
+    product = StructureNode(structure=_structure_with(reactant.structure, embed_product(symbols, _ang(reactant), edges)))
+
+    def tautomer(structure, *, max_products, options):
+        return [product.structure] if graph_edges(StructureNode(structure=structure)) == edges0 else []
+
+    def find_ts(node, engine, **kw):
+        x = np.asarray(node.structure.geometry, dtype=float).copy()
+        if len(node.structure.symbols) < n:                    # the pairing job: on the subsystem
+            if how == "fails":
+                raise ConvergenceError("did not converge in 300 steps")
+            x[np.argmax(np.linalg.norm(x - x[0], axis=1))] += 3.0     # an atom far off: every distance to it changes
+        ts = StructureNode(structure=node.structure.model_copy(update={"geometry": x}))
+        ts._cached_energy = -0.004
+        return ts
+
+    def verify(items):
+        for idx, fp in items:
+            mepd.write_xyz(Path(fp).with_name(f"{Path(fp).stem}_irc.xyz"), [reactant, product])
+        return [(idx, reactant.copy(), product.copy()) for idx, _ in items]
+
+    def refine(items):
+        raise AssertionError("the async queue never runs a whole channel search")
+
+    class WholeBox(_TSFileAsyncConnector):
+        def _found(self, i, j, nodes):
+            rec = super()._found(i, j, nodes)
+            mepd.write_xyz(rec["files"]["ts"], rec["ts"],
+                           comments=[f"E={rec['ts'].energy:.10f} {optimized_on_comment()}"])
+            return rec
+
+    refine.pairs, refine.width = (lambda item: {"start": [], "end": [], "pairs": []}), 3
+    monkeypatch.setitem(generators.GENERATORS, "reactor",
+                        generators.Generator("reactor", "Reactor", "test", tautomer, kind="structures"))
+    monkeypatch.setattr(mepd, "find_ts", find_ts)
+    monkeypatch.setattr(FreeEnergies, "corrections",
+                        lambda self, structures, ts, ends=None, energies=None: [0.0] * len(structures))
+    monkeypatch.setattr(FreeEnergies, "_correction", lambda self, *a, **k: 0.0)
+    from pathlib import Path
+
+    forked = WholeBox(tmp_path)
+    try:
+        res = expand_network(reactant.copy(), _GraphEngine(), connect=forked, verify=verify, refine=refine,
+                             steer="access", access_cutoff_kcal=30.0, max_products=5,
+                             kinetics={"threshold": 1e-6, "free_energy": True}, schedule="async",
+                             generator="reactor", generator_options={"n_seeds": 1})
+    finally:
+        forked.close()
+    assert [st.label for st in res.steps] == ["fast_0_1"] and not (tmp_path / "fast_0_1_sub.xyz").exists()
+    (rec,) = [r for r in res.steps_removed if r["reason"] == "subsystem_ts_not_kept"]
+    assert rec["label"] == "fast_0_1_sub" and rec["of"] == "fast_0_1"
+    if how == "fails":
+        assert rec["why"].startswith("TS optimization on the subsystem failed: ConvergenceError: did not converge")
+    else:
+        assert rec["why"].startswith("the reacting core moved: ") and " A (limit 0.3): another TS" in rec["why"]

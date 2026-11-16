@@ -1788,8 +1788,9 @@ def expand_network(
         # Two path searches can find the same TS; counting it twice would
         # double that channel's rate. Distinct TSs between the same pair
         # stay (parallel channels).
-        twin = next((st for st in result.steps
-                     if {st.a, st.b} == {a, b} and _same_ts(st, ts_e, found["ts"].structure)), None)
+        fp = (found.get("files") or {}).get("ts")      # (its file: it says what the TS was optimized on)
+        new = _open_structure(fp) if free is not None and fp and Path(fp).exists() else found["ts"].structure
+        twin = next((st for st in result.steps if {st.a, st.b} == {a, b} and _same_ts(st, ts_e, new)), None)
         if twin is not None:
             _left(found.get("label", ""), a, b, "same_ts", of=twin.label)
             return
@@ -1830,7 +1831,9 @@ def expand_network(
         """Whether step `st`'s TS is this one (`ts_e`, Hartree; its Structure): the same energy (0.1 kcal/mol)
         and geometry (superimposable by a proper rotation and a permutation of identical atoms, so a mirror
         image -- the twin TS -- or another conformer's TS is another channel); energy alone when a geometry
-        is missing or undecided."""
+        is missing or undecided. A TS optimized on the whole box and one optimized on a subsystem of it (their
+        files say: free_energy.optimized_on) are two, however alike: they count as different molecules."""
+        from mepd.discovery.free_energy import optimized_on
         from mepd.discovery.mirror import _angstrom, superimposable
 
         if abs(st.ts_energy - ts_e) * HARTREE_TO_KCAL_PER_MOL >= 0.1:
@@ -1838,6 +1841,9 @@ def expand_network(
         other = _ts_structure(st)
         if other is None or ts_structure is None or list(map(str, other.symbols)) != list(map(str, ts_structure.symbols)):
             return True
+        on = optimized_on(other), optimized_on(ts_structure)
+        if free is not None and None not in on and on[0] != on[1]:     # (free energies: where the count matters)
+            return False
         return superimposable(list(map(str, other.symbols)), _angstrom(other), _angstrom(ts_structure)) is not False
 
     live_kin = {"n_steps": -1, "hot": set(), "version": 0}
@@ -2743,7 +2749,8 @@ def expand_network(
             return i
 
         same = [tuple(p) for p in (kinetic.mirrors or {}).get("found_twins", [])]
-        same += [(m, why["of"]) for m, why in left.items() if why.get("reason") == "duplicate"]
+        same += [(m, why["of"]) for m, why in left.items()
+                 if why.get("reason") in ("duplicate", "counted_through_subsystem_ts")]
         for m, o in same:
             lo, hi = sorted((root(int(m)), root(int(o))))
             group[hi] = lo
@@ -3305,6 +3312,8 @@ def expand_network(
     thermo_wait: dict = {}    # staged: product species -> [its node, the proposed pairs waiting for its Hessian]
     deferred_iced: list = []                # channel-search pieces no material reached yet (_search_deferred)
     retry: list = []                        # pairs whose single TS turned out to belong elsewhere
+    queued_subsystem: set = set()           # whole-box TS files whose subsystem TS is queued or done (async)
+    paired_subsystem: set = set()           # ... those whose job has come back: saved, the others are asked again
     irc_products: list = []                 # (asked source, species first found as an IRC end): connected (async)
     searched: set[tuple[int, int]] = set()  # pairs that already had their full path search
     expanded: set[int] = set()
@@ -3327,7 +3336,7 @@ def expand_network(
             "result": result, "pos": pos, "connected": connected, "retry": retry, "searched": searched,
             "expanded": expanded, "frontier": frontier, "t_idx": t_idx, "refined": refined,
             "sample_more": sample_more, "peak_fallback": peak_fallback, "steer_delta": steer_delta,
-            "proposed_pairs": proposed_pairs,
+            "proposed_pairs": proposed_pairs, "queued_subsystem": sorted(paired_subsystem),
             **({"thermo_wait": {k: list(v[1:]) for k, v in thermo_wait.items()}} if staged else {}),
             "free_cache": dict(free._cache) if free is not None else {},
             "deferred_iced": deferred_iced, "pending": sorted(pending) if schedule == "async" else [],
@@ -3344,6 +3353,8 @@ def expand_network(
         refined |= saved["refined"]
         sample_more |= saved["sample_more"]
         proposed_pairs |= saved.get("proposed_pairs", set())
+        paired_subsystem |= set(saved.get("queued_subsystem", ()))     # (a state saved before it: none)
+        queued_subsystem |= paired_subsystem
         peak_fallback.update(saved["peak_fallback"])
         steer_delta.update(saved["steer_delta"])
         if free is not None:
@@ -3429,7 +3440,8 @@ def expand_network(
                 if a is None or b is None or a == b or src is None:
                     continue
                 label = f"known{f}_{st.get('label') or src.stem}"
-                files = {k: v for k, v in files0.items() if k not in ("ts", "irc", "pair", "rotamer_of")}
+                files = {k: v for k, v in files0.items()
+                         if k not in ("ts", "irc", "pair", "rotamer_of", "subsystem_of")}
                 ts_fp = out_dir / f"{label}.xyz"
                 permuted_xyz(src, ts_fp, order)
                 if src.with_name(f"{src.stem}_ends.xyz").exists():
@@ -3443,8 +3455,9 @@ def expand_network(
                     files["irc"] = str(out_dir / f"{label}_irc.xyz")
                 if files0.get("pair") and all(p in idx for p in files0["pair"]):
                     files["pair"] = [idx[p] for p in files0["pair"]]
-                if files0.get("rotamer_of"):
-                    files["rotamer_of"] = f"known{f}_{files0['rotamer_of']}"
+                for link in ("rotamer_of", "subsystem_of"):     # the labels of other steps of that run: as theirs
+                    if files0.get(link):
+                        files[link] = f"known{f}_{files0[link]}"
                 files["known"] = str(kr.folder)
                 ts = StructureNode(structure=_open_structure(ts_fp).model_copy(update={"charge": charge,
                                                                                       "multiplicity": mult}))
@@ -3872,26 +3885,37 @@ def expand_network(
                 connect.job_inputs.engine.compute_energies(missing)
             return {**out, "start": [], "end": [], "pairs": [(cut.whole(x, x), cut.whole(y, x)) for x, y in out["pairs"]]}
 
-        def _rotamer_job(guess, fp, core, ends, parent):
+        def _rotamer_job(guess, fp, core, ends, parent, say=False):
             """In a worker: a TS optimized from one rotamer guess of a step's TS (`ts_rotamer_guesses`), written
             to `fp` with its parent's IRC ends beside it (`<stem>_ends.xyz`, what tells its spectators); None
             unless every distance of the reacting `core` stayed within CORE_TOLERANCE_ANG of the guess's (the
             parent's): it went to another TS. With free energies, also its (cache key, thermal correction), as the
             queue's own TS jobs compute it. A TS with spectators is optimized on its subsystem (`subsystem`, put
-            back among them as its `parent` TS has them)."""
+            back among them as its `parent` TS has them). `say` (the pairing job, _queue_subsystem_ts): where it
+            keeps nothing it returns why (horizontal.NotKept) -- the TS optimization failed, the reacting core
+            moved (which distance, by how much) -- for the job log and the run's record."""
             import mepd
             from mepd.cli_conformers import CORE_TOLERANCE_ANG
+            from mepd.discovery.horizontal import NotKept
 
             eng = connect.job_inputs.engine
             cut = subsystem(*(StructureNode(structure=e) for e in ends), eng, ref=StructureNode(structure=parent))
             node = StructureNode(structure=guess)
-            ts = mepd.find_ts(cut.sub(node) if cut else node, eng,
-                              maxiter=int(getattr(connect, "fast_ts_steps", 300)), continue_unconverged=0)
+            try:
+                ts = mepd.find_ts(cut.sub(node) if cut else node, eng,
+                                  maxiter=int(getattr(connect, "fast_ts_steps", 300)), continue_unconverged=0)
+            except Exception as exc:
+                if not say:
+                    raise
+                return NotKept(f"TS optimization on the subsystem failed: {type(exc).__name__}: {str(exc)[:200]}")
             ts = cut.whole(ts) if cut else ts
             x0, x1 = (np.asarray(s.geometry, dtype=float) / ANGSTROM_TO_BOHR for s in (guess, ts.structure))
-            if any(abs(np.linalg.norm(x1[i] - x1[j]) - np.linalg.norm(x0[i] - x0[j])) > CORE_TOLERANCE_ANG
-                   for i, j in core):
-                return None
+            moved = max(((abs(np.linalg.norm(x1[i] - x1[j]) - np.linalg.norm(x0[i] - x0[j])), i, j) for i, j in core),
+                        default=(0.0, 0, 0))
+            if moved[0] > CORE_TOLERANCE_ANG:
+                sy = [str(s) for s in guess.symbols]
+                return NotKept(f"the reacting core moved: {sy[moved[1]]}{moved[1]}-{sy[moved[2]]}{moved[2]} by "
+                               f"{moved[0]:.2f} A (limit {CORE_TOLERANCE_ANG:g}): another TS") if say else None
             fp = Path(fp)
             from mepd.discovery.free_energy import optimized_on_comment, unrecorded
 
@@ -3940,6 +3964,7 @@ def expand_network(
         queued_channels: set = set()  # species pairs whose sampling is queued or done
         queued_steer: set = set()     # steering single points queued
         queued_rotamers: set = set(known_no_rotamers)  # TS files whose rotamers are queued or done
+        queued_subsystem.update(known_no_rotamers)
 
         lowest_ts: dict = {"steps": -1, "pairs": {}}   # species pair -> its lowest TS energy, at that many steps
 
@@ -3999,15 +4024,56 @@ def expand_network(
                                priority=_ts_gated(st)[1] if staged else (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
             return len(guesses)
 
-        def _rotamer_back(a, b, parent, out) -> None:
+        def _queue_subsystem_ts(st) -> int:
+            """A TS optimized on the whole box whose two IRC ends leave a molecule as it was (the same atoms
+            with the same bonds at both ends: `subsystem`'s reading, so a molecule that hands an atom on is
+            not one) also gets a TS on the other atoms: the queue's rotamer job with the TS itself as the
+            guess, which optimizes it on that subsystem, keeps it only if the reacting core stayed, and
+            writes it as `<stem>_sub`, one more TS of the step, IRC-checked like any. Both stay: the
+            whole-box TS counts as one molecule, this one with the unchanged molecules apart."""
+            from mepd.discovery.free_energy import FreeEnergies, optimized_on
+
+            ts = _ts_structure(st)
+            if ts is None or optimized_on(ts) != list(range(len(ts.symbols))):
+                return 0
+            ends = _ts_ends(st)
+            if len(FreeEnergies(None, 298.15).parts(ends[0].model_copy(update={"extras": {}}), True, ends)) == 1:
+                return 0
+            stem = Path(st.files["ts"]).stem
+            core = sorted(graph_edges(StructureNode(structure=ends[0])) ^ graph_edges(StructureNode(structure=ends[1])))
+            sub = Path(st.files["ts"]).with_name(f"{stem}_sub.xyz")
+            if not any((o.files or {}).get("ts") == str(sub) for o in result.steps):
+                # a `_sub` a stopped run left without its step is written again: the IRC check an earlier life
+                # left beside it is not this TS's. (One a step owns is not touched: the job's TS is then
+                # dropped as the same TS, and the step keeps its files.)
+                for old in ("_irc.xyz", "_irc.energies", "_irc.failed"):
+                    sub.with_name(f"{sub.stem}{old}").unlink(missing_ok=True)
+
+            def back(out, a=st.a, b=st.b, fp=st.files["ts"], parent=st.label):
+                paired_subsystem.add(fp)     # done only now: a job the run stopped under is asked again on resume
+                if out is None or isinstance(out, str):      # kept nothing: said in the record, with the job's reason
+                    _left(f"{stem}_sub", a, b, "subsystem_ts_not_kept", of=parent,
+                          why=str(out) if out is not None else "its job failed (the job log says how)")
+                    out = None
+                _rotamer_back(a, b, stem, out, subsystem_of=parent)
+
+            connect.submit("rotamer", (ts, str(sub), core, ends, ts, True), back,
+                           label=f"{st.a}→{st.b} · {stem} on its reacting molecules",
+                           priority=_ts_gated(st)[1] if staged else (st.ts_energy - e0) * HARTREE_TO_KCAL_PER_MOL)
+            return 1
+
+        def _rotamer_back(a, b, parent, out, subsystem_of=None) -> None:
             """A rotamer of TS `parent` is back: one more TS between its ends (unless the same TS is there
-            already), IRC-checked like any; an IRC that fails drops it, and asks for no path search."""
+            already), IRC-checked like any; an IRC that fails drops it, and asks for no path search.
+            `subsystem_of`: the label of the whole-box step it is the subsystem TS of (_queue_subsystem_ts),
+            kept in its files: the link the molecule kinetics count the two as one TS by."""
             if out is not None:
                 ts, fp, corr = out
                 if corr is not None and free is not None:
                     free._cache[corr[0]] = corr[1]
                 _add_found({"pair": (a, b), "ts": ts, "label": Path(fp).stem,
-                            "files": {"ts": fp, "verified": False, "rotamer_of": parent, "pair": [a, b]}})
+                            "files": {"ts": fp, "verified": False, "rotamer_of": parent, "pair": [a, b],
+                                      **({"subsystem_of": subsystem_of} if subsystem_of else {})}})
             _save()
             _follow_up()
 
@@ -4103,7 +4169,17 @@ def expand_network(
                                        lambda out, key=key, a=a, b=b, h=h: _channels_back(key, a, b, out, h),
                                        label=f"{a}→{b}", priority=h)
                         n += 1
-            if refine is not None and verify is not None:   # the rotamers of every IRC-checked TS the kinetics use
+            if refine is not None and verify is not None and free is not None:
+                # every IRC-checked whole-box TS with a molecule that takes no part: also on its subsystem.
+                # Whatever its height: counted whole it lies a molecule's entropy higher than that TS will
+                for st in list(result.steps):
+                    fp = st.files.get("ts")
+                    if (fp and st.files.get("verified") is True and st.files.get("irc") and fp not in queued_subsystem
+                            and "rotamer_of" not in st.files and st.files.get("ts_kind") != "path_peak"):
+                        queued_subsystem.add(fp)
+                        n += _queue_subsystem_ts(st)
+            if refine is not None and verify is not None:
+                # the rotamers of every IRC-checked TS the kinetics use
                 for st in list(result.steps):
                     fp = st.files.get("ts")
                     if (fp and st.files.get("verified") is True and st.files.get("irc") and fp not in queued_rotamers

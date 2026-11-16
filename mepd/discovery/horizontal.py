@@ -69,6 +69,11 @@ SEED_RANK = -1
 _HELD = threading.local()   # .slots: the workers the job running in this thread holds (`_run_job`)
 
 
+class NotKept(str):
+    """What a caller's job (`register`) returns when it ran and kept nothing: the reason, in words. The job
+    log says it (`ok` false, `why`), and the job's callback gets it in place of a result."""
+
+
 def _run_job(method: str, args):
     self = _CONNECTOR["self"]
     if method.startswith("own:"):    # a job kind the caller registered
@@ -658,10 +663,12 @@ class HorizontalConnector:
                     t_end = time.monotonic()
                     t_start = started.pop(fut, t_end)
                     exc = fut.exception()
+                    why = (f"{type(exc).__name__}: {exc}" if exc is not None
+                           else str(fut.result()) if isinstance(fut.result(), NotKept) else None)
                     log_event({"event": "job", "kind": kind.removeprefix("own:"), "what": what(kind, pair, args),
                                "wait_s": round(t_start - queued_at.pop(id(args), t_start), 1),
-                               "run_s": round(t_end - t_start, 1), "ok": exc is None,
-                               **({} if exc is None else {"why": f"{type(exc).__name__}: {exc}"})})
+                               "run_s": round(t_end - t_start, 1), "ok": why is None,
+                               **({} if why is None else {"why": why})})
                     rerun = False
                     try:
                         i, j = pair if pair is not None else (None, None)
@@ -681,7 +688,8 @@ class HorizontalConnector:
                         except Exception:
                             out = None
                         d, f = finished.get(kind.removeprefix("own:"), (0, 0))
-                        finished[kind.removeprefix("own:")] = (d + (out is not None), f + (out is None))
+                        kept = out is not None and not isinstance(out, NotKept)
+                        finished[kind.removeprefix("own:")] = (d + kept, f + (not kept))
                         if kind.startswith("own:"):
                             own_label.pop(id(args), None)
                             own_done.pop(id(args))(out)

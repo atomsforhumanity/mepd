@@ -146,6 +146,34 @@ def test_a_whole_box_ts_keeps_the_neighbour_it_touches_only_when_checked():
     assert o in x["r"] and o in x["p"] and x["with_neighbours"]          # the water-like neighbour on both sides
 
 
+def test_a_whole_box_ts_and_its_subsystem_ts_are_one_ts_unless_the_bystander_is_in_contact():
+    """A -> B beside S. The whole-box TS counts as one molecule (12 above A + S here, the bystander's entropy
+    lost); its subsystem TS (files: subsystem_of the whole-box step, IRC-checked) counts S apart (10). Both are
+    the reaction A -> B: counted once, through the subsystem TS, the whole-box step saying which step stands
+    for it. A whole-box TS with S in contact is A + S -> B + S and stays."""
+    boxes = [[((0, 1), "C"), ((2,), "O")], [((0, 1), "C="), ((2,), "O")]]
+    parts, bonds = _parts_net(boxes)
+    g = [0.0, 2.0 / H]
+    far = Structure(symbols=["C", "C", "O"], geometry=np.array([[0, 0, 0], [1.5, 0, 0], [7.0, 0, 0]]) * A2B)
+    near = Structure(symbols=["C", "C", "O"], geometry=np.array([[0, 0, 0], [1.5, 0, 0], [2.6, 0, 0]]) * A2B)
+    sub = Step(0, 1, 10.0 / H, "s_sub", {"subsystem_of": "s", "rotamer_of": "s", "verified": True})
+
+    def info(whole_ts):          # (TS, computed on a subsystem, IRC-checked): step 0 the whole-box TS, 1 its `_sub`
+        return lambda m: (whole_ts, m == 1, True)
+
+    net = M.build(2, parts, bonds, [Step(0, 1, 12.0 / H, "s", {"verified": True}), sub], g, ts_info=info(far))
+    assert [x["step"] for x in net.reactions] == [1] and net.reactions[0]["g_ts"] - net.g[0] == pytest.approx(10.0)
+    assert net.left_out[0] == {"reason": "counted_through_subsystem_ts", "of": 1}
+    # the `_sub` not IRC-checked (yet): the whole-box TS still counts
+    unchecked = Step(0, 1, 10.0 / H, "s_sub", {"subsystem_of": "s", "verified": False})
+    net = M.build(2, parts, bonds, [Step(0, 1, 12.0 / H, "s", {"verified": True}), unchecked], g, ts_info=info(far))
+    assert sorted(x["step"] for x in net.reactions) == [0, 1]
+    # the bystander in contact: another reaction (S on both sides), both count
+    net = M.build(2, parts, bonds, [Step(0, 1, 12.0 / H, "s", {"verified": True}), sub], g, ts_info=info(near))
+    assert sorted(x["step"] for x in net.reactions) == [0, 1] and not net.left_out
+    assert [bool(x.get("with_neighbours")) for x in sorted(net.reactions, key=lambda x: x["step"])] == [True, False]
+
+
 def _dimer_net(g_ts=15.0):
     """2 A <-> A2 (A2 2 kcal/mol below two A), and A <-> B (unimolecular, high)."""
     return M.MoleculeNetwork(["A", "A2", "B"], np.array([0.0, -2.0, 5.0]),

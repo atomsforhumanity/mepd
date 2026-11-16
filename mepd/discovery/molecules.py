@@ -24,6 +24,13 @@ molecule of either end those atoms are in, and a molecule whose key alone change
   * Molecule free energies: each molecule at its lowest over the boxes holding it (lowest: every box at or above
     the sum of its molecules', a linear programme). A reaction's TS on this scale is the box TS with the
     spectators taken out.
+  * A TS optimized on the whole box whose reaction is that of its reacting molecules alone (no spectator in
+    contact) and its subsystem TS (the same pair's step whose files say "subsystem_of" it, IRC-checked) are one
+    TS, counted once, through the subsystem TS: left to themselves both would carry flux, the whole-box one
+    lower by the free energy of holding the bystander. Through the subsystem TS whichever of the two is lower:
+    the whole-box copy's height carries the box model's replacement of the spectator's free motion by soft
+    vibrations of the complex, which is no property of the reaction. A whole-box TS with a spectator in
+    contact stays its own reaction (the spectator on both sides).
   * One reaction found in several boxes is one TS when its TS energies are within DEDUP_KCAL and the reacting atoms'
     sorted distances agree (mixture._same_distances); mirror-image twins are never merged with each other.
 
@@ -394,6 +401,22 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
                     x["atoms"] = sorted(set(react) | {i for a in near for i in a})
                     x["with_neighbours"] = True
         found.append(x)
+    # A TS optimized on the whole box that enters as the reaction of its reacting molecules alone (no spectator
+    # in contact) and its IRC-checked subsystem TS (the step whose files name it: "subsystem_of",
+    # network_expansion._queue_subsystem_ts) are one TS: the reaction counts once, through the subsystem TS,
+    # where the molecule that takes no part is counted apart. Both steps stay in the record.
+    stands = {}
+    for x in found:
+        f = steps[x["step"]].files or {}
+        if not x["twin"] and f.get("subsystem_of") and f.get("verified") is True:
+            stands.setdefault(f["subsystem_of"], x)
+    for x in list(found):
+        y_ = stands.get(steps[x["step"]].label)
+        if (y_ is not None and not x["twin"] and not x.get("with_neighbours") and (x["a"], x["b"]) in
+                ((y_["a"], y_["b"]), (y_["b"], y_["a"])) and sorted((x["r"], x["p"])) == sorted((y_["r"], y_["p"]))):
+            count("counted_through_subsystem_ts")
+            left(x["j"], "counted_through_subsystem_ts", of=y_["step"])
+            found[:] = [z for z in found if z["step"] != x["step"]]      # (its mirror-image twin with it)
     # molecule free energies
     used = sorted({x["a"] for x in found} | {x["b"] for x in found} | {0})
     used = [k for k in used if parts_of(k) is not None]

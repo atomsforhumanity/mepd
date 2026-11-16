@@ -293,3 +293,25 @@ def test_within_a_rank_the_lower_priority_starts_first(tmp_path):
 
     hc([], nodes, start=start)
     assert started == ["plain", "ch_low", "moves", "mid", "high"]
+
+
+def test_a_job_that_kept_nothing_says_why_in_the_job_log_and_to_its_callback(tmp_path, monkeypatch):
+    """A caller's job that ran and kept nothing returns NotKept(reason): the job log has `ok` false and `why`,
+    and the callback gets the reason in place of a result (the pairing job: the reacting core moved, ...)."""
+    import json
+
+    from mepd.discovery.horizontal import NotKept
+
+    log = tmp_path / "events.jsonl"
+    monkeypatch.setenv("MEPD_NETWORK_AWARE_LOG", str(log))
+    hc = _connector(tmp_path)
+    A, B = (Node(name=n) for n in "AB")
+    hc._fast_ts = lambda i, j, a, b: (SimpleNamespace(energy=-1.0), f"fast_{i}_{j}", None)
+    hc.register("pairing", lambda k: NotKept("the reacting core moved: C0-H5 by 0.47 A") if k else "kept")
+    got = []
+    hc([(0, 1)], [A, B], start=lambda: (hc.submit("pairing", (1,), got.append), hc.submit("pairing", (0,), got.append)))
+    assert sorted(map(str, got)) == ["kept", "the reacting core moved: C0-H5 by 0.47 A"]
+    assert isinstance(next(g for g in got if g != "kept"), NotKept)
+    jobs = [e for e in map(json.loads, log.read_text().splitlines()) if e["event"] == "job" and e["kind"] == "pairing"]
+    assert sorted((e["ok"], e.get("why")) for e in jobs) == [(False, "the reacting core moved: C0-H5 by 0.47 A"),
+                                                             (True, None)]
