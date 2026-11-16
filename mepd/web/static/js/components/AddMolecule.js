@@ -383,10 +383,10 @@ function Detail({ q, file, tick, onGone }) {
   const head = html`<div class="am-detail-head">
     ${d.smiles && html`<img src=${depictUrl(d.smiles, 120, 90)} alt="" />`}
     <div><h3>${name}</h3><div class="small muted">${d.amount != null ? `${fmtC(d.amount)} M added` : ''}${d.smiles ? ` · ${d.smiles}` : ''}</div>
-      <div class="am-layers">${(d.layers || []).map((l) => html`<span class=${`am-layer ${l.status}`} title=${`${l.what || ''}${l.level ? `\nlevel: ${l.level}` : ''}`}>
+      <div class="am-layers">${(d.layers || []).map((l) => html`<span class=${`am-layer ${l.status === 'stopped early' ? 'failed' : l.status}`} title=${`${l.what || ''}${l.level ? `\nlevel: ${l.level}` : ''}`}>
         ${l.status === 'running' ? html`<span class="spinner" aria-hidden="true"></span>` : ''}${LAYER[l.name] || l.name}: ${l.status}${
           l.total ? ` ${l.done ?? 0}/${l.total}` : l.entries != null ? ` · ${l.entries} number${l.entries === 1 ? '' : 's'}` : ''}${l.wall_s ? ` · ${fmtTime(l.wall_s)}` : ''}</span>`)}
-        ${d.status === 'interrupted' && html`<span class="am-layer failed">stopped early</span>`}</div></div>
+</div></div>
     <span class="spacer"></span>
     <div class="am-actions">
       ${d.readout && html`<button class="btn small" title="Keep it as a variant of the network and mark its changes on the network map" onClick=${show}>${variant ? 'Show on the map' : 'Show on the map…'}</button>`}

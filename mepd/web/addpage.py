@@ -482,11 +482,12 @@ def _source(doc: dict) -> dict:
     return out
 
 
-def detail(ws, qid: str, name: str) -> dict:
+def detail(manager, qid: str, name: str) -> dict:
     """One candidate's result as the page reads it: the read-out with, for every changed step, the layer
     and level its number is from; the two groups of barrier changes (through the molecule; only
     because amounts moved); what is new; what failed and why. The estimates' raw bindings stay in the
     file."""
+    ws = manager.ws
     q = _query(ws, qid)
     doc = _load(_result_path(ws, qid, name))
     r = doc.get("readout")
@@ -500,6 +501,11 @@ def detail(ws, qid: str, name: str) -> dict:
                        "label": labels.get(f.get("step")) or _names(q, ws).get(f.get("species"), f.get("species"))}
                       for f in doc.get("failed") or []],
            "timings": doc.get("timings"), "through_steps": [], "moved_steps": [], "new_steps": [], "new_species": []}
+    out["job"] = running(manager, qid).get(name)
+    if out["status"] == "running" and out["job"] is None:        # (cut short, as in `view`)
+        out["status"] = "interrupted"
+        out["layers"] = [{**lay, "status": "stopped early"} if lay.get("status") == "running" else lay
+                         for lay in out["layers"]]
     if not r:
         return out
 

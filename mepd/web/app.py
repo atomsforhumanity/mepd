@@ -2702,7 +2702,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
     def addmol_detail(qid: str, name: str):
         from mepd.web import addpage
 
-        return addpage.detail(W(), qid, name)
+        return addpage.detail(J(), qid, name)
 
     @app.delete("/api/addmol/{qid}/results/{name}")
     def addmol_remove(qid: str, name: str):

@@ -178,6 +178,8 @@ def test_candidates_are_ranked_and_each_line_says_what_it_is_built_on(mgr):
     # a file that says running with no job writing it was cut short
     assert half["status"] == "interrupted" and half["layers"][0]["done"] == 1
     assert all(r["variant"] is None and r["job"] is None for r in rows)
+    cut = addpage.detail(mgr, qid, half["file"])
+    assert cut["status"] == "interrupted" and cut["layers"][0]["status"] == "stopped early" and cut["job"] is None
     # where the target forms, a gain is a factor, and any factor ranks above a route that only came down
     hot = ask(mgr, temperature=1500.0, time_s=1e-8)
     qh, _ = put_result(mgr, hot, "relay", None)
@@ -194,7 +196,7 @@ def test_one_candidate_in_detail(mgr):
                          "binding": {k: {"electronic": v, "spread": 0.7} for k, v in (("r", -1.0), ("ts", -30.0), ("p", -1.0))}}]}
     _, name = put_result(mgr, qid, "beside", beside, failed=[{"step": st["id"], "layer": "bystander", "status": "unmoved",
                                                                "why": "the molecule did not move"}])
-    d = addpage.detail(mgr.ws, qid, name)
+    d = addpage.detail(mgr, qid, name)
     (row,) = d["through_steps"]
     assert row["through"] == f"{st['id']}+added" and row["layer"] == "bystander" and row["level"] == "lvl"
     assert row["change"] == pytest.approx(row["after"] - row["before"]) and row["spread"] == 0.7 and row["status"] == "est"
@@ -205,21 +207,21 @@ def test_one_candidate_in_detail(mgr):
     assert "binding" not in json.dumps(d["through_steps"]) and "coordinates" not in d["candidate"]
     # a step the molecule takes part in: listed as new, and the parent step reads through it
     _, name = put_result(mgr, qid, "relay", relay(q))
-    d = addpage.detail(mgr.ws, qid, name)
+    d = addpage.detail(mgr, qid, name)
     assert d["through_steps"][0]["via"] == "HCN -> HNC through the molecule" and d["through_steps"][0]["layer"] == "given"
     assert d["new_steps"][0]["barrier"]["electronic"] == 25.0 and d["new_steps"][0]["source"] == "made up"
     assert d["peak_routes"]["with"][0]["peak"] < d["peak_routes"]["parent"][0]["peak"]
     # a result whose kinetics could not be built still reads (and is plain JSON)
     _, name = put_result(mgr, qid, "broken", {"new_steps": [{"id": "x", "reactants": ["nowhere"], "products": ["added"],
                                                              "barrier": {"electronic": 1.0}, "status": "est"}]})
-    d = json.loads(json.dumps(addpage.detail(mgr.ws, qid, name), allow_nan=False))
+    d = json.loads(json.dumps(addpage.detail(mgr, qid, name), allow_nan=False))
     assert not d["readout"] and d["effect"] is None and "nowhere" in d["failed"][0]["why"]
     addpage.remove(mgr, qid, name)
     # nothing at all
-    d = addpage.detail(mgr.ws, qid, "x.json")
+    d = addpage.detail(mgr, qid, "x.json")
     assert d["through_steps"] == [] and d["unchanged"] == 1 and d["readout"]
     with pytest.raises(WorkspaceError, match="no result"):
-        addpage.detail(mgr.ws, qid, "../query.json")
+        addpage.detail(mgr, qid, "../query.json")
     addpage.remove(mgr, qid, "x.json")
     assert [r["name"] for r in addpage.view(mgr, qid)["results"]] == ["beside", "relay"]
 
@@ -241,7 +243,7 @@ def test_the_geometry_shows_the_molecule_only_where_the_estimate_kept_it(mgr):
     # the same step read through another estimate (a relay that came with no geometry): the parent's own frames
     other = addpage.geometry(mgr.ws, qid, st["id"], name, "relay")
     assert not other["with_molecule"] and other["frames"][1].startswith("3\n")
-    assert addpage.detail(mgr.ws, qid, name)["through_steps"][0]["with_geometry"]
+    assert addpage.detail(mgr, qid, name)["through_steps"][0]["with_geometry"]
     with pytest.raises(WorkspaceError, match="no step"):
         addpage.geometry(mgr.ws, qid, "nope")
 
