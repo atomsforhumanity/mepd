@@ -36,8 +36,11 @@ are built; until then such numbers can be given with a candidate (`estimates`, b
   is computed now with the run's own code and profile (`--inputs`, default the `.toml` beside the run); a step
   for which that is not possible is left out (`notes` says how many): the molecules' free energies are fitted
   over the boxes, and one box on an electronic energy would move them all. Each step's
-  `geometry` holds the reacting molecules only (`atom_indices_in_run`: their indices in the run's files); a
-  mirror-image twin of a step has no geometry (`mirror_of`).
+  `geometry` holds the reacting molecules only (`atom_indices_in_run`: their indices in the run's files). A
+  mirror-image twin of a step (`mirror_of`; its original names it under `mirror`) has the original's frames
+  reflected (`reflected`): for a molecule that is its own mirror image the two are one step (the bystander layer
+  computes the pair once and copies the row), with a chiral molecule they are two different steps, each
+  computed, and the read-out's two rows name each other (`mirror`). A pose applies to the step it names.
 - **A workspace** (`mepd addmol query WORKSPACE/`, `mepd.web.added.network`): the workspace's kinetic model
   (*Analyze › Kinetics*: IRC-verified steps, free energies at the 1 M standard state from quasi-RRHO on GFN2-xTB
   Hessians; [kinetics.md](kinetics.md)), for networks built in the web. An explorer run adopted into a workspace
@@ -76,13 +79,34 @@ G(C) cancels in every rate, so C needs no free energy of its own.
 **A step given with its TS.** A `new_steps` entry may come with the TS itself instead of a barrier:
 `"ts": {"atoms", "coordinates", "charge", "multiplicity", "ends": [reactant end, product end]}`, all in one atom
 order (a verified TS and its IRC ends, a channel search's). `mepd addmol test` then puts it on the parent's scale
-as a whole (`mepd.discovery.parent.ts_step`): G(TS) minus G of the separated, minimized molecules of its reactant
-end, quasi-RRHO at 1 M with the explorer's free-energy code, the TS counted as the explorer counts a TS file (what
-its file says it was optimized on; without that record, by its ends: molecules that take no part apart). The
-entry's `reactants` and `products` are read from the geometry (the molecules that take part; C as `added`),
+as a whole (`mepd.discovery.parent.ts_step`, `on_parent_scale`):
+
+- G(TS) by the explorer's free-energy code (quasi-RRHO at 1 M), the TS counted as the explorer counts a TS file
+  (what its file says it was optimized on; without that record, by its ends: molecules that take no part apart);
+- minus **one reference per molecule, its lowest known form**: every parent molecule at the parent network's own
+  free energy (for a run through its starting box, whose free energy and geometry the query keeps under
+  `reference`; this needs the TS's parent molecules to be, together, the starting box's atoms, which a parent
+  step with the molecule added always is), and the added molecule at its lowest free energy over the candidate's
+  conformers and the form found in the complex. Not each molecule as it happened to sit in the complex: the
+  entry keeps that number too (`free_from_molecules_minimized_alone`) and says which reference it used
+  (`reference`, `added_form`).
+
+The entry's `reactants` and `products` are read from the geometry (the molecules that take part; C as `added`),
 `spectators` lists the others, and `parent_step` is the parent's step between the same molecules. A barrier
 "from the complex" is never added to a separately estimated binding; only bystander estimates (not stationary
 points) use the placer's free-energy term.
+
+**Levels.** Every step carries its `level`. A run's own steps: `explorer` (the run's profile), `explorer+steer`
+(its TS carries the run's steering single point) or `explorer+steer (lent)`. A step given with its TS is at
+`explorer` after the above. `mepd addmol test --steer STEERING_PROFILE` then puts it on the parent's steering
+level with the run's own single-point code: one single point of the TS (counted as above), of the added
+molecule's reference form and of the starting box; the barrier moves by their difference (`steer` on the entry),
+the level becomes `explorer+steer`. This is the slow part (a minute per 34-atom single point on one core), so
+it runs after the low-level answer is written, the steps on the routes that carry the target's material first,
+the file rewritten after each. The read-out's `mixed_levels` is `true` when the steps the comparison rests on
+(the routes that carry the target's material, the lowest-peak routes without and with C) are not all at one
+level; `levels` lists them by level. Steering a step with C beside a parent whose own steps on the route carry
+no single point makes the comparison mixed, and the file says so.
 
 ## What you read (`readout`, in every result file)
 
@@ -119,6 +143,7 @@ Parent and variant are run from the same mixture, the variant with C at its amou
   else **no part**. When it did: **regenerated** if `turnovers` ≥ `covalent`, else **consumed**. A slow catalyst
   on the only route reads `regenerated` with few turnovers, and one held up on its product reads `regenerated`
   with the product complex as resting state: read the numbers with the word.
+- **`mixed_levels`**, **`levels`**: whether the steps compared are at one level of theory (above).
 - **`first_order`**: the estimate below, beside the kinetics' own `factor`.
 - **`new_species`**: the complexes and new species with their amounts.
 
@@ -160,6 +185,7 @@ Plain JSON. Energies in kcal/mol, lengths in Å, amounts in mol/L, times in s (`
 | `times` | the output times of every `series` |
 | `species[]` | `id`, `name`, `smiles`, `charge`, `multiplicity`, `g`, `atoms`, `coordinates` (its own atom order), `amount` {`initial`, `final`, `max`, `mean`}, `series`, `control` (X, or null), `status`, `level` |
 | `source` | `explorer run` or `workspace` |
+| `reference` | a run only: its starting box (`seed_g_hartree`, `seed_symbols`, `seed_coordinates`, `seed_molecules`), what a TS with an added molecule is measured from |
 | `steps[]` | `id`, `label`, `reactants`, `products` (ids, repeated for 2 A), `shuttles` (on both sides), `g_ts`, `barrier` {`forward`, `reverse`}, `apparent_barrier`, `extent`, `control`, `status`, `level`, `geometry`; from a run also `run_step`, `mirror_of` |
 | `steps[].geometry` | `atoms`, `charge`, `multiplicity`, `reactant`, `ts`, `product`: three frames in **one atom order** (the TS's; the two ends are its IRC's ends), and `bonds_broken`, `bonds_formed` as pairs of 0-based indices into that order. `null` when the step has no TS and IRC files |
 | `limits` | the section above: `defined`, `why`, `basis`, `control`, `order`, `traps`, `routes`, `cutoff_kcal` |
