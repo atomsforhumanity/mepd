@@ -2,7 +2,7 @@
 (a strong catalyst, an inhibitor, a consumed reagent, a molecule that does nothing, a failed layer, kinetics that
 cannot be built).
 
-    python synthetic_results.py QUERY.json OUTDIR
+    python synthetic_results.py QUERY.json OUTDIR      # a query of the acetone + acetaldehyde demonstration
 
 Every number that goes in is invented here to exercise the page; the kinetics on top of them are mepd.addmol's
 own. They say nothing about chemistry: every candidate is called "synthetic: ..." and every estimate's
@@ -17,8 +17,17 @@ import numpy as np
 from mepd import addmol
 
 SOURCE = "synthetic (invented to exercise the page; not a calculation)"
-ACETONE, ACETALDEHYDE, ENOL, ALDOL = "s_818728a4", "s_79184cf5", "s_5ce441f7", "s_2f617c91"
-ENOLISATION, CC, BOTH_ENOLS = "r_3eed255a", "r_3bd79eeb", "r_e824d559"
+SMILES = {"ACETONE": "CC(C)=O", "ACETALDEHYDE": "CC=O", "ENOL": "C=C(C)O", "VINYL": "C=CO", "ALDOL": "CC(=O)C[C@@H](C)O"}
+
+
+def find(q, a, b):
+    """The id of a step with frames between the species sets `a` and `b`, molecules on both sides apart; None."""
+    for st in q["steps"]:
+        left = sorted(x for x in st["reactants"] if x not in st.get("shuttles", []))
+        right = sorted(x for x in st["products"] if x not in st.get("shuttles", []))
+        if st.get("geometry") and sorted([left, right]) == sorted([sorted(a), sorted(b)]):
+            return st["id"]
+    return None
 
 
 def e(free, spread, electronic=None):
@@ -43,6 +52,12 @@ def beside(q, step, shift=4.0):
 
 def main(query: Path, out: Path) -> None:
     q = json.loads(query.read_text())
+    ids = {k: addmol.match(q["species"], v)[0] for k, v in SMILES.items()}
+    ACETONE, ACETALDEHYDE, ENOL, ALDOL = ids["ACETONE"], ids["ACETALDEHYDE"], ids["ENOL"], ids["ALDOL"]
+    ENOLISATION = find(q, [ACETONE], [ENOL])
+    CC = find(q, [ALDOL], [ENOL, ACETALDEHYDE])
+    BOTH_ENOLS = find(q, [ACETONE, ACETALDEHYDE], [ENOL, ids["VINYL"]])
+    assert ENOLISATION and CC and BOTH_ENOLS, "this query is not the aldol demonstration's"
     out.mkdir(parents=True, exist_ok=True)
     none = {"species": [], "steps": [], "new_species": [], "new_steps": []}
     done = [{"name": "given", "status": "done", "what": "synthetic estimates", "entries": 0}]

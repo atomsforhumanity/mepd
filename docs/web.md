@@ -149,8 +149,11 @@ A molecule in explicit solvent (*Put in explicit solvent (QM/MM)*), or a whole s
 *Add a molecule* (the canvas tab beside Kinetics and Landscape; or select a species in Explore › *Make more of it*)
 is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page `add-molecule`):
 
-1. **Target and conditions** → *What limits it today?* builds the query file (`mepd.web.added.query`; the first
-   time in a workspace it computes the GFN2-xTB Hessians of every species and TS, then seconds). The page shows the
+1. **Target and conditions** → *What limits it today?* builds the query file. Where every verified step of the
+   workspace belongs to one finished Network expansion (`addpage.source_run`), the query is the exploration's own
+   molecule-level network (`mepd addmol query RUN`, run in a process of its own; about half a minute); otherwise
+   the workspace's (`mepd.web.added.query`; the first time it computes the GFN2-xTB Hessians of every species and
+   TS, then seconds). The page says which. It shows the
    degree-of-rate-control order (lower these, do not lower these, traps), or, where the network makes none of the
    target, the easiest route with each step's height against what the conditions allow.
 2. **Candidates**: SMILES lines (`SMILES name amount`), a candidates file (JSON), an `.xyz` file, or the molecule

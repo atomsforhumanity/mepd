@@ -4112,12 +4112,12 @@
   "title": "the target",
   "does": "The species you want more of. Everything on the page is read for its amount at the end of the run, at the conditions below.",
   "how": [
-   "The network is the one Kinetics runs: steps with an IRC-verified transition state, free energies at the 1 M standard state.",
+   "Where the workspace is one finished exploration, its own molecule-level network is asked (the run's free energies, every IRC-verified step it found); otherwise the workspace's network, the one Kinetics runs.",
    "A species that exists as several stereoisomers is several species of the network; ticked, they are counted together.",
    "The question (target and conditions) is kept in the workspace as a query file; asking it again opens its candidates."
   ],
   "caveats": [
-   "The first question in a workspace computes a GFN2-xTB Hessian for every species and transition state (minutes); they are kept."
+   "On the workspace's network the first question computes a GFN2-xTB Hessian for every species and transition state (minutes); they are kept. On an exploration's own network every question takes about half a minute."
   ],
   "code": [
    "mepd/web/addpage.py:make_query",

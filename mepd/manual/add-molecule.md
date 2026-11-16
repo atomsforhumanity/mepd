@@ -16,10 +16,21 @@ Kinetics last ran, else from what the latest exploration started from, 1 M
 each. A target that exists as several stereoisomers is several species of the
 network; they are counted together unless you untick the box.
 
-The network is the one Kinetics runs: steps with an IRC-verified transition
-state, free energies at the 1 M standard state from GFN2-xTB Hessians. The
-first question in a workspace computes those Hessians (minutes for a hundred
-steps); they are kept, and later questions take seconds.
+Which network is asked depends on where the workspace's network came from
+(the line under *What limits it today* says which):
+
+- **One finished exploration** (every verified step is a step of the same
+  Network expansion): the exploration's own network. Its species are
+  molecules, its free energies are the run's own, and every IRC-verified
+  step it found counts, also the ones it closed as too high. A question
+  takes about half a minute: the thermal corrections the run did not record
+  are computed each time.
+- **Anything else** (steps from several calculations, a hand-built
+  network, a question with a fixed amount): the workspace's network, the one
+  Kinetics runs: one step per pair of species, free energies at the 1 M
+  standard state from GFN2-xTB Hessians. The first question computes those
+  Hessians (minutes for a hundred steps); they are kept, and later questions
+  take seconds.
 
 A question is kept in the workspace. *Earlier questions* opens one again with
 its candidates.
@@ -142,8 +153,9 @@ Result files written elsewhere and copied into
   the new species it forms are not built yet; until then such numbers can
   come with a candidate (`estimates` in a candidates file) and are shown
   with their source.
-- The network is the workspace's: one step per pair of species, and for an
-  adopted exploration not that exploration's own free energies.
+- Steps of an exploration's own network are drawn on the map through the
+  workspace's edges; a step the workspace keeps no edge for (a second
+  transition state of the same pair) is counted but not drawn.
 - The target's factor has no spread of its own: the spread shown is that of
   the steps underneath it.
 - Kinetics' *Network* menu does not list added-molecule variants: their

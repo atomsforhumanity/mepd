@@ -180,13 +180,13 @@ function Limits({ q }) {
   const name = t.names.length > 1 ? `${t.names[0]} and its ${t.names.length - 1 === 1 ? 'stereoisomer' : `${t.names.length - 1} stereoisomers`}` : t.names[0];
   const total = c.initial.reduce((a, m) => a + m.amount, 0);
   const openStep = (r) => { if (r.edge) openReaction(r.edge); };
-  const energy = `${q.source === 'explorer run' ? 'the exploration\'s own network' : 'the workspace\'s network'}: ${q.counts.steps} verified steps, ${q.energies === 'free' ? 'free energies at 1 M' : 'electronic energies'}`;
+  const energy = `${q.source === 'explorer run' ? 'The exploration\'s own network' : 'The workspace\'s network'}: ${q.counts.steps} verified steps, ${q.energies === 'free' ? 'free energies at 1 M' : 'electronic energies'}`;
   const head = html`<p class="am-lede"><b>${name}</b>: ${t.resolved
     ? html`<span class="mono">${fmtC(t.final)} M</span> today (${fmtC((100 * t.final) / total)}% of the start), half of it after ${t.time_to_fraction_s != null ? fmtTime(t.time_to_fraction_s) : '—'}`
     : html`<b>none forms today</b> <span class="muted">(${fmtC(t.final)} M: below what the kinetics resolve)</span>`}
     <span class="muted"> · ${condText(c)}</span></p>`;
   if (lim.defined) {
-    const rows = lim.order.filter((o) => Math.abs(o.control) >= 0.01).slice(0, 8).map((o) => ({ ...o, x: o.control }));
+    const rows = lim.order.filter((o) => Math.abs(o.control) >= 0.01).slice(0, 8).map((o) => ({ ...o, x: o.control, label: `${stepLabel(o.label)}${o.mirror ? ' (mirror image)' : ''}` }));
     const quiet = lim.order.length - rows.length;
     const traps = lim.traps.filter((s) => Math.abs(s.control) > 0.02).slice(0, 6).map((s) => ({ label: s.name, x: s.control }));
     return html`<section class="am-card">
@@ -268,7 +268,7 @@ function Table({ q, rows, sel, onPick, picked, onToggle }) {
     <thead><tr><th></th><th>Candidate</th><th title="The target's amount at the end, with the molecule against without">Target</th>
       <th title="When the mixture with the molecule holds what today's takes half its run to make">How soon</th>
       <th title="Whether the molecule comes back (on the route that carries the target's material; its turnovers in the run), and the species that holds most of it over the run">Returned? · rests as</th>
-      <th title="The parent step whose barrier changes most through the molecule">Largest step change</th></tr></thead>
+      <th title="Among the steps that limit the target, the one whose barrier changes most through the molecule">Largest step change</th></tr></thead>
     <tbody>${rows.map((r) => {
       const s = stateOf(r);
       const b = r.best;
@@ -286,9 +286,9 @@ function Table({ q, rows, sel, onPick, picked, onToggle }) {
           <${Cell} v=${soonerText(r)} tag=${tag} />
           <td><span class="am-main">${fate.main}</span>${tag}<div class="small muted">${fate.sub}</div>
             ${rest && html`<div class="small muted">rests as ${rest.main} (${rest.sub})</div>`}</td>
-          ${b ? html`<td title=${stepLabel(b.label)}><span class=${cls('am-main mono', b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
+          ${b ? html`<td title=${`${stepLabel(b.label, b.direction)}${b.limits ? '\n(the largest change among the steps that limit the target)' : '\n(no step that limits the target goes through it: the largest change anywhere)'}`}><span class=${cls('am-main mono', b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
             <span class="mono small"> ${b.spread != null ? `± ${b.spread.toFixed(1)}` : ''}</span> <${Tag} status=${b.status} />
-            <div class=${cls('small', within ? 'am-warn' : 'muted')}>${b.spread == null ? 'kcal/mol · spread not given' : within ? 'kcal/mol · within its spread' : 'kcal/mol'}</div></td>`
+            <div class=${cls('small', within ? 'am-warn' : 'muted')}>${b.spread == null ? 'kcal/mol · spread not given' : within ? 'kcal/mol · within its spread' : 'kcal/mol'}${b.limits ? '' : ' · not a step that limits the target'}</div></td>`
             : html`<td class="muted small">no step goes through it</td>`}`
           : html`<td colspan="4" class=${cls('small', r.status === 'failed' || r.why ? 'am-warn' : 'muted')}>${r.why ? `No number: ${r.why}`
             : r.status === 'queued' ? 'Waiting its turn: the candidates of one calculation are tested one after another.' : r.status === 'running' ? 'No number yet: the first arrive within a minute.' : 'No layer gave a number.'}</td>`}
@@ -414,8 +414,9 @@ function Detail({ q, file, tick, onGone }) {
     ${nothing && d.status !== 'running' && html`<p class="level-note">No effect at these conditions: ${name} lowers no step of the network${s ? '' : ' (no layer gave a number)'}, and the target's amount stays where it is. That is a result: ${
       d.used.est + d.used.verified} estimate${d.used.est + d.used.verified === 1 ? '' : 's'} went into it.</p>`}
     <dl class="am-facts">
-      <dt>Target at the end</dt><dd><span class="mono">${fmtC(t.parent.final)} → ${fmtC(t.with.final)} M</span> <b class=${cls('am-main', eff.kind)}>${eff.main}</b> <${Tag} status=${s} />
-        ${!t.with.resolved && html`<div class="small muted">Below what the kinetics resolve (1e-9 of the starting material): read as none.</div>`}
+      <dt>Target at the end</dt><dd><span class="mono">${t.parent.resolved ? fmtC(t.parent.final) : 'none'} → ${t.with.resolved ? `${fmtC(t.with.final)} M` : 'none'}</span>
+        ${t.factor != null && html` <b class=${cls('am-main', eff.kind)}>${eff.main}</b>`} <${Tag} status=${s} />
+        ${(!t.with.resolved || !t.parent.resolved) && html`<div class="small muted">None: below what the kinetics resolve, 1e-9 of the starting material (${!t.parent.resolved ? `without ${fmtC(t.parent.final)} M` : ''}${!t.parent.resolved && !t.with.resolved ? ', ' : ''}${!t.with.resolved ? `with ${fmtC(t.with.final)} M` : ''}).</div>`}
         ${fo?.factor != null && html`<div class="small muted">First-order estimate from the degrees of rate control: ${fmtX(fo.factor)}× (the full kinetics: ${t.factor != null ? `${fmtX(t.factor)}×` : '—'})<${Why} id="addmol.first_order" label="The first-order estimate" /></div>`}</dd>
       ${soonerText(d) && html`<dt>As much as today's half</dt><dd><span class="mono">${soonerText(d).main}</span> <span class="muted">(today: ${fmtTime(t.parent.time_to_fraction_s)})</span> <${Tag} status=${s} /></dd>`}
       <dt>Easiest route to it</dt><dd><span class="mono">${kcal(peak.parent)} → ${kcal(peak.with)} kcal/mol</span> at its highest point <${Tag} status=${peak.with !== peak.parent ? s : 'verified'} />

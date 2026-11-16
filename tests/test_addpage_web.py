@@ -209,6 +209,12 @@ def test_one_candidate_in_detail(mgr):
     assert d["through_steps"][0]["via"] == "HCN -> HNC through the molecule" and d["through_steps"][0]["layer"] == "given"
     assert d["new_steps"][0]["barrier"]["electronic"] == 25.0 and d["new_steps"][0]["source"] == "made up"
     assert d["peak_routes"]["with"][0]["peak"] < d["peak_routes"]["parent"][0]["peak"]
+    # a result whose kinetics could not be built still reads (and is plain JSON)
+    _, name = put_result(mgr, qid, "broken", {"new_steps": [{"id": "x", "reactants": ["nowhere"], "products": ["added"],
+                                                             "barrier": {"electronic": 1.0}, "status": "est"}]})
+    d = json.loads(json.dumps(addpage.detail(mgr.ws, qid, name), allow_nan=False))
+    assert not d["readout"] and d["effect"] is None and "nowhere" in d["failed"][0]["why"]
+    addpage.remove(mgr, qid, name)
     # nothing at all
     d = addpage.detail(mgr.ws, qid, "x.json")
     assert d["through_steps"] == [] and d["unchanged"] == 1 and d["readout"]
@@ -305,3 +311,25 @@ def test_the_page_endpoints(mgr, tmp_path):
         assert c.get("/api/state").json()["workspace"]["variants"][vid]["marks"]["edges"]
         assert c.delete(f"/api/addmol/{qid}/results/{name}").json() == {"ok": True}
         assert c.get(f"/api/addmol/{qid}/results/{name}").status_code == 400
+
+
+# ---------------------------------------------------------------- an exploration's own network
+def test_a_workspace_that_is_one_exploration_is_asked_through_its_run(mgr):
+    """(decision of team41: the parent of an explorer run is its own molecule-level network, not its adoption)"""
+    pytest.importorskip("mepd.discovery.parent")
+    job, run = addpage.source_run(mgr.ws, mgr.jobs)
+    assert job["op"] == "graph-enumeration" and (run / "summary.json").exists()
+    # its steps are named by the run's labels and its species by SMILES: the map still finds their edge and nodes
+    snap = mgr.ws.snapshot()
+    (eid,) = snap["edges"]
+    ids = {r["smiles"]: sid for sid, r in snap["structures"].items()}
+    q = {"asked": {"job": job["id"]}, "steps": [{"id": "fast_0_1", "run_step": "fast_0_1"}, {"id": "other", "run_step": "x"}],
+         "species": [{"id": "C#N", "smiles": "C#N"}, {"id": "CC", "smiles": "CC"}]}
+    assert addpage._edges(mgr.ws, q) == {"fast_0_1": eid}
+    assert addpage._nodes(mgr.ws, q) == {"C#N": [ids["C#N"]], "CC": []}
+    # an exploration that is still running is not asked this way
+    assert addpage.source_run(mgr.ws, {job["id"]: {**job, "status": "running"}}) is None
+    assert addpage.source_run(mgr.ws, {}) is None
+    # a question with a constant feed, or on electronic energies, is asked of the workspace's network
+    qid = ask(mgr)
+    assert addpage.view(mgr, qid)["source"] == "workspace" and addpage.view(mgr, qid)["asked"]["job"] is None

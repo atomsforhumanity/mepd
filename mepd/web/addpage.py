@@ -128,6 +128,9 @@ def make_query(ws, jobs: dict, *, target: str, initial: dict, temperature: float
             raise WorkspaceError(f"the query could not be built: {lines[-1] if lines else 'mepd addmol query failed'}")
         doc = json.loads(tmp.read_text())
         tmp.unlink()
+        kept = tmp.with_name(tmp.name + ".provenance.json")       # (what the command recorded about itself)
+        if kept.exists():
+            kept.replace(fp.with_name("query.provenance.json"))
     else:
         try:
             doc = added.query(ws, jobs, target=goal, initial=initial, temperature=temperature, time_s=time_s,
@@ -168,37 +171,62 @@ def _nodes(ws, q: dict) -> dict:
     return out
 
 
-def _names(q: dict) -> dict:
-    return {s["id"]: s.get("name") or s["id"] for s in q["species"]}
+def _names(q: dict, ws=None) -> dict:
+    """{species id: name}; with the workspace, the name its structure has there (an exploration's network
+    names species by SMILES)."""
+    out = {s["id"]: s.get("name") or s["id"] for s in q["species"]}
+    if ws is not None and (q.get("asked") or {}).get("job"):
+        st = ws.snapshot()["structures"]
+        for sid, mine in _nodes(ws, q).items():
+            if mine and st[mine[0]].get("name"):
+                out[sid] = st[mine[0]]["name"]
+    return out
 
 
-def _limits(q: dict, edges: dict) -> dict:
+def _labels(q: dict, names: dict) -> dict:
+    """{step id: its label in the names the page uses}: the query's own, or, for an exploration's network (whose
+    labels are SMILES), written from the species' names."""
+    if not (q.get("asked") or {}).get("job"):
+        return {st["id"]: st.get("label") or st["id"] for st in q["steps"]}
+    side = lambda ids: " + ".join(names.get(x, x) for x in ids)   # noqa: E731
+    return {st["id"]: f"{side(st['reactants'])} -> {side(st['products'])}" for st in q["steps"]}
+
+
+def _relabel(rows, labels: dict) -> None:
+    for r in rows or []:
+        if r and r.get("step") in labels:
+            r["label"] = labels[r["step"]]
+
+
+def _limits(q: dict, edges: dict, names: dict) -> dict:
     """What limits the target, with the names and barriers the page shows beside each step."""
-    lim, names = q["limits"], _names(q)
+    lim = q["limits"]
     steps = {st["id"]: st for st in q["steps"]}
+    labels = _labels(q, names)
 
     def row(o: dict) -> dict:
         st = steps.get(o["step"]) or {}
-        return {**o, "label": st.get("label") or o["step"], "barrier": (st.get("barrier") or {}).get("forward"),
-                "status": st.get("status"), "edge": edges.get(o["step"])}
+        return {**o, "label": labels.get(o["step"], o["step"]), "barrier": (st.get("barrier") or {}).get("forward"),
+                "status": st.get("status"), "edge": edges.get(o["step"]), "mirror": bool(st.get("mirror_of"))}
 
     return {"defined": lim.get("defined"), "basis": lim.get("basis"), "why": lim.get("why"),
             "cutoff_kcal": lim.get("cutoff_kcal"), "order": [row(o) for o in lim.get("order") or []],
             # (stabilizing a starting material always costs target, trivially: the page lists the others)
             "traps": [{**t, "name": names.get(t["species"], t["species"])} for t in lim.get("traps") or []
                       if not q["conditions"]["initial"].get(t["species"]) and t["species"] not in q["target"]["species"]],
-            "routes": lim.get("routes") or []}
+            "routes": [{**r, "steps": [{**x, "label": labels.get(x["step"], x.get("label"))} for x in r["steps"]]}
+                       for r in lim.get("routes") or []]}
 
 
-def summary(q: dict, edges: Optional[dict] = None) -> dict:
+def summary(q: dict, edges: Optional[dict] = None, names: Optional[dict] = None) -> dict:
     """The query as the page reads it: no coordinates, no time series."""
-    names = _names(q)
+    names = names or _names(q)
     cond = q["conditions"]
     return {"target": {**q["target"], "names": [names.get(x, x) for x in q["target"]["species"]]},
             "conditions": {**cond, "initial": [{"id": k, "name": names.get(k, k), "amount": v}
                                                for k, v in cond["initial"].items()]},
             "energies": q.get("energies"), "level": (q.get("level") or {}).get("key"),
-            "limits": _limits(q, edges or {}), "notes": q.get("notes") or [], "left_out": q.get("left_out"),
+            "limits": _limits(q, edges or {}, names), "notes": q.get("notes") or [], "left_out": q.get("left_out"),
             "source": q.get("source") or "workspace", "asked": q.get("asked"),
             "counts": {"species": len(q["species"]), "steps": len(q["steps"]),
                        "with_geometry": sum(1 for st in q["steps"] if st.get("geometry"))}}
@@ -212,7 +240,7 @@ def queries(ws) -> list:
             q = _load(fp)
         except (OSError, ValueError):
             continue
-        s = summary(q)
+        s = summary(q, names=_names(q, ws))
         out.append({"id": fp.parent.name, "target": s["target"], "conditions": s["conditions"],
                     "results": len(list((fp.parent / "results").glob("*.json"))), "made": fp.stat().st_mtime})
     return sorted(out, key=lambda r: -r["made"])
@@ -363,9 +391,10 @@ def _moved(row: dict) -> bool:
     return not _through(row) and abs(row.get("change") or 0.0) > MOVED
 
 
-def line(doc: dict) -> dict:
+def line(doc: dict, order=()) -> dict:
     """One candidate in one line: what it does to the target, whether it is returned, where it rests,
-    which layers are in. `effect` orders candidates (larger: more of the target): the logarithm of the
+    which layers are in. `best`: the step that changes most through the molecule, among the steps that limit
+    the target (`order`: the query's order of work) where any of them does. `effect` orders candidates (larger: more of the target): the logarithm of the
     factor where both amounts are above the kinetics' resolution, else how far the lowest route's peak
     came down, kept below every resolved gain."""
     cand, r = doc.get("candidate") or {}, doc.get("readout")
@@ -381,11 +410,12 @@ def line(doc: dict) -> dict:
     # Why a whole layer gave nothing (not one step's failure).
     out["why"] = next((f.get("why") for f in doc.get("failed") or [] if not f.get("step") and not f.get("species")), None)
     if not r:
-        return {**out, "readout": False, "effect": -math.inf}
+        return {**out, "readout": False, "effect": None}
     t, a = r["target"], r.get("added") or {}
     peak = {side: ((r.get("peak_routes") or {}).get(side) or [{}])[0].get("peak") for side in ("parent", "with")}
     through = [s for s in r["steps"] if _through(s) and s.get("change") is not None]
-    best = min(through, key=lambda s: s["change"], default=None)
+    limiting = [s for s in through if s["step"] in set(order)]
+    best = min(limiting or through, key=lambda s: s["change"], default=None)
     worst = max((s for s in r["steps"] if s.get("change") is not None), key=lambda s: s["change"], default=None)
     drop = (peak["parent"] - peak["with"]) if peak["parent"] is not None and peak["with"] is not None else 0.0
     if t.get("factor") is not None and t["factor"] > 0:
@@ -404,7 +434,8 @@ def line(doc: dict) -> dict:
             "through": len(through),
             "steps": [{k: s.get(k) for k in ("step", "label", "direction", "change", "status", "spread")}
                       for s in sorted(through, key=lambda s: s["change"])[:6]],
-            "best": best and {k: best.get(k) for k in ("step", "label", "before", "after", "change", "status", "spread")},
+            "best": best and {**{k: best.get(k) for k in ("step", "label", "direction", "before", "after", "change",
+                                                          "status", "spread")}, "limits": bool(limiting)},
             "raised": worst and worst["change"] > MOVED and {k: worst.get(k) for k in ("step", "label", "change", "status")}}
 
 
@@ -414,6 +445,9 @@ def view(manager, qid: str) -> dict:
     ws = manager.ws
     q = _query(ws, qid)
     busy = running(manager, qid)
+    names = _names(q, ws)
+    labels = _labels(q, names)
+    order = [o["step"] for o in q["limits"].get("order") or []]
     rows = []
     for fp in sorted((folder(ws, qid) / "results").glob("*.json")):
         try:
@@ -422,16 +456,14 @@ def view(manager, qid: str) -> dict:
             continue                       # (being replaced this instant: the next poll has it)
         if doc.get("schema") != addmol.RESULT:
             continue
-        row = {**line(doc), "file": fp.name, "job": busy.get(fp.name)}
+        row = {**line(doc, order), "file": fp.name, "job": busy.get(fp.name)}
+        _relabel([row.get("best"), row.get("raised") or None, *(row.get("steps") or [])], labels)
         if row["status"] == "running" and fp.name not in busy:
             # The file says running and no job is writing it: its job was cancelled or the server restarted.
             row["status"] = "interrupted"
         rows.append(row)
     have = {r["file"] for r in rows}
-    rows.sort(key=lambda r: -r["effect"])
-    for r in rows:
-        if r["effect"] == -math.inf:
-            r["effect"] = None
+    rows.sort(key=lambda r: math.inf if r["effect"] is None else -r["effect"])
     # (one calculation tests its candidates one after another: those it has not reached yet wait)
     rows += [{"name": n[:-5], "file": n, "status": "queued", "job": j, "readout": False,
               "layers": [], "failed": 0, "effect": None} for n, j in busy.items() if n not in have]
@@ -439,7 +471,7 @@ def view(manager, qid: str) -> dict:
             if (v.get("addmol") or {}).get("query") == qid}
     for r in rows:
         r["variant"] = kept.get(r["file"])
-    return {"id": qid, **summary(q, _edges(ws, q)), "results": rows}
+    return {"id": qid, **summary(q, _edges(ws, q), names), "results": rows}
 
 
 def _source(doc: dict) -> dict:
@@ -461,11 +493,12 @@ def detail(ws, qid: str, name: str) -> dict:
     steps = {st["id"]: st for st in q["steps"]}
     edges = _edges(ws, q)
     source = _source(doc)
-    out = {"file": name, **line(doc), "candidate": {k: v for k, v in (doc.get("candidate") or {}).items()
+    labels = _labels(q, _names(q, ws))
+    out = {"file": name, **line(doc, [o["step"] for o in q["limits"].get("order") or []]), "candidate": {k: v for k, v in (doc.get("candidate") or {}).items()
                                                     if k not in ("coordinates", "pose", "atoms")},
            "failed": [{**{k: f.get(k) for k in ("layer", "status", "why", "step", "species")},
-                       "label": (steps.get(f.get("step")) or {}).get("label")
-                       or _names(q).get(f.get("species"), f.get("species"))} for f in doc.get("failed") or []],
+                       "label": labels.get(f.get("step")) or _names(q, ws).get(f.get("species"), f.get("species"))}
+                      for f in doc.get("failed") or []],
            "timings": doc.get("timings"), "through_steps": [], "moved_steps": [], "new_steps": [], "new_species": []}
     if not r:
         return out
@@ -482,6 +515,7 @@ def detail(ws, qid: str, name: str) -> dict:
     out["moved_steps"] = sorted(({**s, "edge": edges.get(s["step"])} for s in changed if _moved(s)),
                                 key=lambda s: -abs(s["change"]))
     out["unchanged"] = len(changed) - len(out["through_steps"]) - len(out["moved_steps"])
+    _relabel([out.get("best"), *out["through_steps"], *out["moved_steps"]], labels)
     out["new_steps"] = [{k: e.get(k) for k in ("id", "label", "parent_step", "status", "layer", "level", "source")}
                         | {"barrier": e.get("barrier"), "with_geometry": bool(e.get("geometry"))}
                         for e in (doc.get("estimates") or {}).get("new_steps") or []]

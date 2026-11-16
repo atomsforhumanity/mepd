@@ -17,7 +17,7 @@
 .am-main { font-weight: 600; }
 .am-main.pos { color: var(--div-pos); } .am-main.neg { color: var(--div-neg); }
 .am-warn { color: var(--warn); }
-.am-level { font-family: var(--font-mono); font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.am-level { font-family: var(--font-mono); font-size: 11px; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* the easiest route: heights against what the conditions allow */
 .am-route { display: flex; flex-direction: column; gap: 4px; max-width: 760px; margin: 6px 0 8px; }
@@ -58,7 +58,7 @@
 /* a step's barrier without and with the molecule on one axis */
 .am-steps td { vertical-align: middle; }
 .am-db-cell { min-width: 140px; width: 24%; }
-.am-steps td.rx-eq { min-width: 220px; }
+.am-steps td.rx-eq { min-width: 170px; }
 .am-db-head { display: flex; justify-content: space-between; font-family: var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 400; }
 .am-db { position: relative; display: block; height: 14px; margin: 0 6px; }
 .am-db-bar { position: absolute; top: 6px; height: 2px; }
