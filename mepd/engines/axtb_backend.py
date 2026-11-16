@@ -189,15 +189,33 @@ def solvation_settings(solvent: str, model: str) -> dict:
     return {model: str(solvent), "solvation_correction": "gfn2"}
 
 
+_RUNG_COUNTS: dict = {}
+
+
 def _warn_rungs(res: dict, what: str) -> dict | None:
-    """The retry rungs a composite's parts converged on ({part: rung}), logged; None if none."""
+    """The retry rungs a composite's parts converged on ({part: rung}); None if none.
+
+    Logged once per kind of retry in a process, then as a running count at 10, 100, 1000, ...: a
+    path search on a hard system meets one at nearly every geometry, and a line per call buried the
+    job's log (a live channels run printed thousands)."""
     rungs = {name: part.get("retry") for name, part in (res.get("parts") or {}).items() if part.get("retry")}
     if rungs:
         import logging
 
-        logging.getLogger(__name__).warning(
-            "axtb %s: an SCF converged only on a retry rung (%s); this structure's energy is from a smeared "
-            "or longer SCF", what, ", ".join(f"{k}: {v}" for k, v in rungs.items()))
+        text = ", ".join(f"{k}: {v}" for k, v in rungs.items())
+        if _RUNG_COUNTS.get("pid") != os.getpid():      # a forked worker counts its own
+            _RUNG_COUNTS.clear()
+            _RUNG_COUNTS["pid"] = os.getpid()
+        key = (what, text)
+        first = key not in _RUNG_COUNTS
+        _RUNG_COUNTS[key] = _RUNG_COUNTS.get(key, 0) + 1
+        total = _RUNG_COUNTS["total"] = _RUNG_COUNTS.get("total", 0) + 1
+        log = logging.getLogger(__name__)
+        if first:
+            log.warning("axtb %s: an SCF converged only on a retry rung (%s); this structure's energy is from a "
+                        "smeared or longer SCF. Further ones like it are counted, not each logged.", what, text)
+        elif total >= 10 and str(total).rstrip("0") == "1":
+            log.warning("axtb: %d SCFs in this process so far converged only on a retry rung", total)
     return rungs or None
 
 
