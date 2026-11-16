@@ -215,6 +215,21 @@ def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list) -> l
             out.append(hit[0])
         return out
 
+    def parent_of(r, p):
+        """The parent's step between the same molecules without the added one (either way round; a molecule on
+        both sides of it aside): its lowest."""
+        from collections import Counter
+
+        r, p = Counter(x for x in r if x != addmol.ADDED_ID), Counter(x for x in p if x != addmol.ADDED_ID)
+        r, p = r - p, p - r
+        same = []
+        for st in q["steps"]:
+            a, b = Counter(st["reactants"]), Counter(st["products"])
+            a, b = a - b, b - a
+            if (a, b) in ((r, p), (p, r)):
+                same.append(st)
+        return min(same, key=lambda st: st["g_ts"])["id"] if same else None
+
     done = []
     for n in entries:
         if not n.get("ts"):
@@ -225,8 +240,9 @@ def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list) -> l
             got = parent.ts_step({k: n["ts"].get(k) for k in ("atoms", "coordinates", "charge", "multiplicity", "comment")
                                   if n["ts"].get(k) is not None}, np.asarray(ends[0]), np.asarray(ends[1]), engine,
                                  temperature=q["temperature"])
-            done.append({**{k: v for k, v in n.items() if k != "ts"}, "reactants": ids(got["reactants"]),
-                         "products": ids(got["products"]), "barrier": got["barrier"], "counted": got["counted"],
+            r, p = ids(got["reactants"]), ids(got["products"])
+            done.append({"parent_step": parent_of(r, p), **{k: v for k, v in n.items() if k != "ts"},
+                         "reactants": r, "products": p, "barrier": got["barrier"], "counted": got["counted"],
                          "spectators": [m["smiles"] for m in got["spectators"]], "barrier_method": got["method"]})
         except Exception as exc:
             failed.append({"step": n.get("id"), "layer": n.get("layer") or "given", "status": "failed",

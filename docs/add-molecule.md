@@ -8,26 +8,46 @@ without the web UI, on files a program or a generative model can read and write:
 - one **result** file per candidate molecule, rewritten as numbers come in, cheapest first.
 
 ```bash
-mepd addmol adopt  RUN/ WORKSPACE/                  # a finished `mepd discovery expand` run into a workspace
-mepd addmol query  WORKSPACE/ --target 'CC(=O)CC(C)O' --initial 'CC(C)=O=1.0' --initial 'CC=O=1.0' \
-                   --temperature 298.15 --time 86400 -o query.json
+mepd addmol query  RUN/ --target 'CC(=O)CC(C)O' --initial 'CC(C)=O=1.0' --initial 'CC=O=1.0' \
+                   --temperature 298.15 --time 86400 -o query.json    # RUN/: a finished `mepd discovery expand` run,
+                                                                      # or a workspace folder
 mepd addmol test   query.json -c 'OC(=O)[C@@H]1CCCN1' --amount 0.1 --workers 4 -o results/
 mepd addmol test   query.json --candidates candidates.json -o results/     # many, with poses or estimates
 ```
 
-In Python: `mepd.web.added` (the workspace side: `adopt_run`, `network`, `query`, `put`) and `mepd.addmol` (the
-kinetics, on plain dicts: `added`, `readout`, `limits`, `first_order`, `bystander`, `result`).
+In Python: `mepd.discovery.parent` (an explorer run as the parent: `network`, `query`, `ts_step`),
+`mepd.web.added` (a workspace as the parent: `network`, `query`, `put`, `adopt_run`) and `mepd.addmol` (the
+kinetics, on plain dicts: `added`, `readout`, `limits`, `first_order`, `bystander`, `query`, `result`).
 
 What exists today is the format, the kinetics and one layer of estimates (the bystander layer, with a stand-in
 placer whose numbers move by kcal/mol between repeats). Layers that verify a step with the molecule present, find
 steps in which it takes part, or find new species it forms, write their numbers into the same result file as they
 are built; until then such numbers can be given with a candidate (`estimates`, below).
 
+## The parent network
+
+- **An explorer run** (`mepd addmol query RUN/`, `mepd.discovery.parent.network`): the explorer's own
+  molecule-level network, built by its own code (`mepd.discovery.molecules.build`): molecules with free energies
+  fitted over the run's boxes, a step found beside another molecule counted through its reacting molecules alone
+  where the explorer counts it so, mirror images as the run decided them. Energies are the run's: electronic +
+  its recorded thermal correction and steering shift, relative to the starting box's molecules. Every
+  IRC-verified step is in it, also those the run's own kinetics had closed (at 298 K an uncatalysed parent may
+  have no open step at all). A thermal correction the run did not record (it records none for most closed steps)
+  is computed now with the run's own code and profile (`--inputs`, default the `.toml` beside the run); a step
+  for which that is not possible is on electronic differences and tagged `"energies": "electronic"`. Each step's
+  `geometry` holds the reacting molecules only (`atom_indices_in_run`: their indices in the run's files); a
+  mirror-image twin of a step has no geometry (`mirror_of`).
+- **A workspace** (`mepd addmol query WORKSPACE/`, `mepd.web.added.network`): the workspace's kinetic model
+  (*Analyze › Kinetics*: IRC-verified steps, free energies at the 1 M standard state from quasi-RRHO on GFN2-xTB
+  Hessians; [kinetics.md](kinetics.md)), for networks built in the web. An explorer run adopted into a workspace
+  loses part of what the run knew (last section): use the run folder itself.
+
+The query file says which it is (`source`).
+
 ## The kinetics with a molecule added
 
-The parent network is the workspace's kinetic model (*Analyze › Kinetics*: IRC-verified steps, free energies at the
-1 M standard state from quasi-RRHO on GFN2-xTB Hessians; [kinetics.md](kinetics.md)). `mepd.addmol.added` puts C
-into it from a list of estimates. It does not care where they come from.
+`mepd.addmol.added` puts C into the parent network from a list of estimates. It does not care where they come
+from.
 
 | estimate | what it adds |
 |---|---|
@@ -52,6 +72,17 @@ Two consequences of counting the TS from the separated molecules:
 
 G(C) cancels in every rate, so C needs no free energy of its own.
 
+**A step given with its TS.** A `new_steps` entry may come with the TS itself instead of a barrier:
+`"ts": {"atoms", "coordinates", "charge", "multiplicity", "ends": [reactant end, product end]}`, all in one atom
+order (a verified TS and its IRC ends, a channel search's). `mepd addmol test` then puts it on the parent's scale
+as a whole (`mepd.discovery.parent.ts_step`): G(TS) minus G of the separated, minimized molecules of its reactant
+end, quasi-RRHO at 1 M with the explorer's free-energy code, the TS counted as the explorer counts a TS file (what
+its file says it was optimized on; without that record, by its ends: molecules that take no part apart). The
+entry's `reactants` and `products` are read from the geometry (the molecules that take part; C as `added`),
+`spectators` lists the others, and `parent_step` is the parent's step between the same molecules. A barrier
+"from the complex" is never added to a separately estimated binding; only bystander estimates (not stationary
+points) use the placer's free-energy term.
+
 ## What you read (`readout`, in every result file)
 
 Parent and variant are run from the same mixture, the variant with C at its amount.
@@ -66,22 +97,27 @@ Parent and variant are run from the same mixture, the variant with C at its amou
   amounts: an intermediate that is hardly there makes it high, a reactant held in a complex makes it higher.
   `after` is the lowest of the step itself and its versions with C; `through` says which, `status` whether that is
   `est` or `verified`, `direction` which way the step is read (the way its material goes). `barrier` is the plain
-  TS above that side at 1 M.
+  TS above that side at 1 M. `group` sorts the rows: `through` (the lowest version has C in it: the table to
+  show), `amounts` (the step's own TS; its apparent barrier moved only because its reactants' amounts moved: a
+  second, folded group), `none`.
 - **`routes`**: where the target's material came from, as lists of steps with the share each carried, by a greedy
   split of the steps' net extents (`flux_routes`); `with_added` marks routes with C in them.
 - **`peak_routes`**: the route to the target with the lowest highest point, without and with C (see below).
-- **`added`**: C's `resting_state` (the C-holding species with the largest time-averaged amount) and its **fate**:
+- **`added`**: C's `resting_state` (the C-holding species with the largest time-averaged amount) and its fate, as
+  two facts side by side and a word:
 
   | number | meaning |
   |---|---|
+  | `on_route`, `route_share` | whether at least half of the target's material goes through steps with a C-holding species, and that share (`null` when no material was made) |
+  | `route_peak`, `route_peak_with_added` | the highest point of the lowest-peak route to the target with C in the flask, and whether that route has C in it |
+  | `turnovers` (= `returns`) | how often, per C put in, a step that changed what C carries handed C back free or in a complex, in the run's time |
   | `shares` | where C is at the end: `free`, `bound` (in complexes), `covalent` (in new species that hold it) |
-  | `returns` | how often a step that changed what C carries handed C back free or in a complex, per C put in |
 
-  Rules, in this order: `returns` and `covalent` both below 0.001: C took part in no step, and it is **bound and
-  inert** if at least half of it is bound or a complex holds at least as much of a species as is left free,
-  else **no part**. Otherwise **regenerated** if `returns` ≥ `covalent`, else **consumed**. A catalyst held up on
-  its product reads `regenerated` with the product complex as resting state and `bound` near 1: read the three
-  together.
+  `fate`: C took part when it is on the route, or `turnovers` or `covalent` reach 0.001. When it did not: **bound
+  and inert** if at least half of it is bound or a complex holds at least as much of a species as is left free,
+  else **no part**. When it did: **regenerated** if `turnovers` ≥ `covalent`, else **consumed**. A slow catalyst
+  on the only route reads `regenerated` with few turnovers, and one held up on its product reads `regenerated`
+  with the product complex as resting state: read the numbers with the word.
 - **`first_order`**: the estimate below, beside the kinetics' own `factor`.
 - **`new_species`**: the complexes and new species with their amounts.
 
@@ -122,12 +158,15 @@ Plain JSON. Energies in kcal/mol, lengths in Å, amounts in mol/L, times in s (`
 | `target` | `species` (ids, counted together), `final` amount, `resolved`, `fraction`, `time_to_fraction_s` |
 | `times` | the output times of every `series` |
 | `species[]` | `id`, `name`, `smiles`, `charge`, `multiplicity`, `g`, `atoms`, `coordinates` (its own atom order), `amount` {`initial`, `final`, `max`, `mean`}, `series`, `control` (X, or null), `status`, `level` |
-| `steps[]` | `id`, `label`, `reactants`, `products` (ids, repeated for 2 A), `shuttles` (on both sides), `g_ts`, `barrier` {`forward`, `reverse`}, `apparent_barrier`, `extent`, `control`, `status`, `level`, `geometry` |
+| `source` | `explorer run` or `workspace` |
+| `steps[]` | `id`, `label`, `reactants`, `products` (ids, repeated for 2 A), `shuttles` (on both sides), `g_ts`, `barrier` {`forward`, `reverse`}, `apparent_barrier`, `extent`, `control`, `status`, `level`, `geometry`; from a run also `energies` (`free` / `electronic`), `run_step`, `mirror_of` |
 | `steps[].geometry` | `atoms`, `charge`, `multiplicity`, `reactant`, `ts`, `product`: three frames in **one atom order** (the TS's; the two ends are its IRC's ends), and `bonds_broken`, `bonds_formed` as pairs of 0-based indices into that order. `null` when the step has no TS and IRC files |
 | `limits` | the section above: `defined`, `why`, `basis`, `control`, `order`, `traps`, `routes`, `cutoff_kcal` |
 | `notes`, `left_out` | how the free energies were made; the number of reactions without a verified TS (not in the model) |
 
-`g` and `g_ts` are absolute at the level; only differences between the two sides of a step mean anything. `status`
+`g` and `g_ts` are on one scale per file (`energy_reference` says which: absolute at the level for a workspace,
+relative to the starting box's molecules for a run); only differences between the two sides of a step mean
+anything. Species ids are the workspace's ids, or for a run the explorer's molecule keys (stereo SMILES). `status`
 and `level` tag every number of a record: `verified` (an IRC-verified TS, a minimum) or `est`. The file is also the
 network `mepd.addmol` runs: its top-level `temperature`, `energies`, `species` and `steps` are all the kinetics
 need.
@@ -190,9 +229,10 @@ overstates the cost of binding (the six new intermolecular vibrations are not co
 difference between the lowest binding over two halves of the placements. Treat its numbers as a way to order
 work.
 
-## Adopting an exploration, and what is lost on the way
+## Adopting an exploration into a workspace, and what is lost on the way
 
-`mepd addmol adopt` (`mepd.web.added.adopt_run`) reads a finished run's `summary.json` as the web reads a running
+For `mepd addmol` use the run folder itself (above). To look at a finished run in `mepd web`,
+`mepd addmol adopt RUN/ WORKSPACE/` (`mepd.web.added.adopt_run`) reads a finished run's `summary.json` as the web reads a running
 one: every species becomes a node, every step goes onto the edge of its pair, the lowest IRC-verified one counting;
 then each molecule of the run's mixtures is minimized on its own. The workspace's kinetics are not the explorer's:
 

@@ -136,6 +136,7 @@ def test_a_candidates_step_given_with_its_ts_through_the_cli(tmp_path):
     hnc = next(s["id"] for s in q["species"] if "H+" in s["id"])
     assert entry["id"] == "beside" and entry["reactants"] == [hnc] and entry["spectators"] == ["O"]
     assert entry["barrier"]["free"] is not None and "ts" not in entry and entry["layer"] == "given"
+    assert entry["parent_step"] == "fast_0_1"                  # the parent's step between the same molecules
     assert "separated" in entry["barrier_method"] and doc["timings"]["ts_steps_s"] >= 0
     (lost,) = [f for f in doc["failed"] if f.get("step") == "bad"]
     assert lost["status"] == "failed" and lost["why"]          # (HSiN is no species of this network)
