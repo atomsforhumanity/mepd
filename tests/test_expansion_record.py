@@ -48,7 +48,11 @@ def test_an_open_step_has_its_free_energy_barrier_and_a_step_out_of_reach_says_w
     for rec, used in zip(res.record["steps"], res.kinetics.barriers_kcal):
         assert rec["closed"] is None and rec["free_energy_barrier_missing"] is None
         assert rec["free_energy_barrier_kcal"] == pytest.approx(list(used))
-        assert rec["ts_energy_terms"] == {"thermal_correction_kcal": 0.0, "steer": None, "steer_shift_kcal": None}
+        # (a TS file without the record of what it was optimized on: counted from its step's ends, and said; the
+        # stubbed corrections here carry nothing of what they counted, and that is said too)
+        assert rec["ts_energy_terms"] == {"thermal_correction_kcal": 0.0, "steer": None, "steer_shift_kcal": None,
+                                          "counted_as": {"molecules": [3], "from": "ends",
+                                                         "not_saved_with_the_correction": True}}
         assert rec["t_opened"] >= rec["t_found"] > 0 and rec["ts_group"] == 0
     assert all(sp["energy_terms"]["thermal_correction_kcal"] == 0.0 for sp in res.record["species"])
     res = run(3.0)

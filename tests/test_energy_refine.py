@@ -140,3 +140,30 @@ def test_a_reconvergence_is_kept_as_soon_as_it_ends(tmp_path, monkeypatch):
     assert done == []
     assert [r["how"] for r in second["refined"]] == ["reoptimized"] * 5
     assert [r["g_high_kcal"] for r in second["refined"]] == pytest.approx([r["g_high_kcal"] for r in first["refined"]])
+
+
+def test_the_mirror_finder_reads_ts_records_only_with_free_energies(tmp_path, monkeypatch):
+    """refine_energies builds its own MirrorFinder: on free energies it must tell a subsystem TS from a
+    whole-box one as the free energies beside it do (their files' optimized_on), on electronic ones not."""
+    import mepd.discovery.mirror as mirror
+
+    made = []
+    real = mirror.MirrorFinder
+
+    class Finder(real):
+        def __init__(self, **kw):
+            made.append(kw)
+            super().__init__(**kw)
+
+    monkeypatch.setattr(mirror, "MirrorFinder", Finder)
+    species, steps, low = _network(tmp_path)
+    _run(species, steps, low, low)                                   # free_energy=False
+    assert made == [{"by_record": False}]
+
+
+def test_the_irc_check_reads_no_ts_record_unless_told():
+    import inspect
+
+    from mepd.discovery.cli_expand import _irc_verifier
+
+    assert inspect.signature(_irc_verifier).parameters["by_record"].default is False

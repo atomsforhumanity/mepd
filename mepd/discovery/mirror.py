@@ -206,8 +206,11 @@ class MirrorFinder:
     """Builds `Mirrors` for a network, remembering what it decided per
     geometry (the explorer asks again every time its network grows)."""
 
-    def __init__(self, *, tol_angstrom: float = TOL_ANGSTROM):
-        self.tol = tol_angstrom
+    def __init__(self, *, tol_angstrom: float = TOL_ANGSTROM, by_record: bool = False):
+        """`by_record` (a run on free energies): two TSs whose files say they were optimized on different atoms
+        (free_energy.optimized_on: the whole box, a subsystem of it) are never each other's mirror image, as
+        they are never one TS (network_expansion._same_ts): they count as different molecules."""
+        self.tol, self.by_record = tol_angstrom, bool(by_record)
         self._chiral: dict = {}
         self._mirror_key: dict = {}
         self._hash: dict = {}
@@ -281,6 +284,8 @@ class MirrorFinder:
         each step's TS (or path peak) Structure, None if it has none;
         `parts(structure)`: the atom groups the free energies count apart
         (None: the whole structure)."""
+        from mepd.discovery.free_energy import optimized_on
+
         n = len(species_nodes)
         out = Mirrors(n)
         notes = out.undecided
@@ -315,8 +320,11 @@ class MirrorFinder:
             ma, mb = mirror_of(st.a), mirror_of(st.b)
             twin = None
             X = _angstrom(mirrored(ts))
+            on = optimized_on(ts) if self.by_record else None
             for o, (st2, ts2) in enumerate(zip(steps, ts_structures)):
                 if o == m or ts2 is None or {st2.a, st2.b} != {ma, mb}:
+                    continue
+                if on is not None and optimized_on(ts2) not in (None, on):
                     continue
                 if abs(st2.ts_energy - st.ts_energy) * HARTREE_TO_KCAL > 1.0:
                     continue

@@ -213,14 +213,20 @@ class HorizontalConnector:
             self._next_index.update(state.get("next_index", {}))
 
     # --- jobs -------------------------------------------------------------
-    def _write_ts(self, ts, label: str, ends=None) -> str:
-        """ts/<label>.xyz, and with `ends` (the two nodes its search started between, in its atom order)
-        ts/<label>_ends.xyz: what tells a TS's spectators from its reacting complex until it has an IRC
-        (free_energy.step_ends)."""
+    def _write_ts(self, ts, label: str, ends=None, cut=None, optimized: bool = True) -> str:
+        """ts/<label>.xyz, its comment saying what it was optimized on (free_energy.optimized_on_comment: the
+        subsystem `cut`, or the whole box), which is what it counts as; not for a path's highest image
+        (`optimized` False), which no TS optimization produced. A subsystem's TS is whole here, among
+        the reference's spectators where they sat: no stationary point of the box, and an atom of it may sit
+        within bonding distance of a spectator. With `ends` (the two nodes its search started between, in its
+        atom order) also ts/<label>_ends.xyz, which its IRC check starts from (cli_expand)."""
         import mepd
+        from mepd.discovery.free_energy import optimized_on_comment, unrecorded
 
         fp = self.ts_dir / f"{label}.xyz"
-        mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
+        record = f" {optimized_on_comment(cut.atoms if cut else None)}" if optimized else ""
+        # (without a record its structure brought along: a path's image made from a species that was a TS's IRC end)
+        mepd.write_xyz(fp, unrecorded(ts.structure), comments=[f"E={ts.energy:.10f}{record}"])
         if ends is not None:
             mepd.write_xyz(self.ts_dir / f"{label}_ends.xyz", list(ends))
         return str(fp)
@@ -269,7 +275,7 @@ class HorizontalConnector:
                 break
         # a TS of the whole box keeps no ends file, so its IRC check runs on the whole box too (cli_expand: its
         # subsystem alone is no saddle); its spectators are then told from its step's species (step_ends)
-        self._write_ts(ts, label, None if first is not None and cut is None else (a, b))
+        self._write_ts(ts, label, None if first is not None and cut is None else (a, b), cut)
         return ts, label, self._ts_correction(ts, label, (a, b))
 
     def _piece(self, chain, index: int, depth: int, cut=None):
@@ -291,7 +297,7 @@ class HorizontalConnector:
         ends = (chain[0], chain[-1])
         if cut is not None:   # a subsystem's piece (_root_chain): the TS and its piece's ends back among the rest
             ts, ends = cut.whole(ts), tuple(cut.whole(n) for n in ends)
-        self._write_ts(ts, label, ends)
+        self._write_ts(ts, label, ends, cut)
         corr = self._ts_correction(ts, label, ends)
         if self.end_keywords is None:
             return ("with_ends", ts, None, corr)
@@ -319,7 +325,7 @@ class HorizontalConnector:
             ends = (nodes[0], nodes[-1])
             if cut is not None:
                 peak, ends = cut.whole(peak), tuple(cut.whole(n) for n in ends)
-            self._write_ts(peak, label, ends)
+            self._write_ts(peak, label, ends, cut, optimized=False)
             return peak
         except Exception:
             return None

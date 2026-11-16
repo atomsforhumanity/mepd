@@ -131,7 +131,10 @@ def _fast_connector(run_inputs, output: Path, workers: int, fallback):
                 en = mepd.energies(list(path.nodes), eng)
                 k = max(range(1, len(en) - 1), key=lambda m: en[m])
                 ts = mepd.find_ts(path.nodes[k], eng)
-                mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
+                from mepd.discovery.free_energy import optimized_on_comment, unrecorded
+
+                mepd.write_xyz(fp, unrecorded(ts.structure),      # optimized on the whole box
+                               comments=[f"E={ts.energy:.10f} {optimized_on_comment()}"])
                 return label
             except Exception as exc:
                 (ts_dir / f"{label}.failed").write_text(f"{type(exc).__name__}: {exc}\n")
@@ -432,10 +435,11 @@ def _alive(pid: int) -> bool:
             return False
 
 
-def _irc_verifier(run_inputs, output: Path, workers: int):
+def _irc_verifier(run_inputs, output: Path, workers: int, by_record: bool = False):
     """IRCs of unverified steps' TSs, in parallel: [(step index, start, end) or None]. Each IRC is kept
     whole, minimized ends included, with its energies (ts/<label>_irc.xyz + .energies): the path through
-    the TS is what the web draws for the step."""
+    the TS is what the web draws for the step. `by_record` (a run on free energies): a TS whose file says it
+    was optimized on the whole box gets the whole box's IRC though it has an ends file."""
     import numpy as np
 
     import mepd
@@ -448,11 +452,13 @@ def _irc_verifier(run_inputs, output: Path, workers: int):
 
         def cut_of(ts_file, ts):
             """The TS's subsystem (network_expansion.subsystem), from the ends its search started between."""
+            from mepd.discovery.free_energy import optimized_on
             from mepd.discovery.network_expansion import subsystem
 
             ends = Path(ts_file).with_name(f"{Path(ts_file).stem}_ends.xyz")
-            if not ends.exists():
-                return None
+            on = optimized_on(ts.structure)
+            if not ends.exists() or (by_record and on is not None and len(on) == len(ts.structure.symbols)):
+                return None      # computed on the whole box (its file says so): no saddle of a subsystem
             frames = mepd.read_frames(ends)
             return subsystem(frames[0], frames[-1], eng, ref=ts)
 
@@ -985,7 +991,9 @@ def expand(
                                      int(fast_ts_steps) if isinstance(fast_ts_steps, int) else 300)
                          if steer == "access" and str(connect_mode).lower() == "fast"
                          else _ts_connector(run_inputs, output, workers) if steer in ("flux", "access") else None),
-                verify=(_irc_verifier(run_inputs, output, workers)
+                verify=(_irc_verifier(run_inputs, output, workers,
+                                      by_record=str(kinetics_energy).lower() == "free"
+                                      if isinstance(kinetics_energy, str) else True)
                         if steer == "access" and str(connect_mode).lower() == "fast" else None),
                 target=target_node, access_cutoff_kcal=access_cutoff if steer == "access" else None,
                 reroute_attempts=int(reroute_attempts) if isinstance(reroute_attempts, int) else 3,

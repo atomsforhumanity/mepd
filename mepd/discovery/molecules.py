@@ -12,8 +12,9 @@ molecule of either end those atoms are in, and a molecule whose key alone change
     without a calculation), a molecule whose key can't be made. A complex reacts first order where it is one, at
     its box's free energy, without its molecules' dilution (a limitation for ion pairs), and carries its
     molecules' keys (a channel is credited from it only when it holds the channel's whole product set).
-  * A step with spectators whose TS was computed on the whole box (no `<ts>_ends.xyz`: its subsystem's TS landed in
-    a spectator's room, network_expansion.Subsystem.clashes) keeps the spectators it touches only when an IRC
+  * A step with spectators whose TS was computed on the whole box (its file says so, free_energy.optimized_on; a
+    file without that record: no `<ts>_ends.xyz`. E.g. its subsystem's TS landed in a spectator's room,
+    network_expansion.Subsystem.clashes) keeps the spectators it touches only when an IRC
     checked it (files["verified"] not False): they are then on both sides of the reaction (a neighbour taking
     part); unchecked, it is left out (the rule of mixture.settle's fix: a TS that fails without its neighbours keeps
     them only if it connects).
@@ -325,7 +326,7 @@ def build(n_species: int, parts: Callable, bonds: Callable, steps: Sequence, ene
     bonds), then the virtual mirror images (`virtual_of`: the found box each mirrors); `steps` (kinetics.Step,
     TS Hartree; the found steps first, then the twin of step twin_of[t] for each t), `energies` (Hartree, every
     box); `found_twins`: pairs of found steps that are each other's mirror image. `ts_info(m)` for a found step:
-    (TS Structure or None, whether its TS has an ends file, whether an IRC checked it)."""
+    (TS Structure or None, whether its TS was computed on a subsystem, whether an IRC checked it)."""
     n_orig = len(steps) - len(twin_of)
     orig_of = list(range(n_orig)) + list(twin_of)
     n_all = n_species + len(virtual_of)

@@ -250,7 +250,7 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
         from mepd.discovery.mirror import MirrorFinder
         from mepd.nodes.node import StructureNode
 
-        finder = MirrorFinder()
+        finder = MirrorFinder(by_record=bool(free_energy))   # (as the free energies below read the TS files)
         mirror_of = finder.species_mirrors([StructureNode(structure=s) for s in species])
     reach, open_steps = kinetic_reach(steps, e_low, e0, cutoff_kcal, mirror_of)
     ref = species[0]
@@ -283,7 +283,7 @@ def refine_energies(species: Sequence, steps: Sequence[Step], *, low_engine, hig
     g_low = [e + sp_corr.get(k, 0.0) / HARTREE_TO_KCAL_PER_MOL for k, e in enumerate(e_low)]
     ts_low = {m: steps[m].ts_energy + ts_corr[m] / HARTREE_TO_KCAL_PER_MOL for m in open_steps}
 
-    splitter = free_low or FreeEnergies(low_engine, temperature, standard_state)
+    splitter = free_low or FreeEnergies(low_engine, temperature, standard_state, by_record=False)
     items = [Item("species", k, species[k],
                   _fragments(species[k], splitter.parts(species[k], False) if free_energy else [None]))
              for k in sp_idx]

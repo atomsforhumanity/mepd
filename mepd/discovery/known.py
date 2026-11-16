@@ -151,7 +151,22 @@ def _charge_mult(run: KnownRun, argv: list) -> Optional[tuple]:
 
 def permuted_xyz(src: Path, dst: Path, order: list) -> None:
     """`src`'s frames with atom i of each frame being `order[i]` of the original, every line kept as written
-    (the geometry to the digit: the cache keys of the run that wrote it stay those of its atoms)."""
+    (the geometry to the digit: the cache keys of the run that wrote it stay those of its atoms), but for the
+    atoms a TS's comment says it was optimized on (free_energy.optimized_on_comment), renumbered with them."""
+    from mepd.discovery.free_energy import OPTIMIZED_ON, optimized_on_comment
+
+    def comment(line):
+        words = line.split(" ")
+        for k, word in enumerate(words):
+            value = word[len(OPTIMIZED_ON):]
+            if word.startswith(OPTIMIZED_ON) and value != "whole":
+                try:
+                    old = {int(i) for i in value.split(",")}
+                except ValueError:
+                    continue
+                words[k] = optimized_on_comment([i for i, j in enumerate(order) if j in old])
+        return " ".join(words)
+
     lines = Path(src).read_text().splitlines()
     out, k = [], 0
     while k < len(lines):
@@ -160,7 +175,7 @@ def permuted_xyz(src: Path, dst: Path, order: list) -> None:
             continue
         n = int(lines[k].split()[0])
         atoms = lines[k + 2:k + 2 + n]
-        out += [lines[k], lines[k + 1]] + [atoms[i] for i in order]
+        out += [lines[k], comment(lines[k + 1])] + [atoms[i] for i in order]
         k += 2 + n
     Path(dst).parent.mkdir(parents=True, exist_ok=True)
     Path(dst).write_text("\n".join(out) + "\n")

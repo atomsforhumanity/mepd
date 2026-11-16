@@ -702,7 +702,9 @@ def subsystem(a, b, engine, ref=None) -> Optional[Subsystem]:
 
     if getattr(engine, "region", None) is not None or getattr(engine, "restraints", None):
         return None
-    parts = FreeEnergies(None, 298.15).parts(a.structure, True, (a.structure, b.structure))
+    # (from the two ends alone: `a` may be a TS file's frame carrying what another search was optimized on)
+    parts = FreeEnergies(None, 298.15).parts(a.structure.model_copy(update={"extras": {}}), True,
+                                             (a.structure, b.structure))
     if len(parts) == 1:
         return None
     atoms, charge, mult = parts[0]
@@ -1859,7 +1861,7 @@ def expand_network(
     if kin.get("mirror_images", True):
         from mepd.discovery.mirror import MirrorFinder
 
-        mirror_finder = MirrorFinder()
+        mirror_finder = MirrorFinder(by_record=free is not None)
     mirror_said: set = set()
     split_cache: dict = {}
     # the structures within reach the last free-energy view had no thermal correction for (_explorer_view)
@@ -1937,10 +1939,17 @@ def expand_network(
         rec = rec or {}
 
         def ts_info(m):
+            from mepd.discovery.free_energy import optimized_on
+
             st = result.steps[m]
             fp = (st.files or {}).get("ts")
-            has_ends = bool(fp) and Path(fp).with_name(f"{Path(fp).stem}_ends.xyz").exists()
-            return _ts_structure(st), has_ends, (st.files or {}).get("verified") is not False
+            ts = _ts_structure(st)
+            on = optimized_on(ts) if ts is not None and free is not None else None
+            if on is not None:     # computed on a subsystem, as its file says
+                has_ends = len(on) < len(ts.symbols)
+            else:                  # a file without the record: an ends file stood for a subsystem's TS
+                has_ends = bool(fp) and Path(fp).with_name(f"{Path(fp).stem}_ends.xyz").exists()
+            return ts, has_ends, (st.files or {}).get("verified") is not False
 
         net = M.build(len(result.species), _mol_parts, _mol_bonds, all_steps, all_energies,
                       [v["mirror_of"] for v in rec.get("virtual_species", [])],
@@ -2190,7 +2199,8 @@ def expand_network(
         from mepd.discovery.free_energy import FreeEnergies
 
         # apart on electronic energies too: a subsystem TS was computed without its spectators
-        groups = (free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M")))._groups(s, is_ts, ends)
+        groups = (free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"),
+                                       by_record=False))._groups(s, is_ts, ends)
         xyz = np.round(np.asarray(s.geometry, dtype=float), 4) + 0.0
         return hashlib.sha1(repr((list(map(str, s.symbols)), xyz.tolist(), int(s.charge), int(s.multiplicity),
                                   is_ts) + ((groups,) if groups and len(groups) > 1 else ())).encode()).hexdigest()[:24]
@@ -2204,7 +2214,7 @@ def expand_network(
         from mepd.discovery.energy_refine import Item, _fragments, _single_point
         from mepd.discovery.free_energy import FreeEnergies
 
-        splitter = free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"))
+        splitter = free or FreeEnergies(engine, kin["temperature"], kin.get("standard_state", "1M"), by_record=False)
         keys = []
         todo: dict = {}
         for s, is_ts, ends in structs:
@@ -2696,6 +2706,8 @@ def expand_network(
                 return {"steer": "failed", "steer_shift_kcal": None, "steer_error": steer_why.get(key)}
             return {"steer": "single_point", "steer_shift_kcal": (v - d_sp[0]) * H}
 
+        from mepd.discovery.free_energy import counted_record
+
         species = []
         for k in range(len(result.species)):
             rec = {"energy_terms": {"thermal_correction_kcal": sp_corr.get(k), **steer_terms("species", k, d_sp)},
@@ -2833,6 +2845,11 @@ def expand_network(
                     # ... or with an end species on one (its barrier from that end, and its reverse rate)
                     staged_rec["end_shift_lent"] = (None if box_closed or not steered
                                                     else [k for k in (a, b) if k in lent.get("species", {})])
+            if terms.get("thermal_correction_kcal") is not None:
+                key = _ts_terms(st)[2] if free is not None else None      # (what the correction counted: saved with it)
+                terms["counted_as"] = counted_record(st.files or {}, (result.species[st.a].node.structure,
+                                                                      result.species[st.b].node.structure),
+                                                     free._cache.get(key) if key is not None else None)
             steps.append({**staged_rec,
                           "free_energy_barrier_kcal": barrier, "free_energy_barrier_missing": missing,
                           "closed": closed, "ts_energy_terms": terms, "reacting": reacting, "ts_group": root(m),
@@ -3093,6 +3110,7 @@ def expand_network(
         if not out or cut is None:
             return out
         import mepd
+        from mepd.discovery.free_energy import optimized_on_comment, unrecorded
 
         def whole(rec):
             ts = rec["ts"]   # (its frame: the conformers a channel search starts from are turned every way)
@@ -3101,7 +3119,8 @@ def expand_network(
             files = dict(rec.get("files") or {})
             fp = Path(files["ts"])
             files["ts"] = str(fp.with_name(f"{fp.stem}_whole.xyz"))
-            mepd.write_xyz(files["ts"], rec["ts"], comments=[f"E={rec['ts'].energy:.10f}"])
+            mepd.write_xyz(files["ts"], unrecorded(rec["ts"].structure),
+                           comments=[f"E={rec['ts'].energy:.10f} {optimized_on_comment(cut.atoms)}"])
             if files.get("irc") and Path(files["irc"]).exists():
                 fp = Path(files["irc"])
                 files["irc"] = str(fp.with_name(f"{fp.stem}_whole.xyz"))
@@ -3874,7 +3893,10 @@ def expand_network(
                    for i, j in core):
                 return None
             fp = Path(fp)
-            mepd.write_xyz(fp, ts, comments=[f"E={ts.energy:.10f}"])
+            from mepd.discovery.free_energy import optimized_on_comment, unrecorded
+
+            mepd.write_xyz(fp, unrecorded(ts.structure),
+                           comments=[f"E={ts.energy:.10f} {optimized_on_comment(cut.atoms if cut else None)}"])
             mepd.write_xyz(fp.with_name(f"{fp.stem}_ends.xyz"), [StructureNode(structure=e) for e in ends])
             corr = None
             if free is not None:
@@ -3963,7 +3985,9 @@ def expand_network(
             from mepd.discovery.free_energy import FreeEnergies
 
             # a spectator's rotamers are no TS's: it is not in the TS's search (subsystem), and counts apart
-            react = (FreeEnergies._groups(ts, True, ends) or [list(range(len(ts.symbols)))])[0]
+            # (which atoms react: from its ends, whatever it was optimized on)
+            react = (FreeEnergies(None, 298.15, by_record=False)._groups(ts, True, ends)
+                     or [list(range(len(ts.symbols)))])[0]
             guesses = [(g, what) for g, what in guesses
                        if not np.allclose(np.asarray(g.geometry)[react], np.asarray(ts.geometry)[react])]
             stem = Path(st.files["ts"]).stem
