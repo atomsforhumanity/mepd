@@ -455,95 +455,146 @@ def shifts(binding: dict) -> dict:
     """Barrier, reverse-barrier and reaction-energy shifts from C's binding to each frame (kcal/mol)."""
     out = {}
     if "ts" in binding and "r" in binding:
-        out["barrier_shift_kcal"] = binding["ts"] - binding["r"]
+        out["barrier_shift"] = binding["ts"] - binding["r"]
     if "ts" in binding and "p" in binding:
-        out["reverse_barrier_shift_kcal"] = binding["ts"] - binding["p"]
+        out["reverse_barrier_shift"] = binding["ts"] - binding["p"]
     if "r" in binding and "p" in binding:
-        out["reaction_shift_kcal"] = binding["p"] - binding["r"]
+        out["reaction_shift"] = binding["p"] - binding["r"]
     return out
 
 
-def _spread(values: list) -> dict:
-    v = [x for x in values if x is not None]
-    if not v:
-        return {"values": values, "std": None, "range": None}
-    return {"values": values, "std": float(np.std(v)), "range": float(max(v) - min(v))}
+def molecule_from_smiles(smiles: str, engine, *, n: int = 3, seed: int = 0) -> dict:
+    """The `molecule` argument of `bystander` from a SMILES: {"symbols", "charge", "multiplicity", "conformers"}
+    (`conformers`: RDKit, minimized with `engine`, lowest first)."""
+    nodes = conformers(smiles, engine, n=n, seed=seed)
+    st = nodes[0].structure
+    return {"symbols": list(st.symbols), "charge": int(st.charge), "multiplicity": int(st.multiplicity),
+            "conformers": [_xyz(c).tolist() for c in nodes], "smiles": smiles}
 
 
-def bystander(frames: dict, molecule, engine, *, reaction_atoms: Optional[Sequence[int]] = None,
-              placer: str = "seeded", poses: int = 6, repeats: int = 3, seed: int = 0, carry: int = 1,
-              relax_substrate: bool = False, final_engine=None, final_keep: int = 3, free_energy: bool = True,
-              temperature: float = 298.15, proposed: Optional[dict] = None, charges: Optional[Callable] = gfn2_charges,
+def _level(engine) -> str:
+    solv = getattr(engine, "axtb_solvation", None) or getattr(engine, "solvation", None) or {}
+    name = getattr(engine, "level", None) or type(engine).__name__
+    return f"{name}" + (f" in {solv.get('solvent')} ({solv.get('model', 'alpb')})" if isinstance(solv, dict) and solv.get("solvent") else "")
+
+
+SPREAD_METHOD = ("the range (largest minus smallest) of the value over the independent repeats, each repeat's "
+                 "value from its own lowest complex of each frame; None with one repeat")
+FREE_METHOD = ("electronic binding + a quasi-RRHO correction at 1 mol/L without relaxing the complex: the "
+               "translation and rotation of C and of the step replaced by the complex's and by the six rigid-body "
+               "vibrations of C against the held step (the complex's Hessian projected on them); internal "
+               "vibrations taken as unchanged, symmetry numbers 1")
+
+
+def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.15, starts: Sequence[dict] = (),
+              seed: int = 0, placer: str = "screen-sp", poses: int = 6, repeats: int = 3, carry: int = 1,
+              relax_substrate: bool = False, reaction_atoms: Optional[Sequence[int]] = None, final_engine=None,
+              final_keep: int = 3, free_energy: bool = True, charges: Optional[Callable] = gfn2_charges,
               pool: int = 200, fmax: float = 0.05, steps: int = 300) -> dict:
     """The bystander estimate of one step with the molecule C beside it (docs/bystander.md).
 
-    frames          {"r": node, "ts": node, "p": node} in one atom order ("ts" may be missing: no barrier
-                    shift then). Their atoms are held where they are.
-    molecule        C: a structure, or several conformers of it (one atom order); `conformers(smiles, engine)`.
-    engine          energies and gradients for the search (a Hessian for the free-energy estimate).
-    reaction_atoms  the step's atoms that change bonds; only used with `relax_substrate`, which frees the
-                    step's other atoms too (default: the atoms of the bonds that differ between the ends).
-    placer, poses   how C is placed and how many poses are relaxed per frame and repeat; `carry`: how many
-                    of each frame's best poses are also relaxed on the other frames (0: none).
-    repeats, seed   independent searches (seeds seed, seed+1, ...): the result is from the lowest complex
-                    of each frame over all of them, `spread` from each repeat alone.
+    frames          one step in one atom order, coordinates in A: {"symbols", "charge", "multiplicity", "r",
+                    "ts" (or None: no barrier shift then), "p"}. Its atoms are held where they are.
+    molecule        C: {"symbols", "charge", "multiplicity", "conformers": [coordinates, ...]}, each conformer
+                    a minimum at `engine`'s level (`molecule_from_smiles`).
+    engine          energies and gradients for the search (and a Hessian for the free-energy estimate); where
+                    the network has a solvent, the engine carries it.
+    temperature     K, for the free-energy estimate.
+    starts          further starting poses, each {"frame": "r" | "ts" | "p", "coords": C's atoms in that
+                    frame's own coordinates} (a model's or a user's): relaxed beside the generic ones, never
+                    instead of them.
+    seed            the repeats use seeds seed, seed + 1, ...
+    placer, poses   how C is placed (PLACERS) and how many poses are relaxed per frame and repeat; `carry`:
+                    how many of each frame's best poses are also relaxed on the other frames (0: none).
+    repeats         independent searches: values are from the lowest complex of each frame over all of them,
+                    "spread" from each repeat alone.
+    relax_substrate also free the step's atoms that change no bond (`reaction_atoms`: those that do; default
+                    the atoms of the bonds that differ between the ends).
     final_engine    a second level (e.g. the same method in implicit solvent): single points on the
                     `final_keep` lowest poses of each frame and repeat, reported under "final".
-    proposed        {frame: [C's coordinates in A, ...]}: further starting poses (e.g. a model's), relaxed
-                    beside the generic ones, never instead of them.
 
-    Returns a dict: "status" ("ok"; "reacted": in some frame every pose, or a pose below the lowest
-    complex, changed C's or the step's bonds; "did_not_move": no pose of some frame moved on relaxing;
-    "no_contact": none ended in contact; "failed"), "why", per frame under "frames" the lowest complex
-    ("xyz" in A, "energy" Eh, "binding_kcal", "binding_free_kcal" at 1 mol/L, "contact", "cross_bonds",
-    "origin", "conformer", counts of poses), "barrier_shift_kcal", "reverse_barrier_shift_kcal",
-    "reaction_shift_kcal" (electronic, each frame from its lowest complex), the same under "free" and
-    "final", "spread" (per quantity: the values of the repeats, their standard deviation and range), and
-    "cost" (seconds, relaxations)."""
+    Returns (kcal/mol; JSON-serialisable):
+      "status"   "ok"; "reacted": in some frame every pose, or a pose below the lowest complex, changed C's or
+                 the step's own bonds; "unmoved": no pose of some frame moved on relaxing; "failed": nothing
+                 could be relaxed, or no pose stayed in contact. "why" says which for every status but "ok".
+      "binding"  per frame {"electronic": E(frame.C) - E(frame) - E(C), "free": the same as a free energy at
+                 1 mol/L (None when not estimated), "spread", and about the lowest complex: "contact" (closest
+                 pair over its vdW radii), "cross_bonds" (pairs of one atom each within bonding range: a
+                 coordinated Lewis acid or a new bond), "origin", "conformer", "poses" (counts)}.
+      "barrier_shift", "reaction_shift", "reverse_barrier_shift"   {"electronic", "free", "spread"}:
+                 binding(ts) - binding(r), binding(p) - binding(r), binding(ts) - binding(p).
+      "complexes" per frame the lowest complex's coordinates (A), the step's atoms first, then C's.
+      "molecule_energy_hartree", "step_energies_hartree", "free_method", "spread_method", "level",
+      "poses" (relaxations run), "gradient_calls", "wall_s", "placer", "repeats", "version", and "final"
+      (binding and shifts at `final_engine`'s level) when asked."""
     from mepd.network_variants import adjacency
 
     t0 = time.perf_counter()
-    confs_in = list(molecule) if isinstance(molecule, (list, tuple)) else [molecule]
     order = [f for f in ("r", "ts", "p") if frames.get(f) is not None]
-    any_frame = frames[order[0]]
-    symx, q_x, mult = list(any_frame.structure.symbols), int(any_frame.structure.charge), int(any_frame.structure.multiplicity)
-    csym, q_c = list(confs_in[0].structure.symbols), int(confs_in[0].structure.charge)
+    symx, q_x, mult = list(frames["symbols"]), int(frames.get("charge", 0)), int(frames.get("multiplicity", 1))
+    csym, q_c = list(molecule["symbols"]), int(molecule.get("charge", 0))
     n_x, charge = len(symx), q_x + q_c
-    X = {f: _xyz(frames[f]) for f in order}
-    out = {"version": VERSION, "status": "ok", "why": None, "placer": placer, "poses": poses, "repeats": repeats,
-           "seed": seed, "carry": carry, "relax_substrate": bool(relax_substrate), "symbols": symx + csym,
-           "charge": charge, "multiplicity": mult, "n_step_atoms": n_x, "frames": {}}
+    X = {f: np.asarray(frames[f], dtype=float).reshape(-1, 3) for f in order}
+    empty = {"electronic": None, "free": None, "spread": None}
+    out = {"version": VERSION, "status": "ok", "why": None, "binding": {}, "barrier_shift": dict(empty),
+           "reaction_shift": dict(empty), "reverse_barrier_shift": dict(empty), "complexes": {},
+           "molecule_energy_hartree": None, "free_method": None, "spread_method": SPREAD_METHOD,
+           "level": _level(engine), "poses": 0, "gradient_calls": None, "wall_s": 0.0, "placer": placer,
+           "repeats": repeats, "seed": seed, "symbols": symx + csym, "charge": charge, "multiplicity": mult}
+    calls = {"n": 0}
+    own_gradients = engine.compute_gradients
+
+    def counted(chain):
+        calls["n"] += 1
+        return own_gradients(chain)
+
+    def finish():
+        if engine.__dict__.get("compute_gradients") is counted:
+            del engine.__dict__["compute_gradients"]
+        out["gradient_calls"], out["wall_s"] = calls["n"], time.perf_counter() - t0
+        return out
+
     try:
-        e_c = [_energy(engine, c) for c in confs_in]
+        engine.compute_gradients = counted
+    except Exception:
+        calls = {"n": None}
+    try:
+        x_nodes = {f: _node(symx, X[f], q_x, mult) for f in order}
+        c_nodes = [_node(csym, c, q_c, int(molecule.get("multiplicity", 1))) for c in molecule["conformers"]]
+        e_c = [_energy(engine, c) for c in c_nodes]
         need_q = placer in ("seeded", "screen-ff")
-        q_frames = {f: charges(frames[f]) for f in order} if need_q else None
-        confs = [(csym, _xyz(c), charges(c) if need_q else None, e) for c, e in zip(confs_in, e_c)]
+        q_frames = {f: charges(x_nodes[f]) for f in order} if need_q else None
+        confs = [(csym, _xyz(c), charges(c) if need_q else None, e) for c, e in zip(c_nodes, e_c)]
         if relax_substrate and reaction_atoms is None:
             a, b = adjacency(symx, X[order[0]]), adjacency(symx, X[order[-1]])
             reaction_atoms = sorted(set(int(i) for i in np.nonzero((a != b).any(axis=1))[0]))
         e_x = {}
         for f in order:
-            node = frames[f]
+            node = x_nodes[f]
             if relax_substrate:
                 from mepd.substituents import relax_group
 
                 node = relax_group(engine, node, [i for i in range(n_x) if i not in set(reaction_atoms)],
                                    fmax=fmax, steps=steps)
             e_x[f] = _energy(engine, node)
+        proposed = {}
+        for s in starts:
+            proposed.setdefault(s["frame"], []).append(np.asarray(s["coords"], dtype=float).reshape(-1, 3))
         runs = [search({f: (symx, X[f]) for f in order}, confs, engine, placer=placer, poses=poses, seed=seed + k,
                        carry=carry, relax_substrate=relax_substrate, reaction_atoms=reaction_atoms,
                        proposed=proposed if k == 0 else None, charges=q_frames, charge=charge, multiplicity=mult,
                        pool=pool, fmax=fmax, steps=steps) for k in range(repeats)]
     except Exception as exc:
         out.update(status="failed", why=f"{type(exc).__name__}: {exc}")
-        return out
+        return finish()
     e_c0 = min(e_c)
-    out["molecule_energy"], out["step_energies"] = e_c0, e_x
+    out["molecule_energy_hartree"], out["step_energies_hartree"] = e_c0, e_x
+    out["poses"] = sum(len(run[f]) for run in runs for f in order)
 
     def bind(p, f):
         return (p["energy"] - e_x[f] - e_c0) * HARTREE_TO_KCAL
 
-    problems, binding, per_repeat = [], {}, []
+    problems, binding, best_pose = [], {}, {}
     for f in order:
         allp = [p for run in runs for p in run[f]]
         good = [p for p in allp if "failed" not in p]
@@ -552,98 +603,109 @@ def bystander(frames: dict, molecule, engine, *, reaction_atoms: Optional[Sequen
                   "unmoved": sum(p["moved"] <= UNMOVED for p in good),
                   "out_of_contact": sum(p["contact"] > CONTACT for p in good)}
         name = {"r": "reactant end", "ts": "TS", "p": "product end"}[f]
+        out["binding"][f] = {**empty, "poses": counts}
         if best is None:
             if good and counts["unmoved"] == len(good):
-                problems.append(("did_not_move", f"no pose moved on relaxing at the {name}"))
+                problems.append(("unmoved", f"no pose moved on relaxing at the {name}"))
             elif good and counts["reacted"] == len(good):
                 problems.append(("reacted", f"every pose changed bonds at the {name}"))
-            elif good and all(p["reacted"] or p["moved"] <= UNMOVED or p["contact"] > CONTACT for p in good) \
-                    and counts["out_of_contact"]:
-                problems.append(("no_contact", f"no pose stayed in contact at the {name}"))
+            elif good and counts["out_of_contact"]:
+                problems.append(("failed", f"no pose stayed in contact at the {name}"))
             else:
                 problems.append(("failed", f"no pose could be relaxed at the {name}: "
                                  + "; ".join(sorted({p['failed'] for p in allp if 'failed' in p}))[:300]))
-            out["frames"][f] = {"poses": counts}
             continue
         if any(p["reacted"] and p["energy"] < best["energy"] for p in good):
             problems.append(("reacted", f"a pose that changed bonds lies below the lowest complex at the {name}"))
-        binding[f] = bind(best, f)
-        out["frames"][f] = {"xyz": best["xyz"].tolist(), "energy": best["energy"], "binding_kcal": binding[f],
-                            "contact": best["contact"], "cross_bonds": best["cross_bonds"], "origin": best["origin"],
-                            "conformer": best["conformer"], "poses": counts}
+        binding[f], best_pose[f] = bind(best, f), best
+        out["complexes"][f] = best["xyz"].tolist()
+        out["binding"][f].update(electronic=binding[f], contact=best["contact"], cross_bonds=best["cross_bonds"],
+                                 origin=best["origin"], conformer=best["conformer"], energy_hartree=best["energy"])
+    per_repeat = []
     for run in runs:
         b = {f: bind(lowest(run[f]), f) for f in order if lowest(run[f]) is not None}
-        per_repeat.append({**shifts(b), **{f"binding_{f}_kcal": v for f, v in b.items()}})
-    out.update(shifts(binding))
-    keys = sorted({k for r in per_repeat for k in r})
-    out["spread"] = {k: _spread([r.get(k) for r in per_repeat]) for k in keys}
+        per_repeat.append({**shifts(b), **b})
+
+    def spread(key):
+        v = [r[key] for r in per_repeat if key in r]
+        return float(max(v) - min(v)) if len(v) > 1 and len(v) == len(per_repeat) else None
+
+    for f in binding:
+        out["binding"][f]["spread"] = spread(f)
+    for key, val in shifts(binding).items():
+        out[key] = {"electronic": val, "free": None, "spread": spread(key), "repeats": [r.get(key) for r in per_repeat]}
     if problems:
-        rank = ["failed", "did_not_move", "no_contact", "reacted"]
+        rank = ["failed", "unmoved", "reacted"]
         problems.sort(key=lambda t: rank.index(t[0]))
         out["status"], out["why"] = problems[0][0], "; ".join(w for _, w in problems)
     if free_energy and callable(getattr(engine, "compute_hessian", None)):
         g = {}
         for f in binding:
             try:
-                fe = binding_free_correction(engine, symx + csym, np.asarray(out["frames"][f]["xyz"]), n_x,
-                                             charge=charge, multiplicity=mult, temperature=temperature)
+                fe = binding_free_correction(engine, symx + csym, best_pose[f]["xyz"], n_x, charge=charge,
+                                             multiplicity=mult, temperature=temperature)
             except Exception as exc:
-                out["frames"][f]["binding_free_error"] = f"{type(exc).__name__}: {exc}"
+                out["binding"][f]["free_error"] = f"{type(exc).__name__}: {exc}"
                 continue
             g[f] = binding[f] + fe["g_corr_kcal"]
-            out["frames"][f].update(binding_free_kcal=g[f], **fe)
-        out["free"] = {"method": "rigid-body modes of C against the held step, quasi-RRHO, 1 mol/L",
-                       "temperature": temperature, **shifts(g)}
+            out["binding"][f].update(free=g[f], **fe)
+        for key, val in shifts(g).items():
+            out[key]["free"] = val
+        out["free_method"] = FREE_METHOD
     if final_engine is not None:
         try:
-            out["final"] = _final(final_engine, frames, confs_in, runs, order, symx + csym, charge, mult, final_keep)
+            out["final"] = _final(final_engine, x_nodes, c_nodes, runs, order, symx + csym, charge, mult, final_keep)
         except Exception as exc:
             out["final"] = {"error": f"{type(exc).__name__}: {exc}"}
-    out["cost"] = {"wall_s": time.perf_counter() - t0,
-                   "relaxations": sum(len(run[f]) for run in runs for f in order)}
-    return out
+    return finish()
 
 
-def _final(engine, frames, confs_in, runs, order, symbols, charge, mult, keep) -> dict:
-    """Single points at a second level on the `keep` lowest eligible poses of each frame and repeat."""
-    e_c = min(_energy(engine, c) for c in confs_in)
-    binding, per_repeat, frames_out = {}, [], {}
+def _final(engine, x_nodes, c_nodes, runs, order, symbols, charge, mult, keep) -> dict:
+    """Single points at a second level on the `keep` lowest eligible poses of each frame and repeat (the
+    lowest of them at that level is the frame's complex there)."""
+    e_c = min(_energy(engine, c) for c in c_nodes)
+    e_x = {f: _energy(engine, x_nodes[f]) for f in order}
+    binding, per_repeat, complexes = {}, [], {}
     for run in runs:
         b = {}
         for f in order:
             ok = sorted([p for p in run[f] if "failed" not in p and _eligible(p)], key=lambda p: p["energy"])[:keep]
             if not ok:
                 continue
-            e_x = _energy(engine, frames[f])
             es = [_energy(engine, _node(symbols, p["xyz"], charge, mult)) for p in ok]
             k = int(np.argmin(es))
-            b[f] = (es[k] - e_x - e_c) * HARTREE_TO_KCAL
+            b[f] = (es[k] - e_x[f] - e_c) * HARTREE_TO_KCAL
             if f not in binding or b[f] < binding[f]:
-                binding[f] = b[f]
-                frames_out[f] = {"xyz": ok[k]["xyz"].tolist(), "energy": es[k], "binding_kcal": b[f]}
-        per_repeat.append({**shifts(b), **{f"binding_{f}_kcal": v for f, v in b.items()}})
-    keys = sorted({k for r in per_repeat for k in r})
-    return {"frames": frames_out, **shifts(binding),
-            "spread": {k: _spread([r.get(k) for r in per_repeat]) for k in keys}}
+                binding[f], complexes[f] = b[f], ok[k]["xyz"].tolist()
+        per_repeat.append({**shifts(b), **b})
+
+    def spread(key):
+        v = [r[key] for r in per_repeat if key in r]
+        return float(max(v) - min(v)) if len(v) > 1 and len(v) == len(per_repeat) else None
+
+    out = {"level": _level(engine), "binding": {f: {"electronic": v, "spread": spread(f)} for f, v in binding.items()},
+           "complexes": complexes}
+    for key, val in shifts(binding).items():
+        out[key] = {"electronic": val, "spread": spread(key)}
+    return out
 
 
 # ----------------------------------------------------------------- a network
 def _one(args):
     key, frames, molecule, make_engine, make_final, kwargs = args
-    engine = make_engine()
     try:
-        res = bystander(frames, molecule, engine, final_engine=make_final() if make_final else None, **kwargs)
+        res = bystander(frames, molecule, make_engine(), final_engine=make_final() if make_final else None, **kwargs)
     except Exception as exc:
         res = {"status": "failed", "why": f"{type(exc).__name__}: {exc}"}
     return key, res
 
 
-def bystander_steps(steps: dict, molecule, make_engine: Callable, *, workers: int = 1,
+def bystander_steps(steps: dict, molecule: dict, make_engine: Callable, *, workers: int = 1,
                     make_final: Optional[Callable] = None, on_result: Optional[Callable] = None, **kwargs) -> dict:
-    """`bystander` for many steps, `workers` processes at once, in the order given (put the steps that
-    matter first). `steps`: key -> frames; `make_engine` (and `make_final`): picklable callables building
-    the engine in each process (e.g. functools.partial(mepd.engine_from_profile, "profile.toml")).
-    `on_result(key, result)` is called as each step finishes. Returns key -> result."""
+    """`bystander` for many steps, `workers` processes at once (one thread each), started in the order given:
+    put the steps that matter first. `steps`: key -> frames; `make_engine` (and `make_final`): picklable
+    callables that build the engine in each process (e.g. functools.partial(mepd.engine_from_profile, path)).
+    `on_result(key, result)` is called as each step finishes. Returns key -> result, in the order given."""
     jobs = [(k, fr, molecule, make_engine, make_final, kwargs) for k, fr in steps.items()]
     out = {}
     if workers <= 1:
@@ -657,8 +719,7 @@ def bystander_steps(steps: dict, molecule, make_engine: Callable, *, workers: in
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
-        futures = [pool.submit(_one, job) for job in jobs]
-        for fut in as_completed(futures):
+        for fut in as_completed([pool.submit(_one, job) for job in jobs]):
             k, res = fut.result()
             out[k] = res
             if on_result:

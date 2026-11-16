@@ -77,7 +77,7 @@ def step(polar_ts=0.6):
     ts, p = r.copy(), r.copy()
     ts[2:] += [0.5, 0.0, 0.0]
     p[2:] += [1.0, 0.0, 0.0]
-    frames = {"r": B._node(sym, r, 0), "ts": B._node(sym, ts, 0), "p": B._node(sym, p, 0)}
+    frames = {"symbols": sym, "charge": 0, "multiplicity": 1, "r": r.tolist(), "ts": ts.tolist(), "p": p.tolist()}
 
     def q_x(x_bohr):
         gap = np.linalg.norm(x_bohr[2] - x_bohr[1]) * BOHR
@@ -91,7 +91,7 @@ def step(polar_ts=0.6):
 
 
 def molecule():
-    return B._node(["H", "F"], [[0, 0, 0], [0.95, 0, 0]], 0)
+    return {"symbols": ["H", "F"], "charge": 0, "multiplicity": 1, "conformers": [[[0, 0, 0], [0.95, 0, 0]]]}
 
 
 @pytest.mark.parametrize("placer", B.PLACERS)
@@ -100,34 +100,47 @@ def test_a_polar_ts_binds_the_molecule_more_and_the_barrier_shift_is_negative(pl
     res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4]), placer=placer, poses=4, repeats=2,
                       charges=charges, pool=40)
     assert res["status"] == "ok", res["why"]
-    f = res["frames"]
-    assert f["ts"]["binding_kcal"] < f["r"]["binding_kcal"] < 0
-    assert res["barrier_shift_kcal"] == pytest.approx(f["ts"]["binding_kcal"] - f["r"]["binding_kcal"])
-    assert res["barrier_shift_kcal"] < -0.5
-    assert len(res["spread"]["barrier_shift_kcal"]["values"]) == 2
-    assert res["spread"]["barrier_shift_kcal"]["std"] is not None
+    b = res["binding"]
+    assert b["ts"]["electronic"] < b["r"]["electronic"] < 0
+    assert res["barrier_shift"]["electronic"] == pytest.approx(b["ts"]["electronic"] - b["r"]["electronic"])
+    assert res["barrier_shift"]["electronic"] < -0.5
+    assert res["reaction_shift"]["electronic"] == pytest.approx(b["p"]["electronic"] - b["r"]["electronic"])
+    assert len(res["barrier_shift"]["repeats"]) == 2 and res["barrier_shift"]["spread"] >= 0
+    assert b["ts"]["spread"] >= 0
     # the free-energy estimate: binding costs translation and rotation, so it is above the electronic one
-    assert f["r"]["binding_free_kcal"] > f["r"]["binding_kcal"]
-    assert len(f["r"]["rigid_modes_cm"]) == 5         # a diatomic C: five rigid-body modes against the step
-    assert "barrier_shift_kcal" in res["free"]
-    assert np.asarray(f["ts"]["xyz"]).shape == (6, 3)
-    assert np.allclose(np.asarray(f["ts"]["xyz"])[:4], B._xyz(frames["ts"]))      # the step's atoms were held
+    assert b["r"]["free"] > b["r"]["electronic"]
+    assert len(b["r"]["rigid_modes_cm"]) == 5         # a diatomic C: five rigid-body modes against the step
+    assert res["barrier_shift"]["free"] is not None and res["free_method"]
+    assert np.asarray(res["complexes"]["ts"]).shape == (6, 3)
+    assert np.allclose(np.asarray(res["complexes"]["ts"])[:4], frames["ts"])      # the step's atoms were held
+    assert res["gradient_calls"] > 0 and res["poses"] >= 3 * 2 * 4
+    import json
+
+    json.dumps(res)
 
 
 def test_a_molecule_that_does_not_move_is_a_failure_not_ok():
     frames, q_x, charges = step()
     res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4], mode="flat"), placer="seeded", poses=3,
                       repeats=1, charges=charges)
-    assert res["status"] == "did_not_move"
-    assert "barrier_shift_kcal" not in res
-    assert res["frames"]["ts"]["poses"]["unmoved"] == 3
+    assert res["status"] == "unmoved" and "moved" in res["why"]
+    assert res["barrier_shift"]["electronic"] is None
+    assert res["binding"]["ts"]["poses"]["unmoved"] == 3
+
+
+def test_one_frame_without_a_ts_gives_no_barrier_shift():
+    frames, q_x, charges = step()
+    res = B.bystander({**frames, "ts": None}, molecule(), Toy(4, q_x, [0.4, -0.4]), placer="seeded", poses=3,
+                      repeats=2, charges=charges)
+    assert res["status"] == "ok" and "ts" not in res["binding"]
+    assert res["barrier_shift"]["electronic"] is None and res["reaction_shift"]["electronic"] is not None
 
 
 def test_a_molecule_pushed_out_of_contact_is_a_failure():
     frames, q_x, charges = step()
     res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4], mode="push"), placer="seeded", poses=3,
                       repeats=1, charges=charges, fmax=0.005, steps=400, carry=0)
-    assert res["status"] == "no_contact"
+    assert res["status"] == "failed" and "contact" in res["why"]
 
 
 def test_a_molecule_that_changes_its_bonds_is_reported_as_reacted():
@@ -135,16 +148,18 @@ def test_a_molecule_that_changes_its_bonds_is_reported_as_reacted():
     res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4], mode="split"), placer="seeded", poses=3,
                       repeats=1, charges=charges)
     assert res["status"] == "reacted"
-    assert res["frames"]["r"]["poses"]["reacted"] == 3
+    assert res["binding"]["r"]["poses"]["reacted"] == 3
 
 
 def test_a_proposed_pose_is_one_more_start_beside_the_generic_ones():
     frames, q_x, charges = step()
-    far = B._xyz(molecule()) + [0, 40.0, 0]             # out of range of the toy's wall: it will not move
-    res = B.bystander(frames, molecule(), Toy(4, q_x, [0.0, 0.0]), placer="seeded", poses=3, repeats=2,
-                      charges=charges, proposed={"ts": [far]}, carry=0)
-    assert res["frames"]["ts"]["poses"]["relaxed"] == 3 * 2 + 1
-    assert res["frames"]["r"]["poses"]["relaxed"] == 3 * 2
+    near = (np.asarray(frames["ts"])[1] + [[0.0, 2.6, 0.0], [0.0, 3.5, 0.0]]).tolist()
+    eng = Toy(4, q_x, [0.4, -0.4])
+    res = B.bystander(frames, molecule(), eng, placer="seeded", poses=3, repeats=2, charges=charges,
+                      starts=[{"frame": "ts", "coords": near}], carry=0)
+    assert res["binding"]["ts"]["poses"]["relaxed"] == 3 * 2 + 1
+    assert res["binding"]["r"]["poses"]["relaxed"] == 3 * 2
+    assert "compute_gradients" not in eng.__dict__     # the call counter is taken off the engine again
 
 
 def test_sites_are_the_atoms_whose_charge_changes_most_and_the_most_polar():

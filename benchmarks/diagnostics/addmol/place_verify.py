@@ -59,8 +59,9 @@ def task(a):
     confs = [B._node(csym, x, cq) for x in confs_xyz]
     rec = {"label": label, "reacting": st.get("reacting"), "recorded_barrier_kcal": st.get("barrier_kcal")}
     t = time.perf_counter()
-    est = B.bystander(frames, confs, engine, placer=placer, poses=poses, repeats=repeats, seed=seed,
-                      relax_substrate=relax_sub)
+    est = B.bystander({"symbols": symx, "charge": qx, "multiplicity": 1, **{f: B._xyz(frames[f]).tolist() for f in frames}},
+                      {"symbols": csym, "charge": cq, "multiplicity": 1, "conformers": [np.asarray(x).tolist() for x in confs_xyz]},
+                      engine, placer=placer, poses=poses, repeats=repeats, seed=seed, relax_substrate=relax_sub)
     rec["estimate"], rec["estimate_s"] = est, time.perf_counter() - t
     X = {f: B._xyz(frames[f]) for f in frames}
     t = time.perf_counter()
@@ -71,9 +72,9 @@ def task(a):
     except Exception as exc:
         rec["parent"] = {"status": "error", "why": f"{type(exc).__name__}: {exc}"}
     rec["parent_s"] = time.perf_counter() - t
-    if all(f in est.get("frames", {}) and "xyz" in est["frames"][f] for f in ("r", "ts", "p")):
+    if all(f in est.get("complexes", {}) for f in ("r", "ts", "p")):
         sym = est["symbols"]
-        C = {f: np.asarray(est["frames"][f]["xyz"]) for f in ("r", "ts", "p")}
+        C = {f: np.asarray(est["complexes"][f]) for f in ("r", "ts", "p")}
         t = time.perf_counter()
         d = {"symbols": sym, "charge": est["charge"], "multiplicity": 1, **{f: C[f].tolist() for f in C},
              "bonds_r": pairs(adjacency(sym, C["r"])), "bonds_p": pairs(adjacency(sym, C["p"]))}
@@ -151,7 +152,7 @@ def main() -> None:
     with ProcessPoolExecutor(max_workers=a.workers, mp_context=mp.get_context("spawn")) as pool:
         for rec in pool.map(task, jobs):
             e, w = rec["estimate"], rec.get("with_c", {})
-            print(rec["label"], e["status"], e.get("barrier_shift_kcal"), "| verified", w.get("status"),
+            print(rec["label"], e["status"], e["barrier_shift"]["electronic"], "| verified", w.get("status"),
                   rec.get("verified_barrier_shift_kcal"), f"| {rec['estimate_s']:.0f}s est, {rec.get('with_c_s', 0):.0f}s verify",
                   flush=True)
     (a.out / "run.json").write_text(json.dumps({"wall_s": time.perf_counter() - t0, "mepd_file": mepd.__file__,
