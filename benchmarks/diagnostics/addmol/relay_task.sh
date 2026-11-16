@@ -26,4 +26,5 @@ cp rec/out/*.json $OUT_DIR/ || true
 cp -r rec/provenance rec/prof $OUT_DIR/ || true
 tail -c 40000 channels.log > $OUT_DIR/channels_tail.log
 (cd rec/out && ls -l --time-style=+%s ts > $OUT_DIR/ts_listing.txt) || true
-tar -czf $OUT_DIR/channels_out.tgz.tmp -C rec/out channels alternate-channels ts conformers 2>/dev/null && mv $OUT_DIR/channels_out.tgz.tmp $OUT_DIR/channels_out.tgz || true
+KEEP=$(cd rec/out && ls -d channels alternate-channels ts conformers 2>/dev/null)   # a run without multistep routes has no alternate-channels
+tar -czf $OUT_DIR/channels_out.tgz.tmp -C rec/out $KEEP && mv $OUT_DIR/channels_out.tgz.tmp $OUT_DIR/channels_out.tgz || true
