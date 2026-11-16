@@ -417,5 +417,16 @@ then each molecule of the run's mixtures is minimized on its own. The workspace'
   stereo marks to count them together.
 - One concentration per species, as given to `query`; the run's own kinetics are not read.
 
+## In the web UI
+
+`mepd web` has a page over all of this: *Add a molecule* (beside Kinetics; [web.md](web.md#add-a-molecule), manual
+page `add-molecule`). It builds the query from a target and conditions, shows `limits`, takes candidates as text
+or files, runs `mepd addmol test` as one calculation and reads the result files as they are rewritten. It keeps
+its files under `<workspace>/addmol/<query id>/` (`query.json`, `results/`); result files copied there from a
+command-line run are shown too. Two optional keys of an estimate, which no layer writes yet, are read by its 3D
+view: on a `steps` entry, `complexes` (`{"r", "ts", "p"}`: the step's atoms first, then the molecule's) with
+`molecule_symbols`; on a `new_steps` entry, `geometry` in the form of a query step's (`atoms`, `reactant`, `ts`,
+`product`). Without them the view shows the network's own TS and says so.
+
 See also [network-variants.md](network-variants.md) (substituent variants, which this sits beside as the variant
 kind `added_molecule`: `mepd.web.added.put`) and [kinetics.md](kinetics.md).

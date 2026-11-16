@@ -22,6 +22,8 @@ change** at the bottom of the page.
   the easiest way in, a barrier filter, and each molecule's neighbourhood.
 - [Orbitals](orbitals): the whole system's HOMO and LUMO, and each
   molecule's own orbitals and how they overlap (fragment orbitals).
+- [Add a molecule](add-molecule): what one more molecule in the flask (a
+  possible catalyst, an additive) does to a product you want more of.
 - [Network expansion](network-expansion): growing a reaction network in four
   stages -- grow, connect, steer, run -- and what each choice does.
 - [Transition-state conformers](ts-conformers): sampling a TS's other

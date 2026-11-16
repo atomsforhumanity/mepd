@@ -32,13 +32,13 @@ The page is one screen:
 | **Top bar** | `mepd` (back to Home), the workspace (switch sessions), **Learn** (manual, references, your tools), the gear (**Settings**: level of theory, profiles, All tools, theme). |
 | **Home** (`#/home`) | The landing. Pick a molecule (four presets, *Draw one*, or a typed name or SMILES) and **Grow its network**: a network expansion at 1000 K, 1 min simulated (hot, so that something forms), opened in its live network view. Beside it, a finished network as mepd shows it (glycine, replayed from `mepd/web/showcase/glycine-live`), and the finished networks and studies of Examples (`mepd/web/showcase/`). *Open the workbench* turns on every tool and opens Explore; the *All tools* switch is there too. |
 | **Structure list** (left) | Molecules and reactions, one status mark each (● checked minimum, ◌ not optimized, ‡ TS, ✕ failed; the words are the tooltip), *+ Add* (SMILES, xyz, QM/MM system) and *Draw*. |
-| **Canvas** (centre) | Explore (the network map, `NetworkMap.js`: one arrow per step with small molecules as tags, molecules in columns by the easiest way in from the start, a barrier histogram that filters, a molecule's neighbourhood and its easiest route; *Graph* switches to the editable graph, `Graph.js`: connect, arrange, conditions, variants, and after a kinetics run nodes and edges sized by the material that passes; manual page `explore`), Reactions, Kinetics, Landscape (the routes that carry material as one energy diagram), a reaction's page, a calculation's page. |
+| **Canvas** (centre) | Explore (the network map, `NetworkMap.js`: one arrow per step with small molecules as tags, molecules in columns by the easiest way in from the start, a barrier histogram that filters, a molecule's neighbourhood and its easiest route; *Graph* switches to the editable graph, `Graph.js`: connect, arrange, conditions, variants, and after a kinetics run nodes and edges sized by the material that passes; manual page `explore`), Reactions, Kinetics, Landscape (the routes that carry material as one energy diagram), Add a molecule (what one more molecule in the flask does to a product you want more of: [below](#add-a-molecule)), a reaction's page, a calculation's page. |
 | **Inspector** (right) | **Tools** (what you can run on the selection; each card reads as one sentence, settings folded), **Results** (what is known), **Method** (level, pipeline, settings vs defaults, the command that reproduces it). Nothing selected: the workspace's counts and its fastest step. |
 | **Calculations bar** (bottom) | What is running, the level of theory, units; click it for the full list. |
 
 **Design and the Reactor are modes** over the canvas, each with one way out (Done / Exit). Design's Move tool drags atoms into place by hand.
 
-**Addresses:** every page has one: `#/explore`, `#/reactions`, `#/kinetics`, `#/landscape`, `#/reaction/<edge>`, `#/calculations`, `#/calc/<job>[/<tab>]`, `#/design`, `#/reactor/<id>`, `#/home`. Add `?d=settings` or `?d=learn` for a drawer. Back and forward walk them, a reload stays, and a link opens the same page. **Esc** goes up one level: the selection, then a drawer, then the page.
+**Addresses:** every page has one: `#/explore`, `#/reactions`, `#/kinetics`, `#/landscape`, `#/add-molecule`, `#/reaction/<edge>`, `#/calculations`, `#/calc/<job>[/<tab>]`, `#/design`, `#/reactor/<id>`, `#/home`. Add `?d=settings` or `?d=learn` for a drawer. Back and forward walk them, a reload stays, and a link opens the same page. **Esc** goes up one level: the selection, then a drawer, then the page.
 
 **The live network** (`#/network/<job>`, or an example's `#/network/example/<slug>`) replays an explorer run: species as structures sized by the material they held, steps coloured by barrier and as wide as their flux, corrections as they happen, and what forms.
 
@@ -144,6 +144,38 @@ A new, empty workspace opens on Home; an empty Explore points there too.
 
 A molecule in explicit solvent (*Put in explicit solvent (QM/MM)*), or a whole system added with *Add › QM/MM system*, becomes one node named by its QM region ("NCC(=O)O · in water"). A structure with exactly that system's atoms joins it automatically. Calculations on it run embedded, at their own level ("… / QM/MM"), and only the operations that work embedded are offered. Every 3D view draws such a structure by region and can colour the environment by motion. Each result path gets *QM/MM checks* (frozen drift, MM bond changes, cut bonds, contacts) and an energy split. See [qmmm.md](qmmm.md).
 
+### Add a molecule
+
+*Add a molecule* (the canvas tab beside Kinetics and Landscape; or select a species in Explore › *Make more of it*)
+is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page `add-molecule`):
+
+1. **Target and conditions** → *What limits it today?* builds the query file (`mepd.web.added.query`; the first
+   time in a workspace it computes the GFN2-xTB Hessians of every species and TS, then seconds). The page shows the
+   degree-of-rate-control order (lower these, do not lower these, traps), or, where the network makes none of the
+   target, the easiest route with each step's height against what the conditions allow.
+2. **Candidates**: SMILES lines (`SMILES name amount`), a candidates file (JSON), an `.xyz` file, or the molecule
+   in Design; several at once. *Test* queues one hidden operation, `addmol-test` (`mepd addmol test`), for all of
+   them. *Download the query file* gives a model what it needs.
+3. **Results** arrive without a reload: the job rewrites one result file per candidate as layers finish, and the
+   page reads them every 3 s while it runs (and on the job's events). One line per candidate, ranked by the gain of
+   the target (target, how soon, returned or not and where it rests, the largest step change with its spread),
+   every number tagged `est.` or `verified`; the detail has the barrier of each step without and with the molecule
+   in two groups (through the molecule; only because amounts moved), what is new, the layers, what failed and why,
+   and the TS in 3D. Ticked candidates are compared step by step.
+4. **Show on the map** keeps a candidate as a variant of kind `added_molecule` (`mepd.web.added.put`, with what
+   the map marks under `marks`); the network map colours the steps that go through the molecule by the change of
+   their barrier (dashed: an estimate) and doubles the border of molecules it binds. The record follows its result
+   file when the job finishes.
+
+Files, all under `<workspace>/addmol/<query id>/`: `query.json`, `results/<name>.json`. A result file from a
+command-line run copied into `results/` is shown like any other. Code: `mepd/web/addpage.py`,
+`static/js/components/AddMolecule.js`, `AddMoleculeMarks.js`, `static/addmol.css`.
+
+Where the variants flow is reused, and where not: the record sits beside the substituent variants and Explore's
+Network picker lists and deletes it; *Update* is not offered for it (nothing to carry), and Kinetics' *Network*
+menu does not list it (its kinetics, on `mepd.addmol`, are on the page; `mepd.web.kinetics.analyze` does not run
+an added-molecule variant).
+
 ### Sessions, cleanup, downloads
 
 - **Sessions.** A session is a workspace directory.
@@ -240,6 +272,11 @@ example, a future `mepd discovery nanoreactor` command becomes one `Params` mode
 | `GET /api/jobs/{id}/archive` | Output folder, inputs and logs as a zip |
 | `GET /api/reactions/{id}/export?format=html\|zip` | One reaction's page (self-contained HTML) or its data |
 | `GET /api/workspace/export?format=html\|csv` | Every reaction Analyze lists: one browsable page, or one CSV row per elementary step (`mepd/web/workspace_export.py`, `CSV_COLUMNS`) |
+| `GET /api/addmol`, `POST /api/addmol/query` `{target, initial, held?, temperature, time_s}` | Add a molecule: the questions asked; ask one (builds or reopens its query file) |
+| `GET /api/addmol/{q}`, `GET /api/addmol/{q}/query.json` | A question: what limits the target, one line per candidate; the query file |
+| `POST /api/addmol/{q}/test` `{text, filename?, amount?, dry_run?, workers?, steps?}` | Candidates (SMILES lines, a candidates file or an xyz file as text): read them (`dry_run`), or start one job that tests them |
+| `GET` / `DELETE /api/addmol/{q}/results/{file}`, `POST …/keep` | One candidate's detail; remove its result; keep it as a variant for the map |
+| `GET /api/addmol/{q}/geometry?step=&result=&through=` | A step's ends and TS as xyz frames, with the molecule where the estimate kept it |
 | `GET /api/sessions`, `POST /api/sessions/new` `{name \| path}`, `POST /api/sessions/open` `{path}` | Sessions |
 
 ## Performance notes

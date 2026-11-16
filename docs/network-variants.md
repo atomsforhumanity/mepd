@@ -115,5 +115,7 @@ built this way are marked `est.`.
 
 A variant can also leave every species as it is and put one more molecule into the flask (a possible catalyst):
 kind `added_molecule`, made by `mepd addmol` / `mepd.web.added.put`. It replaces nothing of the parent; its
-kinetics come from estimates of the molecule's binding and of the steps it takes part in. See
+kinetics come from estimates of the molecule's binding and of the steps it takes part in. In the web UI it is
+made from *Add a molecule › Show on the map*; Explore's Network picker lists it, the network map marks its changed
+steps, and Kinetics' Network menu leaves it out (its kinetics are on the Add a molecule page). See
 [add-molecule.md](add-molecule.md).
