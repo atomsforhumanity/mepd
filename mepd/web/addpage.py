@@ -60,27 +60,119 @@ def _result_path(ws, qid: str, name: str) -> Path:
 
 
 # ---------------------------------------------------------------- the query
+def source_run(ws, jobs: dict) -> Optional[tuple]:
+    """(job, run folder) when the workspace's network is one finished exploration: every edge with a
+    verified TS is a step of the same `mepd discovery expand` run, and its folder is there. The parent
+    of such a network is the explorer's own molecule-level network (its rules, its free energies, every
+    verified step: mepd.discovery.parent), not its adoption into the workspace. None otherwise."""
+    try:
+        from mepd.discovery import parent
+    except ImportError:
+        return None
+    owners = {(e.get("origin") or {}).get("job") for e in ws.snapshot()["edges"].values()
+              if (e.get("origin") or {}).get("barrier_verified")}
+    if len(owners) != 1:
+        return None
+    job = jobs.get(owners.pop() or "")
+    if not job or job.get("op") != "graph-enumeration" or job.get("status") != "done":
+        return None
+    run = Path(job.get("output_dir") or "")
+    return (job, run) if parent.is_run(run) else None
+
+
 def make_query(ws, jobs: dict, *, target: str, initial: dict, temperature: float, time_s: float, held=(),
-               free_energy: bool = True) -> str:
+               free_energy: bool = True, together: bool = True, source: str = "auto", workers: int = 2) -> str:
     """Build the query file for these conditions (or keep the one that is there) and return its id.
-    The id names the question (target and conditions), so asking it again finds its results."""
+    The id names the question (target, conditions, network), so asking it again finds its results.
+    `target`, `held` and the keys of `initial` are structure ids; `together` counts the target's
+    stereoisomers as one. `source`: "auto" (the exploration's own network where the workspace is one
+    finished exploration, `source_run`; else the workspace's) or "workspace"."""
+    # (`mepd addmol query` takes no constant feed for a run yet: a question with one is asked of the workspace's)
+    found = source_run(ws, jobs) if source == "auto" and free_energy and not held else None
     key = json.dumps([target, sorted(initial.items()), sorted(held), float(temperature), float(time_s),
-                      bool(free_energy)])
+                      bool(free_energy), bool(together), "run" if found else "workspace"])
     qid = "q_" + hashlib.sha1(key.encode()).hexdigest()[:8]
     fp = folder(ws, qid) / "query.json"
-    if not fp.exists():
-        doc = added.query(ws, jobs, target=target, initial=initial, temperature=temperature, time_s=time_s,
-                          held=held, free_energy=free_energy)
-        fp.parent.mkdir(parents=True, exist_ok=True)
-        addmol.write_json(fp, doc)
+    if fp.exists():
+        return qid
+    st = ws.snapshot()["structures"]
+    missing = [x for x in [target, *initial, *held] if x not in st]
+    if missing:
+        raise WorkspaceError(f"unknown structure {missing[0]!r}")
+    smiles = lambda sid: st[sid].get("smiles") or sid   # noqa: E731
+    goal = target
+    if together and st[target].get("smiles"):
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(st[target]["smiles"])
+        if mol is not None:
+            Chem.RemoveStereochemistry(mol)
+            goal = Chem.MolToSmiles(mol)          # (no stereo marks: every stereoisomer, counted together)
+    if found:
+        # `mepd addmol query RUN` in a process of its own: it builds the run's engine for the thermal
+        # corrections the run did not record (engines set process-wide state; the server builds none).
+        import subprocess
+        import sys
+
+        tmp = fp.with_name("query.making.json")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        argv = [sys.executable, "-m", "mepd.cli", "addmol", "query", str(found[1]), "--target",
+                goal if goal != target else smiles(target), "--temperature", str(float(temperature)),
+                "--time", str(float(time_s)), "--workers", str(workers), "--output", str(tmp)]
+        for k, v in initial.items():
+            argv += ["--initial", f"{smiles(k)}={float(v)}"]
+        done = subprocess.run(argv, capture_output=True, text=True)
+        if done.returncode != 0 or not tmp.exists():
+            tmp.unlink(missing_ok=True)
+            lines = [ln.strip(" │╭╰─╮╯") for ln in (done.stderr or done.stdout).strip().splitlines() if ln.strip(" │╭╰─╮╯")]
+            raise WorkspaceError(f"the query could not be built: {lines[-1] if lines else 'mepd addmol query failed'}")
+        doc = json.loads(tmp.read_text())
+        tmp.unlink()
+    else:
+        try:
+            doc = added.query(ws, jobs, target=goal, initial=initial, temperature=temperature, time_s=time_s,
+                              held=held, free_energy=free_energy)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from None
+    # What the page asked, in the workspace's own ids (an exploration's network names species by SMILES).
+    doc["asked"] = {"target": target, "together": bool(together), "initial": dict(initial), "held": list(held),
+                    "job": found[0]["id"] if found else None}
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    addmol.write_json(fp, doc)
     return qid
+
+
+def _edges(ws, q: dict) -> dict:
+    """{step id: the workspace edge that step is on}: a workspace query names it; an exploration's step
+    is found by its label among the edges its job put there."""
+    out = {st["id"]: st["edge"] for st in q["steps"] if st.get("edge")}
+    job = (q.get("asked") or {}).get("job")
+    if job:
+        by_label = {(e.get("origin") or {}).get("label"): eid for eid, e in ws.snapshot()["edges"].items()
+                    if (e.get("origin") or {}).get("job") == job}
+        out.update({st["id"]: by_label[st["run_step"]] for st in q["steps"] if st.get("run_step") in by_label})
+    return out
+
+
+def _nodes(ws, q: dict) -> dict:
+    """{species id: the workspace structures that species is}: itself in a workspace query; by SMILES for an
+    exploration's (which names species by SMILES, and counts mirror images as one)."""
+    st = ws.snapshot()["structures"]
+    out = {}
+    for s in q["species"]:
+        if s["id"] in st:
+            out[s["id"]] = [s["id"]]
+        elif s.get("smiles"):
+            mine = [{"id": sid, "smiles": r.get("smiles")} for sid, r in st.items() if r.get("smiles") and r.get("role") != "complex"]
+            out[s["id"]] = addmol.match(mine, s["smiles"])
+    return out
 
 
 def _names(q: dict) -> dict:
     return {s["id"]: s.get("name") or s["id"] for s in q["species"]}
 
 
-def _limits(q: dict) -> dict:
+def _limits(q: dict, edges: dict) -> dict:
     """What limits the target, with the names and barriers the page shows beside each step."""
     lim, names = q["limits"], _names(q)
     steps = {st["id"]: st for st in q["steps"]}
@@ -88,7 +180,7 @@ def _limits(q: dict) -> dict:
     def row(o: dict) -> dict:
         st = steps.get(o["step"]) or {}
         return {**o, "label": st.get("label") or o["step"], "barrier": (st.get("barrier") or {}).get("forward"),
-                "status": st.get("status"), "edge": st.get("edge")}
+                "status": st.get("status"), "edge": edges.get(o["step"])}
 
     return {"defined": lim.get("defined"), "basis": lim.get("basis"), "why": lim.get("why"),
             "cutoff_kcal": lim.get("cutoff_kcal"), "order": [row(o) for o in lim.get("order") or []],
@@ -98,7 +190,7 @@ def _limits(q: dict) -> dict:
             "routes": lim.get("routes") or []}
 
 
-def summary(q: dict) -> dict:
+def summary(q: dict, edges: Optional[dict] = None) -> dict:
     """The query as the page reads it: no coordinates, no time series."""
     names = _names(q)
     cond = q["conditions"]
@@ -106,7 +198,8 @@ def summary(q: dict) -> dict:
             "conditions": {**cond, "initial": [{"id": k, "name": names.get(k, k), "amount": v}
                                                for k, v in cond["initial"].items()]},
             "energies": q.get("energies"), "level": (q.get("level") or {}).get("key"),
-            "limits": _limits(q), "notes": q.get("notes") or [], "left_out": q.get("left_out"),
+            "limits": _limits(q, edges or {}), "notes": q.get("notes") or [], "left_out": q.get("left_out"),
+            "source": q.get("source") or "workspace", "asked": q.get("asked"),
             "counts": {"species": len(q["species"]), "steps": len(q["steps"]),
                        "with_geometry": sum(1 for st in q["steps"] if st.get("geometry"))}}
 
@@ -226,7 +319,8 @@ def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, w
     pending.write_text(json.dumps(clean, indent=1))
     names = ", ".join(c["name"] for c in clean[:3]) + (f" and {len(clean) - 3} more" if len(clean) > 3 else "")
     try:
-        (job,) = manager.submit(OP, structure_ids=list(q["target"]["species"]), edge_ids=[],
+        (job,) = manager.submit(OP, structure_ids=[(q.get("asked") or {}).get("target") or q["target"]["species"][0]],
+                                edge_ids=[],
                                 params={"query": qid, "steps": steps, "workers": workers,
                                         "names": [file_name(c["name"]) for c in clean]},
                                 profile=None, label=f"Add a molecule: {names}")
@@ -248,12 +342,25 @@ def running(manager, qid: str) -> dict:
 # ---------------------------------------------------------------- results
 def _on_route(readout: dict) -> float:
     """The share of the target's material that came by routes with the added molecule in them."""
+    share = (readout.get("added") or {}).get("route_share")
+    if share is not None:
+        return share
     return sum(r.get("share") or 0.0 for r in (readout.get("routes") or {}).get("with") or [] if r.get("with_added"))
 
 
 def _through(row: dict) -> bool:
-    """A parent step whose lowest version goes through the added molecule."""
+    """A parent step whose lowest version goes through the added molecule (the read-out's `group`; files
+    written before it had one: by `through`)."""
+    if row.get("group"):
+        return row["group"] == "through"
     return row.get("through") is not None and row["through"] != row["step"]
+
+
+def _moved(row: dict) -> bool:
+    """A parent step whose own TS is unchanged and whose barrier moved because amounts moved."""
+    if row.get("group"):
+        return row["group"] == "amounts"
+    return not _through(row) and abs(row.get("change") or 0.0) > MOVED
 
 
 def line(doc: dict) -> dict:
@@ -332,7 +439,7 @@ def view(manager, qid: str) -> dict:
             if (v.get("addmol") or {}).get("query") == qid}
     for r in rows:
         r["variant"] = kept.get(r["file"])
-    return {"id": qid, **summary(q), "results": rows}
+    return {"id": qid, **summary(q, _edges(ws, q)), "results": rows}
 
 
 def _source(doc: dict) -> dict:
@@ -352,6 +459,7 @@ def detail(ws, qid: str, name: str) -> dict:
     doc = _load(_result_path(ws, qid, name))
     r = doc.get("readout")
     steps = {st["id"]: st for st in q["steps"]}
+    edges = _edges(ws, q)
     source = _source(doc)
     out = {"file": name, **line(doc), "candidate": {k: v for k, v in (doc.get("candidate") or {}).items()
                                                     if k not in ("coordinates", "pose", "atoms")},
@@ -367,12 +475,11 @@ def detail(ws, qid: str, name: str) -> dict:
         st = steps.get(s["step"]) or {}
         return {**s, "layer": e.get("layer"), "level": e.get("level"), "source": e.get("source"),
                 "via": e.get("label") if e.get("id") else None, "geometry": bool(st.get("geometry")),
-                "with_geometry": bool(e.get("complexes") or e.get("geometry")), "edge": st.get("edge")}
+                "with_geometry": bool(e.get("complexes") or e.get("geometry")), "edge": edges.get(s["step"])}
 
     changed = [s for s in r["steps"] if s.get("change") is not None]
     out["through_steps"] = sorted((row(s) for s in changed if _through(s)), key=lambda s: s["change"])
-    out["moved_steps"] = sorted(({**s, "edge": (steps.get(s["step"]) or {}).get("edge")}
-                                 for s in changed if not _through(s) and abs(s["change"]) > MOVED),
+    out["moved_steps"] = sorted(({**s, "edge": edges.get(s["step"])} for s in changed if _moved(s)),
                                 key=lambda s: -abs(s["change"]))
     out["unchanged"] = len(changed) - len(out["through_steps"]) - len(out["moved_steps"])
     out["new_steps"] = [{k: e.get(k) for k in ("id", "label", "parent_step", "status", "layer", "level", "source")}
@@ -433,7 +540,7 @@ def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optio
 
 
 # ---------------------------------------------------------------- the variant (Explore's Network picker, the map)
-def marks(q: dict, doc: dict) -> dict:
+def marks(q: dict, doc: dict, edges: dict, nodes: dict) -> dict:
     """What the network map marks for a candidate: per parent step whose lowest version goes through the
     molecule (by its edge) the change of its apparent barrier and whether that is an estimate; per parent
     species the complex with the molecule that holds material; what has no place on the parent's map (new
@@ -444,19 +551,20 @@ def marks(q: dict, doc: dict) -> dict:
     names = _names(q)
     out = {"edges": {}, "species": {}, "new": [], "moved": 0, "status": doc.get("status"), "updated": doc.get("updated")}
     for s in r.get("steps") or []:
-        edge = (steps.get(s["step"]) or {}).get("edge")
+        edge = edges.get(s["step"])
         if edge is None or s.get("change") is None:
             continue
         if _through(s):
             out["edges"][edge] = {"change": round(s["change"], 2), "status": s.get("status"), "spread": s.get("spread")}
-        elif abs(s["change"]) > MOVED:
+        elif _moved(s):
             out["moved"] += 1
     total = sum((r.get("conditions") or {}).get("initial", {}).values()) or 1.0
     for s in r.get("new_species") or []:
-        base = s["id"].rsplit(".", 1)[0]
+        base = s["id"].removesuffix("." + addmol.ADDED_ID)
         if s.get("kind") == "complex" and base in names:
             if (s.get("max") or 0.0) > addmol.RESOLUTION * total:
-                out["species"][base] = {"name": s.get("name"), "max": s.get("max"), "status": s.get("status")}
+                for node in nodes.get(base) or []:
+                    out["species"][node] = {"name": s.get("name"), "max": s.get("max"), "status": s.get("status")}
         else:
             out["new"].append({"name": s.get("name") or s["id"], "kind": "species", "status": s.get("status")})
     for e in (doc.get("estimates") or {}).get("new_steps") or []:
@@ -478,7 +586,7 @@ def keep(ws, qid: str, name: str) -> dict:
                     float(cand["amount"]), doc.get("estimates") or {}, vid=(old or {}).get("id"))
     rec["edit"] = [f"{cand['amount']:g} M of {cand.get('name') or cand.get('smiles')} added"]   # (a list, as the picker reads it)
     rec["addmol"] = {"query": qid, "result": name}
-    rec["marks"] = marks(q, doc)
+    rec["marks"] = marks(q, doc, _edges(ws, q), _nodes(ws, q))
     return ws.put_variant(rec)
 
 

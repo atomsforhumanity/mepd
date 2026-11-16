@@ -8,7 +8,7 @@
 // Every number says whether it is an estimate (est.) or verified, and its spread.
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, openTab, set, setExploreView, state, toast, useStore } from '../store.js';
+import { openJob, openReaction, openTab, set, setExploreView, state, toast, useStore } from '../store.js';
 import { cls, depictUrl, isSpecies, readFileText } from '../util.js';
 import { ControlBars, Mixture, UNITS, fmtC, fmtTime } from './Kinetics.js';
 import { Viewer3D } from './Viewer3D.js';
@@ -70,16 +70,17 @@ function Setup({ q, busy, onAsk, queries, onOpen }) {
   // An earlier question opened: the form shows what it asked.
   useEffect(() => {
     if (!q) return;
-    const c = q.conditions;
-    setTarget(q.target.species[0]); setTogether(q.target.species.length > 1);
-    setMix(c.initial.map((m) => ({ id: m.id, c: m.amount, held: c.held.includes(m.id) })));
+    const c = q.conditions, a = q.asked;
+    setTarget(a ? a.target : q.target.species[0]); setTogether(a ? a.together : q.target.species.length > 1);
+    setMix(a ? Object.entries(a.initial).map(([id, amount]) => ({ id, c: amount, held: a.held.includes(id) }))
+      : c.initial.map((m) => ({ id: m.id, c: m.amount, held: c.held.includes(m.id) })));
     setT(c.temperature);
     const u = ['d', 'h', 'min', 's'].find((k) => Number.isInteger(+(c.time_s / UNITS[k]).toFixed(6))) || 's';
     setTUnit(u); setTVal(+(c.time_s / UNITS[u]).toFixed(6));
   }, [q?.id]);
   const rec = structures[target];
   const twins = rec?.smiles ? species.filter((s) => s.id !== target && flat(s.smiles) === flat(rec.smiles)) : [];
-  const ask = () => onAsk({ target: twins.length && together ? flat(rec.smiles) : target,
+  const ask = () => onAsk({ target, together: twins.length > 0 && together,
     initial: Object.fromEntries(mix.map((m) => [m.id, m.c])), held: mix.filter((m) => m.held).map((m) => m.id),
     temperature: T, time_s: tVal * UNITS[tUnit] });
   return html`
@@ -178,8 +179,8 @@ function Limits({ q }) {
   const lim = q.limits, t = q.target, c = q.conditions;
   const name = t.names.length > 1 ? `${t.names[0]} and its ${t.names.length - 1 === 1 ? 'stereoisomer' : `${t.names.length - 1} stereoisomers`}` : t.names[0];
   const total = c.initial.reduce((a, m) => a + m.amount, 0);
-  const openStep = (r) => { if (r.edge) set({ analyze: { ...(state.analyze || {}), view: 'reactions', reaction: r.step } }); };
-  const energy = q.energies === 'free' ? 'free energies, 1 M standard state' : 'electronic energies';
+  const openStep = (r) => { if (r.edge) openReaction(r.edge); };
+  const energy = `${q.source === 'explorer run' ? 'the exploration\'s own network' : 'the workspace\'s network'}: ${q.counts.steps} verified steps, ${q.energies === 'free' ? 'free energies at 1 M' : 'electronic energies'}`;
   const head = html`<p class="am-lede"><b>${name}</b>: ${t.resolved
     ? html`<span class="mono">${fmtC(t.final)} M</span> today (${fmtC((100 * t.final) / total)}% of the start), half of it after ${t.time_to_fraction_s != null ? fmtTime(t.time_to_fraction_s) : '—'}`
     : html`<b>none forms today</b> <span class="muted">(${fmtC(t.final)} M: below what the kinetics resolve)</span>`}
@@ -198,7 +199,7 @@ function Limits({ q }) {
         : html`<p class="small">No barrier controls it at these conditions: its amount is set by the species' energies.</p>`}
       ${traps.length > 0 && html`<p class="small muted kn-sub">Traps: what making each of these 1 kcal/mol more stable does to the target. A molecule that binds them costs target.</p>
         <${ControlBars} rows=${traps} T=${c.temperature} />`}
-      <p class="small muted">Degree of rate control, verified steps of the network, ${energy}.</p>
+      <p class="small muted">Degree of rate control. ${energy}.</p>
     </section>`;
   }
   const [first, ...others] = lim.routes;
@@ -210,7 +211,7 @@ function Limits({ q }) {
       <${RouteBars} route=${first} cutoff=${lim.cutoff_kcal} top=${Math.max(...lim.routes.map((r) => r.peak))} />
       ${others.length > 0 && html`<details class="small"><summary>${others.length} other route${others.length > 1 ? 's' : ''}, peaking at ${others.map((r) => kcal(r.peak)).join(' and ')} kcal/mol</summary>
         ${others.map((r) => html`<${RouteBars} route=${r} cutoff=${lim.cutoff_kcal} top=${Math.max(...lim.routes.map((x) => x.peak))} />`)}</details>`}
-      <p class="small muted">Which steps compete with the target cannot be said while none of it forms. Verified steps of the network, ${energy}.</p>`
+      <p class="small muted">Which steps compete with the target cannot be said while none of it forms. ${energy}.</p>`
       : html`<p class="warn-box small">No route of verified steps leads from the starting mixture to it.</p>`}
   </section>`;
 }

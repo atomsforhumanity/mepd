@@ -219,8 +219,10 @@ class VariantIn(BaseModel):
 
 
 class AddmolQueryIn(BaseModel):
-    target: str                         # a species id, name or SMILES (no stereo marks: its stereoisomers together)
+    target: str                         # a structure id
+    together: bool = True               # count its stereoisomers as one
     initial: dict                       # structure id -> M
+    source: str = "auto"                # "workspace": the workspace's network even where it is one exploration
     held: list[str] = []
     temperature: float = Field(298.15, gt=0)
     time_s: float = Field(86400.0, gt=0)
@@ -2660,7 +2662,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         try:
             qid = await run_in_threadpool(
                 addpage.make_query, W(), dict(J().jobs), target=body.target, initial=body.initial, held=body.held,
-                temperature=body.temperature, time_s=body.time_s, free_energy=body.free_energy)
+                temperature=body.temperature, time_s=body.time_s, free_energy=body.free_energy,
+                together=body.together, source=body.source)
         except RuntimeError as exc:
             raise WorkspaceError(str(exc)) from None
         return addpage.view(J(), qid)

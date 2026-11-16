@@ -269,7 +269,8 @@ def test_a_kept_candidate_is_a_variant_the_map_can_mark(mgr):
     assert again["marks"]["edges"][st["edge"]]["status"] == "verified"
     assert not addpage.after_job(mgr, {"params": {"query": qid, "names": ["other.json"]}})
     # a molecule that changes nothing marks nothing
-    assert addpage.marks(q, json.loads((addpage.folder(mgr.ws, qid) / "results" / "x.json").read_text()))["edges"] == {}
+    doc = json.loads((addpage.folder(mgr.ws, qid) / "results" / "x.json").read_text())
+    assert addpage.marks(q, doc, addpage._edges(mgr.ws, q), addpage._nodes(mgr.ws, q))["edges"] == {}
 
 
 # ---------------------------------------------------------------- the endpoints
