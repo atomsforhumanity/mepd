@@ -47,13 +47,11 @@ class Toy:
         return e, g
 
     def compute_energies(self, nodes):
-        out = np.array([self._eg(n)[0] for n in nodes])
-        for n, e in zip(nodes, out):
-            try:
-                n._cached_energy = float(e)
-            except Exception:
-                pass
-        return out
+        # as mepd's engines: a structure that has an energy keeps it
+        for n in nodes:
+            if n._cached_energy is None:
+                n._cached_energy = float(self._eg(n)[0])
+        return np.array([n._cached_energy for n in nodes])
 
     def compute_gradients(self, nodes):
         return np.array([self._eg(n)[1] for n in nodes])
@@ -189,3 +187,18 @@ def test_steps_come_back_in_the_order_given_and_as_they_finish():
                             charges=charges, free_energy=False)
     assert list(out) == ["b", "a"] == seen
     assert out["a"]["status"] == "ok"
+
+
+def test_the_second_level_is_computed_for_the_step_and_the_molecule_too():
+    """A structure keeps the energy of the engine that computed it first: the second level must not reuse it."""
+    frames, q_x, charges = step()
+
+    class Shifted(Toy):                       # the same surface, every structure 0.01 Eh per atom lower
+        def _eg(self, node):
+            e, g = super()._eg(node)
+            return e - 0.01 * len(node.structure.symbols), g
+
+    kw = dict(placer="seeded", poses=3, repeats=2, charges=charges)
+    res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4]), final_engine=Shifted(4, q_x, [0.4, -0.4]), **kw)
+    for f in ("r", "ts", "p"):
+        assert res["final"]["binding"][f]["electronic"] == pytest.approx(res["binding"][f]["electronic"], abs=1e-6)

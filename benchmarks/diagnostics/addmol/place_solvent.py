@@ -28,14 +28,16 @@ def task(a):
     frames = {"symbols": list(fr["ts"].structure.symbols), "charge": int(fr["ts"].structure.charge), "multiplicity": 1,
               **{f: B._xyz(fr[f]).tolist() for f in fr}}
     eg, es = mepd.engine_from_profile(gas), mepd.engine_from_profile(solv)
-    t = time.perf_counter()
-    a1 = B.bystander(frames, mol_gas, eg, final_engine=es, **kw)
-    t1 = time.perf_counter() - t
-    t = time.perf_counter()
-    a2 = B.bystander(frames, mol_solv, es, **kw)
-    t2 = time.perf_counter() - t
-    rec = {"label": label, "reacting": st.get("reacting"), "gas_search": a1, "gas_search_s": t1,
-           "solvated_search": a2, "solvated_search_s": t2}
+    arms = kw.pop("arms")
+    rec = {"label": label, "reacting": st.get("reacting")}
+    if arms in ("both", "gas"):
+        t = time.perf_counter()
+        rec["gas_search"] = B.bystander(frames, mol_gas, eg, final_engine=es, **kw)
+        rec["gas_search_s"] = time.perf_counter() - t
+    if arms in ("both", "solv"):
+        t = time.perf_counter()
+        rec["solvated_search"] = B.bystander(frames, mol_solv, es, **kw)
+        rec["solvated_search_s"] = time.perf_counter() - t
     Path(out, f"{label}.json").write_text(json.dumps(rec, indent=1, default=float))
     return rec
 
@@ -56,6 +58,7 @@ def main() -> None:
     ap.add_argument("--polish", type=int, default=2)
     ap.add_argument("--conformers", type=int, default=3)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--arms", default="both", choices=["both", "gas", "solv"])
     a = ap.parse_args()
     import multiprocessing as mp
 
@@ -68,18 +71,20 @@ def main() -> None:
     mol_solv = B.molecule_from_smiles(a.solv_smiles or a.smiles, es, n=a.conformers)
     forms = {}
     for name, mol in (("gas_minimized", mol_gas), ("solvent_minimized", mol_solv)):
-        nodes = [B._node(mol["symbols"], c, mol["charge"]) for c in mol["conformers"]]
-        forms[name] = {"smiles": mol["smiles"], "gas_energy": [B._energy(eg, n) for n in nodes],
-                       "solvated_energy": [B._energy(es, n) for n in nodes]}
-    kw = {"placer": a.placer, "poses": a.poses, "repeats": a.repeats, "carry": a.carry, "polish": a.polish}
+        def nodes():
+            return [B._node(mol["symbols"], c, mol["charge"]) for c in mol["conformers"]]
+        forms[name] = {"smiles": mol["smiles"], "gas_energy": [B._energy(eg, n) for n in nodes()],
+                       "solvated_energy": [B._energy(es, n) for n in nodes()]}
+    kw = {"arms": a.arms, "placer": a.placer, "poses": a.poses, "repeats": a.repeats, "carry": a.carry, "polish": a.polish}
     jobs = [(a.run_dir, a.gas, a.solv, lab, mol_gas, mol_solv, kw, str(a.out)) for lab in a.labels.split(",")]
     t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=a.workers, mp_context=mp.get_context("spawn")) as pool:
         for r in pool.map(task, jobs):
-            g, s = r["gas_search"], r["solvated_search"]
-            print(r["label"], "gas", g["status"], g["barrier_shift"]["electronic"], "gas+sp",
-                  (g.get("final") or {}).get("barrier_shift", {}).get("electronic"), "solv", s["status"],
-                  s["barrier_shift"]["electronic"], f"{r['gas_search_s']:.0f}s / {r['solvated_search_s']:.0f}s", flush=True)
+            g, s = r.get("gas_search"), r.get("solvated_search")
+            print(r["label"], "gas", g and (g["status"], g["barrier_shift"]["electronic"],
+                                            (g.get("final") or {}).get("barrier_shift", {}).get("electronic")),
+                  "solv", s and (s["status"], s["barrier_shift"]["electronic"]),
+                  f"{r.get('gas_search_s', 0):.0f}s / {r.get('solvated_search_s', 0):.0f}s", flush=True)
     (a.out / "run.json").write_text(json.dumps({"forms": forms, "wall_s": time.perf_counter() - t0,
                                                 "mepd_file": mepd.__file__, "args": {k: str(v) for k, v in vars(a).items()}}, indent=1))
 

@@ -93,8 +93,8 @@ def task(a):
     if final_profile:
         fe = mepd.engine_from_profile(final_profile)
         t1 = time.perf_counter()
-        fe_c = min(B._energy(fe, c) for c in cnodes)
-        fe_x = {f: B._energy(fe, frames[f]) for f in frames}
+        fe_c = min(B._energy(fe, B._node(csym, x, cq)) for x in confs_xyz)
+        fe_x = {f: B._energy(fe, B._node(symx, X[f][1], charge - cq)) for f in frames}
         n_sp = 0
         for group in [done] + [c["poses"] for c in carried.values()]:
             for f, ps in group.items():

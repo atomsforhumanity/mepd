@@ -69,6 +69,9 @@ def solvent(dirs):
             if fp.name == "run.json":
                 continue
             r = json.loads(fp.read_text())
+            other = Path(str(d) + "-gasarm") / fp.name      # the gas arm rerun (place_solvent.py --arms gas)
+            if other.exists():
+                r.update({k: v for k, v in json.loads(other.read_text()).items() if k.startswith("gas_search")})
             g, s = r["gas_search"], r["solvated_search"]
             fin = g.get("final") or {}
 

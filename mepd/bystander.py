@@ -684,8 +684,10 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
 def _final(engine, x_nodes, c_nodes, runs, order, symbols, charge, mult, keep) -> dict:
     """Single points at a second level on the `keep` lowest eligible poses of each frame and repeat (the
     lowest of them at that level is the frame's complex there)."""
-    e_c = min(_energy(engine, c) for c in c_nodes)
-    e_x = {f: _energy(engine, x_nodes[f]) for f in order}
+    # fresh structures: these were computed at the search's level, and a structure keeps its energy
+    fresh = lambda n: _node(n.structure.symbols, _xyz(n), n.structure.charge, n.structure.multiplicity)  # noqa: E731
+    e_c = min(_energy(engine, fresh(c)) for c in c_nodes)
+    e_x = {f: _energy(engine, fresh(x_nodes[f])) for f in order}
     binding, per_repeat, complexes = {}, [], {}
     for run in runs:
         b = {}
