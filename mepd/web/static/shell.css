@@ -876,3 +876,66 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
   .nm-end.nm-find { flex: 1 1 120px; }
   .nm-ends-hint { flex-basis: 100%; order: 9; }
 }
+
+/* Path map (ChannelsMap.js): mechanisms in a fixed categorical order, a map and an energy profile sharing hover and selection. */
+:root { --mech-1: #2a78d6; --mech-2: #eb6834; --mech-3: #1baf7a; --mech-4: #eda100; --mech-5: #e87ba4; --mech-6: #008300; --mech-7: #6250d6; --mech-8: #e34948; --cmap-halo: #fcfcfa; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --mech-1: #3987e5; --mech-2: #d95926; --mech-3: #199e70; --mech-4: #c98500; --mech-5: #d55181; --mech-6: #008300; --mech-7: #9085e9; --mech-8: #e66767; --cmap-halo: #132434; }
+}
+:root[data-theme="dark"] { --mech-1: #3987e5; --mech-2: #d95926; --mech-3: #199e70; --mech-4: #c98500; --mech-5: #d55181; --mech-6: #008300; --mech-7: #9085e9; --mech-8: #e66767; --cmap-halo: #132434; }
+.cmap-caption { margin: 2px 0 8px; max-width: 72ch; }
+.cmap-head .why { margin-left: -4px; }
+.cmap-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.cmap-body { grid-template-columns: minmax(0, 1fr) 320px; padding-bottom: 0; }
+.cmap-main { min-width: 0; max-width: 760px; }
+.cmap-surf { background: var(--panel); }
+.cmap-main > .cmap-legend { position: static; margin-top: 4px; }
+.cmap-frame { fill: none; stroke: var(--border-strong); stroke-width: 1; }
+.cmap-grid { stroke: var(--border); stroke-width: 1; }
+.cmap-contour { stroke: rgba(23, 50, 74, .22); stroke-width: .7; }
+.cmap-surf svg text, .cmap-prof svg text { font-size: 11px; fill: var(--muted); }
+.cmap-surf svg text.cmap-axis, .cmap-prof svg text.cmap-axis { fill: var(--text); font-size: 11.5px; }
+.cmap-surf svg text.cmap-tip, .cmap-prof svg text.cmap-tip { font-size: 11.5px; font-weight: 600; paint-order: stroke; stroke: var(--cmap-halo); stroke-width: 3.5px; fill: var(--text); }
+.cmap-surf svg text.cmap-minlabel, .cmap-prof svg text.cmap-minlabel { font-size: 12px; font-weight: 700; paint-order: stroke; stroke: var(--cmap-halo); stroke-width: 3.5px; fill: var(--text); }
+.cmap-casing { fill: none; stroke: var(--cmap-halo); stroke-linecap: round; stroke-linejoin: round; }
+.cmap-hit { fill: none; stroke: transparent; stroke-width: 12; }
+.cmap-img { stroke: var(--cmap-halo); stroke-width: 1; }
+.cmap-img-hit { fill: transparent; }
+.cmap-min { fill: var(--cmap-halo); stroke: var(--text); stroke-width: 2; }
+.cmap-hover { fill: none; stroke: var(--warn); stroke-width: 2.5; }
+.cmap-history { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 4 3; opacity: .8; }
+.cmap-irc { stroke: var(--muted); stroke-width: 3; }
+.cmap-dim { opacity: .18; }
+.cmap-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0 0; }
+.cmap-key span { display: inline-flex; align-items: center; gap: 5px; }
+.cmap-subhead { margin: 14px 0 4px; font-size: 13px; }
+.cmap-side .cmap-subhead { margin-top: 0; }
+.cmap-prof { width: 100%; aspect-ratio: 660 / 210; background: var(--panel); }
+.cmap-prof svg { width: 100%; height: 100%; display: block; }
+.cmap-mechs, .cmap-routes, .cmap-steps { list-style: none; margin: 0; padding: 0; }
+.cmap-mechs { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; max-height: 360px; overflow-y: auto; }
+.cmap-mechs > li + li { border-top: 1px solid var(--border); }
+:where(.cmap-mechs) button { all: unset; box-sizing: border-box; cursor: pointer; display: block; width: 100%; text-align: left; }
+:where(.cmap-mechs) button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cmap-mech { display: grid; grid-template-columns: 20px minmax(0, 1fr) max-content; gap: 2px 8px; align-items: center; padding: 7px 8px; }
+.cmap-mech:hover, .cmap-routes button:hover { background: var(--panel-2); }
+.cmap-mechs > li.on > .cmap-mech { background: var(--accent-soft); }
+.cmap-letter { display: inline-grid; place-items: center; min-width: 18px; height: 18px; border-radius: 3px; color: #fff; font-weight: 700; font-size: 11.5px; margin-right: 4px; vertical-align: 1px; }
+.cmap-mech .cmap-letter { margin: 0; grid-row: span 2; justify-self: start; align-self: start; width: 20px; min-width: 0; }
+.cmap-seq { font-weight: 600; overflow-wrap: anywhere; }
+.cmap-count { grid-column: 2 / 4; }
+.cmap-routes { padding: 0 0 6px 34px; }
+.cmap-routes > li > button { padding: 3px 8px; border-radius: 3px; }
+.cmap-routes > li.on > button { font-weight: 600; }
+.cmap-steps { padding: 0 0 4px 12px; }
+.cmap-steps button { padding: 2px 8px; border-radius: 3px; }
+.cmap-steps li.on button { background: var(--accent-soft); }
+@media (max-width: 1000px) { .cmap-body { grid-template-columns: minmax(0, 1fr); } .cmap-main { max-width: none; } }
+/* On a phone the 660-wide drawings shrink by about half: their text grows to stay readable. */
+@media (max-width: 720px) {
+  .cmap-surf svg text, .cmap-prof svg text { font-size: 19px; }
+  .cmap-surf svg text.cmap-axis, .cmap-prof svg text.cmap-axis { font-size: 13px; }
+  .cmap-surf svg text.cmap-minlabel, .cmap-prof svg text.cmap-minlabel { font-size: 21px; stroke-width: 5px; }
+  .cmap-surf svg text.cmap-tip, .cmap-prof svg text.cmap-tip { font-size: 18px; stroke-width: 5px; }
+  .cmap-side { order: -1; }
+}

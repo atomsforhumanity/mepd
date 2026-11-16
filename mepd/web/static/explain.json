@@ -4084,5 +4084,28 @@
    "mepd/web/static/js/components/OrbitalsPath.js"
   ],
   "cli": "mepd orbitals path.xyz --charge 0 --multiplicity 1 --functional wb97x-d3bj --basis def2-svp --frames 41 --ts-frame 35"
+ },
+ "other.path-map": {
+  "title": "Path map",
+  "does": "Every path a channels run relaxes, read as one route per conformer pair from reactant to product. Pairs that pass through the same minima in the same order are one mechanism, with one colour and one letter (A has the lowest highest point). The map shows where the routes run in two coordinates; the profile below shows their energy step by step.",
+  "how": [
+   "A path the search splits at an intermediate is replaced by its pieces; the pieces that were not split again (the elementary steps) are joined end to start where two of them meet at the same structure (aligned RMSD under 0.35 Å). Of the ways from the reactant to the product, the one with the lowest highest point is the pair's route (then the fewest steps).",
+   "Minima are named by bonding pattern, not by geometry: R and P are the ends, I1, I2, ... the intermediates in the order they appear, and the same intermediate keeps its name in every pair (conformers of it included).",
+   "Bond progress: x is how far the bonds that break have stretched, y how far the bonds that form have closed, 0 at the pair's reactant and 1 at its product, with each pair's own bonds, so different atom mappings share the square. When a reaction only forms (or only breaks) bonds, they are split in two groups plotted against each other.",
+   "Distance: how far each structure is from the lowest reactant and product conformer, as the RMS difference of sorted interatomic distances per element pair: independent of atom numbering, so paths through similar structures run close together.",
+   "Along an IRC (post hoc): every image placed against one computed IRC, along it and how far off it, with the same numbering-independent distance.",
+   "The profile puts each step side by side (step i spans i to i+1, images spaced by how far the structure moves), so routes with the same minima line up and their barriers compare step by step. ✕ marks an optimized TS at its own energy.",
+   "Energy surface (optional): fitted to the computed images, their energies and their gradients projected onto the two coordinates, and drawn only near them: between chains nothing was computed.",
+   "Search history (optional): the chains the search split, and elementary steps that are not on a pair's easiest route, as grey dashes."
+  ],
+  "caveats": [
+   "Energies are kcal/mol from the lowest reactant-side image of all paths. A step's highest point is its optimized TS when one was found for it, otherwise its highest image.",
+   "Two coordinates keep only two of a molecule's many directions: the map is exact at the images and approximate between them.",
+   "While the run goes, a route can stop at the furthest point reached so far (shown with …)."
+  ],
+  "code": [
+   "mepd/web/channels_pes.py:_routes",
+   "mepd/web/static/js/components/ChannelsMap.js"
+  ]
  }
 }
