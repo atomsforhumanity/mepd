@@ -506,7 +506,7 @@ FREE_METHOD = ("electronic binding + a quasi-RRHO correction at 1 mol/L without 
 
 
 def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.15, starts: Sequence[dict] = (),
-              seed: int = 0, placer: str = "screen-sp", poses: int = 6, repeats: int = 3, carry: int = 1,
+              seed: int = 0, placer: str = "seeded", poses: int = 6, repeats: int = 3, carry: int = 3,
               relax_substrate: bool = False, reaction_atoms: Optional[Sequence[int]] = None, final_engine=None,
               final_keep: int = 3, free_energy: bool = True, charges: Optional[Callable] = gfn2_charges,
               pool: int = 200, fmax: float = 0.05, steps: int = 300, polish: int = 2) -> dict:
