@@ -190,10 +190,12 @@ def _flat(smiles: Optional[str]) -> Optional[str]:
     return Chem.MolToSmiles(mol)
 
 
-def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list) -> list:
+def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list, kept: dict) -> list:
     """The candidate's new steps given with a TS geometry and its two ends, each put on the parent's scale as a
-    whole (mepd.discovery.parent.ts_step): its barrier above its separated molecules, and which species its
-    reacting molecules are. An entry that already has a barrier and no TS is kept as given."""
+    whole (mepd.discovery.parent.ts_step, on_parent_scale): its barrier above the parent's own free energies of
+    its molecules and the added molecule's lowest known form, and which species its reacting molecules are. An
+    entry that already has a barrier and no TS is kept as given. `kept[id]`: what a steering single point of the
+    step needs (its TS, how it is counted, the added molecule's reference form)."""
     import numpy as np
 
     from mepd import addmol
@@ -240,14 +242,84 @@ def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list) -> l
             got = parent.ts_step({k: n["ts"].get(k) for k in ("atoms", "coordinates", "charge", "multiplicity", "comment")
                                   if n["ts"].get(k) is not None}, np.asarray(ends[0]), np.asarray(ends[1]), engine,
                                  temperature=q["temperature"])
-            r, p = ids(got["reactants"]), ids(got["products"])
-            done.append({"parent_step": parent_of(r, p), **{k: v for k, v in n.items() if k != "ts"},
-                         "reactants": r, "products": p, "barrier": got["barrier"], "counted": got["counted"],
+            r, p, beside = ids(got["reactants"]), ids(got["products"]), ids(got["spectators"])
+            # the added molecule's reference: its lowest form over the candidate's conformers and the one this
+            # complex holds
+            mine = [m for m, i in zip(got["reactants"] + got["spectators"], r + beside) if i == addmol.ADDED_ID]
+            forms = [_structure(molecule["symbols"], c, molecule["charge"], molecule["multiplicity"])
+                     for c in molecule["conformers"]]
+            forms += [_structure(m["symbols"], m["coordinates"], molecule["charge"], molecule["multiplicity"])
+                      for m in mine if m.get("coordinates")]
+            low = parent.lowest_form(forms, engine, temperature=q["temperature"]) if mine else None
+            placed = parent.on_parent_scale(got, r + beside, q, low["g_hartree"] if low else 0.0)
+            before = got["barrier"]["free"]
+            kept[n.get("id")] = {"ts": _structure(n["ts"]["atoms"], n["ts"]["coordinates"], n["ts"].get("charge", 0),
+                                                  n["ts"].get("multiplicity", 1)),
+                                 "parts": got["ts_parts"], "added": low["structure"] if low else None,
+                                 "n_added": len(mine)}
+            done.append({"parent_step": parent_of(r, p), **{k: v for k, v in n.items() if k not in ("ts", "level")},
+                         "reactants": r, "products": p,
+                         "barrier": {"electronic": got["barrier"]["electronic"], "free": placed["free"]},
+                         # the parent's own level (its profile's): what the given `level` text said is kept beside
+                         "level": (q.get("level") or {}).get("key"), "level_given": n.get("level"),
+                         "reference": placed["reference"], "counted": got["counted"],
+                         "added_form": None if low is None else
+                         ("a conformer of the candidate" if low["index"] < len(molecule["conformers"])
+                          else "the form in this complex"),
+                         "free_from_molecules_minimized_alone": before,
                          "spectators": [m["smiles"] for m in got["spectators"]], "barrier_method": got["method"]})
         except Exception as exc:
             failed.append({"step": n.get("id"), "layer": n.get("layer") or "given", "status": "failed",
                            "why": f"{type(exc).__name__}: {exc}"})
     return done
+
+
+def _steer(q: dict, est: dict, kept: dict, order: list, engine, steer_engine, lay: dict, failed: list, write) -> None:
+    """The parent's steering level for the steps given with a TS (`kept`), in `order`: one single point of the
+    TS (counted as its free energy counts it), of the added molecule's reference form and of the parent's
+    starting box, by the run's own single-point code; the step's barrier moves by their difference and its level
+    says so. The result file is rewritten after each step."""
+    import numpy as np
+
+    from mepd.discovery import parent
+    from mepd.discovery.free_energy import FreeEnergies
+    from mepd.web.variants import _structure
+
+    t0 = time.perf_counter()
+    ref = q.get("reference") or {}
+    try:
+        if not ref.get("seed_coordinates"):
+            raise ValueError("the query has no starting box to measure the steering level from (a workspace's "
+                             "network): its steps stay at the low level")
+        seed = _structure(ref["seed_symbols"], ref["seed_coordinates"], ref.get("charge", 0), ref.get("multiplicity", 1))
+        d_seed = parent.steer_shift(seed, FreeEnergies(engine, q["temperature"]).parts(seed, False), engine, steer_engine)
+    except Exception as exc:
+        lay["status"] = "failed"
+        failed.append({"layer": "steer", "status": "failed", "why": f"{type(exc).__name__}: {exc}"})
+        write("running")
+        return
+    d_added: dict = {}
+    by_id = {n.get("id"): n for n in est["new_steps"]}
+    for sid in order:
+        n, k = by_id[sid], kept[sid]
+        try:
+            d_ts = parent.steer_shift(k["ts"], k["parts"], engine, steer_engine)
+            d_c = 0.0
+            if k["added"] is not None:
+                key = np.round(np.asarray(k["added"].geometry, dtype=float), 4).tobytes()
+                if key not in d_added:
+                    d_added[key] = parent.steer_shift(k["added"], None, engine, steer_engine)
+                d_c = d_added[key]
+            shift = d_ts - k["n_added"] * d_c - d_seed
+            n["barrier"] = {**n["barrier"], "free": n["barrier"]["free"] + shift}
+            n["level"] = f"{n['level']}{parent.STEERED}"
+            n["steer"] = {"shift_kcal": shift, "ts": d_ts, "added": d_c, "starting_box": d_seed}
+        except Exception as exc:
+            failed.append({"step": sid, "layer": "steer", "status": "failed", "why": f"{type(exc).__name__}: {exc}"})
+        lay["done"] += 1
+        lay["wall_s"] = round(time.perf_counter() - t0, 1)
+        write("running")
+    lay["status"] = "done"
 
 
 _ENGINE = None
@@ -281,6 +353,10 @@ def test(
     steps: Optional[int] = typer.Option(None, "--steps", help="Bystander estimates for the first N steps of the "
                                         "query's order of work only (0: none, the kinetics of the estimates "
                                         "given with the candidates). Default: every step with geometries."),
+    steer: Optional[Path] = typer.Option(None, "--steer", help="The parent run's steering profile: each step given "
+                                         "with a TS is put on that level by single points (the TS, the candidate, "
+                                         "the parent's starting box), the steps that carry the target's material "
+                                         "first. Without it such steps stay at the parent's low level."),
     workers: int = typer.Option(1, "--workers", help="Processes for the bystander layer."),
     output: Path = typer.Option(..., "--output", "-o", help="Folder: one result file per candidate, rewritten as "
                                 "numbers come."),
@@ -363,8 +439,24 @@ def test(
                 continue
             timing["prepare_s"] = round(time.perf_counter() - t, 1)
             t = time.perf_counter()
-            est["new_steps"] = _ts_steps(q, est["new_steps"], molecule, engine, failed)
+            kept: dict = {}
+            est["new_steps"] = _ts_steps(q, est["new_steps"], molecule, engine, failed, kept)
             timing["ts_steps_s"] = round(time.perf_counter() - t, 1)
+            doc = write("running")
+            todo = [n["id"] for n in est["new_steps"] if n.get("id") in kept]
+            if steer is not None and todo:
+                from mepd.cli_common import _open_run_inputs
+
+                # the steps on the routes that carry the target's material first
+                first = [x for r in ((doc.get("readout") or {}).get("routes") or {}).get("with") or [] for x in r["steps"]]
+                todo.sort(key=lambda sid: first.index(sid) if sid in first else len(first))
+                slay = {"name": "steer", "status": "running", "done": 0, "total": len(todo), "wall_s": 0.0,
+                        "level": str(steer.name), "what": "the parent's steering level for the steps given with a "
+                                                         "TS: single points of the TS, the candidate and the "
+                                                         "parent's starting box"}
+                layers.insert(1, slay)
+                _steer(q, est, kept, todo, engine, _open_run_inputs(steer).engine, slay, failed, write)
+                timing["steer_s"] = slay["wall_s"]
         doc = write("running" if work else "done")
         if work:
             # A complex a given step starts from or ends in needs its binding.
@@ -378,7 +470,20 @@ def test(
                 fr = {"symbols": s["atoms"], "charge": s.get("charge", 0), "multiplicity": s.get("multiplicity", 1),
                       "r": s["coordinates"], "ts": None, "p": None}
                 tasks.append((str(profile), "species", s["id"], fr, molecule, q["temperature"], (), 0))
+            # A step and its mirror image are one step for a molecule that is its own mirror image: computed once,
+            # the twin's row a copy. With a chiral molecule they are two (diastereomeric) steps, each computed.
+            from mepd.discovery.mirror import is_chiral
+            from mepd.web.variants import _structure as _st
+
+            handed = is_chiral(_st(molecule["symbols"], molecule["conformers"][0], molecule["charge"],
+                                   molecule["multiplicity"])) is not False
+            twin_of = {} if handed else {st["mirror_of"]: st["id"] for st in q["steps"]
+                                         if st.get("mirror_of") and st["id"] in work and st["mirror_of"] in work}
+            cand["chiral"] = handed
+            lay["total"] -= len(twin_of)
             for sid in work:
+                if sid in twin_of.values():
+                    continue
                 g = by_id[sid]["geometry"]
                 fr = {"symbols": g["atoms"], "charge": g["charge"], "multiplicity": g["multiplicity"],
                       "r": g["reactant"], "ts": g["ts"], "p": g["product"]}
@@ -405,6 +510,8 @@ def test(
                         if kind == "species":
                             entry["binding"] = entry["binding"]["r"]
                         est[kind].append({**entry, "status": "est"})
+                        if kind == "steps" and ref in twin_of:
+                            est[kind].append({**entry, "step": twin_of[ref], "status": "est", "mirror_image_of": ref})
                     else:
                         failed.append({**entry, "status": out["status"], "why": out.get("why")})
                     if time.perf_counter() - last > 10.0:      # the file follows the layer

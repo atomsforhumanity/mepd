@@ -12,7 +12,7 @@ KCAL = 627.509474
 C_HCN, C_HNC, C_TS = 10.0, 9.0, 7.0          # thermal corrections "the run recorded", kcal/mol
 
 
-def _run(tmp_path, recorded=True, steer=0.0):
+def _run(tmp_path, recorded=True, steer=None):
     out = tmp_path / "expand" / "run"
     (out / "species").mkdir(parents=True)
     (out / "ts").mkdir()
@@ -140,3 +140,177 @@ def test_a_candidates_step_given_with_its_ts_through_the_cli(tmp_path):
     (lost,) = [f for f in doc["failed"] if f.get("step") == "bad"]
     assert lost["status"] == "failed" and lost["why"]          # (HSiN is no species of this network)
     assert doc["readout"] is not None
+
+
+# ---------------------------------------------------------------- one reference per molecule; levels; mirror twins
+def test_a_ts_is_measured_from_the_parents_own_free_energies():
+    """acetone-like A (+ a bystander B: together the starting box) with the added molecule: the barrier is the TS
+    above the starting box and the added molecule's lowest form, B taken out at the network's free energy;
+    not above whatever conformers the complex happened to hold."""
+    h = 1.0 / KCAL
+    net = {"species": [{"id": "A", "g": -7.0}, {"id": "B", "g": 7.0}],
+           "reference": {"seed_g_hartree": -100.0, "seed_atoms": ["C", "H", "O"]}}
+    got = {"g_ts_hartree": -150.0 + 30.0 * h,
+           "reactants": [{"smiles": "A", "symbols": ["C", "O"], "g_hartree": -60.0 + 2.0 * h},
+                         {"smiles": "X", "symbols": ["N"], "g_hartree": -50.0 + 4.0 * h}],
+           "spectators": [{"smiles": "B", "symbols": ["H"], "g_hartree": -40.0 + 1.0 * h}]}
+    out = parent.on_parent_scale(got, ["A", "added", "B"], net, -50.0)
+    # 30 above the box and X; B (g 7) out: the step A + X -> ... has its TS at 23, that is 30 above A (g -7)
+    assert out["free"] == pytest.approx(30.0) and "starting box" in out["reference"]
+    # the molecules of the TS are not the starting box (no B): each as it was minimized alone, and it says so
+    alone = parent.on_parent_scale({**got, "spectators": []}, ["A", "added"], net, -50.0)
+    assert alone["free"] == pytest.approx((-150.0 + 30.0 * h + 50.0 + 60.0 - 2.0 * h) * KCAL) and "alone" in alone["reference"]
+
+
+def test_the_lowest_form_of_a_molecule():
+    pytest.importorskip("axtb")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.structures import smiles_to_structure
+
+    engine = GXTBCalculator(backend="axtb")
+    low = engine.compute_geometry_optimization(StructureNode(structure=smiles_to_structure("OO")))[-1].structure
+    flat = low.model_copy(update={"geometry": np.asarray(low.geometry) * [1.0, 1.0, 1.0] * 1.03})   # stretched
+    got = parent.lowest_form([flat, low], engine)
+    assert got["index"] == 1 and got["g_hartree"] > got["e_hartree"] - 0.1
+
+
+def _twin_run(tmp_path):
+    """The HCN run with a recorded mirror twin of its step (as a run records one for a chiral TS)."""
+    run = _run(tmp_path)
+    fp = run / "summary.json"
+    s = json.loads(fp.read_text())
+    s["mirror_images"] = {"virtual_species": [], "species_mirror": [0, 1], "chiral_conformers": {},
+                          "added_twins": [{"step": 0, "a": 0, "b": 1}], "found_twins": [], "undecided": []}
+    fp.write_text(json.dumps(s))
+    return run
+
+
+def test_a_mirror_twin_has_its_originals_frames_reflected(tmp_path):
+    net = parent.network(_twin_run(tmp_path))
+    one, twin = net["steps"]
+    assert twin["id"] == "fast_0_1~mirror" and twin["mirror_of"] == "fast_0_1" and one["mirror"] == twin["id"]
+    g, m = one["geometry"], twin["geometry"]
+    assert m["reflected"] and m["atoms"] == g["atoms"] and m["bonds_broken"] == g["bonds_broken"]
+    for key in ("reactant", "ts", "product"):
+        assert np.allclose(np.asarray(m[key]) * [-1, 1, 1], g[key])
+    assert net["reference"]["seed_atoms"] == ["C", "H", "N"] and len(net["reference"]["seed_coordinates"]) == 3
+    assert {st["level"] for st in net["steps"]} == {"explorer"}
+
+
+def test_the_bystander_layer_tells_mirror_frames_apart_only_for_a_chiral_molecule():
+    """A chiral species and its mirror image: an achiral molecule placed in mirror-image poses binds both alike
+    (numerical noise); a chiral one, the same hand beside both, does not."""
+    pytest.importorskip("axtb")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.structures import smiles_to_structure
+
+    engine = GXTBCalculator(backend="axtb")
+    ang = lambda st: np.asarray(st.geometry, dtype=float).reshape(-1, 3) * 0.529177210903     # noqa: E731
+    opt = lambda smi: engine.compute_geometry_optimization(StructureNode(structure=smiles_to_structure(smi)))[-1].structure   # noqa: E731
+    host = opt("C[C@H](O)F")
+    mirror = np.array([-1.0, 1.0, 1.0])
+    frame = {"symbols": [str(x) for x in host.symbols], "charge": 0, "multiplicity": 1, "r": ang(host), "ts": None, "p": None}
+    twin = {**frame, "r": ang(host) * mirror}
+
+    def molecule(smi):
+        st = opt(smi)
+        return {"symbols": [str(x) for x in st.symbols], "charge": 0, "multiplicity": 1, "conformers": [ang(st)]}
+
+    def beside(fr, mol, pose):
+        return addmol.bystander(fr, mol, engine, poses=0, starts=[{"frame": "r", "coords": pose}])
+
+    water = molecule("O")
+    first = addmol.bystander(frame, water, engine, poses=2)
+    pose = np.asarray(first["complexes"]["r"])[len(frame["symbols"]):]
+    a, b = beside(frame, water, pose), beside(twin, water, pose * mirror)
+    assert a["binding"]["r"]["electronic"] == pytest.approx(b["binding"]["r"]["electronic"], abs=0.02)
+    # a chiral molecule: the same molecule (not its mirror image) beside the mirror frame, put where its mirror
+    # image would sit
+    chiral = molecule("C[C@@H](O)Cl")
+    first = addmol.bystander(frame, chiral, engine, poses=2)
+    pose = np.asarray(first["complexes"]["r"])[len(frame["symbols"]):]
+    want = pose * mirror                               # the mirror image's place: the same hand fitted onto it
+    x = np.asarray(chiral["conformers"][0])
+    pc, qc = x - x.mean(axis=0), want - want.mean(axis=0)
+    u, _s, vt = np.linalg.svd(pc.T @ qc)
+    rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+    a, b = beside(frame, chiral, pose), beside(twin, chiral, pc @ rot + want.mean(axis=0))
+    # (with the one given pose and no generic ones, a pose that is already relaxed reads "unmoved": the binding
+    # is there all the same)
+    assert abs(a["binding"]["r"]["electronic"] - b["binding"]["r"]["electronic"]) > 0.05
+
+
+def test_the_steering_level_for_a_step_given_with_its_ts(tmp_path):
+    """--steer: the step moves to the parent's steering level by single points and says so; the read-out says
+    that the comparison mixes levels when the parent's own steps are not there. (Here the steering profile is the
+    explorer's own, so the shift is zero: the plumbing, not the level.)"""
+    pytest.importorskip("axtb")
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    run = _run(tmp_path)
+    qf = tmp_path / "q.json"
+    cli = CliRunner()
+    assert cli.invoke(app, ["addmol", "query", str(run), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
+                            "--time", "3600", "-o", str(qf)]).exit_code == 0
+    water = [(3.0, 0.0, 0.5), (3.9, 0.3, 0.5), (2.6, 0.9, 0.5)]
+    frame = lambda key: [list(x) for x in list(FRAMES[key]) + water]     # noqa: E731
+    step = {"id": "beside", "status": "est", "level": "somebody's",
+            "ts": {"atoms": ["H", "C", "N", "O", "H", "H"], "coordinates": frame("ts"), "charge": 0, "multiplicity": 1,
+                   "ends": [frame("hnc"), frame("hcn")]}}
+    cf = tmp_path / "c.json"
+    cf.write_text(json.dumps([{"name": "water", "smiles": "O", "amount": 0.1, "estimates": {"new_steps": [step]}}]))
+    args = ["addmol", "test", str(qf), "--candidates", str(cf), "--steps", "0"]
+    assert cli.invoke(app, args + ["-o", str(tmp_path / "low")]).exit_code == 0
+    low = json.loads((tmp_path / "low" / "water.json").read_text())
+    (entry,) = low["estimates"]["new_steps"]
+    assert entry["level"] == "explorer" and entry["level_given"] == "somebody's" and "starting box" in entry["reference"]
+    assert entry["added_form"] in ("a conformer of the candidate", "the form in this complex")
+    assert low["readout"]["mixed_levels"] is False and list(low["readout"]["levels"]) == ["explorer"]
+    res = cli.invoke(app, args + ["--steer", str(run.parent / "profile.toml"), "-o", str(tmp_path / "high")])
+    assert res.exit_code == 0, res.output
+    high = json.loads((tmp_path / "high" / "water.json").read_text())
+    (entry,) = high["estimates"]["new_steps"]
+    assert entry["level"] == "explorer+steer" and abs(entry["steer"]["shift_kcal"]) < 1e-6
+    assert entry["barrier"]["free"] == pytest.approx(low["estimates"]["new_steps"][0]["barrier"]["free"], abs=1e-6)
+    assert [x["name"] for x in high["layers"]] == ["given", "steer", "bystander"] and high["layers"][1]["done"] == 1
+    assert high["readout"]["mixed_levels"] is True and set(high["readout"]["levels"]) == {"explorer", "explorer+steer"}
+
+
+def test_a_step_and_its_mirror_twin_in_the_result(tmp_path):
+    """An achiral candidate: the twin's bystander row is the original's (one computation). A chiral one: two
+    computations, two rows; each row names the other."""
+    pytest.importorskip("axtb")
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    run = _twin_run(tmp_path)
+    qf = tmp_path / "q.json"
+    cli = CliRunner()
+    assert cli.invoke(app, ["addmol", "query", str(run), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
+                            "--time", "3600", "-o", str(qf)]).exit_code == 0
+    res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "-c", "C[C@@H](O)Cl", "--amount", "0.1",
+                           "-o", str(tmp_path / "r")])
+    assert res.exit_code == 0, res.output
+    water = json.loads((tmp_path / "r" / "O.json").read_text())
+    rows = {e["step"]: e for e in water["estimates"]["steps"]}
+    assert set(rows) == {"fast_0_1", "fast_0_1~mirror"} and rows["fast_0_1~mirror"]["mirror_image_of"] == "fast_0_1"
+    assert rows["fast_0_1~mirror"]["binding"] == rows["fast_0_1"]["binding"] and water["candidate"]["chiral"] is False
+    table = {r["step"]: r for r in water["readout"]["steps"]}
+    assert table["fast_0_1"]["mirror"] == "fast_0_1~mirror" and table["fast_0_1~mirror"]["mirror"] == "fast_0_1"
+    assert table["fast_0_1"]["after"] == pytest.approx(table["fast_0_1~mirror"]["after"], abs=1e-6)
+    chiral = json.loads((tmp_path / "r" / _name("C[C@@H](O)Cl")).read_text())
+    assert chiral["candidate"]["chiral"] is True
+    both = [e for e in chiral["estimates"]["steps"] + chiral["failed"] if e.get("step")]
+    assert sorted(e["step"] for e in both) == ["fast_0_1", "fast_0_1~mirror"]
+    assert not any(e.get("mirror_image_of") for e in both)
+
+
+def _name(text):
+    from mepd.cli_addmol import _file_name
+
+    return _file_name(text)

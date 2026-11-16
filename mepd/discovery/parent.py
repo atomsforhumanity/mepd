@@ -212,13 +212,23 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
         both = sorted((set(r) & set(p)))
         row = {"id": st.label + ("~mirror" if x["twin"] else ""), "reactants": r, "products": p, "shuttles": both,
                "label": " + ".join(r) + " -> " + " + ".join(p), "g_ts": float(x["g_ts"]), "status": "verified",
-               "level": "explorer", "energies": "free", "run_step": st.label,
-               "geometry": None}
+               "level": LEVEL + _steered(st_rec[m].get("ts_energy_terms")), "energies": "free",
+               "run_step": st.label, "geometry": None}
+        geometry = _frames(M, x, st, ts_cache[m], ends[m], parts, bonds, q)
         if x["twin"]:
+            # the mirror image of its original: the same frames reflected (with a chiral molecule beside them the
+            # two are different steps)
             row["mirror_of"] = st.label
+            if geometry is not None:
+                row["geometry"] = {**geometry, **{k: (np.asarray(geometry[k]) * [-1.0, 1.0, 1.0]).tolist()
+                                                  for k in ("reactant", "ts", "product")}, "reflected": True}
         else:
-            row["geometry"] = _frames(M, x, st, ts_cache[m], ends[m], parts, bonds, q)
+            row["geometry"] = geometry
         out_steps.append(row)
+    twins = {row["mirror_of"]: row["id"] for row in out_steps if row.get("mirror_of")}
+    for row in out_steps:
+        if row["id"] in twins:
+            row["mirror"] = twins[row["id"]]
     # boxes the fit leaves above the sum of their molecules (molecules.lowest: each molecule at its lowest over
     # the boxes holding it): a step out of such a box is higher here by that much than in the box
     g_of = dict(zip(net.names, (float(x) for x in net.g)))
@@ -245,8 +255,24 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
             "excluded": [{"step": steps[j].label, **why} for j, why in sorted(net.left_out.items()) if j in used]
             + [{"step": steps[m].label, "reason": "thermal_correction_missing"} for m in missing],
             "notes": notes, "counts": dict(net.counts), "fit": {**net.fit, "boxes_above_their_molecules": above},
+            # what a TS with an added molecule is measured from (ts_step, on_parent_scale): the starting box
+            "reference": {"seed_g_hartree": float(all_g[0]), "seed_atoms": sorted(str(x) for x in nodes[0].structure.symbols),
+                          "seed_symbols": [str(x) for x in nodes[0].structure.symbols], **q,
+                          "seed_coordinates": (np.asarray(nodes[0].structure.geometry, dtype=float).reshape(-1, 3)
+                                               * BOHR).tolist(),
+                          "seed_molecules": [net.names[i] for i in net.seed], "standard_state": standard},
             "run": {"steps": len(steps), "verified": len(use), "species": n,
                     "seed": [net.names[i] for i in net.seed]}}
+
+
+LEVEL = "explorer"
+STEERED = "+steer"
+
+
+def _steered(terms: Optional[dict]) -> str:
+    """How a structure's level name ends: the run's steering single point on it, a lent shift, or neither."""
+    steer = (terms or {}).get("steer")
+    return STEERED if steer == "single_point" else STEERED + " (lent)" if steer == "lent" else ""
 
 
 def _frames(M, x, st, ts, ends, parts, bonds, q) -> Optional[dict]:
@@ -327,6 +353,7 @@ def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: flo
     taking_part = set(counted[0][0]) if len(counted) > 1 else set(range(len(sym)))
     # the separated molecules of the reactant end, each minimized alone
     g_apart = e_apart = 0.0
+    alone = []
     for atoms, qi, mi in free.parts(s_r, False):
         xyz = np.asarray(s_r.geometry, dtype=float).reshape(-1, 3)[atoms]
         node = StructureNode(structure=Structure(symbols=[sym[a] for a in atoms], geometry=xyz, charge=qi,
@@ -338,6 +365,7 @@ def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: flo
             raise RuntimeError("a separated molecule's thermal correction failed")
         e_apart += e
         g_apart += e + c / H_KCAL
+        alone.append((sorted(atoms), e, e + c / H_KCAL, low.structure))
 
     def side(s):
         mols = [{"smiles": key, "atoms": sorted(atoms)} for atoms, key in M.molecule_parts(s)]
@@ -345,8 +373,74 @@ def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: flo
                 [m for m in mols if not set(m["atoms"]) & taking_part])
 
     (r_in, r_out), (p_in, _p_out) = side(s_r), side(s_p)
+    by_atoms = {tuple(a): (e, g, st) for a, e, g, st in alone}
+    for m in r_in + r_out:
+        hit = by_atoms.get(tuple(m["atoms"]))
+        if hit is not None:      # (each molecule alone, minimized from its geometry in the complex)
+            m.update(e_hartree=hit[0], g_hartree=hit[1],
+                     coordinates=(np.asarray(hit[2].geometry, dtype=float).reshape(-1, 3) * BOHR).tolist(),
+                     symbols=[str(x) for x in hit[2].symbols])
     return {"barrier": {"electronic": (e_ts - e_apart) * H_KCAL, "free": (e_ts - g_apart) * H_KCAL + c_ts},
+            "g_ts_hartree": e_ts + c_ts / H_KCAL, "e_ts_hartree": e_ts, "ts_parts": counted,
             "reactants": r_in, "products": p_in, "spectators": r_out, "counted": [len(c[0]) for c in counted],
             "method": f"G(TS) - G(separated, minimized molecules of the reactant end), quasi-RRHO at {temperature:g} K, "
                       f"{standard_state}, {type(engine).__name__} Hessians (mepd.discovery.free_energy); the TS counted as "
                       + ("its reacting molecules, the others apart" if len(counted) > 1 else "one complex")}
+
+
+def lowest_form(forms: list, engine, *, temperature: float = 298.15, standard_state: str = "1M") -> dict:
+    """The lowest free energy over `forms` of one molecule (qcdata Structures, each a minimum at the engine's
+    level), by the explorer's free-energy code: {"g_hartree", "e_hartree", "index", "structure"}."""
+    from mepd.discovery.free_energy import FreeEnergies
+    from mepd.nodes.node import StructureNode
+
+    free = FreeEnergies(engine, float(temperature), standard_state)
+    energies = [float(e) for e in engine.compute_energies([StructureNode(structure=s) for s in forms])]
+    corr = free.corrections(list(forms), [False] * len(forms), None, energies)
+    g = [e + c / H_KCAL if c is not None else float("inf") for e, c in zip(energies, corr)]
+    k = int(np.argmin(g))
+    if not np.isfinite(g[k]):
+        raise RuntimeError("no thermal correction of the molecule could be computed")
+    return {"g_hartree": g[k], "e_hartree": energies[k], "index": k, "structure": forms[k]}
+
+
+def on_parent_scale(got: dict, ids: list, network: dict, added_g_hartree: float) -> dict:
+    """The barrier of a `ts_step` result measured from the parent's own references: every parent molecule at the
+    parent network's free energy, the added molecule at its lowest known form (`added_g_hartree`).
+    `ids`: for each molecule of `got["reactants"] + got["spectators"]`, its species id in `network`, or
+    mepd.addmol.ADDED_ID. Returns {"free", "reference"}.
+
+    A run's molecule free energies are relative to its starting box, whose absolute free energy the network keeps
+    (`reference`): so this needs the parent molecules of the TS to be, together, the starting box's atoms (a
+    parent step's box with the molecule added always is). Otherwise (and for a network without that record)
+    the parent molecules are measured as `ts_step` did, each minimized alone from its geometry in the complex,
+    and `reference` says so."""
+    from mepd.addmol import ADDED_ID
+
+    mols = got["reactants"] + got["spectators"]
+    part = [True] * len(got["reactants"]) + [False] * len(got["spectators"])
+    g = {s["id"]: float(s["g"]) for s in network["species"]}
+    ref = network.get("reference") or {}
+    parent = [(m, i, t) for m, i, t in zip(mols, ids, part) if i != ADDED_ID]
+    n_added = sum(1 for i in ids if i == ADDED_ID)
+    atoms = sorted(x for m, _i, _t in parent for x in m.get("symbols") or [])
+    if ref.get("seed_g_hartree") is not None and atoms == list(ref.get("seed_atoms") or []):
+        above_seed = (got["g_ts_hartree"] - n_added * added_g_hartree - float(ref["seed_g_hartree"])) * H_KCAL
+        # (as molecules.build: the molecules that take no part taken out at the network's free energies)
+        return {"free": above_seed - sum(g[i] for _m, i, _t in parent),
+                "reference": "the parent network's free energies of its molecules (through its starting box); the "
+                             "added molecule at its lowest known form"}
+    alone = sum(m["g_hartree"] for m, _i, _t in parent)
+    return {"free": (got["g_ts_hartree"] - n_added * added_g_hartree - alone) * H_KCAL,
+            "reference": "the added molecule at its lowest known form; the parent's molecules each minimized alone "
+                         "from its geometry in the complex (they are not, together, the parent's starting box)"}
+
+
+def steer_shift(structure, parts: Optional[list], engine, steer_engine) -> float:
+    """E(steering level) - E(explorer level) of a structure in kcal/mol, by the run's own single-point code
+    (mepd.discovery.energy_refine): `parts` ((atoms, charge, multiplicity), from FreeEnergies.parts) counts its
+    molecules apart, as the free energies count them."""
+    from mepd.discovery.energy_refine import Item, _fragments, _single_point
+
+    return float(_single_point(Item("ts", 0, structure, _fragments(structure, parts or [(None, 0, 1)])
+                                    if parts and len(parts) > 1 else [structure]), engine, steer_engine)["delta_kcal"])

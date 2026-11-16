@@ -587,6 +587,8 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
         side = st["products"] if d else st["reactants"]
         steps.append({"step": st["id"], "label": st.get("label") or st["id"],
                       "direction": "reverse" if d else "forward",
+                      **({"mirror": st.get("mirror") or st.get("mirror_of")} if st.get("mirror") or st.get("mirror_of")
+                         else {}),
                       "barrier": float(st["g_ts"]) - sum(float(parent["species"][kp["pos"][x]]["g"]) for x in side),
                       "before": before, "after": after[0],
                       "change": after[0] - before if after[0] is not None and before is not None else None,
@@ -606,8 +608,18 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
              "with": peak_routes(variant, kv["initial"], target, limit=1)}
     made = _series(kv, target)
     carrying = routes["with"] if made is not None and float(made[-1]) > 1e-13 else ()   # (below: integration noise)
+    # the levels of the steps the comparison rests on: the routes that carry the target's material with C, and the
+    # lowest-peak routes without and with it
+    level_of = {st["id"]: st.get("level") for st in variant["steps"] if st.get("kind") != "association"}
+    on = [x for r in routes["with"] for x in r["steps"]] + [x["step"] for side in peaks.values() for r in side
+                                                           for x in r["steps"]]
+    by_level: dict = {}
+    for sid in dict.fromkeys(x for x in on if x in level_of):
+        by_level.setdefault(str(level_of[sid]), []).append(sid)
     return {"target": tgt, "steps": steps, "routes": routes, "peak_routes": peaks,
-            "added": fate(variant, kv, carrying, peaks["with"][0] if peaks["with"] else None), "new_species": new, "notes": variant.get("notes") or [],
+            "added": fate(variant, kv, carrying, peaks["with"][0] if peaks["with"] else None), "new_species": new,
+            # True: the steps compared are not all at one level of theory (which, under `levels`)
+            "mixed_levels": len(by_level) > 1, "levels": by_level, "notes": variant.get("notes") or [],
             "conditions": {"temperature": float(parent["temperature"]), "time_s": float(time_s),
                            "initial": kp["initial"], "amount": float(amount), "energies": parent.get("energies")}}
 
@@ -797,6 +809,7 @@ def query(net: dict, *, target: str, initial: dict, time_s: float, held=(), frac
                            "held": hold},
             "target": {"species": goal, "asked": target, "fraction": fraction, "final": final, "resolved": resolved,
                        "time_to_fraction_s": time_to(k["times"], series, fraction * final) if resolved else None},
+            **({"reference": net["reference"]} if net.get("reference") else {}),
             "times": k["times"].tolist(), "species": net["species"], "steps": net["steps"], "limits": lim,
             "notes": net.get("notes") or [], "left_out": len(net.get("excluded") or [])}
 
@@ -820,7 +833,8 @@ def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done
         # (the kinetics need no geometry: leave the coordinates and time series behind)
         net = {"temperature": query["temperature"], "energies": query["energies"],
                "species": [{k: s.get(k) for k in ("id", "name", "g", "smiles")} for s in query["species"]],
-               "steps": [{k: st.get(k) for k in ("id", "label", "reactants", "products", "g_ts", "status")}
+               "steps": [{k: st.get(k) for k in ("id", "label", "reactants", "products", "g_ts", "status", "level",
+                                                  "mirror", "mirror_of")}
                          for st in query["steps"]]}
         variant = added(net, molecule, estimates)
         out = readout(net, variant, cond["initial"], float(candidate["amount"]), target, cond["time_s"],
