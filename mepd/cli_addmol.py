@@ -87,6 +87,11 @@ def query(
     from mepd.web import added
     from mepd.web.workspace import Workspace, WorkspaceError
 
+    import os
+
+    from mepd.orbitals import ORBITALS_ENV
+
+    os.environ.pop(ORBITALS_ENV, None)      # (--output is a file here: no orbitals folder under its name)
     t0 = time.perf_counter()
     try:
         from mepd.discovery import parent
