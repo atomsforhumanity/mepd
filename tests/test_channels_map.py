@@ -206,3 +206,67 @@ def test_chain_verdicts_reach_the_map(tmp_path, monkeypatch):
         **data["monitors"]["branch-0"], "verdict": "split"}, "branch-1": {**data["monitors"]["branch-0"], "verdict": "elementary"}}}))
     m = channels_map(tmp_path / "job", "bonds")
     assert {p["monitor"]: p["verdict"] for p in m["paths"]} == {"branch-0": "split", "branch-1": "elementary"}
+
+
+def _hop(a, b, n=5, y=0.0):
+    """H1 at 0 and H3 at 3 A, H2 moving from x=a to x=b (bonded to H1 at 0.74, to H3 at 2.26, to neither between)."""
+    return [_xyz([(0, 0, 0), (a + (b - a) * t, y * np.sin(np.pi * t), 0), (3.0, 0, 0)], ["H", "H", "H"])
+            for t in np.linspace(0, 1, n)]
+
+
+def _write_monitors(live, name, monitors):
+    live.mkdir(parents=True, exist_ok=True)
+    (live / f"{name}.json").write_text(json.dumps({"finished": True, "monitors": {
+        mid: {"active": False, "verdict": verdict, "geometry": {"frames": frames},
+              "plot": {"y": energies, "energy_ref_hartree": -1.0}}
+        for mid, (frames, energies, verdict) in monitors.items()}}))
+
+
+def test_each_pair_reads_as_one_route_and_pairs_through_the_same_minima_are_one_mechanism(tmp_path):
+    """A split path is replaced by its elementary pieces, chained end to start
+    whatever order the live data lists them in; minima are named by bonding
+    pattern (the intermediate keeps its name across pairs); a dead end the
+    search also relaxed is not on the route; routes are lettered by their
+    highest point."""
+    live = tmp_path / "job" / "live"
+    # Two steps through an intermediate (H2 on its own between H1 and H3), listed out of order, plus a
+    # step from the intermediate back to the reactant that leads nowhere new.
+    _write_monitors(live, "pair_0_3", {
+        "branch-0": (_hop(0.74, 2.26, 7), [0, 20, 40, 30, 40, 20, -5], "split"),
+        "branch-1": (_hop(1.5, 2.26), [30, 38, 41, 20, -5], "elementary"),
+        "branch-2": (_hop(0.74, 1.5), [0, 15, 35, 33, 30], "elementary"),
+        "branch-3": (_hop(1.5, 0.74, y=0.4), [30, 50, 60, 20, 0], "elementary"),
+    })
+    # The same mechanism in another pair, higher; and a one-step pair, lowest of all.
+    _write_monitors(live, "pair_1_4", {
+        "branch-0": (_hop(0.74, 2.26, 7), [0, 25, 45, 30, 45, 20, -5], "split"),
+        "branch-1": (_hop(0.74, 1.5), [0, 20, 44, 33, 30], "elementary"),
+        "branch-2": (_hop(1.5, 2.26), [30, 38, 42, 20, -5], "elementary"),
+    })
+    _write_monitors(live, "pair_2_5", {"branch-0": (_hop(0.74, 2.26, 7, y=0.3), [0, 10, 25, 30, 25, 10, -5], "elementary")})
+    m = channels_map(tmp_path / "job", "distance", running=False)
+    routes = {r["pair"]: r for r in m["routes"]}
+    assert [r["pair"] for r in m["routes"]] == ["pair_2_5", "pair_0_3", "pair_1_4"]     # lowest highest point first
+    assert routes["pair_2_5"]["minima"] == ["R", "P"] and routes["pair_2_5"]["mechanism"] == "A"
+    two = routes["pair_0_3"]
+    assert two["minima"] == ["R", "I1", "P"] and two["complete"] and two["mechanism"] == "B"
+    assert [s["path"] for s in two["steps"]] == ["pair_0_3/branch-2", "pair_0_3/branch-1"]
+    assert [s["peak"] for s in two["steps"]] == [35.0, 41.0] and two["top"] == 41.0
+    assert two["steps"][1]["barrier"] == 11.0                                # from the intermediate, 30
+    assert routes["pair_1_4"]["minima"] == ["R", "I1", "P"] and routes["pair_1_4"]["mechanism"] == "B"
+    on_route = {s["path"] for r in m["routes"] for s in r["steps"]}
+    assert {p["id"] for p in m["paths"]} - on_route == {"pair_0_3/branch-0", "pair_0_3/branch-3", "pair_1_4/branch-0"}
+    # The minima sit where their chains end, and every image knows how far along its chain it is.
+    assert two["points"][1]["q"] == next(p for p in m["paths"] if p["id"] == "pair_0_3/branch-2")["points"][-1][:2]
+    p = next(p for p in m["paths"] if p["id"] == "pair_2_5/branch-0")
+    assert p["s"][0] == 0.0 and p["s"][-1] == 1.0 and all(a < b for a, b in zip(p["s"], p["s"][1:]))
+
+
+def test_a_route_still_being_searched_stops_where_it_has_got_to(tmp_path):
+    live = tmp_path / "job" / "live"
+    _write_monitors(live, "pair_0_3", {
+        "branch-0": (_hop(0.74, 2.26, 7), [0, 20, 40, 30, 40, 20, -5], "split"),
+        "branch-1": (_hop(0.74, 1.5), [0, 15, 35, 33, 30], "elementary"),
+    })
+    (r,) = channels_map(tmp_path / "job", "bonds", running=True)["routes"]
+    assert r["minima"] == ["R", "I1"] and not r["complete"] and len(r["steps"]) == 1

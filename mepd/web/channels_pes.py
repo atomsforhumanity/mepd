@@ -305,6 +305,166 @@ def _search_ts(output_dir: Path, kinds: dict) -> list[dict]:
     return found
 
 
+def _connectivity_key(symbols, X) -> str:
+    """The same for every conformer and atom numbering of one bonding
+    pattern: a Weisfeiler-Lehman hash of the bond graph, atoms by element."""
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_nodes_from((i, {"el": s}) for i, s in enumerate(symbols))
+    g.add_edges_from(_bonds(symbols, X))
+    return nx.weisfeiler_lehman_graph_hash(g, node_attr="el", iterations=4)
+
+
+def _arc(frames: list[str]) -> list[float]:
+    """Each image's fraction of the way along its chain (0 at the first,
+    1 at the last), by the Cartesian step between neighbouring images."""
+    X = [_frame(f)[1] for f in frames]
+    steps = [_aligned_rmsd(a, b) if a.shape == b.shape else 0.0 for a, b in zip(X, X[1:])]
+    total = sum(steps) or 1.0
+    out, run = [0.0], 0.0
+    for d in steps:
+        run += d
+        out.append(run / total)
+    return out
+
+
+# Two chains meet at an intermediate when the end of one is the start of the
+# next: the split point both were cut at (identical) or, for a path whose
+# ends were minimized separately, the same minimum (well under this).
+_JOIN_RMSD = 0.35
+
+
+def _routes(placed: list, ts_marks: list, e_ref: float) -> tuple[list[dict], dict]:
+    """Each pair's search, read as one route from its reactant to its
+    product: its elementary chains (the pieces nothing was split from)
+    chained end to start, the minima between them named R, I1, I2, ..., P
+    by bonding pattern (the same intermediate gets the same name in every
+    pair), and pairs through the same minima in the same order grouped as
+    one mechanism (A, B, ... from the lowest highest point).
+    Returns (routes, {minimum name: {"n_routes": ...}})."""
+    by_pair: dict = {}
+    for p, pts in placed:
+        if pts:
+            by_pair.setdefault(p["stream"], []).append((p, pts))
+    raw = []
+    for pair, items in by_pair.items():
+        root = next((it for it in items if it[0]["monitor"] in ("branch-0", "main")), items[0])
+        leaves = [it for it in items if it[0].get("verdict") != "split"] or [root]
+        sym, start = _frame(root[0]["frames"][0])
+        _, goal = _frame(root[0]["frames"][-1])
+        # The minima: every chain end, merged when they are the same structure.
+        spots = [start, goal]
+
+        def spot(X):
+            for i, Y in enumerate(spots):
+                if Y.shape == X.shape and _aligned_rmsd(X, Y) <= _JOIN_RMSD:
+                    return i
+            spots.append(X)
+            return len(spots) - 1
+        hops = []                                  # (from spot, to spot, leaf, highest energy)
+        for it in leaves:
+            p = it[0]
+            es = [e for e in p["energies"] if e is not None]
+            hops.append((spot(_frame(p["frames"][0])[1]), spot(_frame(p["frames"][-1])[1]), it,
+                         max(es) if es else float("inf")))
+        # The easiest way from the reactant: lowest highest point, then fewest steps.
+        import heapq
+        best = {0: (-float("inf"), 0, [])}
+        heap = [(-float("inf"), 0, 0)]
+        while heap:
+            top_e, n, at = heapq.heappop(heap)
+            if (top_e, n) > best[at][:2]:
+                continue
+            for k, (u, v, it, peak) in enumerate(hops):
+                if u != at:
+                    continue
+                cand = (max(top_e, peak), n + 1, best[at][2] + [k])
+                if v not in best or cand[:2] < best[v][:2]:
+                    best[v] = cand
+                    heapq.heappush(heap, (cand[0], cand[1], v))
+        complete = 1 in best and best[1][2] != []
+        if complete:
+            used = best[1][2]
+        else:                                      # still running (or stuck): the furthest it got
+            far = max(best, key=lambda v: (len(best[v][2]), -best[v][0]))
+            used = best[far][2]
+        chain = [hops[k][2] for k in used]
+        left = [hops[k][2] for k in range(len(hops)) if k not in used]
+        if not chain:
+            chain, left = [root], [it for it in leaves if it is not root]
+        minima = [(sym, start, chain[0][1][0], chain[0][0]["energies"][0])]
+        for p, pts in chain:
+            minima.append((sym, _frame(p["frames"][-1])[1], pts[-1], p["energies"][-1]))
+        raw.append({"pair": pair, "chain": chain, "minima": minima, "complete": complete,
+                    "unchained": [p for p, _ in left]})
+    # Name the minima by bonding pattern.
+    keys = {}
+    for r in raw:
+        r["keys"] = [_connectivity_key(sym, X) for sym, X, _, _ in r["minima"]]
+    r_keys = {r["keys"][0] for r in raw}
+    p_keys = {r["keys"][-1] for r in raw if r["complete"]}
+
+    # TSs by the chain they came from (the one that came closest).
+    ts_by_path = {}
+    for m in ts_marks:
+        c = m.get("closest")
+        if c:
+            ts_by_path.setdefault(f"{m['pair']}/{c['monitor']}", []).append(m)
+
+    def peak(p):
+        """A step's highest point (kcal/mol on the map's scale): its optimized TS, else its highest image."""
+        ts = ts_by_path.get(f"{p['stream']}/{p['monitor']}")
+        if ts:
+            return min(m["e"] for m in ts), min(ts, key=lambda m: m["e"])["label"]
+        es = [e for e in p["energies"] if e is not None]
+        return ((max(es) - e_ref) * H2K if es else None), None
+
+    def top(r):
+        vals = [peak(p)[0] for p, _ in r["chain"]]
+        vals = [v for v in vals if v is not None]
+        return (not r["complete"], max(vals) if vals else float("inf"))
+    raw.sort(key=top)
+    names: dict = {}
+    for k in r_keys:
+        names[k] = "R"
+    for k in p_keys:
+        names.setdefault(k, "P")
+    n = 0
+    for r in raw:
+        for k in r["keys"]:
+            if k not in names:
+                n += 1
+                names[k] = f"I{n}"
+    groups: dict = {}
+    routes = []
+    for r in raw:
+        # The ends by position (a degenerate reaction's product bonds like its reactant), the rest by bonding.
+        seq = ["R"] + [names[k] for k in r["keys"][1:]]
+        if r["complete"]:
+            seq[-1] = "P"
+        sig = tuple(seq) + (() if r["complete"] else ("…",))
+        if sig not in groups:
+            groups[sig] = chr(ord("A") + len(groups)) if len(groups) < 26 else f"Z{len(groups) - 25}"
+        steps = []
+        for p, pts in r["chain"]:
+            hi, label = peak(p)
+            first = p["energies"][0]
+            steps.append({"path": f"{p['stream']}/{p['monitor']}",
+                          "barrier": None if hi is None or first is None else round(hi - (first - e_ref) * H2K, 2),
+                          "peak": None if hi is None else round(hi, 2), "ts": label})
+        routes.append({
+            "pair": r["pair"], "mechanism": groups[sig], "minima": seq, "complete": r["complete"],
+            "steps": steps,
+            "points": [{"name": nm, "q": [round(q[0], 4), round(q[1], 4)],
+                        "e": None if e is None else round((e - e_ref) * H2K, 2)}
+                       for nm, (_, _, q, e) in zip(seq, r["minima"])],
+            "top": max((s["peak"] for s in steps if s["peak"] is not None), default=None),
+            "unchained": [f"{p['stream']}/{p['monitor']}" for p in r["unchained"]],
+        })
+    return routes, {sig: g for sig, g in groups.items()}
+
+
 def channels_map(job_dir: Path, mode: str = "bonds", grid: int = 64, running: bool = True,
                  output_dir: Optional[Path] = None, ts: Optional[str] = None,
                  search: Optional[tuple[Path, dict]] = None) -> dict:
@@ -501,6 +661,8 @@ def channels_map(job_dir: Path, mode: str = "bonds", grid: int = 64, running: bo
                          "e": round((ts["energy"] - e_ref) * H2K, 3), "kind": ts["kind"], "group": ts["group"],
                          "closest": closest, "xyz": ts["xyz"]})
 
+    routes, _ = _routes(placed, ts_marks, e_ref)
+
     data = [(x, y, e, g) for _, pts in placed for x, y, e, g in pts if e is not None]
     if irc_line:
         data += [(x, y, e, g) for x, y, e, g in irc_line if e is not None]
@@ -574,10 +736,11 @@ def channels_map(job_dir: Path, mode: str = "bonds", grid: int = 64, running: bo
         "reference": "lowest reactant-side image of all paths",
         "paths": [{"id": f"{p['stream']}/{p['monitor']}", "pair": p["stream"], "monitor": p["monitor"],
                    "active": running and p["active"] and not p["finished"], "bonds": p.get("bonds"),
-                   "verdict": p.get("verdict"),
+                   "verdict": p.get("verdict"), "s": [round(v, 4) for v in _arc(p["frames"])] if len(pts) == len(p["frames"]) else None,
                    "points": [[round(x, 4), round(y, 4), None if e is None else round(e, 3)] for x, y, e, _ in pts]}
                   for p, pts in placed if pts],
         "ts": ts_marks,
+        "routes": routes,
         "irc_choices": irc_choices,
         "irc": {"ts": chosen_ts, "points": [[round(x, 4), round(y, 4), e] for x, y, e, _ in irc_line]} if irc_line else None,
         "warnings": warnings,
