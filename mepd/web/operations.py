@@ -1892,6 +1892,32 @@ class VariantParams(Params):
     pass
 
 
+class AddmolTestParams(Params):
+    query: str = P("", "Query", "The query (target and conditions) the candidates are tested against.", kind="custom")
+    steps: Optional[int] = P(None, "Steps", "Bystander estimates for the first N steps of the order of work only.",
+                             kind="custom")
+    workers: int = P(2, "Processes", "Processes for the bystander layer.", kind="custom", ge=1, le=64)
+    names: list[str] = P([], "Results", "The result files this job writes.", kind="custom")
+
+
+def _build_addmol_test(ctx: JobContext, p: AddmolTestParams) -> list[str]:
+    """Candidates against a query of this workspace (mepd.web.addpage): the result files go to the
+    query's own folder, where the page reads them as they are rewritten."""
+    from mepd.web import addpage
+
+    base = addpage.folder(ctx.ws, p.query)
+    src = base / addpage.PENDING
+    if not (base / "query.json").exists() or not src.exists():
+        raise WorkspaceError("candidates are tested from the Add a molecule page")
+    dst = ctx.job_dir / "inputs" / "candidates.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    argv = ["addmol", "test", str(base / "query.json"), "--candidates", str(dst), "--workers", str(p.workers)]
+    if p.steps is not None:
+        argv += ["--steps", str(p.steps)]
+    return [*argv, "--output", str(base / "results")]
+
+
 def _build_variant(mode: str):
     def build(ctx: JobContext, p: VariantParams) -> list[str]:
         """A network variant's reaction (mepd.web.variants): its spec,
@@ -2427,6 +2453,12 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "pair", "Reaction conditions", VariantParams, _build_variant("reoptimize"), hidden=True,
         cli_path=("variant",), cli_extra_flags=("--mode", "--charge", "--multiplicity", "--inputs", "--output"),
         produces=["a verified TS for the variant reaction"]),
+    Operation(
+        "addmol-test", "Add a molecule: test candidates", "What one more molecule in the flask does to a target: "
+        "the molecule beside every step, then the kinetics with it. (`mepd addmol test`)",
+        "set", "Reaction conditions", AddmolTestParams, _build_addmol_test, hidden=True,
+        cli_path=("addmol", "test"), cli_extra_flags=("--candidates", "--workers", "--steps", "--output"),
+        produces=["one result file per candidate"]),
     Operation(
         "substituents", "Substituent effects", "Swap hydrogens for functional groups, one at a time, and see how "
         "each shifts the barrier and which channel wins. (`mepd substituents`)",

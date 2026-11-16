@@ -218,6 +218,24 @@ class VariantIn(BaseModel):
     name: str = ""
 
 
+class AddmolQueryIn(BaseModel):
+    target: str                         # a species id, name or SMILES (no stereo marks: its stereoisomers together)
+    initial: dict                       # structure id -> M
+    held: list[str] = []
+    temperature: float = Field(298.15, gt=0)
+    time_s: float = Field(86400.0, gt=0)
+    free_energy: bool = True
+
+
+class AddmolTestIn(BaseModel):
+    text: str = ""                      # SMILES lines, a candidates file (JSON) or an xyz file
+    filename: str = ""
+    amount: Optional[float] = Field(None, gt=0)   # mol/L of every candidate that gives none
+    steps: Optional[int] = Field(None, ge=0)
+    workers: int = Field(2, ge=1, le=64)
+    dry_run: bool = False               # read the candidates and say what would be tested
+
+
 class ProposeIn(BaseModel):
     reactants: list[str]
     n_break: int = Field(2, ge=0, le=3)
@@ -407,6 +425,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                     bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
             if job["op"] == "graph-enumeration" and job["status"] == "done":
                 if await run_in_threadpool(adopt_expansion_steps, manager, job):
+                    bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
+            if job["op"] == "addmol-test":
+                from mepd.web import addpage
+
+                if await run_in_threadpool(addpage.after_job, manager, job):
                     bus.publish("workspace", manager.ws.snapshot(), key=str(manager.ws.root))
             if job["op"] == "design-tsopt":
                 try:
@@ -2620,6 +2643,86 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         variants.delete(W(), vid)
         publish_ws()
         return {"ok": True}
+
+    # ------------------------------------------------------ add a molecule
+    # (mepd.web.addpage over mepd.web.added and `mepd addmol test`; docs/add-molecule.md)
+    @app.get("/api/addmol")
+    def addmol_queries():
+        from mepd.web import addpage
+
+        return {"queries": addpage.queries(W())}
+
+    @app.post("/api/addmol/query")
+    async def addmol_query(body: AddmolQueryIn):
+        """What limits a target at these conditions (the query file, kept in the workspace)."""
+        from mepd.web import addpage
+
+        try:
+            qid = await run_in_threadpool(
+                addpage.make_query, W(), dict(J().jobs), target=body.target, initial=body.initial, held=body.held,
+                temperature=body.temperature, time_s=body.time_s, free_energy=body.free_energy)
+        except RuntimeError as exc:
+            raise WorkspaceError(str(exc)) from None
+        return addpage.view(J(), qid)
+
+    @app.get("/api/addmol/{qid}")
+    def addmol_view(qid: str):
+        from mepd.web import addpage
+
+        return addpage.view(J(), qid)
+
+    @app.get("/api/addmol/{qid}/query.json")
+    def addmol_query_file(qid: str):
+        from mepd.web import addpage
+
+        fp = addpage.folder(W(), qid) / "query.json"
+        if not fp.exists():
+            raise HTTPException(404, f"unknown query {qid!r}")
+        return FileResponse(fp, media_type="application/json", filename=f"mepd-addmol-query-{qid}.json")
+
+    @app.post("/api/addmol/{qid}/test")
+    async def addmol_test(qid: str, body: AddmolTestIn):
+        """Candidates in (typed, pasted or a file's text); one calculation tests them all, cheapest layer first."""
+        from mepd.web import addpage
+
+        cands = await run_in_threadpool(addpage.parse_candidates, body.text, body.amount, body.filename)
+        if body.dry_run:
+            return {"candidates": [{k: v for k, v in c.items() if k not in ("coordinates", "atoms", "pose", "estimates")}
+                                   for c in cands]}
+        if demo is not None:
+            demo.check_op("addmol-test", {"workers": body.workers})
+            demo.check_capacity(J().list())
+        job = addpage.start(J(), qid, cands, steps=body.steps, workers=body.workers)
+        return {"job": job["id"], "candidates": len(cands)}
+
+    @app.get("/api/addmol/{qid}/results/{name}")
+    def addmol_detail(qid: str, name: str):
+        from mepd.web import addpage
+
+        return addpage.detail(W(), qid, name)
+
+    @app.delete("/api/addmol/{qid}/results/{name}")
+    def addmol_remove(qid: str, name: str):
+        from mepd.web import addpage
+
+        addpage.remove(J(), qid, name)
+        return {"ok": True}
+
+    @app.get("/api/addmol/{qid}/geometry")
+    def addmol_geometry(qid: str, step: str, result: Optional[str] = None, through: Optional[str] = None):
+        """A step's two ends and TS as xyz frames, with a candidate beside them where its layer kept that."""
+        from mepd.web import addpage
+
+        return addpage.geometry(W(), qid, step, result, through)
+
+    @app.post("/api/addmol/{qid}/results/{name}/keep")
+    async def addmol_keep(qid: str, name: str):
+        """The candidate as a variant of the network: Explore's Network picker lists it, the map marks it."""
+        from mepd.web import addpage
+
+        rec = await run_in_threadpool(addpage.keep, W(), qid, name)
+        publish_ws()
+        return {"variant": rec["id"], "name": rec["name"]}
 
     @app.post("/api/reactions/propose")
     async def reactions_propose(body: ProposeIn):

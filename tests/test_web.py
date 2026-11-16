@@ -1336,6 +1336,8 @@ def test_every_web_operation_emits_only_real_cli_flags(client, tmp_path, monkeyp
             continue   # need a QM/MM system or site search: tests/test_qmmm_web.py checks their flags
         if op["key"] in ("variant-fast", "variant-reopt"):
             continue   # need a network variant's edge: tests/test_variants_web.py checks their flags
+        if op["key"] == "addmol-test":
+            continue   # needs a query of the Add a molecule page: tests/test_addpage_web.py checks its command
         body = {"op": op["key"], "dry_run": True, "profile": "default"}
         if op["target"] == "pair":
             body["structures"] = [a["id"], b["id"]]
