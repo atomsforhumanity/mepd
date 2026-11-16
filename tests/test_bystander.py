@@ -139,7 +139,7 @@ def test_one_frame_without_a_ts_gives_no_barrier_shift():
 def test_a_molecule_pushed_out_of_contact_is_a_failure():
     frames, q_x, charges = step()
     res = B.bystander(frames, molecule(), Toy(4, q_x, [0.4, -0.4], mode="push"), placer="seeded", poses=3,
-                      repeats=1, charges=charges, fmax=0.005, steps=400, carry=0)
+                      repeats=1, charges=charges, fmax=0.005, steps=400, carry=0, polish=0)
     assert res["status"] == "failed" and "contact" in res["why"]
 
 
@@ -156,7 +156,7 @@ def test_a_proposed_pose_is_one_more_start_beside_the_generic_ones():
     near = (np.asarray(frames["ts"])[1] + [[0.0, 2.6, 0.0], [0.0, 3.5, 0.0]]).tolist()
     eng = Toy(4, q_x, [0.4, -0.4])
     res = B.bystander(frames, molecule(), eng, placer="seeded", poses=3, repeats=2, charges=charges,
-                      starts=[{"frame": "ts", "coords": near}], carry=0)
+                      starts=[{"frame": "ts", "coords": near}], carry=0, polish=0)
     assert res["binding"]["ts"]["poses"]["relaxed"] == 3 * 2 + 1
     assert res["binding"]["r"]["poses"]["relaxed"] == 3 * 2
     assert "compute_gradients" not in eng.__dict__     # the call counter is taken off the engine again
