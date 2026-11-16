@@ -407,24 +407,30 @@ def search(frames: dict, confs: list, engine, *, placer: str, poses: int, seed: 
     if carry:
         carry_poses(frames, done, engine, symbols, free, bonds_c, n_x, carry, charge=charge,
                     multiplicity=multiplicity, fmax=fmax, steps=steps, t0=t0)
-    for f, (_, X) in frames.items() if polish else ():
-        # the lowest poses relaxed on, five times tighter: a floppy complex stops early at `fmax`
-        bonds_x = adjacency(symx, np.asarray(X, dtype=float))
-        for src in sorted([p for p in done[f] if "failed" not in p and _eligible(p)], key=lambda p: p["energy"])[:polish]:
-            try:
-                p = relax_pose(engine, symbols, src["xyz"], free, charge=charge, multiplicity=multiplicity,
-                               bonds_x=bonds_x, bonds_c=bonds_c, n_x=n_x, fmax=fmax / 5, steps=steps)
-            except Exception as exc:
-                p = {"failed": f"{type(exc).__name__}: {exc}"}
-            p.update(conformer=src["conformer"], origin="polished:" + src["origin"], t=time.perf_counter() - t0)
-            if "failed" not in p:
-                p["moved"] = max(p["moved"], 2 * UNMOVED)
-            done[f].append(p)
+    if polish:
+        # The lowest poses relaxed on, five times tighter (a floppy complex stops early at `fmax`, and the
+        # deeper basins are reached only then), and the best of them carried once more, as tightly, so
+        # that a basin found at one frame is also tried at the other two.
+        for f, (_, X) in frames.items():
+            bonds_x = adjacency(symx, np.asarray(X, dtype=float))
+            low = sorted([p for p in done[f] if "failed" not in p and _eligible(p)], key=lambda p: p["energy"])
+            for src in low[:polish]:
+                try:
+                    p = relax_pose(engine, symbols, src["xyz"], free, charge=charge, multiplicity=multiplicity,
+                                   bonds_x=bonds_x, bonds_c=bonds_c, n_x=n_x, fmax=fmax / 5, steps=steps)
+                except Exception as exc:
+                    p = {"failed": f"{type(exc).__name__}: {exc}"}
+                p.update(conformer=src["conformer"], origin="polished:" + src["origin"], t=time.perf_counter() - t0)
+                if "failed" not in p:
+                    p["moved"] = max(p["moved"], 2 * UNMOVED)
+                done[f].append(p)
+        carry_poses(frames, done, engine, symbols, free, bonds_c, n_x, 1, charge=charge, multiplicity=multiplicity,
+                    fmax=fmax / 5, steps=steps, t0=t0, placed_only=False)
     return done
 
 
 def carry_poses(frames, done, engine, symbols, free, bonds_c, n_x, carry, *, charge, multiplicity, fmax, steps,
-                t0, upto: Optional[int] = None) -> dict:
+                t0, upto: Optional[int] = None, placed_only: bool = True) -> dict:
     """The `carry` lowest eligible poses of each frame (of its first `upto` placed ones), relaxed on every
     other frame: C's coordinates are kept in the frame they were found in, the other frame's atoms
     superposed on that frame's. Appended to `done` (origin "carried:<frame>")."""
@@ -432,7 +438,7 @@ def carry_poses(frames, done, engine, symbols, free, bonds_c, n_x, carry, *, cha
 
     best = {}
     for f, ps in done.items():
-        placed = [p for p in ps if "failed" not in p and not p["origin"].startswith("carried")][:upto]
+        placed = [p for p in ps if "failed" not in p and not (placed_only and p["origin"].startswith("carried"))][:upto]
         best[f] = sorted([p for p in placed if _eligible(p)], key=lambda p: p["energy"])[:carry]
     added = {f: [] for f in done}
     for f, (_, X) in frames.items():
