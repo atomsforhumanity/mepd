@@ -228,8 +228,18 @@ def _cargo(network: dict) -> dict:
             for s in network["species"]}
 
 
-def fate(network: dict, k: dict) -> Optional[dict]:
-    """What became of the added molecule C in the kinetics `k` (of `run`), by amounts (per C put in):
+def fate(network: dict, k: dict, routes: Sequence[dict] = (), peak: Optional[dict] = None) -> Optional[dict]:
+    """What became of the added molecule C in the kinetics `k` (of `run`), as two facts side by side and what
+    follows from them. `routes`: `flux_routes` of the target in these kinetics; `peak`: its lowest-peak route.
+
+    * `on_route`: whether C is on the routes that carry the target's material (at least half of it goes
+      through steps with a C-holding species; None when no material was made), with `route_share` (that
+      share), `route_peak` (the highest point of the lowest-peak route to the target, kcal/mol above the
+      mixture) and `route_peak_with_added` (whether that route has C in it);
+    * `turnovers` (= `returns`): how often, per C put in, C came back from a step it took part in, in the
+      run's time.
+
+    By amounts (per C put in):
 
     * `shares` at the end: `free` (C itself), `bound` (in complexes, which fall apart without a barrier),
       `covalent` (in new species that hold C);
@@ -237,11 +247,11 @@ def fate(network: dict, k: dict) -> Optional[dict]:
       (sum over such steps of their net extent x the C on their product side held that way) / c0(C);
     * `resting_state`: the C-holding species with the largest time-averaged amount.
 
-    Rules, in this order: `returns` and `covalent` both below 0.001 -> C took no part in any step:
-    "bound and inert" if at the end at least half of C is bound, or a complex holds at least as much of a
-    species as is left of it free; else "no part". Otherwise
-    "regenerated" if returns >= covalent (C came back at least as often as it is held up at the end),
-    else "consumed".
+    Rules, in this order. C took part when it is on the route, or `returns` or `covalent` reach 0.001. When
+    it did not: "bound and inert" if at the end at least half of C is bound, or a complex holds at least as
+    much of a species as is left of it free; else "no part". When it did: "regenerated" if returns >= covalent
+    (C came back at least as often as it is held up at the end), else "consumed". A slow catalyst reads
+    "regenerated" with few turnovers: read the two facts, not the word alone.
     """
     c = network.get("added")
     pos = k["pos"]
@@ -266,13 +276,22 @@ def fate(network: dict, k: dict) -> Optional[dict]:
         back += abs(float(ext)) * sum(sp[x]["holds"] for x in p if sp[x].get("kind") in ("added", "complex"))
     returns = back / c0
     rest = max(holders, key=lambda s: k["mean"][pos[s["id"]]] * s["holds"])
-    if returns < TRACE and shares["covalent"] < TRACE:
+    carried = [r for r in routes if r.get("share") is not None]
+    share = sum(r["share"] for r in carried if r.get("with_added")) if carried else None
+    on_route = None if share is None else bool(share >= 0.5)
+    holds_c = {s["id"] for s in holders}
+    by_id = {st["id"]: st for st in network["steps"]}
+    peak_with = bool(peak) and any(holds_c & set(by_id[x["step"]]["reactants"] + by_id[x["step"]]["products"])
+                                   for x in peak["steps"])
+    if not on_route and returns < TRACE and shares["covalent"] < TRACE:
         holds = any(s.get("kind") == "complex" and end[pos[s["id"]]] > TRACE * c0
                     and end[pos[s["id"]]] >= end[pos[s["of"][0]]] for s in holders)
         verdict = "bound and inert" if shares["bound"] >= 0.5 or holds else "no part"
     else:
         verdict = "regenerated" if returns >= shares["covalent"] else "consumed"
-    return {"fate": verdict, "shares": shares, "returns": returns,
+    return {"fate": verdict, "on_route": on_route, "route_share": share,
+            "route_peak": peak["peak"] if peak else None, "route_peak_with_added": peak_with if peak else None,
+            "turnovers": returns, "shares": shares, "returns": returns,
             "resting_state": {"id": rest["id"], "name": rest.get("name") or rest["id"],
                               "share": rest["holds"] * float(k["mean"][pos[rest["id"]]]) / c0}}
 
@@ -529,7 +548,9 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
     side by side: the target, every parent step's apparent barrier before and after (read the way its
     material goes, `direction`; after: the lowest of the step itself and its versions with C, and which,
     `through`; `barrier`: its TS above that side at 1 M), the routes that carry the target's material,
-    C's resting state and fate (`fate`). "resolved" False: an amount below the kinetics' resolution."""
+    C's resting state and fate (`fate`). Each step row has a `group`: "through" (its lowest version has C in
+    it: the table to show), "amounts" (its own TS; the apparent barrier moved only because amounts moved),
+    "none". "resolved" False: an amount below the kinetics' resolution."""
     c = variant["added"]
     kp = run(parent, initial, time_s, held)
     kv = run(variant, {**initial, c: float(amount)}, time_s, held)
@@ -570,16 +591,23 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
                       "before": before, "after": after[0],
                       "change": after[0] - before if after[0] is not None and before is not None else None,
                       "through": after[1]["id"] if after[1] is not None else None,
+                      # "through": its lowest version has C in it; "amounts": its own TS, the barrier moved only
+                      # because its reactants' amounts moved; "none": unchanged
+                      "group": ("through" if after[1] is not None and after[1]["id"] != st["id"] else
+                                "amounts" if after[0] is not None and before is not None
+                                and abs(after[0] - before) > 0.05 else "none"),
                       "status": (after[1].get("status") or "verified") if after[1] is not None else None,
                       "spread": (after[1] or {}).get("spread")})
     new = [{"id": s["id"], "name": s.get("name"), "kind": s["kind"], "final": float(kv["res"].c[-1, kv["pos"][s["id"]]]),
             "max": float(kv["res"].c[:, kv["pos"][s["id"]]].max()), "mean": float(kv["mean"][kv["pos"][s["id"]]]),
             "status": s.get("status")} for s in variant["species"] if s.get("kind") in ("complex", "new")]
-    return {"target": tgt, "steps": steps,
-            "routes": {"parent": flux_routes(parent, kp, target), "with": flux_routes(variant, kv, target)},
-            "peak_routes": {"parent": peak_routes(parent, kp["initial"], target, limit=1),
-                            "with": peak_routes(variant, kv["initial"], target, limit=1)},
-            "added": fate(variant, kv), "new_species": new, "notes": variant.get("notes") or [],
+    routes = {"parent": flux_routes(parent, kp, target), "with": flux_routes(variant, kv, target)}
+    peaks = {"parent": peak_routes(parent, kp["initial"], target, limit=1),
+             "with": peak_routes(variant, kv["initial"], target, limit=1)}
+    made = _series(kv, target)
+    carrying = routes["with"] if made is not None and float(made[-1]) > 1e-13 else ()   # (below: integration noise)
+    return {"target": tgt, "steps": steps, "routes": routes, "peak_routes": peaks,
+            "added": fate(variant, kv, carrying, peaks["with"][0] if peaks["with"] else None), "new_species": new, "notes": variant.get("notes") or [],
             "conditions": {"temperature": float(parent["temperature"]), "time_s": float(time_s),
                            "initial": kp["initial"], "amount": float(amount), "energies": parent.get("energies")}}
 

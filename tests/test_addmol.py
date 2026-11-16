@@ -311,3 +311,29 @@ def test_naming_species():
     assert A.match(sp, "CC(=O)CC(C)O") == ["s1", "s2"]           # no stereo marks: both
     assert A.match(sp, "C[C@H](O)CC(C)=O") in (["s1"], ["s2"])   # with them: one
     assert A.match(sp, "acetone") == ["s3"] and A.match(sp, "s2") == ["s2"] and A.match(sp, "CCO") == []
+
+
+def test_the_barrier_table_has_two_groups_and_the_fate_two_facts():
+    """A -> B -> D: a relay for A -> B. The first row goes through the molecule; B -> D's own TS is what it was,
+    its apparent barrier moved because B is there now."""
+    net = network([("ab", ["A"], ["B"], 30.0), ("bd", ["B"], ["D"], 28.0)], species=("A", "B", "D"),
+                  g={"B": -1.0, "D": -3.0})
+    v = A.added(net, C, RELAY)
+    out = A.readout(net, v, {"A": 1.0}, 0.1, "B", 20.0)
+    rows = {r["step"]: r for r in out["steps"]}
+    assert rows["ab"]["group"] == "through" and rows["bd"]["group"] == "amounts" and rows["bd"]["through"] == "bd"
+    f = out["added"]
+    assert f["on_route"] is True and f["route_share"] == pytest.approx(1.0, abs=1e-3) and f["route_peak_with_added"]
+    assert f["route_peak"] == pytest.approx(20.0 - RT * math.log(0.1), abs=0.01)
+    assert f["turnovers"] == f["returns"] > 0.1 and f["fate"] == "regenerated"
+
+
+def test_a_slow_catalyst_on_the_route_is_not_no_part():
+    """The relay is the only way to B, and far too slow for a turnover in the time: on the route, few turnovers."""
+    slow = {"new_steps": [{**RELAY["new_steps"][0], "barrier": both(27.0)}]}
+    hard = network([("ab", ["A"], ["B"], 45.0)], g={"B": -10.0})
+    f = A.readout(hard, A.added(hard, C, slow), {"A": 1.0}, 0.1, "B", 100.0)["added"]
+    assert f["on_route"] is True and f["turnovers"] < 1e-3 and f["fate"] == "regenerated"
+    # no steps with it at all: neither fact holds
+    idle = A.readout(hard, A.added(hard, C, {}), {"A": 1.0}, 0.1, "B", 100.0)["added"]
+    assert idle["on_route"] is None and idle["fate"] == "no part" and idle["route_peak_with_added"] is False
