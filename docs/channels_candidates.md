@@ -203,8 +203,8 @@ again at the end adds `[catalytic: <formula>]`.
 
 - **Cost.** Measured on three 31–34-atom steps beside L-proline (512–1800
   pairs, N = 20): 0.4–0.6 CPU-seconds per pair for all 21 mechanisms (snap's
-  placements, one per mechanism, are most of it), so 20–50 s on 32 threads
-  and 1–2 minutes on 8.
+  placements, one per mechanism, are most of it): 18–52 s on 32 threads,
+  43–116 s on 8 cores.
 - **The search runs once per reaction.** It reads the two bond graphs and
   SLAPMapper's mappings only, so every conformer pair gets the same answer;
   it is computed once per process. On acetone → enol beside acetaldehyde and
