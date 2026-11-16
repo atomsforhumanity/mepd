@@ -666,6 +666,14 @@ class _EditCount:
                         if b > j and inv[b] not in self.adj0[inv[j]])
         return tuple(broken), tuple(formed)
 
+    def relabels(self, base, order) -> bool:
+        """Whether `order` is `base` with the start's atoms renamed by a symmetry of the start's bond graph
+        (the other methyl of an acetone, say): the same mechanism through equivalent atoms, which the
+        caller's symmetry variants of `base` already cover (`expand_mapping_fully`, snap's picks)."""
+        inv = {int(v): a for a, v in enumerate(base)}
+        sigma = [inv[int(v)] for v in order]
+        return all(sigma[k] in self.adj0[sigma[i]] for i in range(self.n) for k in self.adj0[i])
+
     def group_swaps(self, order):
         """Two same-element atoms swapped together with their same-element
         terminal neighbours (a CH3's three H, not its halide): one move for
@@ -766,11 +774,14 @@ def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, st
         if not frontier:
             break
 
-    known = {ec.route(tuple(int(v) for v in b.as_order())) for b in bases}
+    base_orders = [tuple(int(v) for v in b.as_order()) for b in bases]
+    known = {ec.route(o) for o in base_orders}
     best: dict[tuple, tuple[int, tuple]] = {}
     for order, c in seen.items():
         key = ec.route(order)
-        if key not in known and (key not in best or c < best[key][0]):
+        if key in known or any(ec.relabels(o, order) for o in base_orders):
+            continue   # a base, or one written with other, symmetry-equivalent atoms: not a new mechanism
+        if key not in best or c < best[key][0]:
             best[key] = (c, order)
     ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
     return ranked, len(best)

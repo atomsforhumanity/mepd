@@ -532,6 +532,22 @@ def test_explore_searches_once_for_all_conformer_pairs_of_a_reaction(monkeypatch
     assert len(am.explore_mechanisms(start, end, [base], max_new=3)) == 3   # other settings: their own search
 
 
+def test_explore_does_not_list_slapmappers_mechanism_again_through_the_other_methyl():
+    """Acetone's enolisation through its other methyl is SLAPMapper's own mechanism with symmetry-equivalent
+    atoms: it was listed (and searched) again as 'explored: <the same bonds>'."""
+    from mepd.atom_mapping import _EditCount, explore_mechanisms, mechanism_key, suggest_mechanism_candidates
+
+    start, end = _scrambled("keto_enol_1water")
+    base = suggest_atom_mapping(start, end)
+    own = mechanism_key(start, realign_end_to_start(base, end))
+    # few symmetry variants kept, as when the symmetry group is larger than the cap (acetone beside proline)
+    keys = list(suggest_mechanism_candidates(start, end, explore=10, max_variants_per_mechanism=2))
+    assert keys[0] == own and f"explored: {own}" not in keys
+    ec = _EditCount(start, end)
+    explored = explore_mechanisms(start, end, [base], max_new=10)
+    assert len(explored) == 10 and not any(ec.relabels(base.as_order(), m.as_order()) for m in explored)
+
+
 def test_explore_finds_the_methyl_relay_through_ch3i():
     from mepd.atom_mapping import catalytic_participants, explore_mechanisms
 
