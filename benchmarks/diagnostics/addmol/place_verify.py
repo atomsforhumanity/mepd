@@ -131,7 +131,7 @@ def main() -> None:
     ap.add_argument("smiles")
     ap.add_argument("out", type=Path)
     ap.add_argument("--labels", required=True)
-    ap.add_argument("--placer", default="seeded")
+    ap.add_argument("--placer", default="mixed")
     ap.add_argument("--poses", type=int, default=6)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--carry", type=int, default=3)
