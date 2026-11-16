@@ -55,9 +55,12 @@ def _install(out: Path) -> None:
 
     def flush(force=False):
         now = time.time()
-        if os.getpid() != state["pid"]:   # a forked worker: its own totals
+        if os.getpid() != state["pid"]:   # a forked worker: its own totals, written when it exits too
             agg.clear()
             state["pid"] = os.getpid()
+            from multiprocessing import util
+
+            util.Finalize(None, flush, args=(True,), exitpriority=10)
         if force or now - state["last"] > 2.0:
             state["last"] = now
             tmp = out / f"agg.{os.getpid()}.json.tmp"
