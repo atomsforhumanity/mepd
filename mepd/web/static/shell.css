@@ -851,3 +851,28 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 }
 .nm-help { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--border-strong); border-radius: var(--radius); color: var(--accent); font-weight: 700; text-decoration: none; }
 .nm-help:hover { background: var(--accent-soft); }
+/* Route between two chosen molecules */
+.nm-routes-btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.nm-ends { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 6px 12px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--route) 8%, var(--panel)); font-size: 13px; }
+.nm-ends > b { color: var(--heading); }
+.nm-end-lab { color: var(--muted); }
+.nm-end-arrow { color: var(--route); font-weight: 700; }
+.nm-end.nm-find { flex: 0 1 190px; }
+.nm-end.armed input { border-color: var(--route); box-shadow: 0 0 0 2px color-mix(in srgb, var(--route) 30%, transparent); }
+.nm-end.set { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 2px 8px 2px 3px; font: 600 13px var(--font-ui); color: var(--heading); background: var(--panel); border: 2px solid var(--route); border-radius: var(--radius); cursor: pointer; }
+.nm-end.set img { width: 36px; height: 27px; background: var(--node-bg); border-radius: 3px; flex: none; }
+.nm-end.set span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm-end.set i { font-style: normal; color: var(--muted); }
+.nm-end.set:hover i { color: var(--heading); }
+.nm-ends-hint { color: var(--muted); font-size: 12px; }
+.nm-ends-x { margin-left: auto; width: 26px; height: 26px; border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; border-radius: var(--radius); }
+.nm-ends-x:hover { background: var(--accent-soft); color: var(--heading); }
+.nm-routes { flex-basis: 100%; display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
+.nm-routes-lab { color: var(--muted); font-size: 12px; }
+.nm-rlist { display: flex; gap: 6px; flex-wrap: wrap; }
+.nm-rlist .nm-chip.on { border-color: var(--route); background: color-mix(in srgb, var(--route) 14%, var(--panel)); }
+@media (max-width: 720px) {
+  .nm-ends { padding: 6px 8px; gap: 6px; }
+  .nm-end.nm-find { flex: 1 1 120px; }
+  .nm-ends-hint { flex-basis: 100%; order: 9; }
+}

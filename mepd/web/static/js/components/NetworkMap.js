@@ -135,6 +135,104 @@ function routeTo(M, R, t) {
   return { steps, mols, top: R.cost[t][0] };
 }
 
+// ---- routes between two chosen molecules -------------------------------------
+// A hop goes from one molecule of a searched step to one on its other side:
+// forward over the forward barrier, and backward where the reverse barrier is
+// known. Between two molecules only the lowest of their hops counts (the
+// others are told as "N ways"), so alternative routes differ in molecules,
+// not in which of two parallel steps they take.
+function hopGraph(M) {
+  const best = {};
+  const add = (x, y, s, bar, back) => {
+    if (x === y || !M.nodes.has(x) || !M.nodes.has(y)) return;
+    const k = `${x}>${y}`, cur = best[k];
+    if (!cur) best[k] = { key: k, x, y, s, bar, back, ways: 1 };
+    else { cur.ways += 1; if (bar < cur.bar) Object.assign(cur, { s, bar, back }); }
+  };
+  for (const s of M.steps) {
+    if (s.kind !== 'b') continue;
+    for (const x of new Set(s.ins)) for (const y of new Set(s.outs)) add(x, y, s, s.fwd, false);
+    if (s.rev != null) for (const x of new Set(s.outs)) for (const y of new Set(s.ins)) add(x, y, s, s.rev, true);
+  }
+  const out = {}, inn = {};
+  for (const h of Object.values(best)) { (out[h.x] ||= []).push(h); (inn[h.y] ||= []).push(h); }
+  return { out, inn };
+}
+// Molecules joined to `id` by some route (forward from it, or backward into it).
+function joined(G, id, forward) {
+  const seen = new Set([id]), todo = [id];
+  while (todo.length) {
+    const a = todo.pop();
+    for (const h of (forward ? G.out[a] : G.inn[a]) || []) {
+      const b = forward ? h.y : h.x;
+      if (!seen.has(b)) { seen.add(b); todo.push(b); }
+    }
+  }
+  return seen;
+}
+const routeCost = (hops) => [Math.max(...hops.map((h) => h.bar)), hops.length, hops.reduce((a, h) => a + h.bar, 0)];
+const cheaper = (x, y) => { for (let i = 0; i < x.length; i += 1) { if (x[i] < y[i] - 1e-9) return true; if (x[i] > y[i] + 1e-9) return false; } return false; };
+// The route whose highest barrier is lowest (then the fewest steps), avoiding some molecules and hops.
+function bestRoute(G, from, to, noMol, noHop) {
+  const cost = { [from]: [0, 0, 0] }, prev = {}, done = new Set(), open = [from];
+  while (open.length) {
+    let bi = 0;
+    for (let i = 1; i < open.length; i += 1) if (cheaper(cost[open[i]], cost[open[bi]])) bi = i;
+    const a = open.splice(bi, 1)[0];
+    if (done.has(a)) continue;
+    done.add(a);
+    if (a === to) break;
+    for (const h of G.out[a] || []) {
+      if (noMol.has(h.y) || noHop.has(h.key) || done.has(h.y)) continue;
+      const c = [Math.max(cost[a][0], h.bar), cost[a][1] + 1, cost[a][2] + h.bar];
+      if (!cost[h.y] || cheaper(c, cost[h.y])) { cost[h.y] = c; prev[h.y] = h; open.push(h.y); }
+    }
+  }
+  if (!prev[to]) return null;
+  const hops = [];
+  for (let x = to; x !== from; x = prev[x].x) hops.unshift(prev[x]);
+  return hops;
+}
+// Up to K different routes, best first: the highest barrier lowest, and between
+// routes that share it the next highest, and so on; then the fewest steps.
+// Candidates come from Yen's method over the hop graph.
+function routesBetween(G, from, to, K = 8) {
+  if (!from || !to || from === to) return [];
+  const mk = (hops) => ({ hops, mols: [from, ...hops.map((h) => h.y)], cost: routeCost(hops), bars: hops.map((h) => h.bar).sort((a, b) => b - a) });
+  const first = bestRoute(G, from, to, new Set(), new Set());
+  if (!first) return [];
+  const A = [mk(first)], B = [], seen = new Set([first.map((h) => h.key).join('|')]);
+  while (A.length < 2 * K) {
+    const last = A[A.length - 1];
+    for (let i = 0; i < last.hops.length; i += 1) {
+      const root = last.hops.slice(0, i), rootKey = root.map((h) => h.key).join('|');
+      const noHop = new Set(A.filter((p) => p.hops.length > i && p.hops.slice(0, i).map((h) => h.key).join('|') === rootKey).map((p) => p.hops[i].key));
+      const spur = bestRoute(G, last.mols[i], to, new Set(last.mols.slice(0, i)), noHop);
+      if (!spur) continue;
+      const hops = [...root, ...spur], k = hops.map((h) => h.key).join('|');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      B.push(mk(hops));
+    }
+    if (!B.length) break;
+    B.sort((p, q) => (cheaper(p.cost, q.cost) ? -1 : cheaper(q.cost, p.cost) ? 1 : 0));
+    A.push(B.shift());
+  }
+  const key = (r) => [...r.bars, -1e9, r.hops.length];   // a route that runs out of steps first is the easier
+  return A.sort((p, q) => {
+    const a = key(p), b = key(q);
+    for (let i = 0; i < Math.min(a.length, b.length); i += 1) if (Math.abs(a[i] - b[i]) > 1e-9) return a[i] - b[i];
+    return a.length - b.length;
+  }).slice(0, K);
+}
+// What a hop takes in and gives off besides the two molecules it joins.
+function hopTags(M, h) {
+  const ins = h.back ? h.s.outs : h.s.ins, outs = h.back ? h.s.ins : h.s.outs;
+  const rest = (xs, main) => { const c = {}; let skip = true; xs.forEach((x) => { if (x === main && skip) { skip = false; return; } c[x] = (c[x] || 0) + 1; }); return c; };
+  return [...tagText(M, rest(ins, h.x), '+'), ...tagText(M, rest(outs, h.y), '−'), ...h.s.via.map((x) => `via ${mapLabel(M.mols[x])}`)];
+}
+const stepsText = (n) => (n === 1 ? 'direct' : `${n} steps`);
+
 // ---- layouts ---------------------------------------------------------------
 const BIN = 5;
 const LONE = 2e6, UNREACHED = 1e6;
@@ -234,17 +332,20 @@ function layoutEgo(M, id, o, thr, look) {
   return { pos, labels, edges, heads };
 }
 function layoutRoute(M, r, look) {
-  // A long route snakes in rows of four, so it stays readable at canvas width.
-  const pos = {}, labels = {}, edges = [], PER = 4;
+  // A long route snakes in rows of four (two on a phone), so it stays readable at canvas width.
+  const pos = {}, labels = {}, edges = [], PER = window.matchMedia(PHONE_QUERY).matches ? 2 : 4;
   r.mols.forEach((m, i) => {
     const row = Math.floor(i / PER), k = i % PER;
     pos[m] = { x: (row % 2 ? PER - 1 - k : k) * 280, y: row * 230 };
     labels[m] = mapLabel(M.mols[m]);
   });
-  r.steps.forEach((s, i) => {
-    const lk = look(s);
-    edges.push({ group: 'edges', classes: 'ego rt', data: { id: `rt:${i}`, step: s.id, source: r.mols[i], target: r.mols[i + 1],
-      col: lk.col, w: lk.w + 0.5, kind: s.kind, lab: [fmt(s.fwd), ...stepTags(M, s)].join('\n') } });
+  r.hops.forEach((h, i) => {
+    const lk = look({ kind: 'b', fwd: h.bar });
+    const tags = hopTags(M, h);
+    const bar = `${fmt(h.bar)}${h.back ? ' (reverse)' : ''}${h.ways > 1 ? `  · ${h.ways} ways` : ''}`;
+    edges.push({ group: 'edges', classes: 'ego rt', data: { id: `rt:${i}`, step: h.s.id, source: h.x, target: h.y,
+      col: lk.col, w: lk.w + 0.5, kind: 'b', lab: [bar, ...tags].join('\n'),
+      tip: `${mapLabel(M.mols[h.x])} → ${mapLabel(M.mols[h.y])}   ${fmt(h.bar)} kcal/mol${h.back ? ', the step run in reverse' : ''}${tags.length ? `   ${tags.join(' ')}` : ''}` } });
   });
   return { pos, labels, edges, heads: [] };
 }
@@ -281,6 +382,8 @@ function styles() {
     { selector: 'edge.picked', style: { 'underlay-color': css('--accent'), 'underlay-opacity': 0.25, 'underlay-padding': 5 } },
     { selector: 'edge.hot', style: { 'line-color': css('--route'), 'target-arrow-color': css('--route'), width: 4, opacity: 1, 'z-index': 10 } },
     { selector: 'node.hot', style: { 'border-color': css('--route'), 'border-width': 3, opacity: 1 } },
+    { selector: 'node.unreach', style: { opacity: 0.18 } },
+    { selector: 'node.endpt', style: { 'border-color': css('--route'), 'border-width': 4, 'underlay-color': css('--route'), 'underlay-opacity': 0.18, 'underlay-padding': 6, 'underlay-shape': 'round-rectangle', opacity: 1, 'font-weight': 700 } },
     { selector: '.gone', style: { display: 'none' } },
   ];
 }
@@ -312,6 +415,42 @@ function BarrierFilter({ M, thr, setThr, look }) {
   </div>`;
 }
 
+// Molecules matching a typed name, formula or SMILES (only those drawn as nodes, for a route's ends).
+function findHits(M, q, nodesOnly = false) {
+  const t = q.trim().toLowerCase();
+  if (!t) return [];
+  return Object.values(M.mols).filter((m) => (M.nodes.has(m.id) || (!nodesOnly && M.tagCount[m.id]))
+    && [m.name, m.smiles, m.formula, mapLabel(m)].some((x) => (x || '').toLowerCase().includes(t))).slice(0, 8);
+}
+function HitList({ hits, hi, onPick }) {
+  if (!hits.length) return null;
+  return html`<ul class="nm-hits">${hits.map((m, i) => html`<li class=${i === hi ? 'on' : ''} onMouseDown=${(e) => { e.preventDefault(); onPick(m.id); }}>
+    ${m.smiles && html`<img src=${depictUrl(m.smiles, 120, 90)} alt="" />`}<span>${mapLabel(m)}<small>${m.smiles || ''}</small></span></li>`)}</ul>`;
+}
+// One end of a route: the molecule chosen (click to choose another), or a box to type in.
+function EndField({ M, id, armed, label, onArm, onPick, onClear }) {
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  const hits = useMemo(() => findHits(M, q, true), [q, M]);
+  const pick = (x) => { setQ(''); onPick(x); };
+  if (id && M.mols[id]) {
+    const m = M.mols[id];
+    return html`<button class="nm-end set" title=${`${label}: ${mapLabel(m)}. Click to choose another.`} onClick=${onClear}>
+      ${m.smiles && html`<img src=${depictUrl(m.smiles, 120, 90)} alt="" />`}<span>${mapLabel(m)}</span><i aria-hidden="true">×</i></button>`;
+  }
+  return html`<div class=${`nm-find nm-end ${armed ? 'armed' : ''}`}>
+    <input type="search" value=${q} aria-label=${label} placeholder=${armed ? 'tap a molecule or type' : 'type a name'}
+      onFocus=${onArm} onInput=${(e) => { setQ(e.target.value); setHi(0); }}
+      onKeyDown=${(e) => {
+        if (e.key === 'ArrowDown') { setHi(Math.min(hits.length - 1, hi + 1)); e.preventDefault(); }
+        else if (e.key === 'ArrowUp') { setHi(Math.max(0, hi - 1)); e.preventDefault(); }
+        else if (e.key === 'Enter' && hits[hi]) pick(hits[hi].id);
+        else if (e.key === 'Escape') { setQ(''); e.stopPropagation(); }
+      }} />
+    <${HitList} hits=${hits} hi=${hi} onPick=${pick} />
+  </div>`;
+}
+
 const isPhone = () => window.matchMedia(PHONE_QUERY).matches;
 const fitCapped = (c) => { if (!c) return; c.maxZoom(1.1); c.fit(c.elements(':visible'), 40); c.maxZoom(2.5); };
 
@@ -332,9 +471,13 @@ export function NetworkMap() {
   const [q, setQ] = useState('');
   const [hi, setHi] = useState(0);
   const [drag, setDrag] = useState(false);
+  // Choosing a route's two ends: `armed` is the end the next tap on a molecule fills.
+  const [ends, setEnds] = useState({ open: false, from: null, to: null, armed: null });
   const setOpt = (patch) => { const v = { ...o, ...patch }; setO(v); prefs.set('mapShow', v); };
   const M = useMemo(() => buildModel(workspace, state.jobs, network), [workspace, statusKey, network]);
   const R = useMemo(() => reach(M, o), [M, o.ns, o.nots]);
+  const G = useMemo(() => hopGraph(M), [M]);
+  const routes = useMemo(() => (view.mode === 'route' ? routesBetween(G, view.from, view.to) : []), [G, view.mode, view.from, view.to]);
   const L = useMemo(() => {
     const c = cyRef.current;
     const aspect = c && c.width() > 50 && c.height() > 50 ? c.width() / c.height() : 1.4;
@@ -346,7 +489,28 @@ export function NetworkMap() {
     const t = M.hi > M.lo ? Math.min(1, Math.max(0, (s.fwd - M.lo) / (M.hi - M.lo))) : 0;
     return { col: mix(css('--ramp-lo'), css('--ramp-hi'), Math.pow(t, 0.8)), w: 0.9 + 2.8 * (1 - t) };
   };
-  live.current = { M, R, L, view, thr, o, look };
+  live.current = { M, R, L, G, view, thr, o, look, ends, routes };
+
+  // A route's ends: set one, then arm the other (or, with both, show the routes).
+  const chooseEnds = (patch) => {
+    const e = { ...live.current.ends, open: true, ...patch };
+    if (e.from && e.from === e.to) e[patch.from ? 'to' : 'from'] = null;   // one molecule cannot be both ends
+    if (!('armed' in patch)) e.armed = !e.from ? 'from' : !e.to ? 'to' : null;
+    live.current.ends = e;
+    setEnds(e);
+    if (e.from && e.to) { setView({ mode: 'route', from: e.from, to: e.to, k: 0 }); setTrail([]); }
+    else if (live.current.view.mode !== 'all') { setView({ mode: 'all' }); setTrail([]); }
+    return e;
+  };
+  live.current.chooseEnds = chooseEnds;
+  const closeEnds = () => { setEnds({ open: false, from: null, to: null, armed: null }); if (live.current.view.mode === 'route') { setView({ mode: 'all' }); setTrail([]); } };
+  const openEnds = () => {
+    // Start from what is in hand: the molecule open, or the one or two selected.
+    const sel = state.selection.structures.filter((id) => live.current.M.nodes.has(id));
+    const v = live.current.view;
+    if (sel.length >= 2) chooseEnds({ from: sel[0], to: sel[1] });
+    else chooseEnds({ from: v.mode === 'ego' ? v.mol : sel[0] || null, to: null });
+  };
 
   // Go to a molecule's neighbourhood (or, for a molecule that only rides along, highlight its steps).
   const goMol = (id, keepTrail = false) => {
@@ -370,7 +534,7 @@ export function NetworkMap() {
       const s = m.byId[e.target.data('step') || e.target.id()];
       if (!s || !tip) return;
       const tags = stepTags(m, s);
-      tip.textContent = `${mapLabel(m.mols[s.a])} → ${mapLabel(m.mols[s.b])}   ${s.kind === 'b' ? `${fmt(s.fwd)} kcal/mol` : barText(s)}${tags.length ? `   ${tags.join(' ')}` : ''}`;
+      tip.textContent = e.target.data('tip') || `${mapLabel(m.mols[s.a])} → ${mapLabel(m.mols[s.b])}   ${s.kind === 'b' ? `${fmt(s.fwd)} kcal/mol` : barText(s)}${tags.length ? `   ${tags.join(' ')}` : ''}`;
       tip.hidden = false;
     });
     c.on('mousemove', (e) => {
@@ -390,9 +554,12 @@ export function NetworkMap() {
       }
       if (e.target.isNode()) {
         const id = e.target.id();
+        const en = live.current.ends;
+        // Choosing a route's ends: the tap fills the end waiting for a molecule.
+        if (en.open && en.armed && !additive && live.current.M.nodes.has(id)) { live.current.chooseEnds({ [en.armed]: id }); return; }
         if (additive) { select({ structures: [id] }, true); return; }
         select({ structures: [id] });
-        if (id !== v.mol) goMol(id);
+        if (v.mode !== 'route' && id !== v.mol) goMol(id);
         return;
       }
       select({ edges: [e.target.data('step') || e.target.id()] }, additive);
@@ -411,7 +578,8 @@ export function NetworkMap() {
       const first = !seen || seen.startsWith('0x');
       seen = size;
       c.resize();
-      if (first && entry.contentRect.width > 0) fitCapped(c);
+      // A route or a neighbourhood always fits (the bars above can change height under it).
+      if ((first || live.current.view.mode !== 'all') && entry.contentRect.width > 0) fitCapped(c);
     });
     ro.observe(host.current);
     return () => { mq.removeEventListener('change', onTheme); window.removeEventListener('mepd:graph', onRestyle); ro.disconnect(); c.destroy(); };
@@ -437,43 +605,54 @@ export function NetworkMap() {
     }
     c.batch(() => { c.elements().remove(); c.add(els); });
     let v = view;
-    if (v.mode !== 'all' && !M.nodes.has(v.mol)) { v = { mode: 'all' }; setView(v); setTrail([]); }
+    const gone = v.mode === 'route' ? !M.nodes.has(v.from) || !M.nodes.has(v.to) : v.mode !== 'all' && !M.nodes.has(v.mol);
+    if (gone) { v = { mode: 'all' }; setView(v); setTrail([]); }
     render(Object.keys(old).length > 0, !Object.keys(old).length);
   }, [M, L]);
 
   // --- the view: overview, a neighbourhood or a route
-  useEffect(() => { render(true); }, [view]);
+  useEffect(() => { render(true); }, [view, routes]);
   useEffect(() => { render(false, false, true); }, [thr]);
+  useEffect(() => { markEnds(); }, [ends]);
 
   function render(anim = true, fitNow = false, thrOnly = false) {
     const c = cyRef.current;
     if (!c || !c.nodes().length) { placeHeads([]); return; }
-    const { M: m, R: r, L: l, view: v, thr: t, o: op, look: lk } = live.current;
+    const { M: m, L: l, view: v, thr: t, o: op, look: lk, routes: rs } = live.current;
     if (thrOnly && v.mode === 'all') { applyThr(); return; }
     let P;
+    // Molecules hidden until now appear in place.
+    const wasHidden = new Set(c.nodes('.gone').map((n) => n.id()));
     c.batch(() => {
       c.remove('.ego');
       c.elements().removeClass('gone fade hl hot two lonely over center');
       c.nodes().forEach((n) => { if (n.data('label') !== n.data('name')) n.data('label', n.data('name')); });
       if (v.mode === 'all') { P = { pos: l.pos, heads: l.heads }; c.nodes().forEach((n) => { if (!l.pos[n.id()]) n.addClass('gone'); }); return; }
-      const route = v.mode === 'route' ? routeTo(m, r, v.mol) : null;
-      P = route ? layoutRoute(m, route, lk) : layoutEgo(m, v.mol, op, t, lk);
+      if (v.mode === 'route') {
+        const rt = rs[Math.min(v.k || 0, rs.length - 1)];
+        // No route: the two ends side by side, so it is clear which two were asked about.
+        P = rt ? layoutRoute(m, rt, lk) : { pos: { [v.from]: { x: 0, y: 0 }, [v.to]: { x: 280, y: 0 } }, labels: {}, edges: [], heads: [] };
+      } else P = layoutEgo(m, v.mol, op, t, lk);
       c.add(P.edges);
       c.elements().forEach((el) => { if (!el.hasClass('ego') && !(el.isNode() && P.pos[el.id()])) el.addClass('gone'); });
       for (const [id, text] of Object.entries(P.labels)) { const n = c.getElementById(id); n.data('label', text); if (text.includes('\n')) n.addClass('two'); }
-      c.getElementById(v.mol).addClass('center');
+      if (v.mol) c.getElementById(v.mol).addClass('center');
     });
     live.current.heads = P.heads;
+    // Hidden nodes keep the animations of an earlier layout running (they fight the new one): stop them first.
+    c.nodes().stop(true);
+    c.nodes().forEach((n) => { if (wasHidden.has(n.id()) && P.pos[n.id()]) n.position({ ...P.pos[n.id()] }); });
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     c.stop();
     c.maxZoom(1.1);   // fitting a few molecules never blows them up to poster size
     c.nodes().filter((n) => P.pos[n.id()]).layout({
       name: 'preset', positions: (n) => P.pos[n.id()], animate: anim && !reduced, animationDuration: 480,
       animationEasing: 'ease-in-out-cubic', fit: true, padding: v.mode === 'all' ? 40 : 56,
-      stop: () => c.maxZoom(2.5),
+      stop: () => { c.maxZoom(2.5); if (v.mode === 'route') fitCapped(c); },
     }).run();
     if (v.mode === 'all') applyThr();
     reflectSelection();
+    markEnds();
     placeHeads();
     setTimeout(() => placeHeads(), anim && !reduced ? 520 : 0);
     if (fitNow) fitCapped(c);
@@ -517,6 +696,21 @@ export function NetworkMap() {
       sel.edges.forEach((id) => { c.getElementById(id).addClass('picked'); c.edges('.ego').filter((e) => e.data('step') === id).addClass('picked'); });
     });
   }
+  // The chosen ends stand out; while one is awaited, molecules no route joins to the other fade.
+  function markEnds() {
+    const c = cyRef.current;
+    if (!c) return;
+    const { G: g, ends: en, view: v } = live.current;
+    c.batch(() => {
+      c.nodes().removeClass('endpt unreach');
+      if (!en.open) return;
+      [en.from, en.to].forEach((id) => { if (id) c.getElementById(id).addClass('endpt'); });
+      const other = en.armed === 'to' ? en.from : en.armed === 'from' ? en.to : null;
+      if (v.mode !== 'all' || !other) return;
+      const ok = joined(g, other, en.armed === 'to');
+      c.nodes().forEach((n) => { if (!ok.has(n.id())) n.addClass('unreach'); });
+    });
+  }
   function placeHeads(force) {
     const el = headRef.current, c = cyRef.current;
     if (!el || !c) return;
@@ -536,8 +730,10 @@ export function NetworkMap() {
     reflectSelection();
     const { structures, edges } = selection;
     const any = structures.length + edges.length > 0;
-    if (structures.length === 1 && !edges.length && M.nodes.has(structures[0]) && !(view.mode !== 'all' && view.mol === structures[0])) goMol(structures[0]);
-    else if (!any && hadSelection.current && view.mode !== 'all') toAll();   // Esc: back to the whole network
+    // On a route, picking one of its molecules shows it in the inspector and keeps the route.
+    const onRoute = view.mode === 'route' && [view.from, view.to, ...routes.flatMap((r) => r.mols)].includes(structures[0]);
+    if (structures.length === 1 && !edges.length && M.nodes.has(structures[0]) && !onRoute && !(view.mode === 'ego' && view.mol === structures[0])) goMol(structures[0]);
+    else if (!any && hadSelection.current && view.mode === 'ego') toAll();   // Esc: back to the whole network
     hadSelection.current = any;
   }, [selection]);
 
@@ -574,23 +770,42 @@ export function NetworkMap() {
   useEffect(() => { highlight(null); }, [view.tag, view.steps]);
 
   // --- find
-  const hits = useMemo(() => {
-    const t = q.trim().toLowerCase();
-    if (!t) return [];
-    return Object.values(M.mols).filter((m) => (M.nodes.has(m.id) || M.tagCount[m.id])
-      && [m.name, m.smiles, m.formula, mapLabel(m)].some((x) => (x || '').toLowerCase().includes(t))).slice(0, 8);
-  }, [q, M]);
+  const hits = useMemo(() => findHits(M, q), [q, M]);
   const go = (id) => { setQ(''); select({ structures: [id] }); if (!M.nodes.has(id)) goMol(id); };
 
-  const route = view.mode !== 'all' ? routeTo(M, R, view.mol) : null;
+  const route = view.mode === 'ego' ? routeTo(M, R, view.mol) : null;
+  const name = (id) => mapLabel(M.mols[id]);
+  const two = selection.structures.filter((id) => M.nodes.has(id));
   const shelf = Object.entries(M.tagCount).filter(([id]) => !M.nodes.has(id)).sort((a, b) => b[1] - a[1]).slice(0, 7);
   const nNs = M.steps.filter((s) => s.kind === 'ns').length, nNots = M.steps.filter((s) => s.kind === 'nots').length;
   const empty = M.nodes.size === 0;
   const crumbs = view.mode === 'all' ? null : html`<nav class="nm-crumbs" aria-label="Where you are">
     <button onClick=${() => { clearSelection(); toAll(); }}>Whole network</button>
     ${trail.map((id, i) => html`<i>›</i><button onClick=${() => { setTrail(trail.slice(0, i + 1)); setView({ mode: 'ego', mol: id }); select({ structures: [id] }); }}>${mapLabel(M.mols[id])}</button>`)}
-    ${view.mode === 'route' && html`<i>›</i><span>Easiest route</span>`}
+    ${view.mode === 'route' && html`<i>›</i><span>Routes</span>`}
   </nav>`;
+  const k = Math.min(view.k || 0, Math.max(0, routes.length - 1));
+  const endsBar = ends.open && html`<div class="nm-ends" role="group" aria-label="Route between two molecules">
+    <b>Route</b>
+    <span class="nm-end-lab">from</span>
+    <${EndField} M=${M} id=${ends.from} armed=${ends.armed === 'from'} label="Start of the route"
+      onArm=${() => setEnds({ ...ends, armed: 'from' })} onPick=${(id) => chooseEnds({ from: id })} onClear=${() => chooseEnds({ from: null, armed: 'from' })} />
+    <span class="nm-end-arrow" aria-hidden="true">→</span>
+    <span class="nm-end-lab">to</span>
+    <${EndField} M=${M} id=${ends.to} armed=${ends.armed === 'to'} label="End of the route"
+      onArm=${() => setEnds({ ...ends, armed: 'to' })} onPick=${(id) => chooseEnds({ to: id })} onClear=${() => chooseEnds({ to: null, armed: 'to' })} />
+    <button class="btn small" title="Swap start and end" aria-label="Swap start and end" disabled=${!ends.from && !ends.to}
+      onClick=${() => chooseEnds({ from: ends.to, to: ends.from })}>⇄</button>
+    ${ends.armed && html`<span class="nm-ends-hint">Tap a molecule on the map${ends.armed === 'from' ? ' to start from' : ' to end at'}${(ends.armed === 'to' ? ends.from : ends.to) ? '; faded ones have no searched route' : ''}</span>`}
+    <button class="nm-ends-x" title="Close" aria-label="Close the route picker" onClick=${closeEnds}>×</button>
+    ${view.mode === 'route' && html`<div class="nm-routes">${routes.length
+      ? html`<span class="nm-routes-lab">${routes.length === 1 ? 'One route' : `${routes.length === 8 ? 'Best 8' : routes.length} routes`}, easiest first · highest barriers, kcal/mol</span>
+        <div class="nm-rlist">${routes.map((r, i) => html`<button class=${`nm-chip ${i === k ? 'on' : ''}`} aria-pressed=${i === k}
+          title=${`${r.mols.map(name).join(' → ')}\nbarriers, highest first: ${r.bars.map(fmt).join(', ')} kcal/mol`}
+          onClick=${() => setView({ ...view, k: i })}>${stepsText(r.hops.length)}<small>${r.bars.slice(0, 2).map(fmt).join(' · ')}</small></button>`)}</div>`
+      : html`<span>No route through searched steps leads from <b>${name(view.from)}</b> to <b>${name(view.to)}</b>. A step counts backwards only where its reverse barrier was computed${nNs ? ', and steps not searched yet do not count' : ''}.</span>`}
+    </div>`}
+  </div>`;
   return html`<div class=${`nm-wrap ${drag ? 'drag' : ''}`}
       onDragOver=${(e) => { e.preventDefault(); setDrag(true); }} onDragLeave=${() => setDrag(false)}
       onDrop=${(e) => { e.preventDefault(); setDrag(false); if (e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); }}>
@@ -604,9 +819,11 @@ export function NetworkMap() {
             else if (e.key === 'Enter' && hits[hi]) go(hits[hi].id);
             else if (e.key === 'Escape') { setQ(''); e.stopPropagation(); }
           }} />
-        ${hits.length > 0 && html`<ul class="nm-hits">${hits.map((m, i) => html`<li class=${i === hi ? 'on' : ''} onMouseDown=${(e) => { e.preventDefault(); go(m.id); }}>
-          ${m.smiles && html`<img src=${depictUrl(m.smiles, 120, 90)} alt="" />`}<span>${mapLabel(m)}<small>${m.smiles || ''}</small></span></li>`)}</ul>`}
+        <${HitList} hits=${hits} hi=${hi} onPick=${go} />
       </div>
+      <button class=${`btn small nm-routes-btn ${ends.open ? 'on' : ''}`} aria-pressed=${ends.open}
+        title="Routes between two molecules: choose where they start and where they end"
+        onClick=${() => (ends.open ? closeEnds() : openEnds())}>Route A → B</button>
       <${BarrierFilter} M=${M} thr=${thr} setThr=${setThr} look=${look} />
       <div class="nm-toggles">
         ${nNs > 0 && html`<label title="Steps a network expansion proposed that no path search has tried"><input type="checkbox" checked=${o.ns} onChange=${(e) => setOpt({ ns: e.target.checked })} /> not searched (${nNs})</label>`}
@@ -619,16 +836,23 @@ export function NetworkMap() {
         <button aria-pressed="false" title="The editable graph: connect structures, arrange, conditions, variants" onClick=${() => setExploreView('graph')}>Graph</button>
       </div>
     </div>
+    ${endsBar}
     <div class="nm-canvas">
       <div class="nm-cy" ref=${host}></div>
       <div class="nm-heads" ref=${headRef} aria-hidden="true"></div>
       ${crumbs}
-      ${view.mode === 'ego' && !M.starts.includes(view.mol) && html`<div class="nm-route">${route
-        ? html`<span>Easiest way here: <b>${route.steps.length} step${route.steps.length > 1 ? 's' : ''}</b>, highest barrier <b class="mono">${fmt(route.top)}</b></span>
-          <button class="btn small" onClick=${() => setView({ mode: 'route', mol: view.mol })}>Show route</button>`
-        : html`<span class="muted">No searched route from the start reaches it.</span>`}</div>`}
-      ${view.mode === 'route' && route && html`<div class="nm-route"><span>${route.steps.length} step${route.steps.length > 1 ? 's' : ''} from ${mapLabel(M.mols[route.mols[0]])}; none higher than <b class="mono">${fmt(route.top)}</b> kcal/mol</span>
-        <button class="btn small" onClick=${() => setView({ mode: 'ego', mol: view.mol })}>Back</button></div>`}
+      ${view.mode === 'ego' && html`<div class="nm-route">
+        ${!M.starts.includes(view.mol) && (route
+          ? html`<span>Easiest way here: <b>${route.steps.length} step${route.steps.length > 1 ? 's' : ''}</b>, highest barrier <b class="mono">${fmt(route.top)}</b></span>
+            <button class="btn small" onClick=${() => chooseEnds({ from: route.mols[0], to: view.mol })}>Show route</button>`
+          : html`<span class="muted">No searched route from the start reaches it.</span>`)}
+        <button class="btn small" title="Choose where a route from this molecule should end" onClick=${() => chooseEnds({ from: view.mol, to: null })}>Route from here</button>
+        <button class="btn small" title="Choose where a route to this molecule should start" onClick=${() => chooseEnds({ from: null, to: view.mol })}>Route to here</button>
+      </div>`}
+      ${view.mode === 'all' && !ends.open && two.length === 2 && html`<div class="nm-route">
+        <span>${name(two[0])} and ${name(two[1])} selected</span>
+        <button class="btn small" onClick=${() => chooseEnds({ from: two[0], to: two[1] })}>Routes between them</button>
+      </div>`}
       <button class="btn small nm-fit" title="Fit in view" onClick=${() => cyRef.current?.animate({ fit: { eles: cyRef.current.elements(':visible'), padding: 40 }, duration: 300 })}>Fit</button>
       ${shelf.length > 0 && html`<div class="nm-shelf"><span>Riding along:</span>${shelf.map(([id, k]) => html`<button
         class=${`nm-chip ${view.tag === id ? 'on' : ''}`} title=${`The ${k} steps that take in or give off ${mapLabel(M.mols[id])}`}
