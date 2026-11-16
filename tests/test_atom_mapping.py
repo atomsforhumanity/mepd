@@ -601,3 +601,42 @@ def test_catalytic_participants_ignores_spectators_and_changed_reactants():
     direct = suggest_atom_mapping(start, end)
     # SLAPMapper's direct transfer leaves the water out of it: nothing catalytic
     assert catalytic_participants(start, realign_end_to_start(direct, end)) == []
+
+
+def test_snap_places_each_mechanism_once_per_pair_and_other_variants_ends_are_not_built(monkeypatch):
+    """Per conformer pair and mechanism, snap ran twice on the same aligned end (for the symmetry variants
+    and again for its picks), and every variant's reordered end was built though snap reads the first."""
+    import qcinf.algorithms.snap as snap_module
+
+    import mepd.atom_mapping as am
+    from mepd.atom_mapping_selection import select_per_mechanism, snap_choice
+    from mepd.inputs import RunInputs
+
+    start, end = _scrambled("keto_enol_1water")
+    run_inputs = RunInputs()
+    run_inputs.atom_mapping_inputs.explore_mechanisms = 3
+    calls, built = [], []
+    real_snap, real_realign, real_once = snap_module.snap_rmsd_align_assign, am.realign_end_to_start, am._once
+    monkeypatch.setattr(snap_module, "snap_rmsd_align_assign", lambda *a, **k: calls.append(1) or real_snap(*a, **k))
+    monkeypatch.setattr(am, "realign_end_to_start", lambda m, e: built.append(1) or real_realign(m, e))
+    am._PER_GEOMETRY.clear()
+    choices = select_per_mechanism(start, end, "snap", run_inputs)
+    groups = am.suggest_mechanism_candidates(start, end, explore=3)
+    assert len(choices) == len(groups) >= 3
+    n_calls = len(calls)
+    monkeypatch.setattr(am, "_once", lambda what, structures, compute: compute())
+    select_per_mechanism(start, end, "snap", run_inputs)
+    assert len(calls) - n_calls == n_calls + len(am.SNAP_SETTINGS) * len(choices)   # the picks' second run
+    monkeypatch.setattr(am, "_once", real_once)
+    assert sum(len(v) for v in groups.values()) > 3 * len(built)
+    # the same choice as with every variant's end built and nothing remembered
+    from mepd.atom_mapping_selection import MappingCandidate
+
+    for choice in choices:
+        am._PER_GEOMETRY.clear()
+        cands = [MappingCandidate(label=f"{choice.key} #{n}", end_structure=real_realign(m, end), atom_map=m)
+                 for n, m in enumerate(groups[choice.key])]
+        score, best, _ = snap_choice(cands, start, run_inputs, use_path=False)
+        assert score == choice.score and best.atom_map.as_order() == choice.winner.atom_map.as_order()
+        assert np.array_equal(best.end_structure.geometry, choice.winner.end_structure.geometry)
+        assert choice.n_variants == len(cands)

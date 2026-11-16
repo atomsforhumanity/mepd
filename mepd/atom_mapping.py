@@ -358,11 +358,30 @@ def _symmetry_colors(structure: Structure) -> list:
     return [f"{x}{r}" for x, r in zip(structure.symbols, ranks)]
 
 
+_PER_GEOMETRY: dict = {}
+
+
+def _once(what: str, structures: tuple, compute):
+    """`compute()`, kept per process for these exact structures (symbols and coordinates): a conformer pair's
+    mapping asks for the start's bonds, symmetry colours and automorphisms, and for snap's placement of one
+    aligned end, once per mechanism or more, and the answer depends on nothing else."""
+    key = (what, *((tuple(x.symbols), np.asarray(x.geometry, dtype=float).tobytes(), x.charge) for x in structures))
+    if key not in _PER_GEOMETRY:
+        if len(_PER_GEOMETRY) >= 256:
+            _PER_GEOMETRY.clear()
+        _PER_GEOMETRY[key] = compute()
+    return _PER_GEOMETRY[key]
+
+
 def _automorphism_generators(structure: Structure) -> list[list[int]]:
     """Generators (nauty) of the bond graph's automorphism group, keeping
     every bond and every atom's `_symmetry_colors`: g[i] is where atom i
     goes. The graph is the one SLAPMapper sees (`structure_to_molecule`).
     [] if there is no symmetry or nauty can't be used."""
+    return _once("automorphism generators", (structure,), lambda: _automorphism_generators_of(structure))
+
+
+def _automorphism_generators_of(structure: Structure) -> list[list[int]]:
     n = len(structure.symbols)
     try:
         import pynauty
@@ -409,21 +428,28 @@ def _snap_variants(atom_map: "AtomMapping", start_structure: Structure, end_stru
     try:
         from qcinf.algorithms.snap import snap_rmsd_align_assign
 
-        conn = [(int(u), int(v), 1.0) for u, v in structure_to_molecule(start_structure).edges()]
-        colors = _symmetry_colors(start_structure)
+        conn, colors = _once("bonds and colours", (start_structure,), lambda: (
+            [(int(u), int(v), 1.0) for u, v in structure_to_molecule(start_structure).edges()],
+            _symmetry_colors(start_structure)))
         aligned = realign_end_to_start(atom_map, end_structure)
     except Exception:
         return []
-    out = []
-    for settings in SNAP_SETTINGS:
-        try:
-            _, _, p = snap_rmsd_align_assign(start_structure, aligned, a_connectivity=conn, b_connectivity=conn,
-                                             a_coloring=colors, b_coloring=colors, **settings)
-        except Exception:
-            continue
-        out.append(AtomMapping(mapping={i: atom_map.mapping[int(p[i])] for i in range(len(p))},
-                               cost=atom_map.cost, n_alternatives=atom_map.n_alternatives))
-    return out
+
+    def snap():
+        found = []
+        for settings in SNAP_SETTINGS:
+            try:
+                _, _, p = snap_rmsd_align_assign(start_structure, aligned, a_connectivity=conn, b_connectivity=conn,
+                                                 a_coloring=colors, b_coloring=colors, **settings)
+            except Exception:
+                continue
+            found.append([int(x) for x in p])
+        return found
+
+    # the same aligned end is asked for twice per mechanism: for its symmetry variants and for snap's picks
+    return [AtomMapping(mapping={i: atom_map.mapping[p[i]] for i in range(len(p))},
+                        cost=atom_map.cost, n_alternatives=atom_map.n_alternatives)
+            for p in _once("snap", (start_structure, aligned), snap)]
 
 
 def expand_mapping_fully(

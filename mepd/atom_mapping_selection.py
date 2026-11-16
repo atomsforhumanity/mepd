@@ -610,13 +610,16 @@ def select_per_mechanism(
         return []
 
     identity_order = tuple(range(len(end_structure.symbols)))
+    # snap reads a mechanism's first variant only (the others only if snap cannot be used): their reordered
+    # ends, up to 200 per mechanism and pair, are built when asked for.
+    by_snap = metric in ("snap", "snap-gi-xtb")
     by_key: dict[str, list[MappingCandidate]] = {}
     for key, atom_maps in groups.items():
         by_key[key] = [
             MappingCandidate(
                 label=f"{key} #{n}",
                 end_structure=end_structure if tuple(m.as_order()) == identity_order
-                else realign_end_to_start(m, end_structure),
+                else None if by_snap and n else realign_end_to_start(m, end_structure),
                 atom_map=None if tuple(m.as_order()) == identity_order else m,
             )
             for n, m in enumerate(atom_maps)
@@ -632,8 +635,13 @@ def select_per_mechanism(
     for order, (key, cands) in enumerate(by_key.items()):
         if only_keys is not None and key not in only_keys:
             continue
-        if metric in ("snap", "snap-gi-xtb"):
-            score, best, _ = snap_choice(cands, start_structure, run_inputs, use_path=metric == "snap-gi-xtb")
+        if by_snap:
+            picks = _distinct(_snap_picks(cands[0], start_structure))
+            if not picks:
+                for c in cands:
+                    if c.end_structure is None:
+                        c.end_structure = realign_end_to_start(c.atom_map, end_structure)
+            score, best, _ = _rank_picks(picks, cands, start_structure, run_inputs, metric == "snap-gi-xtb")[:3]
             choices.append(MechanismChoice(key=key, winner=best, score=score, n_variants=len(cands), order=order))
             continue
         pool = lowest_rmsd_variants(cands, start_structure, run_inputs) if metric == "rmsd-geodesic" else cands
