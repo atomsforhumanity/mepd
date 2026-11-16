@@ -6,7 +6,8 @@ Per step, placer, with / without carrying, and number of placed poses n per fram
 reaction-energy shift from the lowest eligible pose of each frame among its first n (plus the poses carried at
 that n); their standard deviation and range over the repeats; the seconds one repeat took on its one thread;
 how far each repeat's lowest complex lies above the lowest one any placer and repeat found for that frame
-(the pooled lowest), and the pooled shift. --final: the same on the second level's single points
+(the pooled lowest), and the pooled shift; and, without carrying, after how many placed poses a repeat's
+own lowest complex of a frame is within 0.5 kcal/mol of what its 24 poses reach. --final: the same on the second level's single points
 (lowest pose chosen at that level). Prints markdown tables; everything goes to OUT.json.
 """
 import argparse
@@ -114,6 +115,33 @@ def main() -> None:
             continue
         print(f"| {system} | {placer} | {'yes' if carry else 'no'} | {n} | {S.mean(r['wall_s'] for r in rs):.1f} | "
               f"{S.median(sd):.2f} / {max(sd):.2f} | {S.median(rm):.2f} / {max(rm):.2f} | {100 * S.mean(w5):.0f} % |")
+    stops_changing(tasks, key)
+
+
+
+def stops_changing(tasks, key="energy"):
+    """Per system and placer: the number of placed poses after which a repeat's lowest eligible pose of a
+    frame is within 0.5 kcal/mol of the lowest of all its placed poses (median, 90th percentile, over
+    repeats, frames and steps)."""
+    out = defaultdict(list)
+    for t in tasks:
+        for f, ps in t["poses"].items():
+            es = [p[key] if ok(p) and key in p else None for p in ps]
+            have = [e for e in es if e is not None]
+            if not have:
+                continue
+            low, best = min(have), None
+            for n, e in enumerate(es, 1):
+                best = e if best is None or (e is not None and e < best) else best
+                if best is not None and (best - low) * H <= 0.5:
+                    out[(t["system"], t["placer"])].append(n)
+                    break
+    print("\n| system | placer | placed poses until the repeat's lowest complex of a frame stops changing by more than 0.5 "
+          "kcal/mol (of 24): median / 90th percentile |")
+    print("|---|---|---|")
+    for (system, placer), ns in sorted(out.items()):
+        ns.sort()
+        print(f"| {system} | {placer} | {S.median(ns):.0f} / {ns[int(0.9 * (len(ns) - 1))]} |")
 
 
 if __name__ == "__main__":
