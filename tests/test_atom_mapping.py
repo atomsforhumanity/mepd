@@ -571,6 +571,25 @@ def test_explore_molecule_keeps_slapmappers_mechanism_and_the_explored_ones_thro
         suggest_mechanism_candidates(start, end, explore=4, explore_molecule="CCO")
 
 
+def test_explore_lists_a_mechanism_once_not_again_through_symmetry_equivalent_atoms():
+    """The water relay from acetone's other methyl is the water relay: one mechanism, listed once, and the
+    place the copy took goes to the next mechanism in the ranking."""
+    import mepd.atom_mapping as am
+
+    start, end = _scrambled("keto_enol_1water")
+    base = suggest_atom_mapping(start, end)
+    ec = am._EditCount(start, end)
+    am._EXPLORED.clear()
+    explored = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10)]
+    assert len(explored) == 10
+    assert not any(ec.relabels(a, b) for k, b in enumerate(explored) for a in explored[:k])
+    # every route found, ranked: the kept ones are its first 10 that repeat no earlier kept one
+    everything = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10_000)]
+    assert explored == everything[:10]
+    costs = [(int(ec.cost(o)), ec.carbon_h_changes(o)) for o in everything]
+    assert costs == sorted(costs)                                   # still in the ranking's order
+
+
 def test_explore_finds_the_methyl_relay_through_ch3i():
     from mepd.atom_mapping import catalytic_participants, explore_mechanisms
 

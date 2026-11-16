@@ -828,7 +828,15 @@ def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, st
             continue
         if key not in best or c < best[key][0]:
             best[key] = (c, order)
-    ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
+    # In ranked order, leaving out a route that is an earlier one through symmetry-equivalent atoms (a relay
+    # from acetone's other methyl): one mechanism, which the first one's symmetry variants and snap's picks
+    # cover; its place goes to the next in the ranking.
+    ranked: list = []
+    for c, order in sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1])):
+        if len(ranked) == max_new:
+            break
+        if not any(ec.relabels(kept, order) for _, kept in ranked):
+            ranked.append((c, order))
     return ranked, len(best)
 
 

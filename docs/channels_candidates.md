@@ -213,9 +213,12 @@ again at the end adds `[catalytic: <formula>]`.
   of SLAPMapper's with the reactant's atoms renamed by a symmetry of its bond
   graph (the other methyl of an acetone) is the same mechanism and is left
   out; the symmetry variants of step 3 and snap's picks cover it.
-- *Known limit:* two **explored** mechanisms can still be one mechanism
-  through symmetry-equivalent atoms (keys ending `[route 2]`): on the
-  enolisation above, 9 of 20.
+- **A mechanism is listed once.** A mapping that is one of SLAPMapper's, or
+  an earlier explored one, with the reactant's atoms renamed by a symmetry
+  of its bond graph is left out the same way, and its place goes to the next
+  mechanism in the ranking. (Keys ending `[route 2]` remain where two
+  mechanisms share a name by symmetry class but are not related by a
+  symmetry of the whole reactant.)
 - **`--explore-molecule SMILES`** keeps, of the explored mechanisms, the N
   best-ranked in which that molecule of the start takes part: a bond that
   breaks or forms has one of its atoms. SLAPMapper's own mechanisms, in which
