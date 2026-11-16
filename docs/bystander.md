@@ -25,15 +25,20 @@ step finishes.
 
 ## What it does
 
-1. **Places** C next to each of the three frames. The default placer,
-   `"seeded"`, reads GFN2-xTB partial charges: it takes the step's atoms whose
-   charge differs most between the TS and either end, and its most polar
-   atoms, and puts one of C's three most oppositely charged atoms against each,
-   C turned to face it from outside, spun at random. No placer knows a
-   reaction class, a functional group or a mechanism. Others: `"random"`
-   (`mepd.complexes.packed`), `"screen-ff"` and `"screen-sp"` (200 rigid poses
-   on the step's surface, the best by point charges + a 12-6 term, or by single
-   points, relaxed).
+1. **Places** C next to each of the three frames. No placer knows a reaction
+   class, a functional group or a mechanism. The default, `"mixed"`, takes half
+   its poses from each of two:
+   - `"seeded"` reads GFN2-xTB partial charges: it takes the step's atoms whose
+     charge differs most between the TS and either end, and its most polar
+     atoms, and puts one of C's three most oppositely charged atoms against
+     each, C turned to face it from outside, spun at random. The best placer
+     for a flexible, polar C; it misses complexes held at two sites at once.
+   - `"screen-sp"` scores 200 rigid poses on the step's surface by single
+     points and relaxes the best. The best placer for a small rigid C.
+
+   Also `"random"` (`mepd.complexes.packed`: does not converge) and
+   `"screen-ff"` (the 200 poses scored by point charges + a 12-6 term: free,
+   but it puts a protic C where it reacts on relaxing).
 2. **Relaxes** C in every pose with the step's atoms held where they are (as
    `mepd variant --mode fast` holds the old atoms), to 0.05 eV/Å.
 3. **Carries** the three lowest poses of each frame to the other two frames and
@@ -54,15 +59,19 @@ E(X·C) − E(X) − E(C, lowest conformer).
 rotation are replaced by the complex's and by the six rigid-body vibrations of
 C against the step (the complex's Hessian projected on them, quasi-RRHO as
 `mepd.thermo.qrrho`). Internal vibrations are taken as unchanged and symmetry
-numbers as 1. On 39 frames it was 1.1 kcal/mol below a full quasi-RRHO of the
-relaxed complex on average (mean absolute 1.1; +10 to +13 kcal/mol for
-proline and AlCl3, +7 to +9 for water), so a gas-phase electronic binding of
-−11 kcal/mol is about 0 at 1 mol/L.
+numbers as 1. On 39 frames it was 1.0 kcal/mol below a full quasi-RRHO of the
+relaxed complex on average (mean absolute 1.1, largest 4.0). The correction is
++10 to +12 kcal/mol for proline and AlCl3 and +6 to +8.5 for water, so a
+gas-phase electronic binding of −11 kcal/mol is about 0 at 1 mol/L.
 
 **Solvent.** Give the engine of the network's level: where that has an
 implicit solvent the whole search runs in it. `final_engine` instead adds
 single points at a second level on the three lowest poses of each frame and
-repeat (`res["final"]`).
+repeat (`res["final"]`): a gas-phase search with DMSO single points gave the
+barrier shift of a search in DMSO throughout within 0.2 kcal/mol on four of
+six steps and 1.2–2.0 off on two, for a fifth to a ninth of the time. That
+shortcut needs C's form in solution to be its gas-phase form (not a
+zwitterion or an ion pair).
 
 ## Status
 
@@ -85,31 +94,36 @@ the lowest complex. Distance alone cannot tell a coordinated Lewis acid
   verified with C present (TS optimized from the estimate's TS complex, IRC,
   ends minimized: `mepd variant --mode reoptimize`), on ten steps (proline on
   aldol steps, water on HCOOH → H2O + CO, AlCl3 on isoprene + methyl acrylate
-  steps; g-xTB, gas phase) it had the verified shift's sign on eight and lay
-  within 2 kcal/mol on five; the largest difference was 4.4 kcal/mol. The
-  verified shift is usually the more negative one: a held TS cannot respond to
-  C.
-- **The verification is cheaper than the estimate** for a flexible C: 14–19 s
-  against 4–5 min of one core at 34 atoms. Verify every step that matters.
+  steps; g-xTB, gas phase) it had the verified shift's sign on nine and lay
+  within 2 kcal/mol on six; the mean difference was 2.0 and the largest 4.2
+  kcal/mol. The verified shift is usually the more negative one: a held TS
+  cannot respond to C. A small `spread` does not make the estimate right: it
+  measures the search, not this approximation.
+- **The verification is cheaper than the estimate** for a flexible C: 12–18 s
+  against 4–5 min of one core at 34 atoms. Use the estimate to order the work,
+  and verify every step that matters.
 - **The search is not converged for a flexible, strongly binding C.** With
-  L-proline (17 atoms, three conformers) on 17-atom steps the barrier shift of
-  a single repeat has a standard deviation of 0.7–0.8 kcal/mol on most steps
-  and of 2–5 kcal/mol on some, where one frame has a deep complex that few
-  searches find. Read `spread`; where it is several kcal/mol, the value is
-  the lowest of what was found and more repeats can still move it. For water
-  and AlCl3 the spread is 0.1–0.6 kcal/mol.
+  L-proline (17 atoms, three conformers) on the 178 steps of a 17-atom network,
+  the barrier shift's `spread` (range over three repeats) had a median of 1.7
+  kcal/mol and exceeded 2 on four steps in ten; two independent runs of the
+  whole network differed by 1.5 kcal/mol (rms). Searching more still lowers the
+  TS complexes more than the ends'. For water and AlCl3 the spread is 0.0–0.2
+  kcal/mol.
 - **It cannot see C taking part.** A proton relay through C, a covalent
   intermediate, or C moving the TS to another saddle are found only by the
   verification (3 of 13 verified steps ended that way: the IRC did not connect
-  the estimate's ends) or by a mapping scan (`mepd channels
-  --explore-mechanisms`).
+  the estimate's ends, and on two of them C's own bonds changed) or by a
+  mapping scan (`mepd channels --explore-mechanisms`).
 - **Gas-phase binding of polar molecules is large** and is not a binding in
-  solution: use the solvated level where the network has one.
+  solution: 3–5 kcal/mol stronger than in implicit DMSO for proline and water
+  here. Use the solvated level where the network has one.
 - One C per step; C's protonation form and conformers are the caller's
   (`molecule_from_smiles` gives a few RDKit conformers minimized at the
   engine's level; a form that is no minimum at that level is refused).
 - Symmetry numbers are 1 in the free-energy estimate (RT ln σ: 0.4 kcal/mol
   for water, 1.1 for AlCl3, in binding only; it cancels in the shifts).
 
-Measurements, with hardware and commits:
-`benchmarks/diagnostics/addmol/place_*.py` and the team's notes.
+Cost (g-xTB through axtb, 34 atoms, one thread per step): about 40 s per step
+with `repeats=1, carry=1, polish=0`, about 5 min with the defaults; 178 steps on
+32 threads of a Threadripper PRO 9985WX took 4.6 min and 31 min. The scripts
+behind every number here: `benchmarks/diagnostics/addmol/place_*.py`.
