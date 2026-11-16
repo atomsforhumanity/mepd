@@ -244,9 +244,13 @@ as not searched (`not_searched`, with the free energy compared).
 
 Where no thermal correction is computed, the comparison is not a free-energy one. These are the limits of "one
 scale":
-- **Above the cutoff + 15 on its electronic energy** a structure is closed, or its pair not searched, without a
-  Hessian: *provisionally*, and the summary says so (`closed.provisional`, `not_searched.provisional`,
-  `steering.provisional_closures`). The margin is one number at every temperature. A structure whose free energy
+- **Above the cutoff + 15 on its electronic energy** a structure that has no thermal correction is closed, or
+  its pair not searched, without a Hessian being asked for it: *provisionally*, and the summary says so
+  (`closed.provisional`, `not_searched.provisional`, `steering.provisional_closures`). In practice that is a
+  proposed product or a species; a TS found by the queue usually has its correction from the job that found it,
+  whatever its height, and is then judged on its free energy (a path-peak placeholder, or a TS whose correction
+  failed, has none). So `closed.provisional` on a step means that its TS, or the end species that closes it, has
+  no correction. The margin is one number at every temperature. A structure whose free energy
   would pass can be closed this way (possible for a product of several molecules at high temperature, whose free
   energy lies far below its electronic energy). The rule is never stricter than the classic gate.
 - **A species first found as the end of an IRC**, beside the pair that was asked for, is connected to the species
@@ -338,13 +342,13 @@ Per step (`steps[*]`):
 |---|---|---|---|
 | `free_energy_barrier_kcal` | `[from a, from b]` | the step's barrier on the basis the final kinetics use (`steering.kinetics_energy_basis`: thermal corrections, steering shifts, mirror-image terms), not clamped. For a step the kinetics use it is what `kinetics_barrier_kcal` was made from (equal unless the TS lies below an end). For a closed step it is given only when the run computed every term of it. For an unverified step or a path peak (`files.verified`, `files.ts_kind`) it is that structure's, not a checked TS's | a closed step with a term the run never computed: `free_energy_barrier_missing` lists them (e.g. `"steering single point of the TS"`); nothing is computed to fill it |
 | `free_energy_barrier_missing` | list of strings | the terms the run never computed | the barrier is given |
-| `ts_energy_terms` | object | as `energy_terms`, for the TS | as there |
+| `ts_energy_terms` | object | as `energy_terms`, for the TS. Its `thermal_correction_kcal` is taken at the TS converged to 1e-4 eV/Å (the file holds it as the search left it, at 0.001) and holds the electronic energy change of that, ~1e-4 kcal/mol unless the search had stopped short on a flat mode (`mepd/discovery/free_energy.py`). `counted_as`: `molecules` (the atom count of each molecule the TS's correction counts: what the TS was optimized on first, then each spectator) and `from`: `"optimized_on"` (the TS file's own record of what its search optimized: the whole box or a subsystem), `"ends"` (a TS file without that record, written before it existed: read from the bonds of the step's ends as before, which can differ between copies of one TS) or `"none"` | as there; `counted_as` absent without a thermal correction |
 | `closed` | object | why the final kinetics leave the step out: `reason`, `by` (`"box kinetics"` or `"molecule kinetics"`), and the numbers compared, `energy_used`, `value_kcal`, `cutoff_kcal` (null where the rule compares none) | the final kinetics use the step |
 | `irc` | object | its IRC check: `ok`, `t`, `ends` (the species its two ends are), `asked` (the pair its TS search was asked for), `searched_between` (the pair it was filed under before), `new_species`, `path_search_asked_for` (the pair sent to a path search because the IRC joins others) | no IRC check of this run filed it (unverified, a path peak, a TS from channel sampling or a known run) |
 | `placeholder_reason` | object | for `files.ts_kind: "path_peak"`: `why` is `"leaf_ts_failed"` (with `error`, and `fast_ts_error`, the pair's single TS optimization's) or `"leaf_ts_irc_failed"` / `"leaf_ts_irc_went_elsewhere"` (with `ts`, `irc_ends`, `error`) | the step has a TS |
 | `t_found`, `t_opened` | number | when the step joined the network; when it first took part in a kinetics, live or recorded (open in the box kinetics and, at molecule level, a reaction of the molecule network) | `t_opened`: it never did |
 | `reacting` | object | the step read as a reaction of molecules: `atoms` (of every reacting molecule), `reactants`, `products` (molecule keys), `spectators` (`{key, atoms}`), `with_neighbours` when the kinetics also keep the spectators its whole-box TS touches; or `{"unreadable": reason}` | the kinetics are not molecule-level |
-| `ts_group` | integer | the lowest index of the steps the kinetics count as one TS with it: mirror-image twins both found, one reaction found in several boxes (its own index when alone) | no kinetics ran |
+| `ts_group` | integer | the lowest index of the steps the kinetics count as one TS with it: mirror-image twins both found, one reaction found in several boxes, a whole-box TS without a spectator in contact and its subsystem TS (its own index when alone). The last pair counts through the subsystem TS whichever of the two is lower (the whole-box step's `closed.reason` is `counted_through_subsystem_ts`, `of` the step that stands for it): the whole-box copy's height carries the box model's replacement of the spectator's free motion by soft vibrations of the complex | no kinetics ran |
 
 `closed.reason` is one of:
 
@@ -375,7 +379,7 @@ Run level:
   reason}` with `reason` one of `ends_one_species`, `end_not_a_species` (an end's minimization failed, or the
   species cap), `same_ts` (`of`: the step that has this TS), `path_peak_not_lowest`, `path_peak_superseded`
   (`by`), `irc_failed` (`irc.why`: the IRC job's error), `irc_ends_one_species`, `irc_end_not_a_species`,
-  `same_ts_after_irc` (`of`), `superseded_by_channel_sampling`. The IRC ones carry `irc` as above. Each is also a
+  `same_ts_after_irc` (`of`), `superseded_by_channel_sampling`, `subsystem_ts_not_kept` (`of`: the whole-box step whose subsystem TS `<label>` would have been; `why`: the job's reason -- its TS optimization failed, or the reacting core moved, with the distance and by how much; the job log's `why` says the same). The IRC ones carry `irc` as above. Each is also a
   `step_removed` line of the event log when it happens, and each passed IRC check an `irc` line.
 - `steering.level`: `explorer` and `steer` (null without a steering level), each `{engine, key, profile_sha256}`:
   the engine class, the level of theory as the run's caches key it (program, method, basis and the other
