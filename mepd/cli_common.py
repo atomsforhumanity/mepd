@@ -1045,12 +1045,15 @@ class PairFollowUp:
     `run(task)` does one (in a forked process; it writes its own files).
     At most `during` run at once while searches are still running or
     queued, `after` once none are (nothing else is left to use the cores).
-    Whatever has not run when the pairs are done is the caller's to finish."""
+    Whatever has not run when the pairs are done is the caller's to finish.
+    `done()`, if given, is called (in the parent) after each pair and each
+    task that finishes."""
 
     tasks: Callable[[Path], list]
     run: Callable[[object], object]
     during: int = 1
     after: int = 1
+    done: Optional[Callable[[], None]] = None
 
 
 def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, follow_up: PairFollowUp,
@@ -1152,6 +1155,11 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                             extra.extend(follow_up.tasks(pairs_dir / f"pair_{i}_{j}"))
                         except Exception as exc:
                             _say(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
+                    if follow_up.done is not None:
+                        try:
+                            follow_up.done()
+                        except Exception as exc:
+                            _say(f"After {kind} {item!r:.80}: {type(exc).__name__}: {exc}")
     except BrokenProcessPool:
         counted(-sum(kind == "pair" for kind, _, _ in running.values()))
         _warn(

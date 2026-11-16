@@ -784,6 +784,23 @@ def catalytic_participants(struct_start: Structure, aligned_end_structure: Struc
     passes a proton on and takes another, or a CH3I hands over its methyl
     and gains one. Formulas, e.g. ['H2O', 'C5H9NO2']: a catalyst, or solvent
     acting as one."""
+    sym = [str(s) for s in struct_start.symbols]
+    out = []
+    for mol in molecules_taking_part(struct_start, aligned_end_structure):
+        if mol["returned"]:
+            counts = {}
+            for i in mol["atoms"]:
+                counts[sym[i]] = counts.get(sym[i], 0) + 1
+            order = sorted(counts, key=lambda e: (e != "C", e != "H", e))
+            out.append("".join(f"{e}{counts[e] if counts[e] > 1 else ''}" for e in order))
+    return sorted(out)
+
+
+def molecules_taking_part(struct_start: Structure, aligned_end_structure: Structure) -> list[dict]:
+    """The molecules of the start with an atom in a bond that breaks or forms on the way to
+    `aligned_end_structure` (same atom order), each as {"atoms": its atom indices, "smiles": its SMILES
+    (from the bond graph: no stereochemistry), "returned": whether the end holds a molecule with the same
+    bond graph (elements included) and at least one of its atoms (`catalytic_participants`' test)}."""
     import networkx as nx
 
     g0 = structure_to_molecule(struct_start)
@@ -793,22 +810,22 @@ def catalytic_participants(struct_start: Structure, aligned_end_structure: Struc
     nx.set_node_attributes(g1, {i: sym[i] for i in g1.nodes}, "el")
     ends = [set(c) for c in nx.connected_components(g1)]
     out = []
-    for comp in nx.connected_components(g0):
+    for comp in sorted(nx.connected_components(g0), key=min):
         comp = set(comp)
         touched = any(g0.has_edge(i, k) != g1.has_edge(i, k)
                       for i in comp for k in set(g0.neighbors(i)) | set(g1.neighbors(i)))
         if not touched:
             continue
         h0 = g0.subgraph(comp)
-        if any(e & comp and len(e) == len(comp)
-               and nx.is_isomorphic(h0, g1.subgraph(e), node_match=lambda a, b: a["el"] == b["el"])
-               for e in ends):
-            counts = {}
-            for i in comp:
-                counts[sym[i]] = counts.get(sym[i], 0) + 1
-            order = sorted(counts, key=lambda e: (e != "C", e != "H", e))
-            out.append("".join(f"{e}{counts[e] if counts[e] > 1 else ''}" for e in order))
-    return sorted(out)
+        try:
+            smiles = h0.copy().force_smiles()
+        except Exception:
+            smiles = ""
+        out.append({"atoms": sorted(int(i) for i in comp), "smiles": smiles,
+                    "returned": any(e & comp and len(e) == len(comp)
+                                    and nx.is_isomorphic(h0, g1.subgraph(e), node_match=lambda a, b: a["el"] == b["el"])
+                                    for e in ends)})
+    return out
 
 
 def _route_keys(struct_start: Structure, struct_end: Structure, bases: list["AtomMapping"]) -> list[str]:

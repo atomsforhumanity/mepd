@@ -774,6 +774,123 @@ def _ts_and_irc_once(node, label: str, ts_dir: Path, run_inputs: RunInputs, char
     return result
 
 
+class _SearchTable:
+    """<output>/searches.json: every path search of a run in the order it is queued, and what each has found
+    so far, rewritten (atomically) whenever a search or a transition state's IRC finishes, so a reader can
+    poll it and a stopped run leaves it. Per search: its conformer pair, the mechanism it was started for,
+    the molecules of the start that mechanism changes bonds in, and its status; per transition state found:
+    its files, its energy above the lowest start conformer (electronic), whether its IRC joins the start
+    and the end, the bonds that differ between its IRC ends (atom indices of the start), the molecules
+    those bonds touch and whether each is returned, and whether that is the mechanism searched for."""
+
+    def __init__(self, output: Path, structures: list, n_start: int, candidates: list, start_node, end_node,
+                 charge: int, multiplicity: int):
+        self.output, self.start, self.end, self.q, self.m = output, start_node, end_node, charge, multiplicity
+        self.floor = None
+        try:
+            self.floor = min(float(n.energy) for n in structures[:n_start] if n.energy is not None)
+        except Exception:
+            pass
+        mechanisms = {}
+        if (output / "pair_mechanisms.json").exists():
+            mechanisms = {r["pair"]: r["mechanism"] for r in json.loads((output / "pair_mechanisms.json").read_text())
+                          if not r.get("not_in_this_run")}
+        self.rows, self.molecules = [], None
+        if mechanisms:   # an atom-mapped search of molecules (not a QM/MM system)
+            from mepd.atom_mapping import molecules_taking_part
+            from mepd.qcdata_structure_helpers import structure_to_molecule
+
+            try:
+                pieces = structure_to_molecule(start_node.structure).separate_graph_in_pieces()
+                self.molecules = [{"atoms": sorted(int(i) for i in g.nodes), "smiles": g.force_smiles()}
+                                  for g in sorted(pieces, key=lambda g: min(g.nodes))]
+            except Exception:
+                pass
+        for i, j in candidates:
+            row = {"pair": f"pair_{i}_{j}", "start_conformer": i, "mechanism": mechanisms.get(f"pair_{i}_{j}")}
+            if row["mechanism"]:
+                try:
+                    row["molecules"] = molecules_taking_part(structures[i].structure, structures[j].structure)
+                except Exception:
+                    row["molecules"] = None
+            self.rows.append(row)
+        self.steps: dict = {}    # pair -> its transition states' labels, once its search is done
+        self.final: dict = {}    # label -> its entry, once nothing more will be written for it
+
+    def _step(self, label: str, mechanism: Optional[str]) -> dict:
+        ts_dir = self.output / "ts"
+        entry: dict = {"label": label}
+        if _ts_opt_failed(ts_dir, label):
+            return {**entry, "status": "ts_failed"}
+        if not (ts_dir / f"{label}.xyz").exists():
+            return {**entry, "status": "ts_pending"}
+        irc_fp = ts_dir / f"{label}_irc.xyz"
+        if not irc_fp.exists():
+            failed = (ts_dir / f"{label}_irc_failed.txt").exists()
+            return {**entry, "status": "irc_failed" if failed else "irc_pending", "ts": f"ts/{label}.xyz"}
+        result = _load_ts_and_irc_from_disk(ts_dir, label, self.q, self.m)
+        entry.update(status="verified", ts=f"ts/{label}.xyz", irc=f"ts/{label}_irc.xyz")
+        try:
+            entry["ts_energy_hartree"] = float(result.ts_node.energy)
+            if self.floor is not None:
+                entry["barrier_kcal"] = round((entry["ts_energy_hartree"] - self.floor) * 627.5094740631, 2)
+        except Exception:
+            pass
+        try:
+            from mepd.atom_mapping import mechanism_key, molecules_taking_part
+            from mepd.qcdata_structure_helpers import structure_to_molecule
+
+            a, b = result.irc_chain[0], result.irc_chain[-1]
+            if not _connectivity_matches(a, self.start) and (
+                    _connectivity_matches(b, self.start) or _connectivity_matches(a, self.end)):
+                a, b = b, a   # the IRC ran from the end's side
+            entry["joins_start_and_end"] = bool(_connectivity_matches(a, self.start) and _connectivity_matches(b, self.end))
+            entry["irc_ends"] = [_species_label(a), _species_label(b)]
+            if entry["irc_ends"][0] == entry["irc_ends"][1] and (ts_dir / f"{label}_check_failed.txt").exists():
+                entry["status"] = "not_a_reaction"
+            before, after = ({tuple(sorted((int(u), int(v)))) for u, v in structure_to_molecule(x.structure).edges()}
+                             for x in (a, b))
+            entry["bonds_broken"], entry["bonds_formed"] = sorted(before - after), sorted(after - before)
+            entry["molecules"] = molecules_taking_part(a.structure, b.structure)
+            entry["mechanism_found"] = mechanism_key(a.structure, b.structure)
+            if mechanism:
+                entry["is_searched_mechanism"] = entry["mechanism_found"] == mechanism.removeprefix("explored: ").split(" [")[0]
+        except Exception as exc:
+            entry["note"] = f"IRC ends not compared ({type(exc).__name__}: {exc})"
+        return entry
+
+    def write(self, finished: bool = False) -> None:
+        groups = {}
+        if finished:   # which channel folder each transition state went to
+            for kind in ("channels", "alternate-channels", "offtarget-exit-channels"):
+                for fp in sorted((self.output / kind).glob("**/members.txt")):
+                    for label in fp.read_text().split():
+                        groups.setdefault(label, str(fp.parent.relative_to(self.output)))
+        searches = []
+        for row in self.rows:
+            pair_dir = self.output / "pairs" / row["pair"]
+            done = (pair_dir / "tree" / "adj_matrix.txt").exists()
+            if done and row["pair"] not in self.steps:
+                self.steps[row["pair"]] = [label for label, _ in _pair_ts_guess_tasks(pair_dir, self.q, self.m)]
+            steps = []
+            for label in self.steps.get(row["pair"], []):
+                if label not in self.final:
+                    entry = self._step(label, row["mechanism"])
+                    if not entry["status"].endswith("_pending"):
+                        self.final[label] = entry
+                else:
+                    entry = self.final[label]
+                steps.append({**entry, **({"channel": groups[label]} if label in groups else {})})
+            status = "searched" if done else ("failed" if finished else "running") if pair_dir.exists() else \
+                ("not_run" if finished else "queued")
+            searches.append({**row, "status": status, "transition_states": steps})
+        doc = {"finished": finished, "barrier_reference": "lowest start conformer, electronic energy",
+               "lowest_start_conformer_hartree": self.floor, "start_molecules": self.molecules, "searches": searches}
+        tmp = self.output / "searches.json.tmp"
+        tmp.write_text(json.dumps(doc, indent=1) + "\n")
+        tmp.replace(self.output / "searches.json")
+
+
 def _discover_channels(
     output: Path,
     start_node,
@@ -1609,6 +1726,8 @@ def run_channels(
     # searches were given (pairs x branches x images), not just --workers.
     q, m = int(start_node.structure.charge), int(start_node.structure.multiplicity)
     ts_dir = output / "ts"
+    table = _SearchTable(output, structures, n_start, candidates, start_node, end_node, q, m)
+    table.write()
     search_procs = workers * (parallel_workers if parallel else 1) * max(1, int(stats.get("engine_parallel") or 1))
     analysis_width = max(workers, min(search_procs, cpu_count))
     follow_up = PairFollowUp(
@@ -1616,7 +1735,7 @@ def run_channels(
                                 if _load_ts_and_irc_from_disk(ts_dir, t[0], q, m) is None
                                 and not _ts_opt_failed(ts_dir, t[0])],
         run=lambda task: _ts_and_irc_once(task[1], task[0], ts_dir, run_inputs, q, m) and None,
-        during=workers, after=analysis_width,
+        during=workers, after=analysis_width, done=table.write,
     )
     from mepd.network_aware import resolve_cutoff
 
@@ -1659,6 +1778,7 @@ def run_channels(
         stats["direct_only"] = direct_only_counts(pairs_dir)
     _write_stats()
 
+    table.write()
     tree_dirs = _completed_tree_dirs(pairs_dir)
     if not tree_dirs:
         if (stats.get("direct_only") or {}).get("pairs_not_characterized"):
@@ -1695,6 +1815,7 @@ def run_channels(
     if mismatch_warnings:
         stats["endpoint_mismatch_warnings"] = mismatch_warnings
     stats["ts_discovery_seconds"] = round(time.perf_counter() - t0, 3)
+    table.write(finished=True)
     _write_stats()
 
 
