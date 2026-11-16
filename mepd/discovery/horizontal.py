@@ -245,10 +245,14 @@ class HorizontalConnector:
         import mepd
 
         label = label or f"fast_{i}_{j}"
+        from mepd.discovery.network_expansion import _xyz_energy, subsystem
+
         if (self.ts_dir / f"{label}.xyz").exists():
+            # (a run that stopped after writing it: with the energy its file gives, which the caller reads)
             ts = mepd.load(self.ts_dir / f"{label}.xyz")
+            if ts._cached_energy is None and _xyz_energy(ts.structure) is not None:
+                ts._cached_energy = _xyz_energy(ts.structure)
             return ts, label, self._ts_correction(ts, label, (a, b))
-        from mepd.discovery.network_expansion import subsystem
 
         # only the molecules the reaction takes part in (network_expansion.subsystem); the TS back among the rest,
         # unless it lands in a spectator's room (Subsystem.clashes): then the whole box, as without spectators
