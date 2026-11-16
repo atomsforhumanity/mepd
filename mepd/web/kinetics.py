@@ -171,22 +171,30 @@ def build(snap: dict, jobs: dict, level_key: Optional[str], *, include_unverifie
 def ts_geometry(job_or_jobs, e_ts: float, tol: float = 2e-3):
     """The TS structure in the output of a job (or of any of several jobs)
     whose energy is closest to `e_ts` (Hartree, within `tol`): (symbols,
-    coordinates in Angstrom), or None."""
+    coordinates in Angstrom), or None. A TS search keeps ts*.xyz with an
+    .energies file beside it; an expansion keeps its steps' TSs as
+    ts/<label>.xyz with the energy in the comment line (E=...)."""
     jobs_ = job_or_jobs if isinstance(job_or_jobs, list) else [job_or_jobs]
     files = []
     for job in jobs_:
         out = Path((job or {}).get("output_dir") or "")
         if out.is_dir():
             files += list(out.rglob("ts*.xyz"))
+            files += [f for f in (out / "ts").glob("*.xyz") if not f.name.startswith("ts")]
     best = None
     for f in files:
-        if "irc" in f.name:
+        if "irc" in f.name or f.name.endswith("_ends.xyz"):
             continue
         en = f.with_suffix(".energies")
         try:
             e = float(en.read_text().split()[0])
         except (OSError, ValueError, IndexError):
-            continue
+            try:
+                with open(f) as fh:
+                    fh.readline()
+                    e = float(fh.readline().split("E=")[1].split()[0])
+            except (OSError, ValueError, IndexError):
+                continue
         if abs(e - e_ts) <= tol and (best is None or abs(e - e_ts) < best[0]):
             best = (abs(e - e_ts), f)
     if best is None:
