@@ -721,6 +721,58 @@ def match(species: Sequence[dict], text: str) -> list:
     return [s["id"] for s in species if want is not None and s.get("smiles") and canon(s["smiles"], flat) == want]
 
 
+def query(net: dict, *, target: str, initial: dict, time_s: float, held=(), fraction: float = 0.5,
+          level: Optional[dict] = None) -> dict:
+    """The query file (docs/add-molecule.md) from a network whose species carry `atoms` and `coordinates`
+    and whose steps carry `geometry` (mepd.web.added.query for a workspace, mepd.discovery.parent.query for an
+    explorer run): the kinetics at these conditions, each species' amounts over time, each step's apparent
+    barriers and extent, and what limits `target`. `target` and the keys of `initial`: ids, names or SMILES.
+    ValueError when one names no species (or `initial` several)."""
+    goal = match(net["species"], target)
+    if not goal:
+        raise ValueError(f"{target!r} is no species of the network's kinetic model")
+    start = {}
+    for text, amount in initial.items():
+        ids = match(net["species"], text)
+        if len(ids) != 1:
+            raise ValueError(f"{text!r} names {len(ids)} species of the network's kinetic model")
+        start[ids[0]] = float(amount)
+    hold = [match(net["species"], x)[0] for x in held]
+    k = run(net, start, time_s, hold)
+    lim = limits(net, start, goal, time_s, held=hold, k=k)
+    control = lim.get("control") or {"steps": {}, "species": {}}
+    series = _series(k, goal)
+    final = float(series[-1])
+    resolved = final > RESOLUTION * float(k["c0"].sum())
+    for s in net["species"]:
+        i = k["pos"][s["id"]]
+        s.update(amount={"initial": float(k["c0"][i]), "final": float(k["res"].c[-1, i]),
+                         "max": float(k["res"].c[:, i].max()), "mean": float(k["mean"][i])},
+                 series=k["res"].c[:, i].tolist(), control=control["species"].get(s["id"]))
+    g = {s["id"]: s["g"] for s in net["species"]}
+    for j, st in enumerate(net["steps"]):
+        st.update(barrier={"forward": st["g_ts"] - sum(g[x] for x in st["reactants"]),
+                           "reverse": st["g_ts"] - sum(g[x] for x in st["products"])},
+                  apparent_barrier={"forward": k["apparent"][j][0], "reverse": k["apparent"][j][1]},
+                  extent=float(k["res"].extent[j]), control=control["steps"].get(st["id"]))
+    free = net["energies"] == "free"
+    return {"schema": QUERY, "version": VERSION, "units": UNITS,
+            "temperature": float(net["temperature"]), "energies": net["energies"],
+            "energy_reference": net.get("energy_reference") or (
+                "g and g_ts are absolute at the level (electronic energy"
+                + (" + thermal correction, 1 M standard state" if free else "")
+                + "): only differences between the two sides of a step mean anything.")
+            + " barrier: the TS above the step's separated reactants (forward) or products (reverse). "
+              "apparent_barrier: the TS above their chemical potentials at their time-averaged amounts.",
+            "source": net.get("source") or "workspace", "level": level or {"key": None, "profile": None},
+            "conditions": {"temperature": float(net["temperature"]), "time_s": float(time_s), "initial": start,
+                           "held": hold},
+            "target": {"species": goal, "asked": target, "fraction": fraction, "final": final, "resolved": resolved,
+                       "time_to_fraction_s": time_to(k["times"], series, fraction * final) if resolved else None},
+            "times": k["times"].tolist(), "species": net["species"], "steps": net["steps"], "limits": lim,
+            "notes": net.get("notes") or [], "left_out": len(net.get("excluded") or [])}
+
+
 def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done", layers: Sequence[dict] = (),
            failed: Sequence[dict] = (), fraction: Optional[float] = None) -> dict:
     """The result file of one candidate: what was asked, every estimate with its layer, level and

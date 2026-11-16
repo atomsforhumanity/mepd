@@ -64,7 +64,9 @@ def _amounts(items: List[str]) -> dict:
 
 @addmol_app.command("query")
 def query(
-    workspace: Path = typer.Argument(..., exists=True, help="Workspace folder."),
+    workspace: Path = typer.Argument(..., exists=True, help="A workspace folder, or the output folder of a "
+                                     "finished `mepd discovery expand` run (summary.json, species/, ts/): then "
+                                     "the parent is the explorer's own molecule-level network."),
     target: str = typer.Option(..., "--target", help="The species to make more of: SMILES, name or id. A SMILES "
                                "without stereo marks counts its stereoisomers together."),
     initial: List[str] = typer.Option(..., "--initial", help="Starting amount, SPECIES=mol/L (repeat)."),
@@ -72,7 +74,11 @@ def query(
     time_s: float = typer.Option(86400.0, "--time", help="s."),
     fraction: float = typer.Option(0.5, "--fraction", help="The time to reach this fraction of the target's "
                                    "final amount is reported."),
-    electronic: bool = typer.Option(False, "--electronic", help="Electronic energies instead of free energies."),
+    electronic: bool = typer.Option(False, "--electronic", help="Electronic energies instead of free energies "
+                                    "(a workspace only)."),
+    inputs: Optional[Path] = typer.Option(None, "--inputs", "-i", help="An explorer run's profile, for the thermal "
+                                          "corrections it did not record. Default: the .toml kept beside the run."),
+    workers: int = typer.Option(1, "--workers", help="Processes for those thermal corrections."),
     output: Path = typer.Option(..., "--output", "-o", help="The query file (JSON)."),
 ) -> None:
     """The query file: conditions, species (SMILES, coordinates, amounts over time), steps (ends, TS, changing
@@ -82,11 +88,23 @@ def query(
     from mepd.web.workspace import Workspace, WorkspaceError
 
     t0 = time.perf_counter()
-    ws = Workspace(workspace)
     try:
-        doc = added.query(ws, added.manager(ws).jobs, target=target, initial=_amounts(initial),
-                          temperature=temperature, time_s=time_s, free_energy=not electronic, fraction=fraction)
-    except WorkspaceError as exc:
+        from mepd.discovery import parent
+    except ImportError:
+        parent = None
+    try:
+        if parent is not None and parent.is_run(workspace):
+            from mepd.cli_common import _open_run_inputs
+
+            profile = inputs or parent.profile_of(workspace)
+            doc = parent.query(workspace, _open_run_inputs(profile).engine if profile else None, target=target,
+                               initial=_amounts(initial), time_s=time_s, temperature=temperature, fraction=fraction,
+                               workers=workers)
+        else:
+            ws = Workspace(workspace)
+            doc = added.query(ws, added.manager(ws).jobs, target=target, initial=_amounts(initial),
+                              temperature=temperature, time_s=time_s, free_energy=not electronic, fraction=fraction)
+    except (WorkspaceError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from None
     addmol.write_json(output, doc)
     lim = doc["limits"]
@@ -157,6 +175,60 @@ def _prepare(candidate: dict, engine) -> dict:
             "conformers": [(np.asarray(best[i].structure.geometry) * 0.529177210903).tolist() for i in order]}
 
 
+def _flat(smiles: Optional[str]) -> Optional[str]:
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(smiles or "")
+    if mol is None:
+        return None
+    Chem.RemoveStereochemistry(mol)
+    return Chem.MolToSmiles(mol)
+
+
+def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list) -> list:
+    """The candidate's new steps given with a TS geometry and its two ends, each put on the parent's scale as a
+    whole (mepd.discovery.parent.ts_step): its barrier above its separated molecules, and which species its
+    reacting molecules are. An entry that already has a barrier and no TS is kept as given."""
+    import numpy as np
+
+    from mepd import addmol
+    from mepd.discovery import molecules as M
+    from mepd.discovery import parent
+    from mepd.web.variants import _structure
+
+    c_key = _flat(M.molecule_parts(_structure(molecule["symbols"], molecule["conformers"][0], molecule["charge"],
+                                              molecule["multiplicity"]))[0][1])
+
+    def ids(mols):
+        out = []
+        for m in mols:
+            hit = addmol.match(q["species"], m["smiles"]) or (
+                [addmol.ADDED_ID] if _flat(m["smiles"]) == c_key else [])
+            if len(hit) != 1:
+                raise ValueError(f"{m['smiles']} in its TS is no species of the network (a new species has to be "
+                                 "given under new_species)" if not hit else f"{m['smiles']} names several species")
+            out.append(hit[0])
+        return out
+
+    done = []
+    for n in entries:
+        if not n.get("ts"):
+            done.append(n)
+            continue
+        try:
+            ends = n["ts"]["ends"]
+            got = parent.ts_step({k: n["ts"].get(k) for k in ("atoms", "coordinates", "charge", "multiplicity", "comment")
+                                  if n["ts"].get(k) is not None}, np.asarray(ends[0]), np.asarray(ends[1]), engine,
+                                 temperature=q["temperature"])
+            done.append({**{k: v for k, v in n.items() if k != "ts"}, "reactants": ids(got["reactants"]),
+                         "products": ids(got["products"]), "barrier": got["barrier"], "counted": got["counted"],
+                         "spectators": [m["smiles"] for m in got["spectators"]], "barrier_method": got["method"]})
+        except Exception as exc:
+            failed.append({"step": n.get("id"), "layer": n.get("layer") or "given", "status": "failed",
+                           "why": f"{type(exc).__name__}: {exc}"})
+    return done
+
+
 _ENGINE = None
 
 
@@ -222,10 +294,14 @@ def test(
     if work and profile is None:
         raise typer.BadParameter("the bystander layer needs a profile: give --inputs (the query keeps none)")
     total = sum(s["amount"]["initial"] for s in q["species"])
-    held = [s for s in q["species"] if s["id"] in q["target"]["species"] or s["amount"]["max"] >= 1e-6 * total]
+    held = [s for s in q["species"] if s.get("atoms") and (s["id"] in q["target"]["species"]
+                                                       or s["amount"]["max"] >= 1e-6 * total)]
     level = (q.get("level") or {}).get("key")
     engine = None
-    if work:
+    with_ts = any(n.get("ts") for c in cands for n in ((c.get("estimates") or {}).get("new_steps") or []))
+    if with_ts and profile is None:
+        raise typer.BadParameter("a step given with a TS needs a profile for its free energy: give --inputs")
+    if work or with_ts:
         from mepd.cli_common import _open_run_inputs
 
         engine = _open_run_inputs(profile).engine
@@ -254,22 +330,27 @@ def test(
             addmol.write_json(fp, doc)
             return doc
 
+        molecule = None
+        if work or any(n.get("ts") for n in est["new_steps"]):
+            t = time.perf_counter()
+            try:
+                molecule = _prepare(cand, engine)
+            except Exception as exc:
+                failed.append({"layer": "candidate", "why": f"the candidate could not be built: {type(exc).__name__}: {exc}"})
+                lay["status"] = "failed" if work else lay["status"]
+                summary.append(_line(write("failed"), fp))
+                continue
+            timing["prepare_s"] = round(time.perf_counter() - t, 1)
+            t = time.perf_counter()
+            est["new_steps"] = _ts_steps(q, est["new_steps"], molecule, engine, failed)
+            timing["ts_steps_s"] = round(time.perf_counter() - t, 1)
         doc = write("running" if work else "done")
         if work:
             # A complex a given step starts from or ends in needs its binding.
             named = {x[:-len(addmol.ADDED_ID) - 1] for n in est["new_steps"] for x in n["reactants"] + n["products"]
                      if x.endswith("." + addmol.ADDED_ID)}
-            held_c = held + [s for s in q["species"] if s["id"] in named and s not in held]
+            held_c = held + [s for s in q["species"] if s["id"] in named and s not in held and s.get("atoms")]
             lay["total"] = len(work) + len(held_c)
-            t = time.perf_counter()
-            try:
-                molecule = _prepare(cand, engine)
-            except Exception as exc:
-                failed.append({"layer": "bystander", "why": f"the candidate could not be built: {type(exc).__name__}: {exc}"})
-                lay["status"] = "failed"
-                summary.append(_line(write("failed"), fp))
-                continue
-            timing["prepare_s"] = round(time.perf_counter() - t, 1)
             pose = cand.get("pose") or {}
             tasks = []
             for s in held_c:
