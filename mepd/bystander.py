@@ -333,11 +333,13 @@ def rigid_modes(hessian, symbols, xyz, n_x: int) -> np.ndarray:
         return np.array(vecs).T
 
     x, c = np.arange(n_x), np.arange(n_x, len(m))
-    whole, _ = np.linalg.qr(rigid(np.arange(len(m))))
+    def basis(v) -> np.ndarray:
+        U, s, _ = np.linalg.svd(v, full_matrices=False)
+        return U[:, s > 1e-6 * s.max()]
+
+    whole = basis(rigid(np.arange(len(m))))
     both = np.hstack([rigid(x), rigid(c)])
-    both = both - whole @ (whole.T @ both)                      # without the complex's own rigid motions
-    U, s, _ = np.linalg.svd(both, full_matrices=False)
-    B = U[:, s > 1e-6 * s.max()][:, :6]
+    B = basis(both - whole @ (whole.T @ both))                  # without the complex's own rigid motions
     H = np.asarray(hessian, dtype=float)
     H = 0.5 * (H + H.T) / np.outer(sm, sm)
     w = np.linalg.eigvalsh(B.T @ H @ B)
