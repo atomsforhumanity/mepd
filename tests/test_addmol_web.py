@@ -125,3 +125,106 @@ def test_the_added_molecule_variant_record(adopted):
     assert out["steps"][0]["through"] == with_c["id"]
     with pytest.raises(WorkspaceError):
         added.variant_network(ws, mgr.jobs, key, 298.15, "nope")
+
+
+# ---------------------------------------------------------------- the query file and the CLI
+def test_the_query_file_is_plain_and_complete(adopted):
+    ws, mgr, _job = adopted
+    doc = added.query(ws, mgr.jobs, target="[C-]#[NH+]", initial={"C#N": 1.0}, temperature=1500.0, time_s=1e-8,
+                      free_energy=False)
+    doc = json.loads(json.dumps(doc))                     # plain JSON, nothing of mepd's in it
+    assert doc["schema"] == "mepd-addmol-query" and doc["version"] == 1 and doc["units"]["length"] == "angstrom"
+    assert doc["energies"] == "electronic" and "absolute" in doc["energy_reference"]
+    hcn = next(s for s in doc["species"] if s["smiles"] == "C#N")
+    assert hcn["atoms"] == ["H", "C", "N"] and len(hcn["coordinates"]) == 3 and hcn["amount"]["initial"] == 1.0
+    assert len(hcn["series"]) == len(doc["times"]) and hcn["status"] == "verified" and hcn["level"] == doc["level"]["key"]
+    (step,) = doc["steps"]
+    g = step["geometry"]
+    assert g["atoms"] == ["H", "C", "N"] and g["bonds_broken"] == [[0, 1]] and g["bonds_formed"] == [[0, 2]]
+    assert np.allclose(g["ts"], FRAMES["ts"]) and step["barrier"]["forward"] == pytest.approx((E_TS - E_HCN) * 627.509474)
+    assert step["status"] == "verified" and step["extent"] > 0
+    # at 1500 K the step runs (1.5 % in this time): its degree of control is defined, and it is the one to lower
+    assert doc["target"]["resolved"] and doc["limits"]["defined"]
+    assert doc["limits"]["order"][0]["step"] == step["id"] and doc["limits"]["order"][0]["role"] == "lower"
+    assert step["control"] == pytest.approx(doc["limits"]["control"]["steps"][step["id"]])
+    assert doc["level"]["profile"].startswith("engine_name")
+    with pytest.raises(WorkspaceError, match="no species"):
+        added.query(ws, mgr.jobs, target="CCO", initial={"C#N": 1.0}, temperature=300.0, time_s=1.0, free_energy=False)
+
+
+def test_the_cli_from_a_run_to_a_result_file(run, tmp_path):
+    """adopt, query, test with estimates that come with the candidate (no bystander layer: --steps 0)."""
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    cli = CliRunner()
+    ws = tmp_path / "ws2"
+    # (every molecule of this run already has its energy: nothing to minimize)
+    res = cli.invoke(app, ["addmol", "adopt", str(run), str(ws)])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["edges_with_verified_ts"] == 1
+    qf = tmp_path / "query.json"
+    res = cli.invoke(app, ["addmol", "query", str(ws), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
+                           "--temperature", "300", "--time", "3600", "--electronic", "-o", str(qf)])
+    assert res.exit_code == 0, res.output
+    q = json.loads(qf.read_text())
+    step = q["steps"][0]
+    assert not q["limits"]["defined"] and q["limits"]["order"][0]["step"] == step["id"]
+    hcn, hnc = step["reactants"][0], step["products"][0]          # (the step is stored HCN -> HNC: uphill)
+    cands = [{"name": "relay cat", "smiles": "O", "amount": 0.1, "estimates": {"new_steps": [
+                 {"id": "relay", "label": "HCN -> HNC through the molecule", "reactants": [hcn, "added"],
+                  "products": [hnc, "added"], "barrier": {"electronic": 25.0}, "parent_step": step["id"],
+                  "status": "est", "level": "from a test", "source": "made up"}]}},
+             {"name": "nothing", "smiles": "N", "amount": 0.1}]
+    cf = tmp_path / "cands.json"
+    cf.write_text(json.dumps(cands))
+    out = tmp_path / "results"
+    res = cli.invoke(app, ["addmol", "test", str(qf), "--candidates", str(cf), "--steps", "0", "-o", str(out)])
+    assert res.exit_code == 0, res.output
+    lines = json.loads(res.output)
+    assert [x["candidate"] for x in lines] == ["relay cat", "nothing"]
+    relay = json.loads((out / "relay_cat.json").read_text())
+    assert relay["status"] == "done" and relay["readout"]["added"]["fate"] == "regenerated"
+    assert relay["readout"]["target"]["with"]["final"] > 0.01 > relay["readout"]["target"]["parent"]["final"]
+    row = relay["readout"]["steps"][0]
+    assert row["through"] == "relay" and row["status"] == "est" and row["change"] < -10.0
+    assert relay["readout"]["first_order"]["factor"] is None and "none of the target" in relay["readout"]["first_order"]["why"]
+    assert [x["name"] for x in relay["layers"]] == ["given", "bystander"] and relay["layers"][1]["status"] == "skipped"
+    assert relay["readout"]["peak_routes"]["with"][0]["peak"] < relay["readout"]["peak_routes"]["parent"][0]["peak"]
+    nothing = json.loads((out / "nothing.json").read_text())
+    assert nothing["readout"]["added"]["fate"] == "no part" and nothing["readout"]["steps"][0]["change"] == 0.0
+    # a file that is no query, a candidate without an amount
+    assert cli.invoke(app, ["addmol", "test", str(cf), "-c", "O", "--amount", "1", "-o", str(out)]).exit_code != 0
+    assert cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "--steps", "0", "-o", str(out)]).exit_code != 0
+
+
+def test_the_bystander_layer_beside_a_step(run, tmp_path):
+    """The stand-in on HCN -> HNC with water: bindings to the three frames, the shifts, a proposed pose."""
+    pytest.importorskip("axtb")
+    from mepd.engines.gxtb import GXTBCalculator
+    from mepd.nodes.node import StructureNode
+    from mepd.structures import smiles_to_structure
+
+    engine = GXTBCalculator(backend="axtb")
+    frames = {"symbols": ["H", "C", "N"], "charge": 0, "multiplicity": 1,
+              "r": FRAMES["hcn"], "ts": FRAMES["ts"], "p": FRAMES["hnc"]}
+    w = engine.compute_geometry_optimization(StructureNode(structure=smiles_to_structure("O")))[-1].structure
+    water = {"symbols": list(w.symbols), "charge": 0, "multiplicity": 1,
+             "conformers": [np.asarray(w.geometry) * 0.529177210903]}
+    out = addmol.bystander(frames, water, engine, poses=4)
+    assert out["status"] == "ok" and set(out["binding"]) == {"r", "ts", "p"} and out["poses"] == 4
+    for b in out["binding"].values():
+        assert -15.0 < b["electronic"] < 0.0 and b["free"] > b["electronic"] and b["spread"] >= 0.0
+    assert out["barrier_shift"]["electronic"] == pytest.approx(out["binding"]["ts"]["electronic"] - out["binding"]["r"]["electronic"])
+    assert np.allclose(np.array(out["complexes"]["ts"])[:3], FRAMES["ts"])            # the step's atoms are held
+    json.dumps(out)                                                                    # plain numbers and lists
+    # a species alone (no TS): its binding only; a proposed pose is one more placement
+    alone = addmol.bystander({**frames, "ts": None, "p": None}, water, engine, poses=2,
+                             starts=[{"frame": "r", "coords": np.array(out["complexes"]["r"])[3:]}])
+    assert set(alone["binding"]) == {"r"} and alone["poses"] == 3 and alone["barrier_shift"] is None
+    assert alone["binding"]["r"]["electronic"] <= out["binding"]["r"]["electronic"] + 0.05
+    # far away, nothing pulls on it: a failure, not a number
+    far = addmol.bystander({**frames, "ts": None, "p": None}, water, engine, poses=0,
+                           starts=[{"frame": "r", "coords": np.array(water["conformers"][0]) + [0.0, 40.0, 0.0]}])
+    assert far["status"] == "unmoved" and "did not move" in far["why"]

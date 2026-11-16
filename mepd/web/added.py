@@ -252,3 +252,85 @@ def variant_network(ws, jobs: dict, level_key: Optional[str], temperature: float
         raise WorkspaceError(f"{vid!r} is not an added-molecule variant")
     parent = parent or network(ws, jobs, level_key, temperature, free_energy=free_energy, view=var.get("on"))
     return addmol.added(parent, var["added"], var["estimates"])
+
+
+# ---------------------------------------------------------------- the query file
+def level_of(ws, jobs: dict) -> tuple[Optional[str], Optional[str]]:
+    """(level key, profile text) the workspace's network is at: its level profile, else the one level
+    its jobs ran at."""
+    if ws.level_profile:
+        return ws.level_of(ws.level_profile)["key"], ws.read_profile(ws.level_profile)
+    levels = {}
+    for j in jobs.values():
+        lv = j.get("level") or {}
+        if lv.get("key"):
+            levels[lv["key"]] = lv
+    if len(levels) != 1:
+        raise WorkspaceError("the workspace has no level profile set and its jobs ran at "
+                             f"{len(levels)} levels: set one (Workspace.set_level_profile)")
+    (lv,) = levels.values()
+    text = None
+    try:
+        text = ws.read_profile(lv["profile"]) if lv.get("profile") else Path(lv["source"]).read_text()
+    except Exception:
+        pass
+    return lv["key"], text
+
+
+def query(ws, jobs: dict, *, target: str, initial: dict, temperature: float, time_s: float, held=(),
+          free_energy: bool = True, fraction: float = 0.5) -> dict:
+    """The query file (docs/add-molecule.md): the network at these conditions, with the geometries and
+    the kinetics a model needs to propose a molecule for `target`, and that `mepd addmol test` needs to
+    test one. `target` and the keys of `initial`: species ids, names or SMILES."""
+    key, profile = level_of(ws, jobs)
+    net = network(ws, jobs, key, temperature, free_energy=free_energy)
+    goal = addmol.match(net["species"], target)
+    if not goal:
+        raise WorkspaceError(f"{target!r} is no species of the network's kinetic model")
+    start = {}
+    for text, amount in initial.items():
+        ids = addmol.match(net["species"], text)
+        if len(ids) != 1:
+            raise WorkspaceError(f"{text!r} names {len(ids)} species of the network's kinetic model")
+        start[ids[0]] = float(amount)
+    hold = [addmol.match(net["species"], x)[0] for x in held]
+    k = addmol.run(net, start, time_s, hold)
+    lim = addmol.limits(net, start, goal, time_s, held=hold, k=k)
+    control = lim.get("control") or {"steps": {}, "species": {}}
+    snap = ws.snapshot()
+    series = addmol._series(k, goal)
+    final = float(series[-1])
+    resolved = final > addmol.RESOLUTION * float(k["c0"].sum())
+    for s in net["species"]:
+        i = k["pos"][s["id"]]
+        st = ws.load_structure(s["id"])
+        s.update(atoms=list(st.symbols), coordinates=(np.asarray(st.geometry, dtype=float) * BOHR).tolist(),
+                 amount={"initial": float(k["c0"][i]), "final": float(k["res"].c[-1, i]),
+                         "max": float(k["res"].c[:, i].max()), "mean": float(k["mean"][i])},
+                 series=k["res"].c[:, i].tolist(), control=control["species"].get(s["id"]))
+    g = {s["id"]: s["g"] for s in net["species"]}
+    for j, st in enumerate(net["steps"]):
+        st.update(barrier={"forward": st["g_ts"] - sum(g[x] for x in st["reactants"]),
+                           "reverse": st["g_ts"] - sum(g[x] for x in st["products"])},
+                  apparent_barrier={"forward": k["apparent"][j][0], "reverse": k["apparent"][j][1]},
+                  extent=float(k["res"].extent[j]), control=control["steps"].get(st["id"]))
+        fr = step_frames(ws, jobs, snap["edges"][st["edge"]], key)
+        st["geometry"] = None if fr is None else {
+            "atoms": fr["symbols"], "charge": fr["charge"], "multiplicity": fr["multiplicity"],
+            "reactant": np.asarray(fr["r"]).tolist(), "ts": np.asarray(fr["ts"]).tolist(),
+            "product": np.asarray(fr["p"]).tolist(),
+            **{f"bonds_{a}": b for a, b in bond_changes(fr["symbols"], fr["r"], fr["p"]).items()}}
+    return {"schema": addmol.QUERY, "version": addmol.VERSION, "units": addmol.UNITS,
+            "temperature": float(temperature), "energies": net["energies"],
+            "energy_reference": "g and g_ts are absolute at the level (electronic energy"
+                                + (" + thermal correction, 1 M standard state" if net["energies"] == "free" else "")
+                                + "): only differences between the two sides of a step mean anything. barrier: "
+                                "the TS above the step's separated reactants (forward) or products (reverse). "
+                                "apparent_barrier: the TS above their chemical potentials at their "
+                                "time-averaged amounts.",
+            "level": {"key": key, "profile": profile},
+            "conditions": {"temperature": float(temperature), "time_s": float(time_s), "initial": start, "held": hold},
+            "target": {"species": goal, "asked": target, "fraction": fraction, "final": final, "resolved": resolved,
+                       "time_to_fraction_s": addmol.time_to(k["times"], series, fraction * final) if resolved else None},
+            "times": k["times"].tolist(), "species": net["species"], "steps": net["steps"], "limits": lim,
+            "notes": net["notes"], "left_out": len(net["excluded"])}

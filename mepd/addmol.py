@@ -526,8 +526,9 @@ def _side(network: dict, k: dict, target, fraction: float) -> dict:
 def readout(parent: dict, variant: dict, initial: dict, amount: float, target, time_s: float, *,
             fraction: float = 0.5, held: Sequence[str] = ()) -> dict:
     """The parent's kinetics and the variant's (the same mixture plus `amount` M of the added molecule),
-    side by side: the target, every parent step's apparent barrier before and after (after: the lowest
-    of the step itself and its versions with C, and which), the routes that carry the target's material,
+    side by side: the target, every parent step's apparent barrier before and after (read the way its
+    material goes, `direction`; after: the lowest of the step itself and its versions with C, and which,
+    `through`; `barrier`: its TS above that side at 1 M), the routes that carry the target's material,
     C's resting state and fate (`fate`). "resolved" False: an amount below the kinetics' resolution."""
     c = variant["added"]
     kp = run(parent, initial, time_s, held)
@@ -541,19 +542,35 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
     versions: dict = {}
     for j, st in enumerate(variant["steps"]):
         versions.setdefault(st.get("parent_step") or st["id"], []).append(j)
+    cargo = _cargo(variant)
+
+    def way(st, version) -> int:
+        """0 if the version runs the way its parent step is written, 1 if the other way (by what its
+        two sides carry; a molecule on both sides of the parent counts on neither)."""
+        r, p = Counter(st["reactants"]), Counter(st["products"])
+        r, p = r - p, p - r
+        vr = Counter(y for x in version["reactants"] for y in cargo[x])
+        vp = Counter(y for x in version["products"] for y in cargo[x])
+        return 1 if (vr - vp) == p and r != p else 0
+
     steps = []
     for j, st in enumerate(parent["steps"]):
-        before = kp["apparent"][j]
-        cand = [(kv["apparent"][i][0], variant["steps"][i]) for i in versions.get(st["id"], [])
-                if kv["apparent"][i][0] is not None]
+        mine = [(i, way(st, variant["steps"][i])) for i in versions.get(st["id"], [])]
+        # Read the way the material goes (with C; without it where nothing goes with C).
+        went = sum(float(kv["res"].extent[i]) * (1 - 2 * w) for i, w in mine) or float(kp["res"].extent[j])
+        d = 1 if went < 0 else 0
+        before = kp["apparent"][j][d]
+        cand = [(kv["apparent"][i][d ^ w], variant["steps"][i]) for i, w in mine]
+        cand = [x for x in cand if x[0] is not None]
         after = min(cand, key=lambda x: x[0]) if cand else (None, None)
+        side = st["products"] if d else st["reactants"]
         steps.append({"step": st["id"], "label": st.get("label") or st["id"],
-                      "barrier": float(st["g_ts"]) - sum(float(parent["species"][i]["g"]) for i in
-                                                         (kp["pos"][x] for x in st["reactants"])),
-                      "before": before[0], "after": after[0],
-                      "change": after[0] - before[0] if after[0] is not None and before[0] is not None else None,
+                      "direction": "reverse" if d else "forward",
+                      "barrier": float(st["g_ts"]) - sum(float(parent["species"][kp["pos"][x]]["g"]) for x in side),
+                      "before": before, "after": after[0],
+                      "change": after[0] - before if after[0] is not None and before is not None else None,
                       "through": after[1]["id"] if after[1] is not None else None,
-                      "status": (after[1] or {}).get("status") or "verified" if after[1] is not None else None,
+                      "status": (after[1].get("status") or "verified") if after[1] is not None else None,
                       "spread": (after[1] or {}).get("spread")})
     new = [{"id": s["id"], "name": s.get("name"), "kind": s["kind"], "final": float(kv["res"].c[-1, kv["pos"][s["id"]]]),
             "max": float(kv["res"].c[:, kv["pos"][s["id"]]].max()), "mean": float(kv["mean"][kv["pos"][s["id"]]]),
@@ -565,3 +582,188 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
             "added": fate(variant, kv), "new_species": new, "notes": variant.get("notes") or [],
             "conditions": {"temperature": float(parent["temperature"]), "time_s": float(time_s),
                            "initial": kp["initial"], "amount": float(amount), "energies": parent.get("energies")}}
+
+
+# ---------------------------------------------------------------- the bystander layer (stand-in)
+def _rigid_g(symbols, coords, temperature: float) -> float:
+    from mepd import thermo
+
+    return float(thermo.qrrho([], list(symbols), np.asarray(coords, dtype=float), float(temperature))["g_corr"])
+
+
+def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.15, starts: Sequence[dict] = (),
+              seed: int = 0, poses: int = 6) -> dict:
+    """The molecule C beside the frames of one parent step, the step's own atoms held: C's binding to the
+    reactant end, the TS and the product end, and the barrier and reaction-energy shifts.
+
+    This is the stand-in until the measured placer lands (the contract both keep is in docs/add-molecule.md):
+    `poses` random packed placements of C around the TS (mepd.complexes.packed; its conformers take
+    turns), each carried unchanged to both ends, plus the proposed `starts`; C relaxed with the frame held
+    (mepd.substituents.relax_group); per frame the lowest complex whose C kept its bonds. Its numbers move
+    by kcal/mol with the placements (see `spread`): estimates to rank work by, not results.
+
+    frames: {"symbols", "charge", "multiplicity", "r", "ts" (or None), "p"}, Angstrom, one atom order.
+    molecule: {"symbols", "charge", "multiplicity", "conformers": [coords, ...]}, minima at the engine's level.
+    starts: [{"frame": "r" | "ts" | "p", "coords": C's atoms in that frame's own Cartesian frame}].
+    """
+    import time
+
+    from mepd.cli_variant import _angstrom, _node
+    from mepd.complexes import packed
+    from mepd.network_variants import adjacency
+    from mepd.substituents import relax_group
+
+    t0 = time.perf_counter()
+    sym, q, mult = list(frames["symbols"]), int(frames.get("charge", 0)), int(frames.get("multiplicity", 1))
+    csym, cq = list(molecule["symbols"]), int(molecule.get("charge", 0))
+    keys = [k for k in ("r", "ts", "p") if frames.get(k) is not None]
+    x = {k: np.asarray(frames[k], dtype=float) for k in keys}
+    n = len(sym)
+    confs = [np.asarray(c, dtype=float) for c in molecule["conformers"]]
+    e_conf = [float(e) for e in engine.compute_energies([_node(csym, c, cq, molecule.get("multiplicity", 1))
+                                                         for c in confs])]
+    e_c, low = min(e_conf), confs[int(np.argmin(e_conf))]
+    e_frame = dict(zip(keys, (float(e) for e in engine.compute_energies([_node(sym, x[k], q, mult) for k in keys]))))
+    anchor = "ts" if "ts" in x else "r"
+    placed = []                                       # C's coordinates, in the frames' Cartesian frame
+    for k in range(int(poses)):                       # (the conformers of C take turns)
+        a = _node(sym, x[anchor], q, mult).structure
+        pk = _angstrom(_node_of(packed([a, _node(csym, confs[k % len(confs)], cq, 1).structure], seed=seed + k)))
+        # back into the anchor frame's own coordinates (packing moved both)
+        pa, xa = pk[:n] - pk[:n].mean(axis=0), x[anchor] - x[anchor].mean(axis=0)
+        u, _s, vt = np.linalg.svd(pa.T @ xa)
+        rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+        placed.append((pk[n:] - pk[:n].mean(axis=0)) @ rot + x[anchor].mean(axis=0))
+    placed += [np.asarray(s["coords"], dtype=float) for s in starts if s.get("frame") in keys]
+    free = list(range(n, n + len(csym)))
+    found: dict = {k: [] for k in keys}               # per frame: (energy, pose index, coords, moved)
+    reacted = {k: 0 for k in keys}
+    for i, xc in enumerate(placed):
+        for k in keys:
+            start = np.vstack([x[k], xc])
+            before = adjacency(sym + csym, start)
+            try:
+                node = relax_group(engine, _node(sym + csym, start, q + cq, mult), free)
+            except Exception:
+                continue
+            end = _angstrom(node)
+            if not np.array_equal(before[free], adjacency(sym + csym, end)[free]):
+                reacted[k] += 1
+                continue
+            found[k].append((float(node.energy), i, end, float(np.linalg.norm(end[n:] - xc, axis=1).max())))
+    out = {"status": "ok", "why": None, "binding": {}, "complexes": {}, "molecule_energy_hartree": e_c,
+           "free_method": "electronic binding + the change of the rigid-rotor and translational free energy at "
+                          "1 M (no vibrations: the six new intermolecular modes are not counted, so the cost of "
+                          "binding is overstated by their free energy)",
+           "spread_method": "difference between the lowest binding over the even and over the odd placements",
+           "level": type(engine).__name__, "poses": len(placed), "gradient_calls": None}
+    for k in keys:
+        if not found[k]:
+            out["status"] = "reacted" if reacted[k] else "failed"
+            out["why"] = (f"the molecule changed bonds in every placement beside the {_FRAME[k]}" if reacted[k]
+                          else f"no placement beside the {_FRAME[k]} could be relaxed")
+            continue
+        if max(f[3] for f in found[k]) < 1e-3 and out["status"] == "ok":
+            out["status"], out["why"] = "unmoved", f"the molecule did not move from where it was placed beside the {_FRAME[k]}"
+        e, _i, xyz, _m = min(found[k], key=lambda f: f[0])
+        halves = [[f[0] for f in found[k] if f[1] % 2 == h] for h in (0, 1)]
+        el = (e - e_frame[k] - e_c) * 627.509474
+        rigid = _rigid_g(sym + csym, xyz, temperature) - _rigid_g(sym, x[k], temperature) - _rigid_g(csym, low, temperature)
+        out["binding"][k] = {"electronic": el, "free": el + rigid,
+                             "spread": abs(min(halves[0]) - min(halves[1])) * 627.509474 if all(halves) else None}
+        out["complexes"][k] = xyz.tolist()
+
+    def shift(k):
+        a, b = out["binding"].get(k), out["binding"].get("r")
+        if not a or not b:
+            return None
+        return {"electronic": a["electronic"] - b["electronic"], "free": a["free"] - b["free"],
+                "spread": None if a["spread"] is None or b["spread"] is None else a["spread"] + b["spread"]}
+
+    out["barrier_shift"], out["reaction_shift"] = shift("ts"), shift("p")
+    out["wall_s"] = time.perf_counter() - t0
+    return out
+
+
+_FRAME = {"r": "reactant end", "ts": "TS", "p": "product end"}
+
+
+def _node_of(structure):
+    from mepd.nodes.node import StructureNode
+
+    return StructureNode(structure=structure)
+
+
+# ---------------------------------------------------------------- the query and result files
+QUERY, RESULT, VERSION = "mepd-addmol-query", "mepd-addmol-result", 1
+UNITS = {"energy": "kcal/mol", "length": "angstrom", "amount": "mol/L", "time": "s", "temperature": "K"}
+ADDED_ID = "added"
+
+
+def match(species: Sequence[dict], text: str) -> list:
+    """The ids of the species `text` names: an id, a name, or a SMILES. A SMILES without stereo marks
+    names every stereoisomer (they are then counted together)."""
+    hit = [s["id"] for s in species if text in (s["id"], s.get("name"))]
+    if hit:
+        return hit
+    from rdkit import Chem
+
+    def canon(smiles, flat):
+        mol = Chem.MolFromSmiles(smiles or "")
+        if mol is None:
+            return None
+        if flat:
+            Chem.RemoveStereochemistry(mol)
+        return Chem.MolToSmiles(mol)
+
+    flat = not any(ch in text for ch in "@/\\")
+    want = canon(text, flat)
+    return [s["id"] for s in species if want is not None and s.get("smiles") and canon(s["smiles"], flat) == want]
+
+
+def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done", layers: Sequence[dict] = (),
+           failed: Sequence[dict] = (), fraction: Optional[float] = None) -> dict:
+    """The result file of one candidate: what was asked, every estimate with its layer, level and
+    `est` / `verified`, what failed, and the read-out at the query's conditions (`readout`, plus the
+    first-order estimate beside the full kinetics where a degree of control is defined)."""
+    import time
+
+    cond = query["conditions"]
+    target = query["target"]["species"]
+    molecule = {"id": ADDED_ID, "name": candidate.get("name") or candidate.get("smiles") or "added molecule",
+                "smiles": candidate.get("smiles")}
+    doc = {"schema": RESULT, "version": VERSION, "units": UNITS, "status": status,
+           "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "query": {"target": query["target"], "conditions": cond},
+           "candidate": candidate, "layers": list(layers), "estimates": estimates, "failed": list(failed)}
+    try:
+        # (the kinetics need no geometry: leave the coordinates and time series behind)
+        net = {"temperature": query["temperature"], "energies": query["energies"],
+               "species": [{k: s.get(k) for k in ("id", "name", "g", "smiles")} for s in query["species"]],
+               "steps": [{k: st.get(k) for k in ("id", "label", "reactants", "products", "g_ts", "status")}
+                         for st in query["steps"]]}
+        variant = added(net, molecule, estimates)
+        out = readout(net, variant, cond["initial"], float(candidate["amount"]), target, cond["time_s"],
+                      fraction=fraction or query["target"].get("fraction", 0.5), held=cond.get("held") or ())
+        lim = query["limits"]
+        fo = first_order(lim, shifts(net, ADDED_ID, estimates, float(candidate["amount"])), cond["temperature"])
+        out["first_order"] = fo if fo is not None else {"factor": None, "why": lim.get("why")}
+        if fo is not None:
+            out["first_order"]["kinetics_factor"] = out["target"]["factor"]
+        doc["readout"] = out
+    except Exception as exc:
+        doc["readout"] = None
+        doc["failed"].append({"layer": "kinetics", "why": f"{type(exc).__name__}: {exc}"})
+    return doc
+
+
+def write_json(path, doc: dict) -> None:
+    """Write whole or not at all (a page or a model may be polling the file)."""
+    import json
+    import os
+    from pathlib import Path
+
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(doc, indent=1, default=lambda x: x.tolist() if hasattr(x, "tolist") else str(x)))
+    os.replace(tmp, path)

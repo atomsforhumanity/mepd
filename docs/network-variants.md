@@ -110,3 +110,10 @@ built this way are marked `est.`.
 | The TS re-optimizes to another saddle, or its IRC misses the ends | The parent's path search (`ts`/`channels`, its parameters) on the variant's minimized ends |
 | The parent TS is one step of a longer route | Path search between the substituted ends |
 | QM/MM species or reactions | Not carried (listed) |
+
+## Another kind of variant: a molecule added
+
+A variant can also leave every species as it is and put one more molecule into the flask (a possible catalyst):
+kind `added_molecule`, made by `mepd addmol` / `mepd.web.added.put`. It replaces nothing of the parent; its
+kinetics come from estimates of the molecule's binding and of the steps it takes part in. See
+[add-molecule.md](add-molecule.md).

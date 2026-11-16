@@ -1971,6 +1971,10 @@ from mepd.cli_qmmm import qmmm_app  # noqa: E402
 
 app.add_typer(qmmm_app, name="qmmm")
 
+from mepd.cli_addmol import addmol_app  # noqa: E402
+
+app.add_typer(addmol_app, name="addmol")
+
 try:
     from mepd.discovery.cli import discovery_app  # noqa: E402
     import mepd.discovery.cli_expand  # noqa: E402,F401  (registers `discovery expand`)

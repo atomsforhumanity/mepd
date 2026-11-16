@@ -261,3 +261,53 @@ def test_flux_splits_over_two_routes():
 def test_time_to_an_amount():
     assert A.time_to([0.0, 1.0, 10.0, 100.0], [0.0, 0.0, 1.0, 2.0], 0.5) == pytest.approx(math.sqrt(10.0))
     assert A.time_to([0.0, 1.0], [0.0, 1.0], 2.0) is None and A.time_to([0.0, 1.0], [0.0, 1.0], 0.0) is None
+
+
+def test_a_version_written_the_other_way_is_read_the_parents_way():
+    """The parent step is stored B -> A; the relay is given as A -> B, and the material goes A -> B."""
+    back = network([("ba", ["B"], ["A"], 30.0)], g={"B": -10.0})
+    v = A.added(back, C, {"new_steps": [{**RELAY["new_steps"][0], "parent_step": "ba"}]})
+    (row,) = A.readout(back, v, {"A": 1.0}, 0.1, "B", 20.0)["steps"]
+    k = A.run(v, {"A": 1.0, "C": 0.1}, 20.0)
+    j = next(i for i, st in enumerate(v["steps"]) if st["id"] == "relay")
+    # read the way the material goes: A -> B, the reverse of how the parent step is written
+    assert row["direction"] == "reverse" and row["barrier"] == pytest.approx(30.0)
+    assert row["through"] == "relay" and row["after"] == pytest.approx(k["apparent"][j][0])
+    assert row["before"] == pytest.approx(30.0, abs=0.3)
+
+
+def test_the_result_file_of_a_candidate(tmp_path):
+    """From a query (here only its kinetics part) and estimates: tagged numbers, the read-out, what failed."""
+    net = network([("ab", ["A"], ["B"], 24.0)], g={"B": -10.0})
+    t = 0.001 / k_of(24.0)
+    k = A.run(net, {"A": 1.0}, t)
+    query = {**net, "schema": A.QUERY, "version": A.VERSION, "limits": A.limits(net, {"A": 1.0}, ["B"], t, k=k),
+             "conditions": {"temperature": T, "time_s": t, "initial": {"A": 1.0}, "held": []},
+             "target": {"species": ["B"], "fraction": 0.5}}
+    est = {"steps": [{"step": "ab", "status": "est", "layer": "bystander", "level": "L",
+                      "binding": {"r": both(5.0), "ts": both(-3.0), "p": both(5.0)}}]}
+    doc = A.result(query, {"name": "cat", "smiles": "O", "amount": 0.1}, est,
+                   failed=[{"step": "x", "layer": "bystander", "status": "reacted", "why": "it changed bonds"}])
+    assert doc["schema"] == A.RESULT and doc["version"] == 1 and doc["status"] == "done"
+    want = 1 + 0.1 * math.exp(3.0 / RT)
+    assert doc["readout"]["target"]["factor"] == pytest.approx(want, rel=0.1)
+    fo = doc["readout"]["first_order"]
+    assert fo["factor"] == pytest.approx(want, rel=0.05) and fo["kinetics_factor"] == doc["readout"]["target"]["factor"]
+    assert doc["readout"]["added"]["fate"] == "regenerated" and len(doc["failed"]) == 1
+    assert doc["estimates"]["steps"][0]["status"] == "est"
+    A.write_json(tmp_path / "r.json", doc)
+    import json
+
+    assert json.loads((tmp_path / "r.json").read_text())["readout"]["steps"][0]["through"] == "ab+added"
+    # estimates the kinetics cannot use do not lose the file: it says what failed
+    bad = A.result(query, {"name": "cat", "amount": 0.1},
+                   {"new_steps": [{"id": "n", "reactants": ["nope"], "products": ["B"], "barrier": both(1.0), "status": "est"}]})
+    assert bad["readout"] is None and "unknown species" in bad["failed"][0]["why"]
+
+
+def test_naming_species():
+    sp = [{"id": "s1", "name": "aldol R", "smiles": "CC(=O)C[C@@H](C)O"}, {"id": "s2", "name": "aldol S", "smiles": "CC(=O)C[C@H](C)O"},
+          {"id": "s3", "name": "acetone", "smiles": "CC(C)=O"}]
+    assert A.match(sp, "CC(=O)CC(C)O") == ["s1", "s2"]           # no stereo marks: both
+    assert A.match(sp, "C[C@H](O)CC(C)=O") in (["s1"], ["s2"])   # with them: one
+    assert A.match(sp, "acetone") == ["s3"] and A.match(sp, "s2") == ["s2"] and A.match(sp, "CCO") == []
