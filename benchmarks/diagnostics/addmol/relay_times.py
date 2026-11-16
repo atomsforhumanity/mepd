@@ -78,8 +78,12 @@ for r in rows:
             sorted(symbols[i] for i in b)[0] == "H" and sorted(symbols[i] for i in b)[1] in ("N", "O") for b in on_c)
         m["ts"].append(step)
 
+counts: dict = {}
+for i in c_atoms:
+    counts[symbols[i]] = counts.get(symbols[i], 0) + 1
+formula = "".join(f"{e}{counts[e] if counts[e] > 1 else ''}" for e in sorted(counts, key=lambda e: (e != "C", e != "H", e)))
 through = [k for k in mechanisms if k.startswith("explored:") and "[catalytic:" in k
-           and any(t["through_c"] for t in mechanisms[k]["ts"]) or (k.startswith("explored:") and "C5H9NO2" in k)]
+           and formula in k.split("[catalytic:")[1].split("]")[0].replace(" ", "").split(",")]
 fewest = min((c_h_changes(k) for k in through), default=None)
 top = [k for k in through if c_h_changes(k) == fewest]
 print(f"{out}: {len(rows)} searches of {len(mechanisms)} mechanisms; total {stats.get('total_seconds')} s"
