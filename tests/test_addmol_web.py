@@ -191,6 +191,7 @@ def test_the_cli_from_a_run_to_a_result_file(run, tmp_path):
     assert row["through"] == "relay" and row["status"] == "est" and row["change"] < -10.0
     assert relay["readout"]["first_order"]["factor"] is None and "none of the target" in relay["readout"]["first_order"]["why"]
     assert [x["name"] for x in relay["layers"]] == ["given", "bystander"] and relay["layers"][1]["status"] == "skipped"
+    assert relay["estimates"]["new_steps"][0]["layer"] == "given" and relay["estimates"]["new_steps"][0]["source"] == "made up"
     assert relay["readout"]["peak_routes"]["with"][0]["peak"] < relay["readout"]["peak_routes"]["parent"][0]["peak"]
     nothing = json.loads((out / "nothing.json").read_text())
     assert nothing["readout"]["added"]["fate"] == "no part" and nothing["readout"]["steps"][0]["change"] == 0.0

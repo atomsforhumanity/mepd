@@ -234,7 +234,8 @@ def test(
         t0 = time.perf_counter()
         fp = output / _file_name(cand["name"])
         given = cand.pop("estimates", None) or {}
-        est = {k: list(given.get(k) or []) for k in ("species", "steps", "new_species", "new_steps")}
+        est = {k: [{"layer": "given", **e} for e in given.get(k) or []]
+               for k in ("species", "steps", "new_species", "new_steps")}
         failed: list = []
         layers = [{"name": "given", "status": "done", "what": "estimates that came with the candidate",
                    "entries": sum(len(v) for v in est.values())}] if any(est.values()) else []
