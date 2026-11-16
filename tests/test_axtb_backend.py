@@ -247,3 +247,21 @@ def test_a_ts_s_frequency_check_and_its_thermal_correction_cost_one_hessian(tmp_
     moved.structure = moved.structure.model_copy(update={"geometry": np.asarray(node.structure.geometry) + 1e-6})
     mepd.frequencies(moved, eng)                                  # another geometry: computed
     assert hessians() == 1
+
+
+def test_retry_rung_warnings_are_counted_not_logged_per_call(caplog):
+    """A hard system meets a retry rung at nearly every geometry: one line per kind, then counts."""
+    from mepd.engines import axtb_backend as ab
+
+    ab._RUNG_COUNTS.clear()
+    a = {"parts": {"gxtb": {"retry": "etemp 1000 K, 1000 iterations"}}}
+    b = {"parts": {"gfn2_gas": {"retry": "etemp 5000 K, 1000 iterations"}, "gxtb": {"retry": "etemp 1000 K, 1000 iterations"}}}
+    with caplog.at_level("WARNING", logger=ab.__name__):
+        for i in range(150):
+            rungs = ab._warn_rungs(a if i % 3 else b, "g-xTB in solvent")
+    assert rungs == {"gxtb": "etemp 1000 K, 1000 iterations"}
+    lines = [r.getMessage() for r in caplog.records]
+    assert len(lines) == 4, lines            # two kinds, then 10 and 100
+    assert sum("Further ones like it are counted" in m for m in lines) == 2
+    assert any(m.startswith("axtb: 100 SCFs") for m in lines)
+    assert ab._warn_rungs({"parts": {"gxtb": {}}}, "g-xTB in solvent") is None
