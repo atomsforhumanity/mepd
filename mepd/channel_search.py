@@ -137,8 +137,8 @@ def _expand_pairs_by_mechanism(
             )
         except Exception as exc:
             return pair, None, f"{type(exc).__name__}: {exc}"
-        return pair, [(c.key, c.score, c.n_variants, c.winner.end_structure, c.winner.atom_map is None)
-                      for c in choices], None
+        return pair, [(c.key, c.score, c.n_variants, c.winner.end_structure, c.winner.atom_map is None,
+                       getattr(c, "order", 0)) for c in choices], None
 
     rows = []  # one per (pair, mechanism)
     n_failed = 0
@@ -150,11 +150,17 @@ def _expand_pairs_by_mechanism(
             rows.append({"i": i, "j": j, "key": "unmapped", "score": None,
                          "n_variants": 0, "structure": None})
             continue
-        for key, score, n_variants, end_structure, is_identity in choices:
+        for key, score, n_variants, end_structure, is_identity, order in choices:
             rows.append({"i": i, "j": j, "key": key, "score": score, "n_variants": n_variants,
-                         "structure": None if is_identity else end_structure})
+                         "structure": None if is_identity else end_structure, "order": order})
 
-    keys = sorted({r["key"] for r in rows})
+    # The mechanisms in the order they were ranked (SLAPMapper's own, then the explored ones: fewest bond
+    # changes, a proton passed between heteroatoms before an H handed on through a C-H), which is the order
+    # their path searches are queued in: an order of work, every mechanism is still searched.
+    first = {}
+    for r in rows:
+        first[r["key"]] = min(first.get(r["key"], r.get("order", 0)), r.get("order", 0))
+    keys = sorted(first, key=lambda k: (first[k], k))
     if filtered:
         rows = _gi_near_lowest_rmsd(rows, keys, _one, workers, rmsd_window(run_inputs),
                                     max(1, pairs_per_mechanism), near_lowest)
@@ -174,7 +180,7 @@ def _expand_pairs_by_mechanism(
         _log(f"Choosing each kept pair's numbering among snap's picks by GI + xtb ({len(todo)} pair(s))...")
         for r, (_, choices, _) in zip(todo, _fork_map(lambda r: _one((r["i"], r["j"]), "snap-gi-xtb", {r["key"]}),
                                                      todo, workers)):
-            for key, score, _, end_structure, is_identity in choices or []:
+            for key, score, _, end_structure, is_identity, _ in choices or []:
                 if key == r["key"]:
                     r["structure"] = None if is_identity else end_structure
 
@@ -307,7 +313,7 @@ def _gi_near_lowest_rmsd(rows: list[dict], keys: list, score_pair, workers: int,
     tasks = [(pair, set(by_key)) for pair, by_key in chosen.items()]
     results = _fork_map(lambda t: score_pair(t[0], "rmsd-geodesic", t[1]), tasks, workers)
     for (pair, by_key), (_, choices, error) in zip(chosen.items(), results):
-        got = {key: (score, nv, st, is_id) for key, score, nv, st, is_id in (choices or [])}
+        got = {key: (score, nv, st, is_id) for key, score, nv, st, is_id, _ in (choices or [])}
         for key, row in by_key.items():
             if key in got:
                 score, nv, st, is_id = got[key]

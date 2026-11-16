@@ -289,6 +289,7 @@ class MechanismChoice:
     winner: MappingCandidate  # this mechanism's best-scoring symmetry variant
     score: float
     n_variants: int
+    order: int = 0  # its place among the pair's mechanisms: SLAPMapper's first, then explored ones as ranked
 
 
 def _xtb_engine():
@@ -626,16 +627,16 @@ def select_per_mechanism(
         )
 
     choices = []
-    for key, cands in by_key.items():
+    for order, (key, cands) in enumerate(by_key.items()):
         if only_keys is not None and key not in only_keys:
             continue
         if metric in ("snap", "snap-gi-xtb"):
             score, best, _ = snap_choice(cands, start_structure, run_inputs, use_path=metric == "snap-gi-xtb")
-            choices.append(MechanismChoice(key=key, winner=best, score=score, n_variants=len(cands)))
+            choices.append(MechanismChoice(key=key, winner=best, score=score, n_variants=len(cands), order=order))
             continue
         pool = lowest_rmsd_variants(cands, start_structure, run_inputs) if metric == "rmsd-geodesic" else cands
         scored = [(score_candidate(c, metric, start_structure, run_inputs)[0], c) for c in pool]
         score, best = min(scored, key=lambda sc: sc[0])
-        choices.append(MechanismChoice(key=key, winner=best, score=score, n_variants=len(cands)))
+        choices.append(MechanismChoice(key=key, winner=best, score=score, n_variants=len(cands), order=order))
     choices.sort(key=lambda ch: ch.score)
     return choices
