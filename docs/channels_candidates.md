@@ -201,6 +201,10 @@ about which atoms may move. One mapping per new route is kept, ranked by
 Their keys start with `explored:`; a molecule that takes part and is found
 again at the end adds `[catalytic: <formula>]`.
 
+- **Cost.** Measured on three 31–34-atom steps beside L-proline (512–1800
+  pairs, N = 20): 0.3–0.5 CPU-seconds per pair for all 21 mechanisms (snap's
+  placements, one per mechanism, are most of it), so 20–50 s on 32 threads
+  and 1–2 minutes on 8.
 - **The search runs once per reaction.** It reads the two bond graphs and
   SLAPMapper's mappings only, so every conformer pair gets the same answer;
   it is computed once per process. On acetone → enol beside acetaldehyde and
