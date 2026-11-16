@@ -1641,7 +1641,9 @@ def test_every_operation_is_decided_for_the_demo():
     from mepd.web.demo import DemoPolicy
     from mepd.web.operations import OPERATIONS
 
-    assert set(OPERATIONS) - set(DemoPolicy().allowed_ops) == set()
+    # Not allowed: addmol-test (Add a molecule: thousands of SCFs per candidate; opening it on a public server is
+    # the owner's decision, not made yet).
+    assert set(OPERATIONS) - set(DemoPolicy().allowed_ops) == {"addmol-test"}
 
 
 def test_demo_retrosynthesis_runs_every_local_method_but_not_a_url_or_a_server_file():

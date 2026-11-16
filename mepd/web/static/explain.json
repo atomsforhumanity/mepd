@@ -4216,7 +4216,7 @@
   "how": [
    "On the target's route: the share of the target's material that came through steps with the molecule in them.",
    "Turnovers: how often a step that changed what the molecule carries handed it back, per molecule put in, in the run's time.",
-   "Returned: it came back at least as often as it is held up at the end. Used up: it ends in new species. Held, does nothing: it sits in complexes and takes part in no step. Takes no part: none of these."
+   "Returned: it came back at least as often as it is held up at the end. Used up: it ends in new species. Held, inert: it sits in complexes and takes part in no step. Takes no part: none of these."
   ],
   "code": [
    "mepd/addmol.py:fate",

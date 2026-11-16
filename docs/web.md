@@ -168,7 +168,7 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
    and the TS in 3D. Ticked candidates are compared step by step.
 4. **Show on the map** keeps a candidate as a variant of kind `added_molecule` (`mepd.web.added.put`, with what
    the map marks under `marks`); the network map colours the steps that go through the molecule by the change of
-   their barrier (dashed: an estimate) and doubles the border of molecules it binds. The record follows its result
+   their barrier (dashed: an estimate), doubles the border of molecules it binds and fades the rest. The record follows its result
    file when the job finishes.
 
 Files, all under `<workspace>/addmol/<query id>/`: `query.json`, `results/<name>.json`. A result file from a

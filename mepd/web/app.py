@@ -2693,7 +2693,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             return {"candidates": [{k: v for k, v in c.items() if k not in ("coordinates", "atoms", "pose", "estimates")}
                                    for c in cands]}
         if demo is not None:
-            demo.check_op("addmol-test", {"workers": body.workers})
+            demo.check_op("addmol-test", {})
             demo.check_capacity(J().list())
         job = addpage.start(J(), qid, cands, steps=body.steps, workers=body.workers)
         return {"job": job["id"], "candidates": len(cands)}

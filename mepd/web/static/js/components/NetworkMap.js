@@ -17,7 +17,7 @@ import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { clearSelection, openReaction, prefs, select, set, setExploreView, state, useStore } from '../store.js';
 import { PHONE_QUERY, depictUrl, edgeStatus, edgeStatusKey, isComplex, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
-import { MarksLegend, markKind, markLook, markTip, marksOf } from './AddMoleculeMarks.js';
+import { MarksLegend, markData, markLook, markTip, marksOf } from './AddMoleculeMarks.js';
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const SUB = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
@@ -369,6 +369,7 @@ function styles() {
     { selector: 'edge', style: { 'curve-style': 'bezier', width: 'data(w)', 'line-color': 'data(col)', 'target-arrow-color': 'data(col)',
       'target-arrow-shape': 'triangle', 'arrow-scale': 0.7, opacity: 0.85 } },
     { selector: 'edge[am = "est"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
+    { selector: '[?amfade]', style: { opacity: 0.1 } },
     { selector: 'node[?am]', style: { 'border-style': 'double', 'border-width': 5, 'border-color': css('--route') } },
     { selector: 'edge[kind = "ns"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [5, 4], opacity: 0.6 } },
     { selector: 'edge[kind = "nots"]', style: { 'line-style': 'dotted', opacity: 0.7 } },
@@ -596,17 +597,18 @@ export function NetworkMap() {
     if (!c) return;
     const old = Object.fromEntries(c.nodes().map((n) => [n.id(), { ...n.position() }]));
     const els = [];
+    const mk = markData(marks, M.steps);
     for (const id of M.nodes) {
       const m = M.mols[id];
       const img = depictUrl(m.smiles, 200, 150);
       // A new molecule found from one already drawn grows out of it.
       const from = old[id] || old[m.origin?.parent] || L.pos[id] || { x: 0, y: 0 };
-      els.push({ group: 'nodes', data: { id, name: mapLabel(m), label: mapLabel(m), img: img || 'none', noimg: !img, start: M.starts.includes(id), am: marks?.species[id] ? 1 : undefined }, position: { ...from } });
+      els.push({ group: 'nodes', data: { id, name: mapLabel(m), label: mapLabel(m), img: img || 'none', noimg: !img, start: M.starts.includes(id), ...mk.node(id) }, position: { ...from } });
     }
     for (const s of M.steps) {
       if (!drawn(s, o) || !M.nodes.has(s.a) || !M.nodes.has(s.b)) continue;
       const lk = look(s);
-      els.push({ group: 'edges', data: { id: s.id, source: s.a, target: s.b, col: lk.col, w: lk.w, kind: s.kind, am: markKind(marks?.edges[s.id]) } });
+      els.push({ group: 'edges', data: { id: s.id, source: s.a, target: s.b, col: lk.col, w: lk.w, kind: s.kind, ...mk.edge(s) } });
     }
     c.batch(() => { c.elements().remove(); c.add(els); });
     let v = view;

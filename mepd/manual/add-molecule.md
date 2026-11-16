@@ -87,7 +87,7 @@ numbers appear and settle without a reload.
 - **Returned?** Two facts side by side: whether steps with the molecule carry
   the target's material, and how often each molecule came back in the run
   (turnovers). *Returned*: it came back at least as often as it is held up
-  at the end. *Used up*: it ends in new species. *Held, does nothing*: it
+  at the end. *Used up*: it ends in new species. *Held, inert*: it
   sits in complexes and takes part in no step. *Takes no part* is said only
   when none of these holds. Below it, the species that holds most of the
   molecule over the run.
@@ -95,8 +95,11 @@ numbers appear and settle without a reload.
   molecule, with its spread. A change no larger than its spread is flagged:
   it is not a signal.
 
-Every number carries **est.** (built on estimates) or **verified** (built
-only on transition states optimized with the molecule present, IRC checked).
+**Built on** says what the row's kinetics rest on: **est.** (estimates) or
+**verified** (only transition states optimized with the molecule present, IRC
+checked); the step's own number has its own tag. A row is two lines, a
+verdict and one fact; hover a cell for the rest (the route share, where the
+molecule rests, the step and its barriers), or open the detail.
 A molecule that changes nothing is a result, and the page says so.
 
 Click a candidate for its detail:
@@ -127,6 +130,9 @@ column per candidate, the change of the barrier on a blue (lower) to red
 - steps whose fastest version goes through the molecule are coloured by the
   change of their barrier, blue lower, red higher, dashed while that is an
   estimate and solid once verified;
+- everything else is faded, so the few marked steps can be found; *Details*
+  in the legend goes back to the candidate in the list, ✕ to the network
+  without it;
 - a molecule with a doubled border has a complex with the added molecule
   that holds material;
 - new species, and steps with no counterpart in the network, are counted in

@@ -226,8 +226,9 @@ function effectText(r, q) {
   }
   if (t.with.resolved) return { main: `${fmtC(t.with.final)} M`, kind: 'pos', sub: 'none without it' };
   const drop = r.peak.parent != null && r.peak.with != null ? r.peak.with - r.peak.parent : 0;
-  return { main: 'still none', kind: '', sub: Math.abs(drop) > 0.05 ? `easiest route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)} kcal/mol (${kcal(q.limits.cutoff_kcal)} needed)`
-    : 'easiest route unchanged' };
+  return { main: 'still none', kind: '', short: Math.abs(drop) > 0.05 ? `route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)}` : 'route unchanged',
+    sub: Math.abs(drop) > 0.05 ? `easiest route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)} kcal/mol (${kcal(q.limits.cutoff_kcal)} needed)`
+      : 'easiest route unchanged' };
 }
 function soonerText(r) {
   const t = r.target;
@@ -238,11 +239,13 @@ function soonerText(r) {
 function fateText(r) {
   const turn = r.returns ?? 0, on = r.on_route ?? 0;
   const turns = turn >= 0.001 ? `${fmtX(turn)} turnover${turn === 1 ? '' : 's'} each` : 'no turnover yet';
-  if (r.fate === 'consumed') return { main: 'used up', sub: `${pct(r.shares?.covalent)} ends in new species` };
-  if (r.fate === 'bound and inert') return { main: 'held, does nothing', sub: `${pct(r.shares?.bound)} bound in complexes` };
-  if (r.fate === 'regenerated') return { main: 'returned', sub: `${turns}${on >= 0.001 ? ` · on the route of ${pct(on)} of the target` : ''}` };
-  if (on >= 0.001) return { main: 'on the route', sub: `of ${pct(on)} of the target · ${turns}` };
-  return { main: 'takes no part', sub: 'no step with it carries material' };
+  // `fact`: the one short fact of the table's row; `sub`: the sentence of the detail and the row's tooltip.
+  const short = turn >= 0.001 ? `${fmtX(turn)} turnovers` : 'no turnover yet';
+  if (r.fate === 'consumed') return { main: 'used up', fact: `${pct(r.shares?.covalent)} in new species`, sub: `${pct(r.shares?.covalent)} ends in new species` };
+  if (r.fate === 'bound and inert') return { main: 'held, inert', fact: `${pct(r.shares?.bound)} bound`, sub: `${pct(r.shares?.bound)} bound in complexes` };
+  if (r.fate === 'regenerated') return { main: 'returned', fact: short, sub: `${turns}${on >= 0.001 ? ` · on the route of ${pct(on)} of the target` : ''}` };
+  if (on >= 0.001) return { main: 'on the route', fact: short, sub: `of ${pct(on)} of the target · ${turns}` };
+  return { main: 'takes no part', fact: '', sub: 'no step with it carries material' };
 }
 const restText = (r) => (r.resting_state ? { main: r.resting_state.id === 'added' ? 'free' : r.resting_state.name, sub: pct(r.resting_state.share) } : null);
 const stateOf = (r) => (r.used?.est ? 'est' : r.used?.verified ? 'verified' : null);
@@ -258,40 +261,47 @@ function Progress({ r }) {
   return null;
 }
 
-function Cell({ v, tag }) {
+// One glance per candidate: each cell is a verdict with its est./verified tag and one short fact below;
+// the sentences are the cell's tooltip and the detail panel.
+function Cell({ v, tag, title }) {
   if (!v) return html`<td class="muted">—</td>`;
-  return html`<td><span class=${cls('am-main', v.kind)}>${v.main}</span>${tag}<div class="small muted">${v.sub}</div></td>`;
+  return html`<td title=${title || v.sub || ''}><span class=${cls('am-main', v.kind)}>${v.main}</span>${tag}<div class="small muted">${v.short ?? v.sub}</div></td>`;
 }
 
 function Table({ q, rows, sel, onPick, picked, onToggle }) {
   return html`<div class="rx-table-wrap"><table class="rx-table am-table">
-    <thead><tr><th></th><th>Candidate</th><th title="The target's amount at the end, with the molecule against without">Target</th>
+    <thead><tr><th></th><th>Candidate</th>
+      <th title="What this row's kinetics are built on: est., estimates; verified, only transition states optimized with the molecule present. It holds for the target, how soon and returned.">Built on</th>
+      <th title="The target's amount at the end, with the molecule against without">Target</th>
       <th title="When the mixture with the molecule holds what today's takes half its run to make">How soon</th>
-      <th title="Whether the molecule comes back (on the route that carries the target's material; its turnovers in the run), and the species that holds most of it over the run">Returned? · rests as</th>
-      <th title="Among the steps that limit the target, the one whose barrier changes most through the molecule">Largest step change</th></tr></thead>
+      <th title="Whether the molecule comes back: its turnovers in the run, whether it is on the route that carries the target's material, and where it rests (hover a row; the detail has it all)">Returned?</th>
+      <th title="Among the steps that limit the target, the one whose barrier changes most through the molecule">Largest step change (kcal/mol)</th></tr></thead>
     <tbody>${rows.map((r) => {
       const s = stateOf(r);
       const b = r.best;
       const within = b && b.spread != null && b.spread >= Math.abs(b.change);
-      const tag = html` <${Tag} status=${s} />`;
       const fate = r.readout && s ? fateText(r) : null, rest = r.readout ? restText(r) : null;
+      const sooner = r.readout && s ? soonerText(r) : null;
       const there = r.status !== 'queued';   // (a result file exists)
+      const none = r.why ? `No number: ${r.why}` : r.status === 'queued' ? 'Waiting its turn: the candidates of one calculation are tested one after another.'
+        : r.status === 'running' ? 'No number yet: the first arrive within a minute.' : 'No layer gave a number.';
       return html`<tr class=${cls(there && 'clickable', sel === r.file && 'on')} onClick=${() => there && onPick(r.file)}>
         <td><input type="checkbox" checked=${picked.has(r.file)} disabled=${!r.readout || !s} title="Compare step by step" aria-label=${`Compare ${r.name}`}
           onClick=${(e) => e.stopPropagation()} onChange=${() => onToggle(r.file)} /></td>
-        <td><div class="am-cand">${r.smiles ? html`<img src=${depictUrl(r.smiles, 60, 45)} alt="" />` : ''}<div><b>${r.name}</b>
+        <td title=${r.name}><div class="am-cand">${r.smiles ? html`<img src=${depictUrl(r.smiles, 60, 45)} alt="" />` : ''}<div><b>${r.name}</b>
           <div class="small muted">${r.amount != null ? `${fmtC(r.amount)} M` : ''} <${Progress} r=${r} /></div></div></div></td>
         ${r.readout && s ? html`
-          <${Cell} v=${effectText(r, q)} tag=${tag} />
-          <${Cell} v=${soonerText(r)} tag=${tag} />
-          <td><span class="am-main">${fate.main}</span>${tag}<div class="small muted">${fate.sub}</div>
-            ${rest && html`<div class="small muted">rests as ${rest.main} (${rest.sub})</div>`}</td>
-          ${b ? html`<td title=${`${stepLabel(b.label, b.direction)}${b.limits ? '\n(the largest change among the steps that limit the target)' : '\n(no step that limits the target goes through it: the largest change anywhere)'}`}><span class=${cls('am-main mono', b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
-            <span class="mono small"> ${b.spread != null ? `± ${b.spread.toFixed(1)}` : ''}</span> <${Tag} status=${b.status} />
-            <div class=${cls('small', within ? 'am-warn' : 'muted')}>${b.spread == null ? 'kcal/mol · spread not given' : within ? 'kcal/mol · within its spread' : 'kcal/mol'}${b.limits ? '' : ' · not a step that limits the target'}</div></td>`
-            : html`<td class="muted small">no step goes through it</td>`}`
-          : html`<td colspan="4" class=${cls('small', r.status === 'failed' || r.why ? 'am-warn' : 'muted')}>${r.why ? `No number: ${r.why}`
-            : r.status === 'queued' ? 'Waiting its turn: the candidates of one calculation are tested one after another.' : r.status === 'running' ? 'No number yet: the first arrive within a minute.' : 'No layer gave a number.'}</td>`}
+          <td><${Tag} status=${s} /></td>
+          <${Cell} v=${effectText(r, q)} />
+          <${Cell} v=${sooner && { main: sooner.main.replace('after ', ''), sub: sooner.sub }} title=${sooner ? `As much as today's mixture makes in half its run, ${sooner.main} (${sooner.sub})` : ''} />
+          <td title=${`${fate.sub}${rest ? `\nrests as ${rest.main} (${rest.sub} over the run)` : ''}`}><span class="am-main">${fate.main}</span><div class="small muted">${fate.fact}</div></td>
+          ${b ? html`<td title=${`${stepLabel(b.label, b.direction)}\n${kcal(b.before)} → ${kcal(b.after)} kcal/mol${b.spread == null ? ', no spread came with this number' : `, spread ± ${b.spread.toFixed(1)}`}${
+              within ? '\nThe change is no larger than its spread between repeats: not a signal.' : ''}${b.limits ? '' : '\nNo step that limits the target goes through it: this is the largest change anywhere.'}`}>
+            <span class=${cls('am-main mono', within ? 'am-weak' : b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
+            <span class="mono small"> ${b.spread != null ? `± ${b.spread.toFixed(1)}` : '± ?'}</span>
+            <div class="small muted"><${Tag} status=${b.status} />${within ? html` <span class="am-flag">within spread</span>` : ''}${b.limits ? '' : html` <span class="am-flag" title="No step that limits the target goes through it">off-route</span>`}</div></td>`
+            : html`<td class="muted small">none through it</td>`}`
+          : html`<td colspan="5" class=${cls('small', r.status === 'failed' || r.why ? 'am-warn' : 'muted')} title=${none}><div class="am-two">${none}</div></td>`}
       </tr>`;
     })}</tbody></table></div>`;
 }

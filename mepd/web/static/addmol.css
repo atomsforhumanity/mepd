@@ -30,12 +30,22 @@
 .am-route-cut { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--heading); }
 .am-route-v { text-align: right; white-space: nowrap; }
 
-/* candidates */
-.am-table td { vertical-align: top; }
-.am-table .am-main, .am-table .mono { white-space: nowrap; }
-.am-table td:nth-child(n+3) { min-width: 96px; }
-.am-table .am-cand { display: flex; gap: 8px; align-items: flex-start; min-width: 150px; }
-.am-table .am-cand img { width: 48px; height: 36px; object-fit: contain; background: var(--node-bg); border-radius: 2px; flex: none; }
+/* the setup column a little narrower than Kinetics', for the table */
+@media (min-width: 901px) { .kinetics.addmol { grid-template-columns: minmax(260px, 320px) minmax(0, 1fr); } }
+
+/* candidates: one glance each (two lines a row); the sentences are tooltips and the detail */
+.am-table { table-layout: auto; }
+.am-table td { vertical-align: top; white-space: nowrap; padding-left: 5px; padding-right: 5px; }
+.am-table th { padding-left: 5px; padding-right: 5px; }
+.am-table td:first-child { width: 22px; padding-right: 0; }
+.am-table td:nth-child(2) { width: 30%; max-width: 0; min-width: 150px; }
+.am-table .am-cand { display: flex; gap: 6px; align-items: flex-start; min-width: 0; }
+.am-table .am-cand > div { min-width: 0; }
+.am-table .am-cand b, .am-table .am-cand .small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.am-table .am-cand img { width: 40px; height: 30px; object-fit: contain; background: var(--node-bg); border-radius: 2px; flex: none; }
+.am-table .am-two { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.am-main.am-weak { color: var(--muted); font-weight: 400; }
+.am-flag { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 5px; border-radius: 3px; background: var(--warn-soft); color: var(--warn); }
 .am-run { white-space: nowrap; color: var(--accent); }
 .am-run.warn { color: var(--warn); } .am-run.bad { color: var(--danger); }
 .am-run .spinner, .am-layer .spinner { margin-right: 4px; }
