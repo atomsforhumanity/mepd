@@ -183,6 +183,45 @@ For each conformer pair (`select_per_mechanism`, parallel over `--workers`):
   minima. Mechanisms that break and form the same bonds but differ in
   stereochemistry (e.g. conrotatory versus disrotatory) get the **same key**.
 
+### Beyond the minimum: `--explore-mechanisms N`
+
+SLAPMapper's minimal mappings never touch a molecule that is the same on both
+sides (a catalyst, a solvent molecule): the fewest bond edits leave it out.
+`--explore-mechanisms N` adds up to N mechanisms with more bond edits
+(`atom_mapping.explore_mechanisms`): starting from SLAPMapper's mappings, the
+images of two same-element atoms (or of two groups) are swapped, and a swap is
+kept when it adds at most two bond edits, five swaps deep. There is no rule
+about which atoms may move. One mapping per new route is kept, ranked by
+
+1. the number of bonds broken plus formed, fewest first;
+2. at equal count, the number of those bonds that join an H to a carbon,
+   fewest first: a proton passed between heteroatoms (a catalyst's O–H or
+   N–H) comes before an H handed on through a C–H.
+
+Their keys start with `explored:`; a molecule that takes part and is found
+again at the end adds `[catalytic: <formula>]`.
+
+- **The search runs once per reaction.** It reads the two bond graphs and
+  SLAPMapper's mappings only, so every conformer pair gets the same answer;
+  it is computed once per process. On acetone → enol beside acetaldehyde and
+  L-proline (34 atoms, 512 pairs) it was 1.2 s of each pair's 1.8 s.
+- **SLAPMapper's own mechanism is not listed again.** A mapping that is one
+  of SLAPMapper's with the reactant's atoms renamed by a symmetry of its bond
+  graph (the other methyl of an acetone) is the same mechanism and is left
+  out; the symmetry variants of step 3 and snap's picks cover it.
+- *Known limit:* two **explored** mechanisms can still be one mechanism
+  through symmetry-equivalent atoms (keys ending `[route 2]`): on the
+  enolisation above, 9 of 20.
+- **`--explore-molecule SMILES`** keeps, of the explored mechanisms, the N
+  best-ranked in which that molecule of the start takes part: a bond that
+  breaks or forms has one of its atoms. SLAPMapper's own mechanisms, in which
+  the molecule may be a bystander, are always kept beside them. The molecule
+  is found by its bond graph (hydrogens included; no stereochemistry); every
+  copy of it in the start counts.
+- *What a mapping cannot express:* a covalent route (an enamine, say). Its
+  net reaction has the bystander's or a relay's atom correspondence; the
+  intermediates are not in one mapping.
+
 ## 7. Pair subselection
 
 For each mechanism, only the `--pairs-per-mechanism` pairs (default **3**)
@@ -265,6 +304,47 @@ paths*) when a missed channel would matter.
 ## 8–9. Path search, TS optimization, classification
 
 - One MSMEP per selected (pair, mechanism), run `--workers` at a time.
+- **Order.** The searches are queued mechanism by mechanism in the order of
+  step 6: SLAPMapper's own mechanisms, then the explored ones as ranked;
+  within a mechanism, its best-scoring pairs first. The order decides what
+  is searched first (and what a `--search-budget` leaves out), never whether
+  a mechanism is searched.
+- **`searches.json`** is rewritten whenever a search or a TS's IRC finishes,
+  so a reader can poll it and a stopped run leaves it:
+  - `start_molecules`: the molecules of the start, each with its atom indices
+    and SMILES (from the bond graph, no stereochemistry);
+  - `searches`: every path search in queue order with its `pair` folder, the
+    `mechanism` it was started for, the `molecules` that mechanism changes
+    bonds in (`atoms`, `smiles`, `returned`: found again at the end), and
+    its `status` (`queued`, `running`, `searched`; at the end `failed` or
+    `not_run`);
+  - per search, `transition_states`: each TS with its `status`
+    (`ts_pending`, `ts_failed`, `irc_pending`, `irc_failed`, `verified`,
+    `not_a_reaction`), its files (`ts`, `irc`, under `ts/`), `barrier_kcal`
+    (electronic, above the lowest start conformer), `joins_start_and_end`,
+    `irc_ends` (SMILES), `bonds_broken` and `bonds_formed` between the IRC
+    ends (atom indices), the `molecules` those bonds touch with `returned`,
+    `mechanism_found` (the step-6 key of the IRC ends) and
+    `is_searched_mechanism`; once the run has classified, `channel` (its
+    folder, e.g. `channels/channel_0`).
+
+  A TS with `joins_start_and_end` true and a returned molecule among its
+  `molecules` is a verified channel through that molecule. (With
+  `--workers 1` the TS optimizations and IRCs run after the last search, so
+  the transition states appear then.)
+- **Processes.** `--workers` is the number of lanes. Searches and the TS/IRC
+  follow-ups of finished searches share them: a follow-up takes a freed lane
+  before the next queued search, so a TS is verified as soon as it is found
+  and no more than `--workers` processes work while searches are queued or
+  running. Once none are, what is left runs on as many processes as the
+  searches had in all (workers × parallel-workers × the engine's own width).
+  `--parallel-workers` and the engine's width, when left to auto, are sized
+  from the CPUs the run may use (its affinity mask and its container's limit,
+  `mepd.cpus.available_cpus`), not from `--workers`: `--workers 8
+  --parallel-workers 1` on a 24-CPU machine gives each search 3 engine
+  threads and the last pass 24 processes. To hold a run to k cores on a
+  shared machine, start it under `taskset -c` (or in a container limited to
+  k CPUs).
 - A pair whose root NEB fails is skipped instead of stopping the run.
 - Every leaf is TS-optimized and followed by an IRC, also in parallel. A
   TS's classification comes from the **connectivity of its IRC endpoints,
