@@ -508,7 +508,7 @@ def mechanism_key(start_structure: Structure, aligned_end_structure: Structure) 
 
 def suggest_mechanism_candidates(
     struct_start: Structure, struct_end: Structure, *, binary: bool = True,
-    max_variants_per_mechanism: int = 200, explore: int = 0,
+    max_variants_per_mechanism: int = 200, explore: int = 0, explore_molecule: Optional[str] = None,
 ) -> dict[str, list["AtomMapping"]]:
     """SLAPMapper's equal-minimal-cost mappings, grouped by the mechanism
     they imply (`mechanism_key`), each fully expanded into its symmetry
@@ -524,7 +524,9 @@ def suggest_mechanism_candidates(
     minimal-edit ones (`explore_mechanisms`: relays and exchanges through
     other molecules), each expanded into its symmetry variants the same way.
     Their keys start with "explored:", and name any molecule that takes
-    part but is regenerated ("[catalytic: H2O]").
+    part but is regenerated ("[catalytic: H2O]"). `explore_molecule` (a
+    SMILES): only explored mechanisms in which that molecule of the start
+    takes part (a bond that breaks or forms has one of its atoms).
 
     Returns {} when `suggest_atom_mapping_candidates` would return []."""
     _require_slapmapper()
@@ -568,7 +570,11 @@ def suggest_mechanism_candidates(
     keys = _route_keys(struct_start, struct_end, [b for b, _ in routes])
     out = dict(zip(keys, (v for _, v in routes)))
     if explore > 0 and routes:
-        for base in explore_mechanisms(struct_start, struct_end, [b for b, _ in routes], max_new=explore):
+        through = atoms_of_molecule(struct_start, explore_molecule) if explore_molecule else frozenset()
+        if explore_molecule and not through:
+            raise ValueError(f"no molecule of the start is {explore_molecule}")
+        for base in explore_mechanisms(struct_start, struct_end, [b for b, _ in routes], max_new=explore,
+                                       through=through):
             aligned = realign_end_to_start(base, struct_end)
             key = f"explored: {mechanism_key(struct_start, aligned)}"
             cats = catalytic_participants(struct_start, aligned)
@@ -666,6 +672,13 @@ class _EditCount:
                         if b > j and inv[b] not in self.adj0[inv[j]])
         return tuple(broken), tuple(formed)
 
+    def changed_atoms(self, order) -> set:
+        """The atoms of the bonds broken and formed."""
+        inv = {int(v): a for a, v in enumerate(order)}
+        return ({a for i in range(self.n) for k in self.adj0[i] if order[k] not in self.adj1[order[i]] for a in (i, k)}
+                | {a for j in range(self.n) for b in self.adj1[j] if inv[b] not in self.adj0[inv[j]]
+                   for a in (inv[j], inv[b])})
+
     def relabels(self, base, order) -> bool:
         """Whether `order` is `base` with the start's atoms renamed by a symmetry of the start's bond graph
         (the other methyl of an acetone, say): the same mechanism through equivalent atoms, which the
@@ -697,7 +710,7 @@ class _EditCount:
 
 def explore_mechanisms(
     struct_start: Structure, struct_end: Structure, bases: list["AtomMapping"], *,
-    max_new: int = 20, rounds: int = 5, step: int = 2, per_round: int = 400,
+    max_new: int = 20, rounds: int = 5, step: int = 2, per_round: int = 400, through: frozenset = frozenset(),
 ) -> list["AtomMapping"]:
     """Mechanisms beyond SLAPMapper's minimal-edit ones, for an unbiased look
     at routes that involve more atoms -- a proton or methyl relayed through
@@ -717,7 +730,9 @@ def explore_mechanisms(
     O, S, P or a halogen), fewest first: a proton shuttled between
     heteroatoms (a catalyst's N-H or O-H) before an H handed on through a
     C-H bond, which the edit count alone can't tell apart. Which of them
-    are actually low in energy is for the caller's scoring to decide."""
+    are actually low in energy is for the caller's scoring to decide.
+    `through` (atom indices of the start): only routes in which a bond that
+    breaks or forms has one of these atoms, the `max_new` best of those."""
     if not bases or max_new <= 0:
         return []
     ec = _EditCount(struct_start, struct_end)
@@ -725,11 +740,12 @@ def explore_mechanisms(
     # asks the same question: answered once per process (1.2 s of a 34-atom pair's 1.8 s of mapping).
     memo = (tuple(ec.sym), tuple(sorted((i, tuple(sorted(a))) for i, a in ec.adj0.items())),
             tuple(sorted((i, tuple(sorted(a))) for i, a in ec.adj1.items())),
-            tuple(tuple(int(v) for v in b.as_order()) for b in bases), max_new, rounds, step, per_round)
+            tuple(tuple(int(v) for v in b.as_order()) for b in bases), max_new, rounds, step, per_round,
+            tuple(sorted(through)))
     if memo not in _EXPLORED:
         if len(_EXPLORED) >= 64:
             _EXPLORED.clear()
-        _EXPLORED[memo] = _explore_routes(ec, bases, max_new, rounds, step, per_round)
+        _EXPLORED[memo] = _explore_routes(ec, bases, max_new, rounds, step, per_round, through)
     ranked, n_routes = _EXPLORED[memo]
     return [AtomMapping(mapping=dict(enumerate(o)), cost=float(c), n_alternatives=n_routes, explored=True)
             for c, o in ranked]
@@ -738,7 +754,8 @@ def explore_mechanisms(
 _EXPLORED: dict = {}
 
 
-def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, step: int, per_round: int) -> tuple:
+def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, step: int, per_round: int,
+                    through: frozenset = frozenset()) -> tuple:
     """`explore_mechanisms`' search: ([(edit count, order)], number of new routes found)."""
     pairs = [(i, j) for i in range(ec.n) for j in range(i + 1, ec.n) if ec.sym[i] == ec.sym[j]]
     seen = {}
@@ -781,6 +798,8 @@ def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, st
         key = ec.route(order)
         if key in known or any(ec.relabels(o, order) for o in base_orders):
             continue   # a base, or one written with other, symmetry-equivalent atoms: not a new mechanism
+        if through and not ec.changed_atoms(order) & through:
+            continue
         if key not in best or c < best[key][0]:
             best[key] = (c, order)
     ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
@@ -805,6 +824,31 @@ def catalytic_participants(struct_start: Structure, aligned_end_structure: Struc
             order = sorted(counts, key=lambda e: (e != "C", e != "H", e))
             out.append("".join(f"{e}{counts[e] if counts[e] > 1 else ''}" for e in order))
     return sorted(out)
+
+
+def atoms_of_molecule(structure: Structure, smiles: str) -> frozenset:
+    """The atom indices of every molecule of `structure` whose bond graph (elements included, hydrogens
+    too; no bond orders, charges or stereochemistry) is that of `smiles`. Empty if there is none."""
+    import networkx as nx
+
+    def labelled(g):
+        return nx.Graph([(u, v) for u, v in g.edges()]), {i: d.get("element") for i, d in g.nodes(data=True)}
+
+    want, want_el = labelled(Molecule.from_smiles(smiles))
+    want.add_nodes_from(want_el)
+    nx.set_node_attributes(want, want_el, "el")
+    mol = structure_to_molecule(structure)
+    sym = [str(x) for x in structure.symbols]
+    atoms: set = set()
+    for comp in nx.connected_components(mol):
+        if len(comp) != want.number_of_nodes():
+            continue
+        h = nx.Graph(mol.subgraph(comp).edges())
+        h.add_nodes_from(comp)
+        nx.set_node_attributes(h, {i: sym[i] for i in comp}, "el")
+        if nx.is_isomorphic(h, want, node_match=lambda a, b: a["el"] == b["el"]):
+            atoms |= {int(i) for i in comp}
+    return frozenset(atoms)
 
 
 def molecules_taking_part(struct_start: Structure, aligned_end_structure: Structure) -> list[dict]:

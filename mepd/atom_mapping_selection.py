@@ -600,9 +600,11 @@ def select_per_mechanism(
 
     if not HAS_SLAPMAPPER or len(start_structure.symbols) != len(end_structure.symbols):
         return []
+    ami = getattr(run_inputs, "atom_mapping_inputs", None)
     groups = suggest_mechanism_candidates(
         start_structure, end_structure, max_variants_per_mechanism=max_variants_per_mechanism,
-        explore=int(getattr(getattr(run_inputs, "atom_mapping_inputs", None), "explore_mechanisms", 0) or 0),
+        explore=int(getattr(ami, "explore_mechanisms", 0) or 0),
+        **({"explore_molecule": ami.explore_molecule} if getattr(ami, "explore_molecule", None) else {}),
     )
     if not groups:
         return []

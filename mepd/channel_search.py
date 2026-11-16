@@ -1104,6 +1104,7 @@ class ChannelsOptions:
     debug_dump: bool = False
     atom_mapping_candidates: int = 3
     explore_mechanisms: int = 0
+    explore_molecule: Optional[str] = None
     relax_mechanisms: Optional[int] = None
     relax_margin: Optional[float] = None
     atom_mapping_metric: str = 'snap-gi-xtb'
@@ -1180,6 +1181,8 @@ class ChannelsOptions:
             )
         if self.atom_mapping_rmsd_window is not None and self.atom_mapping_rmsd_window < 0:
             raise InputsError("--atom-mapping-rmsd-window must be 0 or more (standard deviations).")
+        if isinstance(self.explore_molecule, str) and self.explore_molecule and not self.explore_mechanisms > 0:
+            raise InputsError("--explore-molecule chooses among the explored mechanisms: give --explore-mechanisms N too.")
         if self.atom_mapping_candidates <= 0:
             raise InputsError("--atom-mapping-candidates must be a positive integer.")
         if self.search_built and self.built_pairs is None:
@@ -1226,6 +1229,7 @@ def apply_options(run_inputs: RunInputs, options: ChannelsOptions) -> None:
     run_inputs.atom_mapping_inputs.veto_margin = options.atom_mapping_veto_margin
     run_inputs.atom_mapping_inputs.recheck_on_split = options.atom_mapping_recheck_splits
     run_inputs.atom_mapping_inputs.explore_mechanisms = max(0, options.explore_mechanisms) if isinstance(options.explore_mechanisms, int) else 0
+    run_inputs.atom_mapping_inputs.explore_molecule = options.explore_molecule if isinstance(options.explore_molecule, str) and options.explore_molecule else None
     if isinstance(options.relax_mechanisms, int):
         run_inputs.atom_mapping_inputs.relax_top = max(0, options.relax_mechanisms)
     if isinstance(options.relax_margin, (int, float)):
@@ -1310,6 +1314,17 @@ def run_channels(
             _log("QM/MM system: the ends share their atom order, so no atom mapping (as --no-atom-mapping).")
         atom_mapping = False
         run_inputs.atom_mapping_inputs.explore_mechanisms = 0
+
+    molecule = run_inputs.atom_mapping_inputs.explore_molecule
+    if molecule and run_inputs.atom_mapping_inputs.explore_mechanisms:
+        from mepd.atom_mapping import atoms_of_molecule
+
+        try:
+            found = atoms_of_molecule(start_node.structure, molecule)
+        except Exception as exc:
+            raise InputsError(f"--explore-molecule: could not read {molecule!r} as SMILES ({exc}).")
+        if not found:
+            raise InputsError(f"--explore-molecule: no molecule of the start is {molecule}.")
 
     if minimize_ends and endpoints_are_guesses:
         _log(

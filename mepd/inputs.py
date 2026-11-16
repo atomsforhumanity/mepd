@@ -511,6 +511,9 @@ class AtomMappingInputs:
         (snap + GI + xtb) and, in channels, searched as its own mechanism;
         those in which a molecule takes part and is regenerated are labelled
         "[catalytic: ...]". Default 0 (off).
+    `explore_molecule`: a SMILES. Of the explored mechanisms, only those in
+        which this molecule of the start takes part (a bond that breaks or
+        forms has one of its atoms); SLAPMapper's own are always kept.
     `rebuild_on_split`: experimental. "start": at every recursive split,
         each new leg's product is rebuilt in the frame of the leg's start
         (`network_expansion.build_partners`); "end": the leg's start in the
@@ -523,6 +526,7 @@ class AtomMappingInputs:
     veto_margin: float = 0.0
     recheck_on_split: bool = False
     explore_mechanisms: int = 0
+    explore_molecule: str = None
     # snap-gi-xtb: relax the paths of the best this many mechanisms (by raw xtb
     # peak) with their changing bonds held, and keep the lowest relaxed barrier
     # (raw interpolation peaks are mostly atoms colliding mid-path). 0 = off.

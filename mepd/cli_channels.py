@@ -128,6 +128,13 @@ def channels(
         "scored like SLAPMapper's (snap + GI + xtb); ones in which a molecule takes part and is "
         "regenerated are labelled [catalytic: ...]. 0 = off.",
     ),
+    explore_molecule: Optional[str] = typer.Option(
+        None, "--explore-molecule",
+        help="With --explore-mechanisms N: a SMILES of one molecule of the start (a catalyst added on both sides, "
+        "say). The N explored mechanisms are then the best-ranked in which that molecule takes part (a bond "
+        "that breaks or forms has one of its atoms); SLAPMapper's own mechanisms, which may leave it "
+        "untouched, are always kept.",
+    ),
     relax_mechanisms: Optional[int] = typer.Option(
         None, "--relax-mechanisms",
         help="snap-gi-xtb: rank mappings by relaxed path energy. The N best by raw xtb peak (plus SLAPMapper's own "

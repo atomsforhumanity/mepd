@@ -51,3 +51,19 @@ def test_searches_are_queued_in_the_mechanisms_ranked_order_not_by_name(tmp_path
     assert [r["mechanism"] for r in table] == [k for k in ranked for _ in range(2)]
     assert cands == [(r["start_conformer"], int(r["pair"].rsplit("_", 1)[1])) for r in table]   # the queue's order
     assert summary["path_searches_per_mechanism"] == {k: 2 for k in ranked}                     # none dropped
+
+
+def test_explore_molecule_needs_explore_mechanisms_and_a_molecule_of_the_start(tmp_path):
+    import pytest
+
+    from mepd.errors import InputsError
+
+    with pytest.raises(InputsError, match="--explore-mechanisms"):
+        cs.ChannelsOptions(explore_molecule="O").validate()
+    start, end = _keto_enol_with_water()
+    options = cs.ChannelsOptions(explore_mechanisms=3, explore_molecule="CCO")
+    with pytest.raises(InputsError, match="no molecule of the start is CCO"):
+        cs.run_channels(StructureNode(structure=start), StructureNode(structure=end), RunInputs(), options, tmp_path)
+    run_inputs = RunInputs()
+    cs.apply_options(run_inputs, cs.ChannelsOptions(explore_mechanisms=3, explore_molecule="O"))
+    assert run_inputs.atom_mapping_inputs.explore_molecule == "O"

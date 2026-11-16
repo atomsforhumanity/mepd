@@ -548,6 +548,29 @@ def test_explore_does_not_list_slapmappers_mechanism_again_through_the_other_met
     assert len(explored) == 10 and not any(ec.relabels(base.as_order(), m.as_order()) for m in explored)
 
 
+def test_explore_molecule_keeps_slapmappers_mechanism_and_the_explored_ones_through_that_molecule():
+    from mepd.atom_mapping import _EditCount, atoms_of_molecule, explore_mechanisms, suggest_mechanism_candidates
+
+    start, end = _scrambled("keto_enol_1water")
+    water, acetone = atoms_of_molecule(start, "O"), atoms_of_molecule(start, "CC(C)=O")
+    assert len(water) == 3 and len(acetone) == 10 and not water & acetone
+    assert atoms_of_molecule(start, "CCO") == frozenset()
+    base = suggest_atom_mapping(start, end)
+    ec = _EditCount(start, end)
+    everything = explore_mechanisms(start, end, [base], max_new=1000)
+    through = explore_mechanisms(start, end, [base], max_new=4, through=water)
+    # the best-ranked of the mechanisms with a changed bond on the water, in the ranking's order
+    assert [m.as_order() for m in through] == \
+        [m.as_order() for m in everything if ec.changed_atoms(m.as_order()) & water][:4]
+    assert len(through) == 4 and len(everything) > len([m for m in everything if ec.changed_atoms(m.as_order()) & water])
+    plain = list(suggest_mechanism_candidates(start, end))
+    keys = list(suggest_mechanism_candidates(start, end, explore=4, explore_molecule="O"))
+    assert keys[:len(plain)] == plain and len(keys) > len(plain)        # SLAPMapper's own, water untouched, kept
+    assert all("H2O" in k for k in keys[len(plain):])
+    with pytest.raises(ValueError, match="no molecule of the start"):
+        suggest_mechanism_candidates(start, end, explore=4, explore_molecule="CCO")
+
+
 def test_explore_finds_the_methyl_relay_through_ch3i():
     from mepd.atom_mapping import catalytic_participants, explore_mechanisms
 
