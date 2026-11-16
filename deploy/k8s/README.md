@@ -1,14 +1,14 @@
 # mepd on the afh cluster
 
 `mepd-demo.yaml` runs the image (`ghcr.io/atomsforhumanity/mepd`) in demo
-mode on **afh-c04**. It is open: anyone who opens the page gets private
+mode on **afh-c03**. It is open: anyone who opens the page gets private
 workspaces at once, no password, with the limits in `mepd/web/demo.py`. It runs as one pod that
 uses the node's GPU, and keeps its state on the node's data disk (`/nvme1`).
 
 ## One-time setup
 
 ```bash
-# On afh-c04: the data disk directories, owned by the container's user (uid 1000)
+# On afh-c03: the data disk directories, owned by the container's user (uid 1000)
 sudo mkdir -p /nvme1/mepd/data /nvme1/mepd/tmp
 sudo chown -R 1000:1000 /nvme1/mepd
 
@@ -42,7 +42,7 @@ interrupted, and a job that finishes in that minute still shows as interrupted u
 
 ## Where things are
 
-| On afh-c04 | In the container | What |
+| On afh-c03 | In the container | What |
 |---|---|---|
 | `/nvme1/mepd/data/demo/visitors/<id>/` | `/data/demo/visitors/<id>/` | each tester's workspaces and job outputs |
 | `/nvme1/mepd/data/demo/profiles/*.toml` | `/data/demo/profiles/` | the compute profiles testers run with (read-only for them; edit here) |
@@ -51,6 +51,25 @@ interrupted, and a job that finishes in that minute still shows as interrupted u
 | `/nvme1/mepd/tmp/` | `/tmp` | scratch (GSM, Psi4); safe to clear while the pod is stopped |
 
 Back up `/nvme1/mepd/data`. Everything else can be rebuilt.
+
+## Moving to another node
+
+The pod follows `nodeSelector` in `mepd-demo.yaml`, and the data stays on the old node's disk, so a
+move is both. It ran on afh-c04 until 2026-11-16, when that node was drained for a hardware check and
+the data was moved to afh-c03 like this:
+
+1. Stop the server so the data is quiet: drain the old node, or `kubectl -n mepd scale deploy/mepd --replicas=0`.
+2. Copy `/nvme1/mepd` to the new node with ownership and times kept, then compare with checksums
+   (56 GB in 1.08 M files took 2.5 min over 10 GbE; the check another 30 s):
+   `rsync -aH --numeric-ids /nvme1/mepd/ <new-node>:/nvme1/mepd/`, then the same with `-c --dry-run --itemize-changes`
+   (no output: identical).
+3. Change `kubernetes.io/hostname` in `mepd-demo.yaml` and this README, and merge: CI deploys it.
+   To bring the site back before the merge, patch the live Deployment the same way
+   (`kubectl -n mepd patch deploy mepd --type merge -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"<new-node>"}}}}}'`);
+   without the merge, the next deploy puts it back on the old node.
+
+Jobs running when the server stopped show as **interrupted** (resumable). The old node's copy is
+stale from then on; delete it once the new node has run for a while.
 
 ## Notes
 
