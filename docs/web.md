@@ -151,7 +151,8 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
 
 1. **Target and conditions** → *What limits it today?* builds the query file. Where every verified step of the
    workspace belongs to one finished Network expansion (`addpage.source_run`), the query is the exploration's own
-   molecule-level network (`mepd addmol query RUN`, run in a process of its own; about half a minute); otherwise
+   molecule-level network (`mepd addmol query RUN`, run in a process of its own; measured on a 274-step run with 2
+   processes: 33 s at the run's temperature, 410 s at another, where every thermal correction is recomputed); otherwise
    the workspace's (`mepd.web.added.query`; the first time it computes the GFN2-xTB Hessians of every species and
    TS, then seconds). The page says which. It shows the
    degree-of-rate-control order (lower these, do not lower these, traps), or, where the network makes none of the

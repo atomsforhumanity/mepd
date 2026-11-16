@@ -4117,7 +4117,7 @@
    "The question (target and conditions) is kept in the workspace as a query file; asking it again opens its candidates."
   ],
   "caveats": [
-   "On the workspace's network the first question computes a GFN2-xTB Hessian for every species and transition state (minutes); they are kept. On an exploration's own network every question takes about half a minute."
+   "On the workspace's network the first question computes a GFN2-xTB Hessian for every species and transition state (minutes); they are kept. On an exploration's own network a question takes about half a minute at the exploration's temperature and several minutes at another."
   ],
   "code": [
    "mepd/web/addpage.py:make_query",

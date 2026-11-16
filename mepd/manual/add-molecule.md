@@ -23,8 +23,9 @@ Which network is asked depends on where the workspace's network came from
   Network expansion): the exploration's own network. Its species are
   molecules, its free energies are the run's own, and every IRC-verified
   step it found counts, also the ones it closed as too high. A question
-  takes about half a minute: the thermal corrections the run did not record
-  are computed each time.
+  takes about half a minute at the exploration's own temperature (the
+  thermal corrections it did not record are computed each time) and several
+  minutes at another one (every correction is computed again).
 - **Anything else** (steps from several calculations, a hand-built
   network, a question with a fixed amount): the workspace's network, the one
   Kinetics runs: one step per pair of species, free energies at the 1 M
