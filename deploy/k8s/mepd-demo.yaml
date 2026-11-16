@@ -1,8 +1,8 @@
-# mepd web in demo mode on afh-c04: one FastAPI process (it holds state, so
+# mepd web in demo mode on afh-c03: one FastAPI process (it holds state, so
 # one replica), the GPU, and its state on the node's data disk.
 #
 # Before the first apply (see deploy/k8s/README.md):
-#   on afh-c04:   sudo mkdir -p /nvme1/mepd/data /nvme1/mepd/tmp && sudo chown -R 1000:1000 /nvme1/mepd
+#   on afh-c03:   sudo mkdir -p /nvme1/mepd/data /nvme1/mepd/tmp && sudo chown -R 1000:1000 /nvme1/mepd
 #   kubectl create namespace mepd
 #   kubectl -n mepd create secret docker-registry ghcr-pull --docker-server=ghcr.io \
 #     --docker-username=<github user> --docker-password=<classic PAT, read:packages only>
@@ -32,7 +32,7 @@ spec:
       labels: {app: mepd}
     spec:
       nodeSelector:
-        kubernetes.io/hostname: afh-c04      # the data lives on this node's disk
+        kubernetes.io/hostname: afh-c03      # the data lives on this node's disk (moving it: deploy/k8s/README.md)
       imagePullSecrets:
         - name: ghcr-pull
       # Kubernetes otherwise sets <SERVICE>_PORT etc. for every Service in the
