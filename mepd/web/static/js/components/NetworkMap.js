@@ -17,6 +17,7 @@ import cytoscape from '../../vendor/cytoscape.esm.min.js';
 import { clearSelection, openReaction, prefs, select, set, setExploreView, state, useStore } from '../store.js';
 import { PHONE_QUERY, depictUrl, edgeStatus, edgeStatusKey, isComplex, reactionOfEdge, variantScope } from '../util.js';
 import { uploadFiles } from './Library.js';
+import { MarksLegend, markKind, markLook, markTip, marksOf } from './AddMoleculeMarks.js';
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const SUB = { 0: '₀', 1: '₁', 2: '₂', 3: '₃', 4: '₄', 5: '₅', 6: '₆', 7: '₇', 8: '₈', 9: '₉' };
@@ -367,6 +368,8 @@ function styles() {
     { selector: 'node.picked', style: { 'border-width': 3, 'border-color': css('--accent'), 'underlay-color': css('--accent'), 'underlay-opacity': 0.15, 'underlay-padding': 5, 'underlay-shape': 'round-rectangle' } },
     { selector: 'edge', style: { 'curve-style': 'bezier', width: 'data(w)', 'line-color': 'data(col)', 'target-arrow-color': 'data(col)',
       'target-arrow-shape': 'triangle', 'arrow-scale': 0.7, opacity: 0.85 } },
+    { selector: 'edge[am = "est"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
+    { selector: 'node[?am]', style: { 'border-style': 'double', 'border-width': 5, 'border-color': css('--route') } },
     { selector: 'edge[kind = "ns"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [5, 4], opacity: 0.6 } },
     { selector: 'edge[kind = "nots"]', style: { 'line-style': 'dotted', opacity: 0.7 } },
     { selector: 'edge[kind = "run"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4], 'line-color': css('--accent'), 'target-arrow-color': css('--accent'), width: 2.4, opacity: 1 } },
@@ -484,12 +487,14 @@ export function NetworkMap() {
     return layoutAll(M, R, o, aspect);
   }, [M, R]);
   const live = useRef({});
+  const marks = marksOf(workspace, network);   // a molecule added to the flask (Add a molecule)
   const look = (s) => {
+    if (marks?.edges[s.id]) return markLook(marks.edges[s.id], css, mix);
     if (s.kind !== 'b') return { col: s.kind === 'run' ? css('--accent') : css('--edge-idle'), w: 1.2 };
     const t = M.hi > M.lo ? Math.min(1, Math.max(0, (s.fwd - M.lo) / (M.hi - M.lo))) : 0;
     return { col: mix(css('--ramp-lo'), css('--ramp-hi'), Math.pow(t, 0.8)), w: 0.9 + 2.8 * (1 - t) };
   };
-  live.current = { M, R, L, G, view, thr, o, look, ends, routes };
+  live.current = { M, R, L, G, view, thr, o, look, ends, routes, marks };
 
   // A route's ends: set one, then arm the other (or, with both, show the routes).
   const chooseEnds = (patch) => {
@@ -534,7 +539,7 @@ export function NetworkMap() {
       const s = m.byId[e.target.data('step') || e.target.id()];
       if (!s || !tip) return;
       const tags = stepTags(m, s);
-      tip.textContent = e.target.data('tip') || `${mapLabel(m.mols[s.a])} → ${mapLabel(m.mols[s.b])}   ${s.kind === 'b' ? `${fmt(s.fwd)} kcal/mol` : barText(s)}${tags.length ? `   ${tags.join(' ')}` : ''}`;
+      tip.textContent = e.target.data('tip') || `${mapLabel(m.mols[s.a])} → ${mapLabel(m.mols[s.b])}   ${s.kind === 'b' ? `${fmt(s.fwd)} kcal/mol` : barText(s)}${tags.length ? `   ${tags.join(' ')}` : ''}${markTip(live.current.marks?.edges[s.id])}`;
       tip.hidden = false;
     });
     c.on('mousemove', (e) => {
@@ -596,12 +601,12 @@ export function NetworkMap() {
       const img = depictUrl(m.smiles, 200, 150);
       // A new molecule found from one already drawn grows out of it.
       const from = old[id] || old[m.origin?.parent] || L.pos[id] || { x: 0, y: 0 };
-      els.push({ group: 'nodes', data: { id, name: mapLabel(m), label: mapLabel(m), img: img || 'none', noimg: !img, start: M.starts.includes(id) }, position: { ...from } });
+      els.push({ group: 'nodes', data: { id, name: mapLabel(m), label: mapLabel(m), img: img || 'none', noimg: !img, start: M.starts.includes(id), am: marks?.species[id] ? 1 : undefined }, position: { ...from } });
     }
     for (const s of M.steps) {
       if (!drawn(s, o) || !M.nodes.has(s.a) || !M.nodes.has(s.b)) continue;
       const lk = look(s);
-      els.push({ group: 'edges', data: { id: s.id, source: s.a, target: s.b, col: lk.col, w: lk.w, kind: s.kind } });
+      els.push({ group: 'edges', data: { id: s.id, source: s.a, target: s.b, col: lk.col, w: lk.w, kind: s.kind, am: markKind(marks?.edges[s.id]) } });
     }
     c.batch(() => { c.elements().remove(); c.add(els); });
     let v = view;
@@ -841,6 +846,7 @@ export function NetworkMap() {
       <div class="nm-cy" ref=${host}></div>
       <div class="nm-heads" ref=${headRef} aria-hidden="true"></div>
       ${crumbs}
+      <${MarksLegend} workspace=${workspace} network=${network} />
       ${view.mode === 'ego' && html`<div class="nm-route">
         ${!M.starts.includes(view.mol) && (route
           ? html`<span>Easiest way here: <b>${route.steps.length} step${route.steps.length > 1 ? 's' : ''}</b>, highest barrier <b class="mono">${fmt(route.top)}</b></span>

@@ -97,6 +97,7 @@ export function VariantTools({ vid }) {
     if (!confirm(`Delete the variant ${v.name} and its species, reactions and results in Explore?`)) return;
     if (await attempt(() => api.del(`/api/variants/${vid}`))) set({ network: '' });
   };
-  return html`<button class="btn small ghost" onClick=${update} title="Carry the edit into reactions added since">Update</button>
+  // (a molecule added to the flask, Add a molecule: nothing to carry; its page refreshes it)
+  return html`${v.kind !== 'added_molecule' && html`<button class="btn small ghost" onClick=${update} title="Carry the edit into reactions added since">Update</button>`}
     <button class="btn small ghost danger-text" onClick=${remove} title="Delete this variant">✕</button>`;
 }
