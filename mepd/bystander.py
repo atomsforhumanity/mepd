@@ -10,7 +10,8 @@ Placers are generic: none knows a reaction class, a functional group or a mechan
   "seeded"      C's most charged atoms put against the step's atoms whose partial charge changes most
                 between the ends and the TS and against its most polar atoms, opposite charges facing;
   "screen-ff"   many rigid poses scored by point charges + a 12-6 term, the best relaxed;
-  "screen-sp"   the same pool scored by single points of `engine`.
+  "screen-sp"   the same pool scored by single points of `engine`;
+  "mixed"       half the poses seeded, half screened by single points.
 With `carry` (default) the best poses of each frame are also relaxed on the other two frames, so the
 three frames are compared at the same sites.
 """
@@ -24,7 +25,7 @@ from qcref.constants import ANGSTROM_TO_BOHR
 
 VERSION = 1
 HARTREE_TO_KCAL = 627.509474
-PLACERS = ("random", "seeded", "screen-ff", "screen-sp")
+PLACERS = ("mixed", "random", "seeded", "screen-ff", "screen-sp")
 #: Bondi radii (A. Bondi, J. Phys. Chem. 68, 441 (1964); H from Rowland and Taylor 1996), 2.0 A otherwise.
 VDW = {"H": 1.10, "B": 1.92, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "Na": 2.27, "Mg": 1.73, "Al": 1.84,
        "Si": 2.10, "P": 1.80, "S": 1.80, "Cl": 1.75, "K": 2.75, "Br": 1.85, "I": 1.98, "Li": 1.82}
@@ -260,6 +261,11 @@ def _distinct(scored: list, n: int) -> list:
 def place(placer: str, engine, symx, X, qx, site_atoms, confs, rng, n: int, *, charge: int = 0,
           multiplicity: int = 1, pool: int = 200) -> list:
     """`n` starting poses [(conformer index, C's coordinates in A, origin)] of C on one frame."""
+    if placer == "mixed":       # half seeded, half screened by single points (the odd one seeded)
+        k = (n + 1) // 2
+        return (_seeded(X, symx, qx, site_atoms, confs, rng, k)
+                + place("screen-sp", engine, symx, X, qx, site_atoms, confs, rng, n - k, charge=charge,
+                        multiplicity=multiplicity, pool=pool))
     if placer == "random":
         return _random(X, symx, confs, rng, n)
     if placer == "seeded":
@@ -583,7 +589,7 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
         x_nodes = {f: _node(symx, X[f], q_x, mult) for f in order}
         c_nodes = [_node(csym, c, q_c, int(molecule.get("multiplicity", 1))) for c in molecule["conformers"]]
         e_c = [_energy(engine, c) for c in c_nodes]
-        need_q = placer in ("seeded", "screen-ff")
+        need_q = placer in ("mixed", "seeded", "screen-ff")
         q_frames = {f: charges(x_nodes[f]) for f in order} if need_q else None
         confs = [(csym, _xyz(c), charges(c) if need_q else None, e) for c, e in zip(c_nodes, e_c)]
         if relax_substrate and reaction_atoms is None:

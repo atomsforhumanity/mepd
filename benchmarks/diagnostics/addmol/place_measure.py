@@ -55,7 +55,7 @@ def task(a):
     t0 = time.perf_counter()
     cnodes = [B._node(csym, x, cq) for x in confs_xyz]
     e_c = [B._energy(engine, c) for c in cnodes]
-    need_q = placer in ("seeded", "screen-ff")
+    need_q = placer in ("mixed", "seeded", "screen-ff")
     q = {f: B.gfn2_charges(frames[f]) for f in frames} if need_q else None
     confs = [(csym, np.asarray(x), B.gfn2_charges(c) if need_q else None, e) for x, c, e in zip(confs_xyz, cnodes, e_c)]
     X = {f: (symx, B._xyz(frames[f])) for f in frames}
