@@ -1,0 +1,98 @@
+/* Add a molecule (js/components/AddMolecule.js): the page sits on Kinetics' two-column layout (.kinetics)
+   and uses the app's tokens; the diverging pair (--div-pos lower / --div-neg higher, --div-mid) is Kinetics' own. */
+.addmol .kn-row select { width: auto; max-width: 100%; }
+.am-target-img { width: 180px; height: 110px; object-fit: contain; background: var(--node-bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.am-text { width: 100%; resize: vertical; font-size: 12.5px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel); color: var(--text); }
+.am-read img { width: 48px; height: 36px; object-fit: contain; background: var(--node-bg); border-radius: 2px; display: block; }
+.am-read tr.am-bad td { color: var(--danger); }
+.am-read tr.am-bad .muted { color: var(--danger); }
+.am-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 4px 16px 12px; margin: 0 0 14px; max-width: 1080px; }
+.am-card > .section-title:first-child { margin-top: 12px; }
+.am-lede { margin: 0 0 8px; font-size: var(--fs-md); }
+
+/* est. / verified beside a number */
+.am-tag { display: inline-block; font: 600 11px/1.5 var(--font-ui); padding: 0 5px; border-radius: 3px; vertical-align: 1px; white-space: nowrap; }
+.am-tag.est { color: var(--warn); border: 1px dashed var(--warn); background: transparent; }
+.am-tag.ver { color: var(--ok); border: 1px solid var(--ok); background: var(--ok-soft); }
+.am-main { font-weight: 600; }
+.am-main.pos { color: var(--div-pos); } .am-main.neg { color: var(--div-neg); }
+.am-warn { color: var(--warn); }
+.am-level { font-family: var(--font-mono); font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the easiest route: heights against what the conditions allow */
+.am-route { display: flex; flex-direction: column; gap: 4px; max-width: 760px; margin: 6px 0 8px; }
+.am-route-row { display: grid; grid-template-columns: 18px minmax(0, 1.4fr) minmax(90px, 1fr) 96px; gap: 8px; align-items: center; font-size: 12px; }
+.am-route-n { color: var(--muted); text-align: right; }
+.am-route-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.am-route-track { position: relative; height: 12px; }
+.am-route-bar { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 0 3px 3px 0; background: var(--edge-idle); }
+.am-route-bar.over { background: var(--accent); }
+.am-route-cut { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--heading); }
+.am-route-v { text-align: right; white-space: nowrap; }
+
+/* candidates */
+.am-table td { vertical-align: top; }
+.am-table .am-main, .am-table .mono { white-space: nowrap; }
+.am-table td:nth-child(n+3) { min-width: 96px; }
+.am-table .am-cand { display: flex; gap: 8px; align-items: flex-start; min-width: 150px; }
+.am-table .am-cand img { width: 48px; height: 36px; object-fit: contain; background: var(--node-bg); border-radius: 2px; flex: none; }
+.am-run { white-space: nowrap; color: var(--accent); }
+.am-run.warn { color: var(--warn); } .am-run.bad { color: var(--danger); }
+.am-run .spinner, .am-layer .spinner { margin-right: 4px; }
+
+/* one candidate */
+.am-detail-head { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 12px; }
+.am-detail-head img { width: 120px; height: 90px; object-fit: contain; background: var(--node-bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.am-detail-head h3 { margin: 0; font-size: var(--fs-lg); color: var(--heading); overflow-wrap: anywhere; }
+.am-actions { display: flex; gap: 6px; align-items: center; }
+.am-layers { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.am-layer { font-size: 12px; padding: 1px 7px; border-radius: 3px; border: 1px solid var(--border-strong); color: var(--muted); }
+.am-layer.done { border-color: var(--ok); color: var(--ok); }
+.am-layer.running { border-color: var(--accent); color: var(--accent); }
+.am-layer.failed { border-color: var(--danger); color: var(--danger); }
+.am-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 12px 0 4px; font-size: var(--fs-sm); }
+.am-facts dt { color: var(--muted); }
+.am-facts dd { margin: 0; }
+.am-failed { margin: 6px 0; padding-left: 18px; }
+
+/* a step's barrier without and with the molecule on one axis */
+.am-steps td { vertical-align: middle; }
+.am-db-cell { min-width: 140px; width: 24%; }
+.am-steps td.rx-eq { min-width: 220px; }
+.am-db-head { display: flex; justify-content: space-between; font-family: var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 400; }
+.am-db { position: relative; display: block; height: 14px; margin: 0 6px; }
+.am-db-bar { position: absolute; top: 6px; height: 2px; }
+.am-db-bar.pos { background: var(--div-pos); } .am-db-bar.neg { background: var(--div-neg); }
+.am-db-dot { position: absolute; top: 2px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; box-sizing: border-box; }
+.am-db-dot.before { background: var(--panel); border: 2px solid var(--muted); }
+.am-db-dot.pos { background: var(--div-pos); border: 2px solid var(--panel); width: 12px; height: 12px; top: 1px; margin-left: -6px; }
+.am-db-dot.neg { background: var(--div-neg); border: 2px solid var(--panel); width: 12px; height: 12px; top: 1px; margin-left: -6px; }
+.am-db-spread { position: absolute; top: 3px; height: 8px; border-left: 1px solid var(--muted); border-right: 1px solid var(--muted);
+  background: linear-gradient(var(--muted), var(--muted)) center / 100% 1px no-repeat; }
+.am-key i.am-db-dot, .am-key i.am-db-spread { position: static; display: inline-block; margin: 0 4px 0 12px; vertical-align: -1px; }
+.am-key i.am-db-spread { width: 18px; }
+.am-key i.am-db-dot:first-child { margin-left: 0; }
+.am-viewer { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; margin: 6px 0 10px; background: var(--bg); }
+
+/* candidates side by side */
+.am-compare th { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.am-heat { text-align: right; color: var(--text); white-space: nowrap; border-left: 2px solid var(--panel); }
+.am-heat-est { font-family: var(--font-ui); font-size: 11px; color: var(--text); opacity: .75; }
+
+/* the network map with an added molecule (js/components/AddMoleculeMarks.js) */
+.nm-added { position: absolute; left: 12px; bottom: 48px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; max-width: min(560px, calc(100% - 24px));
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 6px 10px; font-size: 12px; }
+.nm-added-scale { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); }
+.nm-added-scale i { display: inline-block; width: 110px; height: 8px; border-radius: 2px; background: linear-gradient(90deg, var(--div-pos), var(--div-mid), var(--div-neg)); }
+.nm-added-line { display: inline-block; width: 22px; height: 0; border-top: 3px solid var(--muted); vertical-align: middle; margin-right: 4px; }
+.nm-added-line.est { border-top-style: dashed; }
+.nm-added-ring { display: inline-block; width: 12px; height: 12px; border: 3px double var(--route); border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+
+@media (max-width: 720px) {
+  .am-card { padding: 2px 10px 10px; }
+  .am-facts { grid-template-columns: 1fr; gap: 2px; }
+  .am-facts dd { margin-bottom: 8px; }
+  .am-route-row { grid-template-columns: 14px minmax(0, 1fr) 84px; }
+  .am-route-track { grid-column: 2 / 4; grid-row: 2; }
+  .am-db-cell { min-width: 110px; }
+}

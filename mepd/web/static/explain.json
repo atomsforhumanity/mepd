@@ -4107,5 +4107,136 @@
    "mepd/web/channels_pes.py:_routes",
    "mepd/web/static/js/components/ChannelsMap.js"
   ]
+ },
+ "addmol.target": {
+  "title": "the target",
+  "does": "The species you want more of. Everything on the page is read for its amount at the end of the run, at the conditions below.",
+  "how": [
+   "The network is the one Kinetics runs: steps with an IRC-verified transition state, free energies at the 1 M standard state.",
+   "A species that exists as several stereoisomers is several species of the network; ticked, they are counted together.",
+   "The question (target and conditions) is kept in the workspace as a query file; asking it again opens its candidates."
+  ],
+  "caveats": [
+   "The first question in a workspace computes a GFN2-xTB Hessian for every species and transition state (minutes); they are kept."
+  ],
+  "code": [
+   "mepd/web/addpage.py:make_query",
+   "mepd/web/added.py:query"
+  ],
+  "cli": "mepd addmol query",
+  "manual": "add-molecule#the-question"
+ },
+ "addmol.limits": {
+  "title": "what limits the target",
+  "does": "What holds the target back in this network today, before any candidate: the steps a molecule would have to lower, and the ones it must not.",
+  "how": [
+   "Where the network makes the target: the degree of rate control of every transition state (what 1 kcal/mol lower does to the target's amount) and of every species (traps). Largest first; candidates are worked in that order.",
+   "Where it makes none (below 1e-9 of the starting material) a degree of rate control is not defined. Then the easiest route from the starting mixture to the target is shown: how high each transition state stands, against the barrier that is crossed with a half-life of the run's time at its temperature."
+  ],
+  "caveats": [
+   "A degree of rate control is local: it says nothing about a route that does not exist yet.",
+   "While none of the target forms, nothing is known about competing steps."
+  ],
+  "code": [
+   "mepd/addmol.py:limits",
+   "mepd/addmol.py:peak_routes",
+   "mepd/microkinetics.py:degree_of_control"
+  ],
+  "manual": "add-molecule#what-limits-the-target"
+ },
+ "addmol.candidates": {
+  "title": "candidates",
+  "does": "The molecules to try, each with an amount (mol/L). Several at once is the normal case.",
+  "how": [
+   "Typed or pasted: one per line, a SMILES, then optionally a name and an amount.",
+   "A file: SMILES lines (.smi), a structure (.xyz, every frame one candidate), or a candidates file (JSON), as a generative model writes it; it may carry a proposed pose beside a step and estimates from elsewhere.",
+   "All candidates of one click run as one calculation (mepd addmol test); each gets a result file that is rewritten as its layers finish."
+  ],
+  "code": [
+   "mepd/web/addpage.py:parse_candidates",
+   "mepd/cli_addmol.py"
+  ],
+  "cli": "mepd addmol test",
+  "manual": "add-molecule#candidates"
+ },
+ "addmol.query": {
+  "title": "the query file",
+  "does": "The question as one JSON file a program can read without mepd: conditions, every species (SMILES, coordinates, amounts over time), every step (both ends and the transition state in one atom order, the bonds that change, barriers) and what limits the target.",
+  "how": [
+   "A model reads it and proposes candidates; mepd addmol test, or this page, tests them and writes one result file per candidate.",
+   "Result files written elsewhere and copied into the query's results folder (workspace/addmol/<query>/results) are shown here like any other."
+  ],
+  "code": [
+   "mepd/web/added.py:query",
+   "mepd/addmol.py:result"
+  ],
+  "cli": "mepd addmol query",
+  "manual": "add-molecule#for-a-generative-model"
+ },
+ "addmol.read": {
+  "title": "one line per candidate",
+  "does": "What the molecule does to the target, largest gain first.",
+  "how": [
+   "Target: its amount at the end with the molecule against without. Where the network makes none today, the amount with it, or how far the easiest route came down.",
+   "How soon: when the mixture with the molecule holds what today's takes half its run to make.",
+   "Returned?: whether steps with the molecule carry the target's material, how often each molecule came back (turnovers), and the species that holds most of it over the run.",
+   "Largest step change: the step whose barrier changes most through the molecule, with its spread between repeats.",
+   "est. marks a number built on estimates; verified, one built only on transition states optimized with the molecule present."
+  ],
+  "caveats": [
+   "A change no larger than its spread is flagged: it is not a signal.",
+   "Amounts below 1e-9 of the starting material are integration noise and read as none."
+  ],
+  "code": [
+   "mepd/web/addpage.py:line",
+   "mepd/addmol.py:readout"
+  ],
+  "manual": "add-molecule#reading-a-candidate"
+ },
+ "addmol.steps": {
+  "title": "barrier without and with the molecule",
+  "does": "For each step of the network, its apparent barrier without the molecule and with it: the transition state above its reactants at the amounts they have in the run.",
+  "how": [
+   "With the molecule, the barrier is the lowest of the step itself and its versions with the molecule (beside it, or taking part); the table lists the steps whose lowest version goes through the molecule.",
+   "A transition state with the molecule is counted from the separated molecules, so its binding never enters a rate twice, and a molecule held in a complex makes the barrier higher.",
+   "Steps whose own transition state is unchanged but whose reactants hold more or less material are a second, folded group."
+  ],
+  "caveats": [
+   "The bystander layer's placer is a stand-in: its numbers move by kcal/mol between repeats (the spread)."
+  ],
+  "code": [
+   "mepd/addmol.py:readout",
+   "mepd/addmol.py:added"
+  ],
+  "manual": "add-molecule#reading-a-candidate"
+ },
+ "addmol.fate": {
+  "title": "returned, used up or held",
+  "does": "What became of the molecule, from the kinetics' own amounts.",
+  "how": [
+   "On the target's route: the share of the target's material that came through steps with the molecule in them.",
+   "Turnovers: how often a step that changed what the molecule carries handed it back, per molecule put in, in the run's time.",
+   "Returned: it came back at least as often as it is held up at the end. Used up: it ends in new species. Held, does nothing: it sits in complexes and takes part in no step. Takes no part: none of these."
+  ],
+  "code": [
+   "mepd/addmol.py:fate",
+   "mepd/addmol.py:flux_routes"
+  ],
+  "manual": "add-molecule#reading-a-candidate"
+ },
+ "addmol.first_order": {
+  "title": "the first-order estimate",
+  "does": "The gain the degrees of rate control predict from the molecule's shifts alone, beside the full kinetics' own.",
+  "how": [
+   "d ln(amount) = sum over steps and species of X times (-shift / RT), the shift of a step with the molecule at its amount taken as all free."
+  ],
+  "caveats": [
+   "Right while the target's amount is linear in the rate constants; wrong near full conversion or when the molecule saturates; silent about new steps and new species. Where the two disagree, the kinetics count."
+  ],
+  "code": [
+   "mepd/addmol.py:first_order",
+   "mepd/addmol.py:shifts"
+  ],
+  "manual": "add-molecule#reading-a-candidate"
  }
 }

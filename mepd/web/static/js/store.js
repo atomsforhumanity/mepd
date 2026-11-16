@@ -217,7 +217,7 @@ export function formatHash(v, analyze = state.analyze) {
   let path;
   switch (v.tab) {
     case 'welcome': path = '/home'; break;
-    case 'analyze': path = `/${['kinetics', 'landscape'].includes(analyze?.view) ? analyze.view : 'reactions'}`; break;
+    case 'analyze': path = `/${['kinetics', 'landscape'].includes(analyze?.view) ? analyze.view : analyze?.view === 'addmol' ? 'add-molecule' : 'reactions'}`; break;
     case 'jobs': path = '/calculations'; break;
     case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
     case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;   // (+ ?from=, below)
@@ -247,6 +247,7 @@ export function parseHash(hash) {
     case 'reactions': return { ...base, tab: 'analyze', analyze: 'reactions' };
     case 'kinetics': return { ...base, tab: 'analyze', analyze: 'kinetics' };
     case 'landscape': return { ...base, tab: 'analyze', analyze: 'landscape' };
+    case 'add-molecule': return { ...base, tab: 'analyze', analyze: 'addmol' };
     case 'calculations': return { ...base, tab: 'jobs' };
     case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
     case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1], from: q.from || null } : { ...base, tab: 'graph' };

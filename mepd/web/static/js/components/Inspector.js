@@ -14,6 +14,7 @@ import { EdgeOrbitalsLauncher } from './OrbitalsPath.js';
 import { LevelChip } from './Library.js';
 import { ReactionCard, TsCell, noTsHint } from './Reactions.js';
 import { openAnalyze } from './Analyze.js';
+import { openAddMolecule } from './AddMolecule.js';
 import { ProductPicker } from './NewReaction.js';
 import { ComplexMethodForm } from './ComplexBuild.js';
 import { DefineQmmm, QmmmStructure } from './QMMM.js';
@@ -515,6 +516,9 @@ export function Inspector() {
     links = [
       n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
         act: () => openAnalyze({ species: [...sids], reaction: null }) },
+      n > 0 && nS === 1 && map.tab('analyze') && { key: 'x-addmol', icon: 'product', name: 'Make more of it',
+        tip: 'What holds this species back in the network, and what a molecule added to the flask (a catalyst, an additive) does to it',
+        act: () => openAddMolecule(sids[0]) },
     ].filter(Boolean);
     extras = [
       nS === 1 && { key: 'x-design', scale: 'molecule', last: true, icon: 'product', name: 'Edit in Design', tip: 'Open it in Design to change atoms, bonds or groups',

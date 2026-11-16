@@ -9,8 +9,8 @@ import { set, state, useStore } from '../store.js';
 import { depictUrl, isSpecies, variantScope } from '../util.js';
 import { Why } from './Why.js';
 
-const fmtC = (x) => (x == null ? '—' : x === 0 ? '0' : Math.abs(x) >= 0.01 && Math.abs(x) < 1000 ? x.toPrecision(3) : x.toExponential(1));
-const UNITS = { s: 1, min: 60, h: 3600, d: 86400 };
+export const fmtC = (x) => (x == null ? '—' : x === 0 ? '0' : Math.abs(x) >= 0.01 && Math.abs(x) < 1000 ? x.toPrecision(3) : x.toExponential(1));
+export const UNITS = { s: 1, min: 60, h: 3600, d: 86400 };
 const RT = (T) => (8.314462618 * T) / 4184;
 
 // ------------------------------------------------------------ charts
@@ -66,7 +66,7 @@ function LineChart({ xs, series, xLabel, yLabel, floor = 1e-12, xlog = true, wid
 // more stable species) does to the target -- "3.2× more" (blue) or "1.6×
 // less" (red). The bar length is the degree of rate control X, the
 // exponent of that factor (Campbell); the tooltip gives X itself.
-function ControlBars({ rows, onPick, T }) {
+export function ControlBars({ rows, onPick, T }) {
   const max = Math.max(0.05, ...rows.map((r) => Math.abs(r.x)));
   return html`<div class="kn-bars">${rows.map((r) => {
     const w = (Math.abs(r.x) / max) * 50;
@@ -84,7 +84,7 @@ function ControlBars({ rows, onPick, T }) {
 const fmtFactor = (f) => (f < 1000 ? f.toPrecision(2) : f.toExponential(0));
 
 // ------------------------------------------------------------ setup
-function Mixture({ items, onChange, species }) {
+export function Mixture({ items, onChange, species }) {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const ql = q.trim().toLowerCase();
@@ -207,7 +207,7 @@ export function KineticsView() {
       ${Object.keys(variants).length > 0 && html`<div class="kn-row"><label>Network <select value=${net}
         onChange=${(e) => { setNet(e.target.value); if (!e.target.value) setCmp(false); }}>
         <option value="">parent</option>
-        ${Object.values(variants).map((v) => html`<option value=${v.id}>${v.name}</option>`)}</select></label>
+        ${Object.values(variants).filter((v) => v.kind !== 'added_molecule').map((v) => html`<option value=${v.id}>${v.name}</option>`)}</select></label>
         ${net && !variants[net]?.on && html`<label class="small" title="Run the parent and this variant from the same mixture: amounts of a replaced species go to its variant">
           <input type="checkbox" checked=${!!cmp} onChange=${(e) => setCmp(e.target.checked)} /> compare with parent<${Why} id="kinetics.compare" /></label>`}
         ${net && variants[net]?.on && html`<label class="small" title="Run this variant and another network from the same mixture: amounts of a replaced species go to its variant">compare with
@@ -241,7 +241,7 @@ export function KineticsView() {
 }
 
 const fmtPct = (v) => (v >= 0.995 && v < 1 ? '>99%' : v >= 0.01 ? `${Math.round(v * 100)}%` : v >= 1e-4 ? `${(v * 100).toPrecision(1)}%` : '<0.01%');
-const fmtTime = (s) => (s >= 86400 ? `${+(s / 86400).toPrecision(3)} d` : s >= 3600 ? `${+(s / 3600).toPrecision(3)} h`
+export const fmtTime = (s) => (s >= 86400 ? `${+(s / 86400).toPrecision(3)} d` : s >= 3600 ? `${+(s / 3600).toPrecision(3)} h`
   : s >= 60 ? `${+(s / 60).toPrecision(3)} min` : `${+s.toPrecision(3)} s`);
 
 // Kinetics outside what explored the network (res.coverage, mepd.web.kinetics.coverage): hotter or longer than
