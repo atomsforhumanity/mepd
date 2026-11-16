@@ -368,7 +368,7 @@ def search(frames: dict, confs: list, engine, *, placer: str, poses: int, seed: 
            relax_substrate: bool = False, reaction_atoms: Optional[Sequence[int]] = None,
            proposed: Optional[dict] = None, charges: Optional[dict] = None, charge: int = 0,
            multiplicity: int = 1, pool: int = 200, fmax: float = 0.05, steps: int = 300,
-           on_pose: Optional[Callable] = None) -> dict:
+           on_pose: Optional[Callable] = None, polish: int = 0) -> dict:
     """One independent repeat: frame -> every relaxed pose, in the order relaxed (placed ones, then the ones
     carried from the other frames), each as `relax_pose` returns it plus "conformer", "origin" and "t" (s
     since the repeat began). `frames`: frame -> (symbols, coordinates in A); `confs`: C's conformers as
@@ -407,6 +407,19 @@ def search(frames: dict, confs: list, engine, *, placer: str, poses: int, seed: 
     if carry:
         carry_poses(frames, done, engine, symbols, free, bonds_c, n_x, carry, charge=charge,
                     multiplicity=multiplicity, fmax=fmax, steps=steps, t0=t0)
+    for f, (_, X) in frames.items() if polish else ():
+        # the lowest poses relaxed on, five times tighter: a floppy complex stops early at `fmax`
+        bonds_x = adjacency(symx, np.asarray(X, dtype=float))
+        for src in sorted([p for p in done[f] if "failed" not in p and _eligible(p)], key=lambda p: p["energy"])[:polish]:
+            try:
+                p = relax_pose(engine, symbols, src["xyz"], free, charge=charge, multiplicity=multiplicity,
+                               bonds_x=bonds_x, bonds_c=bonds_c, n_x=n_x, fmax=fmax / 5, steps=steps)
+            except Exception as exc:
+                p = {"failed": f"{type(exc).__name__}: {exc}"}
+            p.update(conformer=src["conformer"], origin="polished:" + src["origin"], t=time.perf_counter() - t0)
+            if "failed" not in p:
+                p["moved"] = max(p["moved"], 2 * UNMOVED)
+            done[f].append(p)
     return done
 
 
