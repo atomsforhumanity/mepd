@@ -27,6 +27,8 @@ def main() -> None:
     ap.add_argument("--placer", default="screen-sp")
     ap.add_argument("--poses", type=int, default=6)
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--carry", type=int, default=3)
+    ap.add_argument("--polish", type=int, default=2)
     ap.add_argument("--conformers", type=int, default=3)
     ap.add_argument("--final-profile", default=None)
     ap.add_argument("--max-steps", type=int, default=0)
@@ -63,7 +65,8 @@ def main() -> None:
 
     out = B.bystander_steps(steps, mol, functools.partial(mepd.engine_from_profile, a.profile), workers=a.workers,
                             make_final=functools.partial(mepd.engine_from_profile, a.final_profile) if a.final_profile else None,
-                            on_result=on_result, placer=a.placer, poses=a.poses, repeats=a.repeats)
+                            on_result=on_result, placer=a.placer, poses=a.poses, repeats=a.repeats, carry=a.carry,
+                            polish=a.polish)
     fh.close()
     status = {}
     for r in out.values():

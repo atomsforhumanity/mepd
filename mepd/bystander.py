@@ -509,7 +509,7 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
               seed: int = 0, placer: str = "screen-sp", poses: int = 6, repeats: int = 3, carry: int = 1,
               relax_substrate: bool = False, reaction_atoms: Optional[Sequence[int]] = None, final_engine=None,
               final_keep: int = 3, free_energy: bool = True, charges: Optional[Callable] = gfn2_charges,
-              pool: int = 200, fmax: float = 0.05, steps: int = 300) -> dict:
+              pool: int = 200, fmax: float = 0.05, steps: int = 300, polish: int = 2) -> dict:
     """The bystander estimate of one step with the molecule C beside it (docs/bystander.md).
 
     frames          one step in one atom order, coordinates in A: {"symbols", "charge", "multiplicity", "r",
@@ -524,7 +524,9 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
                     instead of them.
     seed            the repeats use seeds seed, seed + 1, ...
     placer, poses   how C is placed (PLACERS) and how many poses are relaxed per frame and repeat; `carry`:
-                    how many of each frame's best poses are also relaxed on the other frames (0: none).
+                    how many of each frame's best poses are also relaxed on the other frames (0: none);
+                    `polish`: how many of each frame's lowest poses are then relaxed five times tighter,
+                    the best of them carried once more (0: none).
     repeats         independent searches: values are from the lowest complex of each frame over all of them,
                     "spread" from each repeat alone.
     relax_substrate also free the step's atoms that change no bond (`reaction_atoms`: those that do; default
@@ -602,7 +604,7 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
         runs = [search({f: (symx, X[f]) for f in order}, confs, engine, placer=placer, poses=poses, seed=seed + k,
                        carry=carry, relax_substrate=relax_substrate, reaction_atoms=reaction_atoms,
                        proposed=proposed if k == 0 else None, charges=q_frames, charge=charge, multiplicity=mult,
-                       pool=pool, fmax=fmax, steps=steps) for k in range(repeats)]
+                       pool=pool, fmax=fmax, steps=steps, polish=polish) for k in range(repeats)]
     except Exception as exc:
         out.update(status="failed", why=f"{type(exc).__name__}: {exc}")
         return finish()

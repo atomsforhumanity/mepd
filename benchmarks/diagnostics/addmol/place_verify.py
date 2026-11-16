@@ -41,7 +41,7 @@ def g_corr(engine, node, ts=False):
 
 
 def task(a):
-    run_dir, profile, label, placer, poses, repeats, seed, relax_sub, confs_xyz, csym, cq, out = a
+    run_dir, profile, label, placer, poses, repeats, seed, relax_sub, confs_xyz, csym, cq, out, carry, polish = a
     import mepd
     from mepd import bystander as B
     from mepd.cli_common import _open_run_inputs
@@ -61,7 +61,8 @@ def task(a):
     t = time.perf_counter()
     est = B.bystander({"symbols": symx, "charge": qx, "multiplicity": 1, **{f: B._xyz(frames[f]).tolist() for f in frames}},
                       {"symbols": csym, "charge": cq, "multiplicity": 1, "conformers": [np.asarray(x).tolist() for x in confs_xyz]},
-                      engine, placer=placer, poses=poses, repeats=repeats, seed=seed, relax_substrate=relax_sub)
+                      engine, placer=placer, poses=poses, repeats=repeats, seed=seed, relax_substrate=relax_sub,
+                      carry=carry, polish=polish)
     rec["estimate"], rec["estimate_s"] = est, time.perf_counter() - t
     X = {f: B._xyz(frames[f]) for f in frames}
     t = time.perf_counter()
@@ -133,6 +134,8 @@ def main() -> None:
     ap.add_argument("--placer", default="seeded")
     ap.add_argument("--poses", type=int, default=6)
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--carry", type=int, default=3)
+    ap.add_argument("--polish", type=int, default=2)
     ap.add_argument("--conformers", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=8)
@@ -147,7 +150,7 @@ def main() -> None:
     confs = B.conformers(a.smiles, mepd.engine_from_profile(a.profile), n=a.conformers)
     csym, cq = list(confs[0].structure.symbols), int(confs[0].structure.charge)
     jobs = [(str(a.run_dir), a.profile, lab, a.placer, a.poses, a.repeats, a.seed, a.relax_substrate,
-             [B._xyz(c) for c in confs], csym, cq, str(a.out)) for lab in a.labels.split(",")]
+             [B._xyz(c) for c in confs], csym, cq, str(a.out), a.carry, a.polish) for lab in a.labels.split(",")]
     t0 = time.perf_counter()
     with ProcessPoolExecutor(max_workers=a.workers, mp_context=mp.get_context("spawn")) as pool:
         for rec in pool.map(task, jobs):
