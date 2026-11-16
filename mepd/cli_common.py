@@ -1072,7 +1072,11 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
 
     workers = max(1, workers)
     share = _SEARCH_SHARE
-    size = max(workers + max(1, follow_up.during), follow_up.after)
+    # One run on its own: searches and follow-ups share `workers` lanes, a follow-up taking a freed lane
+    # before the next search does (its transition state is verified at once, and no more processes work
+    # than were asked for). An explorer's steps (a share): follow-ups beside the searches, as before.
+    lanes_shared = share is None
+    size = max(workers, follow_up.after) if lanes_shared else max(workers + max(1, follow_up.during), follow_up.after)
     pairs, extra = collections.deque(todo), collections.deque()
     running: dict = {}   # future -> (kind, item, pool)
 
@@ -1088,8 +1092,10 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
 
     key = (os.getpid(), next(_FORK_KEYS))
     _FORK_JOB[key] = lambda item: one(item[1]) if item[0] == "pair" else follow_up.run(item[1])
-    _say(f"Each search's follow-up (TS optimization and IRC) starts as soon as it finishes: up to "
-               f"{follow_up.during} worker process(es) beside the searches, {follow_up.after} once they are done.")
+    _say("Each search's follow-up (TS optimization and IRC) starts as soon as it finishes, "
+         + (f"in the lane it frees ({workers} lane(s) for searches and follow-ups together)" if lanes_shared
+            else f"up to {follow_up.during} worker process(es) beside the searches")
+         + f"; {follow_up.after} process(es) once the searches are done.")
     try:
         with contextlib.ExitStack() as stack:
             def new_pool(n: int):
@@ -1110,7 +1116,10 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
             # processes at once, so the first can't simply be made as large as the whole run): [pool, size]
             spare: list = []
             while pairs or extra or running:
-                while pairs and pairs_in(pool) < workers:
+                if lanes_shared:
+                    while extra and len(running) < workers:
+                        submit(pool, ("task", extra.popleft()))
+                while pairs and (len(running) if lanes_shared else pairs_in(pool)) < workers:
                     submit(pool, ("pair", pairs.popleft()))
                 n_pairs = sum(kind == "pair" for kind, _, _ in running.values())
                 if pairs and share is not None:
@@ -1130,7 +1139,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                             sp[0].shutdown(wait=False)
                     spare = [sp for sp in spare if pairs_in(sp[0])]
                 limit = follow_up.during if (pairs or n_pairs) else follow_up.after
-                while extra and len(running) - n_pairs < limit:
+                while extra and len(running) - n_pairs < limit and not (lanes_shared and (pairs or n_pairs)):
                     submit(pool, ("task", extra.popleft()))
                 if not running:
                     break

@@ -76,3 +76,25 @@ def test_follow_up_done_is_called_after_each_pair_and_task(tmp_path):
     follow = PairFollowUp(tasks=lambda d: [d.name], run=lambda t: None, done=lambda: calls.append(1))
     _fork_pairs_with_follow_up(lambda pair: None, [(0, 1), (0, 2), (0, 3)], tmp_path, 2, follow)
     assert len(calls) == 6
+
+
+def test_follow_ups_take_freed_lanes_before_queued_searches_and_no_more_processes_work_than_workers(tmp_path):
+    """`--workers 2`: two processes work at any time (searches and their TS/IRC follow-ups together), and a
+    finished search's follow-up starts before the next queued search."""
+    import time
+
+    from mepd.cli_common import PairFollowUp, _fork_pairs_with_follow_up
+
+    def span(name, seconds):
+        (tmp_path / f"{name}.start").write_text(str(time.time()))
+        time.sleep(seconds)
+        (tmp_path / f"{name}.end").write_text(str(time.time()))
+
+    follow = PairFollowUp(tasks=lambda d: [d.name], run=lambda name: span(f"task_{name}", 0.4), during=2, after=2)
+    _fork_pairs_with_follow_up(lambda pair: span(f"pair_{pair[0]}_{pair[1]}", 0.4), [(0, k) for k in range(5)],
+                               tmp_path, 2, follow)
+    spans = {fp.stem: (float(fp.read_text()), float(fp.with_suffix(".end").read_text()))
+             for fp in tmp_path.glob("*.start")}
+    assert len(spans) == 10
+    assert max(sum(a <= t < b for a, b in spans.values()) for t, _ in spans.values()) == 2
+    assert spans["task_pair_0_0"][0] < spans["pair_0_2"][0] and spans["task_pair_0_1"][0] < spans["pair_0_3"][0]
