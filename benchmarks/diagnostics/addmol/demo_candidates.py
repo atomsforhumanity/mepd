@@ -23,7 +23,9 @@ import sys
 
 
 def lowest_with_molecule(report: dict) -> dict:
-    took_part = [c for c in report["channels"] if c.get("added_in_end_to_end_changes")
+    # kind "channels": a one-step channel between the two ends asked for (not a multistep route, not an exit
+    # to other products)
+    took_part = [c for c in report["channels"] if c.get("kind") == "channels" and c.get("added_in_end_to_end_changes")
                  and c.get("barrier_from_lowest_start_conformer_kcal") is not None]
     return min(took_part, key=lambda c: c["barrier_from_lowest_start_conformer_kcal"])
 

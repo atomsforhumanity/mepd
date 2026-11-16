@@ -195,8 +195,13 @@ def test(
     """Test candidates against a query: the layers that exist, cheapest first; one result file per candidate,
     rewritten as numbers come (the target's change, per-step barrier changes, new species, the molecule's
     fate, where each number is from)."""
-    from mepd import addmol
+    import os
 
+    from mepd import addmol
+    from mepd.orbitals import ORBITALS_ENV
+
+    # (a run with --output keeps every SCF's orbitals for the web's viewer: not the thousands of this layer)
+    os.environ.pop(ORBITALS_ENV, None)
     q = json.loads(query_file.read_text())
     if q.get("schema") != addmol.QUERY or q.get("version") != addmol.VERSION:
         raise typer.BadParameter(f"{query_file} is not a {addmol.QUERY} file of version {addmol.VERSION}")
