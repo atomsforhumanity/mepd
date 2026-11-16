@@ -510,6 +510,28 @@ def test_explore_puts_proton_shuttles_before_h_moved_through_carbon():
     assert any(ec.carbon_h_changes(m.as_order()) > ec.carbon_h_changes(tied[0].as_order()) for m in tied)
 
 
+def test_explore_searches_once_for_all_conformer_pairs_of_a_reaction(monkeypatch):
+    """Another conformer pair (same bonds, other coordinates) gets the first pair's routes without a new search."""
+    import mepd.atom_mapping as am
+
+    start, end = _scrambled("keto_enol_1water")
+    base = suggest_atom_mapping(start, end)
+    am._EXPLORED.clear()
+    first = am.explore_mechanisms(start, end, [base], max_new=10)
+    assert len(am._EXPLORED) == 1
+    moved = Structure(symbols=start.symbols, geometry=np.asarray(start.geometry) * 1.001, charge=start.charge,
+                      multiplicity=start.multiplicity)
+    monkeypatch.setattr(am, "_explore_routes", lambda *a, **k: pytest.fail("searched again"))
+    again = am.explore_mechanisms(moved, end, [base], max_new=10)
+    assert [(m.as_order(), m.cost, m.n_alternatives, m.explored) for m in again] == \
+        [(m.as_order(), m.cost, m.n_alternatives, m.explored) for m in first]
+    monkeypatch.undo()
+    am._EXPLORED.clear()   # and the memo holds what a fresh search gives
+    fresh = am.explore_mechanisms(start, end, [base], max_new=10)
+    assert [m.as_order() for m in fresh] == [m.as_order() for m in first]
+    assert len(am.explore_mechanisms(start, end, [base], max_new=3)) == 3   # other settings: their own search
+
+
 def test_explore_finds_the_methyl_relay_through_ch3i():
     from mepd.atom_mapping import catalytic_participants, explore_mechanisms
 

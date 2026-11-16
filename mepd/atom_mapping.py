@@ -713,6 +713,25 @@ def explore_mechanisms(
     if not bases or max_new <= 0:
         return []
     ec = _EditCount(struct_start, struct_end)
+    # The search reads the two bond graphs and the bases only, so every conformer pair of one reaction
+    # asks the same question: answered once per process (1.2 s of a 34-atom pair's 1.8 s of mapping).
+    memo = (tuple(ec.sym), tuple(sorted((i, tuple(sorted(a))) for i, a in ec.adj0.items())),
+            tuple(sorted((i, tuple(sorted(a))) for i, a in ec.adj1.items())),
+            tuple(tuple(int(v) for v in b.as_order()) for b in bases), max_new, rounds, step, per_round)
+    if memo not in _EXPLORED:
+        if len(_EXPLORED) >= 64:
+            _EXPLORED.clear()
+        _EXPLORED[memo] = _explore_routes(ec, bases, max_new, rounds, step, per_round)
+    ranked, n_routes = _EXPLORED[memo]
+    return [AtomMapping(mapping=dict(enumerate(o)), cost=float(c), n_alternatives=n_routes, explored=True)
+            for c, o in ranked]
+
+
+_EXPLORED: dict = {}
+
+
+def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, step: int, per_round: int) -> tuple:
+    """`explore_mechanisms`' search: ([(edit count, order)], number of new routes found)."""
     pairs = [(i, j) for i in range(ec.n) for j in range(i + 1, ec.n) if ec.sym[i] == ec.sym[j]]
     seen = {}
     frontier = []
@@ -754,8 +773,7 @@ def explore_mechanisms(
         if key not in known and (key not in best or c < best[key][0]):
             best[key] = (c, order)
     ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
-    return [AtomMapping(mapping=dict(enumerate(o)), cost=float(c), n_alternatives=len(best), explored=True)
-            for c, o in ranked]
+    return ranked, len(best)
 
 
 def catalytic_participants(struct_start: Structure, aligned_end_structure: Structure) -> list[str]:
