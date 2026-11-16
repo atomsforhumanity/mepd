@@ -59,10 +59,9 @@ def test_the_runs_own_network_with_its_closed_verified_steps(tmp_path):
 
 def test_a_correction_the_run_did_not_record(tmp_path):
     run = _run(tmp_path, recorded=False)
-    net = parent.network(run)                     # no engine: electronic differences, and it says so
-    (step,) = net["steps"]
-    assert step["energies"] == "electronic" and step["g_ts"] == pytest.approx((E_TS - E_HCN) * KCAL)
-    assert any("electronic differences" in n for n in net["notes"])
+    net = parent.network(run)                     # no engine: the step is left out, and it says so
+    assert net["steps"] == [] and [x["reason"] for x in net["excluded"]] == ["thermal_correction_missing"]
+    assert any("left out" in n for n in net["notes"])
     pytest.importorskip("axtb")
     from mepd.engines.gxtb import GXTBCalculator
 

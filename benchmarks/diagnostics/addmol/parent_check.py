@@ -1,6 +1,6 @@
 """Does mepd.discovery.parent.network give the run's own molecule kinetics back?
 
-    parent_check.py RUN_DIR
+    parent_check.py RUN_DIR [PROFILE]
 
 For a finished `mepd discovery expand` run whose kinetics had open steps: its recorded molecule network
 (summary.json rounds[-1].kinetics.molecules: names, g_kcal, reactions with g_ts_kcal and the step each came
@@ -15,14 +15,19 @@ import sys
 from pathlib import Path
 
 
-def main(run_dir):
+def main(run_dir, profile=None):
     from mepd.discovery import parent
 
     run_dir = Path(run_dir)
     summary = json.loads((run_dir / "summary.json").read_text())
     rec = summary["rounds"][-1]["kinetics"]["molecules"]
     labels = [st["label"] for st in summary["steps"]]
-    net = parent.network(run_dir)          # no engine: only what the run recorded
+    engine = None
+    if profile:                            # (else only what the run recorded)
+        from mepd.cli_common import _open_run_inputs
+
+        engine = _open_run_inputs(Path(profile)).engine
+    net = parent.network(run_dir, engine, workers=4)
     g = {s["id"]: s["g"] for s in net["species"]}
     mine = {st["id"]: st for st in net["steps"]}
     both = [n for n in rec["names"] if n in g]

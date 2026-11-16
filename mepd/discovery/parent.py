@@ -85,9 +85,9 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
     Steps: every IRC-verified step of the run with a TS file. Energies: free, relative to the seed's molecules
     (1 M or the run's standard state), at the run's temperature (another `temperature` recomputes every
     correction). A box or TS whose thermal correction the run did not record gets it from `engine` (the run's
-    profile's) with the run's own code; without an engine, or where that fails, the step is on electronic
-    differences (the seed's correction for a box, its lower end's for a TS) and says so: "energies":
-    "electronic" on the step."""
+    profile's) with the run's own code; without an engine, or where that fails, the step is left out and
+    listed under "excluded" (reason "thermal_correction_missing"): the molecules' free energies are fitted over
+    the boxes, and one box on an electronic energy would move them all."""
     from mepd.discovery import molecules as M
     from mepd.discovery.free_energy import FreeEnergies, optimized_on, step_ends
     from mepd.discovery.kinetics import Step
@@ -134,30 +134,26 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
             computed["ts" if c is not None else "failed"] += 1
 
     def shift(terms):
-        # the steering level's single point, where the run used one (recorded relative to the seed's)
+        # the steering level's shift the run's kinetics used: its single point, or the shift it lent a structure
+        # outside its deciding windows (recorded relative to the seed's)
         terms = terms or {}
-        return float(terms["steer_shift_kcal"]) if terms.get("steer") == "single_point" and terms.get(
+        return float(terms["steer_shift_kcal"]) if terms.get("steer") in ("single_point", "lent") and terms.get(
             "steer_shift_kcal") is not None else 0.0
 
-    lent = c_box.get(0) if c_box.get(0) is not None else 0.0
-    electronic = set()          # steps with a lent correction somewhere
-    g_box = [float(sp[k]["energy"]) + lent / H_KCAL for k in range(n)]
+    # a step with a correction missing is not used: put above its ends like every step that is not
+    missing = [m for m in use if c_box[steps[m].a] is None or c_box[steps[m].b] is None or c_ts[m] is None]
+    use = [m for m in use if m not in set(missing)] if c_box.get(0) is not None else []
+    g_box = [float(sp[k]["energy"]) for k in range(n)]
     for k in boxes:
         if c_box[k] is not None:
             g_box[k] = float(sp[k]["energy"]) + (c_box[k] + shift(sp[k].get("energy_terms"))) / H_KCAL
+    used = set(use)
     view = []
     for m, st in enumerate(steps):
-        top = max(g_box[st.a], g_box[st.b])
-        if m not in use:
-            view.append(Step(st.a, st.b, top + CLOSED, st.label, st.files))
-            continue
-        if c_box[st.a] is None or c_box[st.b] is None or c_ts[m] is None:
-            electronic.add(m)
-        if c_ts[m] is not None:
+        if m in used:
             g_ts = st.ts_energy + (c_ts[m] + shift(st_rec[m].get("ts_energy_terms"))) / H_KCAL
-        else:           # its lower end's correction: the electronic barrier on the free-energy scale
-            low = st.a if float(sp[st.a]["energy"]) <= float(sp[st.b]["energy"]) else st.b
-            g_ts = st.ts_energy + (g_box[low] - float(sp[low]["energy"]))
+        else:
+            g_ts = max(g_box[st.a], g_box[st.b]) + CLOSED
         view.append(Step(st.a, st.b, g_ts, st.label, st.files))
     # mirror images, as the run decided them
     rec = summary.get("mirror_images") if isinstance(summary.get("mirror_images"), dict) else {}
@@ -216,7 +212,7 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
         both = sorted((set(r) & set(p)))
         row = {"id": st.label + ("~mirror" if x["twin"] else ""), "reactants": r, "products": p, "shuttles": both,
                "label": " + ".join(r) + " -> " + " + ".join(p), "g_ts": float(x["g_ts"]), "status": "verified",
-               "level": "explorer", "energies": "electronic" if m in electronic else "free", "run_step": st.label,
+               "level": "explorer", "energies": "free", "run_step": st.label,
                "geometry": None}
         if x["twin"]:
             row["mirror_of"] = st.label
@@ -228,15 +224,14 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
     if any(computed.values()):
         notes.append(f"thermal corrections the run had not recorded, computed now: {computed['species']} boxes, "
                      f"{computed['ts']} TSs; {computed['failed']} failed")
-    if electronic:
-        notes.append(f"{len(electronic)} steps on electronic differences (a thermal correction missing): "
-                     "\"energies\": \"electronic\" on the step")
+    if missing:
+        notes.append(f"{len(missing)} IRC-verified steps left out: a thermal correction of theirs is not recorded "
+                     "and was not computed (give the run's profile)")
     return {"temperature": T, "energies": "free", "source": "explorer run", "species": species, "steps": out_steps,
             "energy_reference": "g and g_ts are free energies relative to the starting box's molecules, as the "
-                                "explorer's molecule-level kinetics count them (a step tagged \"energies\": "
-                                "\"electronic\" has a thermal correction lent from the seed or its end).",
-            "excluded": [{"step": steps[j].label, **why} for j, why in sorted(net.left_out.items())
-                         if j in set(use)],
+                                "explorer's molecule-level kinetics count them.",
+            "excluded": [{"step": steps[j].label, **why} for j, why in sorted(net.left_out.items()) if j in used]
+            + [{"step": steps[m].label, "reason": "thermal_correction_missing"} for m in missing],
             "notes": notes, "counts": dict(net.counts), "fit": dict(net.fit),
             "run": {"steps": len(steps), "verified": len(use), "species": n,
                     "seed": [net.names[i] for i in net.seed]}}

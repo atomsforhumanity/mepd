@@ -34,7 +34,8 @@ are built; until then such numbers can be given with a candidate (`estimates`, b
   IRC-verified step is in it, also those the run's own kinetics had closed (at 298 K an uncatalysed parent may
   have no open step at all). A thermal correction the run did not record (it records none for most closed steps)
   is computed now with the run's own code and profile (`--inputs`, default the `.toml` beside the run); a step
-  for which that is not possible is on electronic differences and tagged `"energies": "electronic"`. Each step's
+  for which that is not possible is left out (`notes` says how many): the molecules' free energies are fitted
+  over the boxes, and one box on an electronic energy would move them all. Each step's
   `geometry` holds the reacting molecules only (`atom_indices_in_run`: their indices in the run's files); a
   mirror-image twin of a step has no geometry (`mirror_of`).
 - **A workspace** (`mepd addmol query WORKSPACE/`, `mepd.web.added.network`): the workspace's kinetic model
@@ -159,7 +160,7 @@ Plain JSON. Energies in kcal/mol, lengths in Å, amounts in mol/L, times in s (`
 | `times` | the output times of every `series` |
 | `species[]` | `id`, `name`, `smiles`, `charge`, `multiplicity`, `g`, `atoms`, `coordinates` (its own atom order), `amount` {`initial`, `final`, `max`, `mean`}, `series`, `control` (X, or null), `status`, `level` |
 | `source` | `explorer run` or `workspace` |
-| `steps[]` | `id`, `label`, `reactants`, `products` (ids, repeated for 2 A), `shuttles` (on both sides), `g_ts`, `barrier` {`forward`, `reverse`}, `apparent_barrier`, `extent`, `control`, `status`, `level`, `geometry`; from a run also `energies` (`free` / `electronic`), `run_step`, `mirror_of` |
+| `steps[]` | `id`, `label`, `reactants`, `products` (ids, repeated for 2 A), `shuttles` (on both sides), `g_ts`, `barrier` {`forward`, `reverse`}, `apparent_barrier`, `extent`, `control`, `status`, `level`, `geometry`; from a run also `run_step`, `mirror_of` |
 | `steps[].geometry` | `atoms`, `charge`, `multiplicity`, `reactant`, `ts`, `product`: three frames in **one atom order** (the TS's; the two ends are its IRC's ends), and `bonds_broken`, `bonds_formed` as pairs of 0-based indices into that order. `null` when the step has no TS and IRC files |
 | `limits` | the section above: `defined`, `why`, `basis`, `control`, `order`, `traps`, `routes`, `cutoff_kcal` |
 | `notes`, `left_out` | how the free energies were made; the number of reactions without a verified TS (not in the model) |
