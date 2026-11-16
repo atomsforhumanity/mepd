@@ -56,13 +56,35 @@ whole network.
 **Show route** lays out the easiest way in from the start as a strip, each
 step with its barrier and tags.
 
+## Routes between two molecules
+
+**Route A → B** above the map opens a bar with two ends, *from* and *to*.
+Fill each by tapping a molecule on the map or typing its name, formula or
+SMILES. Once the start is set, molecules that no searched route joins to it
+fade, so you can see which ends are possible before you choose. A molecule's
+neighbourhood also has **Route from here** and **Route to here**. With two
+molecules selected (Shift-click), **Routes between them** fills both ends.
+**⇄** swaps them.
+
+The bar then lists up to eight different routes, the easiest first, and the
+map draws the chosen one as a strip. Each route's button gives its number of
+steps and its two highest barriers; hover it for the molecules it passes
+through. Routes are ranked by their highest barrier, then the next highest
+when two share it, then by the fewest steps. A one-step route, if there is
+one, is listed as *direct* among the others. A route goes through searched
+steps only: forward over the forward barrier, backward where the reverse
+barrier was computed. Between two molecules only the lowest of their steps
+counts, so routes differ in the molecules they pass through, not in which of
+two parallel steps they take ("2 ways" on the arrow).
+
 ## Limits and possible improvements
 
 - **The arrow is a choice of drawing.** A step making two molecules of similar
   size is drawn to the one in fewer steps, and the other becomes a tag. It is
   still counted for routes, and the step's page shows the full equation.
-- **The forward barrier only.** The scale and the routes use each step's
-  forward barrier, at the workspace's level when the step has one. A step
+- **The forward barrier only.** The scale and the columns use each step's
+  forward barrier (routes between two chosen molecules also go backward over a
+  computed reverse barrier), at the workspace's level when the step has one. A step
   known only in reverse counts once the reverse is searched.
 - **Barriers, not rates.** The columns rank by barrier, not by a rate at given
   conditions; Kinetics and Landscape answer what forms.
