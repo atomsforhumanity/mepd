@@ -219,6 +219,18 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
         else:
             row["geometry"] = _frames(M, x, st, ts_cache[m], ends[m], parts, bonds, q)
         out_steps.append(row)
+    # boxes the fit leaves above the sum of their molecules (molecules.lowest: each molecule at its lowest over
+    # the boxes holding it): a step out of such a box is higher here by that much than in the box
+    g_of = dict(zip(net.names, (float(x) for x in net.g)))
+    y0 = all_g[0] * H_KCAL
+    above = []
+    for k in sorted({steps[m].a for m in used} | {steps[m].b for m in used}):
+        keys = [key for _a, key in parts(k) or []]
+        if keys and all(key in g_of for key in keys):
+            resid = all_g[k] * H_KCAL - y0 - sum(g_of[key] for key in keys)
+            if resid > M.FIT_SLACK_KCAL:
+                above.append({"species": k, "molecules": sorted(keys), "above_kcal": resid})
+    above.sort(key=lambda x: -x["above_kcal"])
     notes = [f"free energies: the run's own (electronic energy + its thermal correction and steering shift, "
              f"{standard}), molecules fitted over boxes (mepd.discovery.molecules)"]
     if any(computed.values()):
@@ -232,7 +244,7 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
                                 "explorer's molecule-level kinetics count them.",
             "excluded": [{"step": steps[j].label, **why} for j, why in sorted(net.left_out.items()) if j in used]
             + [{"step": steps[m].label, "reason": "thermal_correction_missing"} for m in missing],
-            "notes": notes, "counts": dict(net.counts), "fit": dict(net.fit),
+            "notes": notes, "counts": dict(net.counts), "fit": {**net.fit, "boxes_above_their_molecules": above},
             "run": {"steps": len(steps), "verified": len(use), "species": n,
                     "seed": [net.names[i] for i in net.seed]}}
 
