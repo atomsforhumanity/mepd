@@ -2,7 +2,7 @@
 
     python benchmarks/diagnostics/thermo/fixed_set.py PROFILE SET_DIR OUT_DIR [WORKERS]
 
-SET_DIR: a set of benchmarks/energetics (branch team39/energetics), e.g. .../benchmarks/energetics/set/v1.
+SET_DIR: an energetics fixed set (a folder with set.json and its structures; the set is not in this repository yet).
 For every structure of SET_DIR/set.json, at its system's temperature and standard state, the thermal correction of
 the molecules it counts as (`parts`; a TS's first part carries its reaction mode), by the explorer's own
 FreeEnergies._one: `given` with the Hessian at the geometry in the set (FreeEnergies._saddle switched off, the
