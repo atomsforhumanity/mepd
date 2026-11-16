@@ -17,7 +17,7 @@ threads_per_task: 32
 cpus_per_pod: 32
 memory_per_pod: 32Gi
 shards: $(wc -l < "$TASKS")
-parallelism: 8
+parallelism: 2
 task_timeout: 3600
 priority: batch
 env: {SELLA_DISABLE_GPU: 1, OMP_NUM_THREADS: 1, MKL_NUM_THREADS: 1, OPENBLAS_NUM_THREADS: 1}
