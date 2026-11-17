@@ -387,3 +387,13 @@ def test_a_row_for_a_reaction_is_compared_with_the_reactions_lowest_parent_ts():
     by = {r["step"]: r for r in out["steps"]}
     assert by["ab_s"]["group"] == "through" and by["ab_s"]["through"] == "scan"
     assert by["ab_s"]["change"] == pytest.approx(by["ab"]["change"]) and by["ab"]["change"] < -5
+
+
+def test_a_shuttle_step_with_its_own_row_is_read_from_its_reactions_lowest_parent_ts():
+    """A row of the shuttle step alone (from its own verification) is still compared with the reaction's best."""
+    shuttle = network([("ab", ["A"], ["B"], 30.0), ("ab_s", ["A", "S"], ["B", "S"], 50.0)],
+                      species=("A", "B", "S"), g={"B": -10.0})
+    row = {"new_steps": [{"id": "ab_s|v", "reactants": ["A", "C"], "products": ["B", "C"], "barrier": both(35.0),
+                          "parent_step": "ab_s", "status": "verified"}]}
+    by = {r["step"]: r for r in A.readout(shuttle, A.added(shuttle, C, row), {"A": 1.0, "S": 1.0}, 0.1, "B", 20.0)["steps"]}
+    assert by["ab_s"]["before"] == pytest.approx(30.0, abs=0.05) and abs(by["ab_s"]["change"]) < 0.3

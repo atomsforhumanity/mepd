@@ -677,6 +677,14 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
             versions.setdefault(sid, []).append(j)
         for x in ids[1:]:
             joined[root(x)] = root(ids[0])
+    # (and the parent steps of one net reaction, molecules on both sides dropped, are one reaction anyway)
+    by_net: dict = {}
+    for st in parent["steps"]:
+        r, p = Counter(st["reactants"]), Counter(st["products"])
+        r, p = tuple(sorted((r - p).elements())), tuple(sorted((p - r).elements()))
+        first = by_net.setdefault(min((r, p), (p, r)), st["id"])
+        if first != st["id"]:
+            joined[root(st["id"])] = root(first)
     reaction: dict = {}
     for st in parent["steps"]:
         reaction.setdefault(root(st["id"]), []).append(st["id"])
