@@ -939,3 +939,5 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
   .cmap-surf svg text.cmap-tip, .cmap-prof svg text.cmap-tip { font-size: 18px; stroke-width: 5px; }
   .cmap-side { order: -1; }
 }
+.settings-ref { display: block; margin-top: 8px; color: var(--accent); text-decoration: none; }
+.settings-ref:hover { text-decoration: underline; }

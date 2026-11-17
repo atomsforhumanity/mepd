@@ -8,6 +8,14 @@ Each page ends with **Limits and possible improvements**. If something here
 is wrong, unclear, or could work better for your chemistry, use **Suggest a
 change** at the bottom of the page.
 
+## Settings reference
+
+- [Settings reference](settings): every calculation, each setting its form
+  shows with its default, and the options mepd keeps at its own defaults
+  behind the form (MD time step, smearing, wall force, ...). Written from the
+  code, so it covers every feature of this version. Each form links to its
+  section (**All settings and defaults**).
+
 ## Pages
 
 - [Explore](explore): the network map, with one arrow per step, columns by
