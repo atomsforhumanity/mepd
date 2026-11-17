@@ -401,7 +401,7 @@ function BulkBar({ group, picked, inGraph, onSet, onAdd, busy }) {
             <button class="btn-link small" onClick=${() => onSet(byEnergy.slice(0, lowest).map((e) => e.id))}>Pick</button></div>`}
       </div>`}
       <button class="btn primary" disabled=${!n || busy} onClick=${onAdd}>
-        ${busy ? 'Adding…' : n ? `Add ${n} to Explore` : 'Tick structures to add'}</button>
+        ${busy ? 'Adding…' : n ? `Add ${n} to Explore` : 'Tick what to add'}</button>
     </div>`;
 }
 
@@ -429,6 +429,16 @@ function ResultPanel({ job }) {
   // result_rev: a follow-up (e.g. 'Check the bifurcation') added to this job's output.
   useEffect(() => { load(); }, [job.id, job.status, job.finished, job.result_rev]);
 
+  // Opened on one entry (#/calc/<job>?entry=<id>, e.g. a reaction's "Calculation ›"): show it, once.
+  const askedEntry = useStore((s) => s.view.entry || null);
+  const shownAsked = useRef(null);
+  useEffect(() => {
+    if (!askedEntry || shownAsked.current === askedEntry || !result) return;
+    if (result.groups.some((g) => g.entries.some((e) => e.id === askedEntry))) {
+      shownAsked.current = askedEntry;
+      setEntryId(askedEntry);
+    }
+  }, [askedEntry, result]);
   const entry = useMemo(() => result?.groups.flatMap((g) => g.entries).find((e) => e.id === entryId), [result, entryId]);
   // A network expansion's step: the molecules its path search ran on (its subsystem), not the whole box.
   const frameXyz = useMemo(() => entry?.frames.map((x) => (entry.subsystem ? subsetXyz(x.xyz, entry.subsystem.atoms) : x.xyz)), [entry]);
@@ -446,9 +456,12 @@ function ResultPanel({ job }) {
     return () => clearInterval(id);
   }, [playing, entry]);
 
-  // Entries already pulled into the Graph from this job (by structure origin).
-  const inGraphKey = useStore((s) => Object.values(s.workspace.structures)
-    .filter((r) => r.origin?.job === job.id).map((r) => r.origin.entry).sort().join('|'));
+  // Entries already pulled into the Graph from this job (by the origin of a
+  // structure, or of an edge: a step added as its ends + edge; a multi-step
+  // route's step edge belongs to a job of its own, `step_of` this one).
+  const inGraphKey = useStore((s) => [...Object.values(s.workspace.structures), ...Object.values(s.workspace.edges || {})]
+    .filter((r) => r.origin?.entry && (r.origin.job === job.id || r.origin.step_of === job.id))
+    .map((r) => r.origin.entry).sort().join('|'));
   const inGraph = useMemo(() => new Set(inGraphKey ? inGraphKey.split('|') : []), [inGraphKey]);
   const report = useStore((s) => reportId(job, s.workspace));
   const [picked, setPicked] = useState(() => new Set());
@@ -462,14 +475,16 @@ function ResultPanel({ job }) {
 
   const reportAdded = (out) => {
     const n = out.added.length, r = out.reused.length;
-    const msg = [n && `Added ${n} structure${n > 1 ? 's' : ''} to Explore`, r && `${r} already there`, out.edge && 'edge added']
+    const edges = out.edges ?? (out.edge ? [out.edge] : []);
+    const msg = [n && `Added ${n} structure${n > 1 ? 's' : ''} to Explore`, r && `${r} already there`,
+      edges.length && (edges.length > 1 ? `${edges.length} edges` : 'edge')]
       .filter(Boolean).join(', ') || 'Nothing to add';
     const ids = [...out.added, ...out.reused].map((x) => x.id);
     const show = () => {
-      if (out.edge) select({ edges: [out.edge.id] }); else select({ structures: ids });
+      select(edges.length ? { structures: ids, edges: edges.map((e) => e.id) } : { structures: ids });
       set({ view: { tab: 'graph', jobId: job.id } });
     };
-    toast(msg, 'ok', 7000, ids.length || out.edge ? { label: 'Show in Explore', run: show } : null);
+    toast(msg, 'ok', 7000, ids.length || edges.length ? { label: 'Show in Explore', run: show } : null);
   };
   const importEntry = async (frames, extra = {}) => {
     const out = await attempt(() => api.post(`/api/jobs/${job.id}/import-entry`, { entry: entry.id, frames, ...extra }));
