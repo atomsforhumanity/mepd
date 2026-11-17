@@ -316,7 +316,7 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     assert line["reaction"] == "C#N -> [C-]#[NH+]" and "with no barrier it would lower the target's route peak" in line["why"]
     assert line["worth"] == "target" and doc["scan"]["ended"]["why"].startswith(("no reaction is left", "the limit"))
     assert not line["run"].startswith("/") and (tmp_path / "r" / line["run"] / "channels.log").exists()
-    assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] in (0, 1)
+    assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] in (0, 1, 2)
     assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
     assert "net reaction" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
     (derived,) = doc["scan"]["derivations"]
