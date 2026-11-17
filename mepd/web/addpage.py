@@ -328,7 +328,8 @@ def file_name(name: str) -> str:
     return _file_name(name)
 
 
-def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, workers: int = 2) -> dict:
+def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, verify: Optional[int] = None,
+          scan: int = 0, workers: int = 2) -> dict:
     """Queue `mepd addmol test` for these candidates (one job; a result file each, in the query's
     `results/`). Refused: a candidate with an `error`, or one whose result is still being written."""
     ws = manager.ws
@@ -349,7 +350,7 @@ def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, w
     try:
         (job,) = manager.submit(OP, structure_ids=[(q.get("asked") or {}).get("target") or q["target"]["species"][0]],
                                 edge_ids=[],
-                                params={"query": qid, "steps": steps, "workers": workers,
+                                params={"query": qid, "steps": steps, "verify": verify, "scan": scan, "workers": workers,
                                         "names": [file_name(c["name"]) for c in clean]},
                                 profile=None, label=f"Add a molecule: {names}")
     finally:
@@ -391,6 +392,34 @@ def _moved(row: dict) -> bool:
     return not _through(row) and abs(row.get("change") or 0.0) > MOVED
 
 
+def _scan_steps(entry: dict) -> list:
+    """The parent steps one scan stands for (one today; a scan per reaction covers several)."""
+    return list(entry.get("steps") or ([entry["step"]] if entry.get("step") else []))
+
+
+def progress(doc: dict) -> dict:
+    """Where a test stands: the stage it is in (the first layer still running), how every parent step
+    ended so far (`summary` of the result file), the scans (asked, done, the one running) and how many
+    steps were wanted for a scan but not scanned (`scan.left`). `open`: the answer can still change, or
+    was never looked for on some steps, so "no effect found" is not "no effect"."""
+    layers = doc.get("layers") or []
+    stage = next((lay for lay in layers if lay.get("status") == "running"), None)
+    scan = doc.get("scan") or {}
+    scans = scan.get("steps") or []
+    live = next((x for x in scans if x.get("status") in ("mapping", "searching")), None)
+    unfinished = [x for x in scans if x.get("status") not in ("done", "failed")]
+    summary = {k: v for k, v in (doc.get("summary") or {}).items() if k != "what"}
+    left = len(scan.get("left") or [])
+    return {"stage": stage and {k: stage.get(k) for k in ("name", "done", "total")},
+            "summary": summary or None,
+            "scans": {"asked": len(scans), "done": sum(1 for x in scans if x.get("status") == "done"),
+                      "failed": sum(1 for x in scans if x.get("status") == "failed"),
+                      "running": live and (live.get("label") or ", ".join(_scan_steps(live))), "left": left},
+            "first": {k: (doc.get("timings") or {}).get(f"first_{k}_s") for k in ("bystander", "verified", "relay")},
+            "open": bool(left or unfinished or doc.get("status") != "done"
+                         or (summary.get("est") or 0) or (summary.get("not_reached") or 0))}
+
+
 def line(doc: dict, order=()) -> dict:
     """One candidate in one line: what it does to the target, whether it is returned, where it rests,
     which layers are in. `best`: the step that changes most through the molecule, among the steps that limit
@@ -402,7 +431,7 @@ def line(doc: dict, order=()) -> dict:
            "status": doc.get("status"), "updated": doc.get("updated"),
            "layers": [{k: lay.get(k) for k in ("name", "status", "done", "total", "wall_s", "level", "what", "entries")}
                       for lay in doc.get("layers") or []],
-           "failed": len(doc.get("failed") or []), "used": {"est": 0, "verified": 0}}
+           "failed": len(doc.get("failed") or []), "used": {"est": 0, "verified": 0}, "progress": progress(doc)}
     for group in (doc.get("estimates") or {}).values():
         for e in group or []:
             if e.get("status") in out["used"]:
@@ -426,7 +455,7 @@ def line(doc: dict, order=()) -> dict:
         effect = drop
     return {**out, "readout": True, "effect": effect,
             "target": {"parent": t["parent"], "with": t["with"], "factor": t.get("factor"),
-                       "time_to_parent_amount_s": t.get("time_to_parent_amount_s")},
+                       "time_to_parent_amount_s": t.get("time_to_parent_amount_s"), "spread": t.get("spread")},
             "first_order": (r.get("first_order") or {}).get("factor"),
             "peak": peak, "on_route": _on_route(r),
             "fate": a.get("fate"), "returns": a.get("returns"), "shares": a.get("shares"),
@@ -509,22 +538,39 @@ def detail(manager, qid: str, name: str) -> dict:
     if not r:
         return out
 
+    level_labels = doc.get("level_labels") or {}
+    rank = {o["step"]: k for k, o in enumerate(q["limits"].get("order") or [])}
+
     def row(s: dict) -> dict:
         e = source.get(s.get("through")) or {}
         st = steps.get(s["step"]) or {}
-        return {**s, "layer": e.get("layer"), "level": e.get("level"), "source": e.get("source"),
-                "via": e.get("label") if e.get("id") else None, "geometry": bool(st.get("geometry")),
-                "with_geometry": bool(e.get("complexes") or e.get("geometry")), "edge": edges.get(s["step"])}
+        # What kind of number: a quick estimate; a verified TS with the molecule beside the step; one with it taking part.
+        kind = ("takes part" if e.get("takes_part") else "beside") if e.get("status") == "verified" else "estimate"
+        files = None
+        if e.get("ts_file"):
+            files = "there" if Path(e["ts_file"]).is_file() else "gone"
+        return {**s, "layer": e.get("layer"), "level": level_labels.get(e.get("level"), e.get("level")),
+                "source": e.get("source"), "kind": kind, "poses_verified": e.get("poses_verified"),
+                "returned": e.get("returned"), "t_s": e.get("t_s"), "rank": rank.get(s["step"]),
+                "via": e.get("label") if e.get("id") and e.get("layer") not in ("verify", "relay") else None,
+                "geometry": bool(st.get("geometry")), "files": files,
+                "with_geometry": bool(e.get("complexes") or e.get("geometry") or files == "there"),
+                "edge": edges.get(s["step"])}
 
     changed = [s for s in r["steps"] if s.get("change") is not None]
-    out["through_steps"] = sorted((row(s) for s in changed if _through(s)), key=lambda s: s["change"])
+    # (in the read-out's own order: the page orders them, and keeps that order still while a test runs)
+    out["through_steps"] = [row(s) for s in changed if _through(s)]
     out["moved_steps"] = sorted(({**s, "edge": edges.get(s["step"])} for s in changed if _moved(s)),
                                 key=lambda s: -abs(s["change"]))
     out["unchanged"] = len(changed) - len(out["through_steps"]) - len(out["moved_steps"])
     _relabel([out.get("best"), *out["through_steps"], *out["moved_steps"]], labels)
-    out["new_steps"] = [{k: e.get(k) for k in ("id", "label", "parent_step", "status", "layer", "level", "source")}
-                        | {"barrier": e.get("barrier"), "with_geometry": bool(e.get("geometry"))}
-                        for e in (doc.get("estimates") or {}).get("new_steps") or []]
+    # Steps with the molecule that are no version of a parent step, and versions that came with the candidate
+    # (the verified versions of parent steps are the rows of the table above).
+    out["new_steps"] = [{k: e.get(k) for k in ("id", "label", "parent_step", "status", "layer", "source")}
+                        | {"barrier": e.get("barrier"), "with_geometry": bool(e.get("geometry")),
+                           "level": level_labels.get(e.get("level"), e.get("level"))}
+                        for e in (doc.get("estimates") or {}).get("new_steps") or []
+                        if e.get("layer") not in ("verify", "relay") or e.get("parent_step") not in steps]
     # The species that hold the molecule, those that ever hold material first.
     out["new_species"] = sorted(r.get("new_species") or [], key=lambda s: -(s.get("max") or 0.0))[:40]
     out["new_species_total"] = len(r.get("new_species") or [])
@@ -532,6 +578,19 @@ def detail(manager, qid: str, name: str) -> dict:
     out["peak_routes"] = r.get("peak_routes")
     out["notes"] = r.get("notes") or []
     out["first_order_detail"] = r.get("first_order")
+    out["route_peak_with_added"] = (r.get("added") or {}).get("route_peak_with_added")
+    out["mixed_levels"] = r.get("mixed_levels")
+    scan = doc.get("scan") or {}
+    out["scans"] = [{**{k: x.get(k) for k in ("status", "why", "searches", "with_molecule", "beside", "lowest",
+                                               "elsewhere", "failed_rows", "wall_s", "t_started_s",
+                                               "first_with_molecule_s", "stopped", "answer", "cores")},
+                     "steps": _scan_steps(x), "labels": [labels.get(i, i) for i in _scan_steps(x)],
+                     "consumed": len(x.get("consumed") or [])} for x in scan.get("steps") or []]
+    grouped: dict = {}
+    for x in scan.get("left") or []:
+        grouped.setdefault(x.get("why") or "not scanned", []).append(labels.get(x.get("step"), x.get("step")))
+    out["scan_left"] = [{"why": why, "n": len(names), "labels": names[:6]} for why, names in grouped.items()]
+    out["scan_rule"], out["not_scanned"] = scan.get("rule"), scan.get("not_scanned")
     return out
 
 
@@ -562,6 +621,21 @@ def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optio
     est = (_source(_load(_result_path(ws, qid, name))).get(through) or {}) if name and through else {}
     g, label = st.get("geometry"), st.get("label") or step
     words = (("reactant", "r", "reactant end"), ("ts", "ts", "TS"), ("product", "p", "product end"))
+    if est.get("ts_file"):
+        # A verified TS with the molecule: its own file, with the two ends of its IRC where that is there too.
+        ts, irc = Path(est["ts_file"]), Path(est.get("irc_file") or "")
+        if not ts.is_file():
+            if g is None:
+                raise WorkspaceError(f"this transition state was written to {ts}, which is not there any more")
+            return {"label": label, "ts": 1, "with_molecule": False, "missing": str(ts),
+                    "frames": [_xyz(g["atoms"], g[k], f"{label} · {w}") for k, _, w in words]}
+        (top,) = added._xyz_frames(ts.read_text())[:1]
+        path = added._xyz_frames(irc.read_text()) if irc.is_file() else []
+        frames = [_xyz(*top, f"{label} · TS with the molecule")]
+        if len(path) >= 2:
+            frames = [_xyz(*path[0], f"{label} · one end of its IRC"), frames[0], _xyz(*path[-1], f"{label} · the other end")]
+        return {"label": label, "frames": frames, "ts": 1 if len(frames) == 3 else 0, "with_molecule": True,
+                "ends": "irc"}
     if est.get("geometry"):
         eg = est["geometry"]
         frames = [_xyz(eg["atoms"], eg[k], f"{est.get('label') or label} · {w}") for k, _, w in words if eg.get(k)]

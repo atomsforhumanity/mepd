@@ -66,12 +66,47 @@ adds the molecule that is open in Design. What was read is listed, with a
 reason for anything that cannot be used, before you press **Test**.
 
 All candidates of one click run as one calculation (*Calculations* lists it;
-cancel it there). They are tested one after another, each in layers, the
-cheapest first. Today one layer exists: the **bystander** layer puts the
-molecule beside the two ends and the transition state of every step, the
-step's own atoms held, and records how strongly it binds to each. Its
-placer is a stand-in whose numbers move by kcal/mol between repeats; that
-spread is shown beside every number.
+cancel it there), one candidate after another.
+
+## A test as it runs
+
+A test has three stages, in this order, and the page shows each as a box with
+its progress and the time its first number came:
+
+1. **Quick estimate.** The molecule is placed beside the two ends and the
+   transition state of every step, the step's own atoms held: seconds per
+   step. A row from it is an *estimate*: drawn hollow and dashed, in muted
+   figures. In the placer's test on 13 steps it differed from the verified
+   value by 2.0 kcal/mol on average (4.2 at most) and had the wrong sign once.
+2. **Verification.** Each step's transition state is optimized with the
+   molecule beside it and its IRC is run. A verified row replaces the step's
+   estimate (*verified · beside*); its spread is the difference between its
+   two poses. A verification that leads to other species is listed and the
+   step keeps its estimate.
+3. **Scan.** A search for transition states in which the molecule itself
+   takes part (a proton relay, an exchange), on the steps that limit the
+   target first: minutes per scan, on every core. Set how many with *Scans*
+   (0: none). Its rows read *verified · takes part*.
+
+The page reads the result file every few seconds. While a test runs the step
+table keeps one order (the steps that limit the target first, then by step),
+so a row that is replaced by a lower one stays where it is and is lit for a
+moment; once the test is over the largest change comes first. *Scans for the
+molecule taking part* lists every scan: its state, its searches, how many
+transition states with the molecule it found, the lowest, and how many led to
+other species.
+
+**The answer comes first**: the easiest route's highest point without and
+with the molecule, the target's amount with the interval it has if every
+number with a spread is off by its spread, what became of the molecule, and
+**Not scanned**: the steps that were wanted for a scan and got none, with
+the reason. While anything is still running, rests on an estimate, or was
+not scanned, the page says *Not a verdict yet*: "no effect found" is then
+not "no effect".
+
+A verified transition state opens in 3D from its own file. Where the
+calculation ran on another machine and the file is gone, the page shows the
+network's own transition state and says so, with the path.
 
 ## Reading a candidate
 
@@ -155,16 +190,15 @@ Result files written elsewhere and copied into
 
 ## Limits and possible improvements
 
-- One layer of estimates exists, with a stand-in placer. Layers that verify a
-  step with the molecule present, find steps in which it takes part, or find
-  the new species it forms are not built yet; until then such numbers can
-  come with a candidate (`estimates` in a candidates file) and are shown
-  with their source.
+- New species the molecule forms (a covalent intermediate that is no version
+  of a step of the network) are not searched for; such numbers can come with
+  a candidate (`estimates` in a candidates file) and are shown with their
+  source.
+- The estimate's uncertainty shown is the placer's test, not a number of this
+  run.
 - Steps of an exploration's own network are drawn on the map through the
   workspace's edges; a step the workspace keeps no edge for (a second
   transition state of the same pair) is counted but not drawn.
-- The target's factor has no spread of its own: the spread shown is that of
-  the steps underneath it.
 - Kinetics' *Network* menu does not list added-molecule variants: their
   kinetics are on this page.
 - A question is asked of the parent network, not of a substituent variant.

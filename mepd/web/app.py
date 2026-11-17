@@ -233,7 +233,9 @@ class AddmolTestIn(BaseModel):
     text: str = ""                      # SMILES lines, a candidates file (JSON) or an xyz file
     filename: str = ""
     amount: Optional[float] = Field(None, gt=0)   # mol/L of every candidate that gives none
-    steps: Optional[int] = Field(None, ge=0)
+    steps: Optional[int] = Field(None, ge=0)      # quick estimates for the first N steps of the order of work only
+    verify: Optional[int] = Field(None, ge=0)     # verify the first N only (0: none)
+    scan: int = Field(0, ge=0, le=64)             # scans for the molecule taking part (minutes each, every core)
     workers: int = Field(2, ge=1, le=64)
     dry_run: bool = False               # read the candidates and say what would be tested
 
@@ -2695,7 +2697,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         if demo is not None:
             demo.check_op("addmol-test", {})
             demo.check_capacity(J().list())
-        job = addpage.start(J(), qid, cands, steps=body.steps, workers=body.workers)
+        job = addpage.start(J(), qid, cands, steps=body.steps, verify=body.verify, scan=body.scan, workers=body.workers)
         return {"job": job["id"], "candidates": len(cands)}
 
     @app.get("/api/addmol/{qid}/results/{name}")

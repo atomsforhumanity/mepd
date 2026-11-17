@@ -65,10 +65,55 @@
 .am-facts dd { margin: 0; }
 .am-failed { margin: 6px 0; padding-left: 18px; }
 
+/* the answer first */
+.am-answer { border-left: 3px solid var(--border-strong); background: var(--panel-2); border-radius: 0 var(--radius) var(--radius) 0; padding: 10px 14px 8px; margin: 12px 0 14px; }
+.am-answer.pos { border-left-color: var(--div-pos); } .am-answer.neg { border-left-color: var(--div-neg); }
+.am-verdict { margin: 0 0 4px; font-size: var(--fs-lg); color: var(--heading); }
+.am-open { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--text); background: var(--warn-soft); border-radius: 3px; padding: 4px 8px; }
+.am-answer .am-facts { margin: 8px 0 2px; }
+.am-left { margin: 2px 0 2px; padding-left: 18px; font-size: var(--fs-sm); }
+
+/* a test as it runs: three stages of fixed size, in the order they run */
+.am-stages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 4px 0 6px; }
+.am-stage { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 10px 6px; background: var(--panel); min-height: 72px; }
+.am-stage.running { border-color: var(--accent); }
+.am-stage.off { opacity: .55; }
+.am-stage-head { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-sm); }
+.am-stage-n { color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+.am-stage-status { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.am-stage.running .am-stage-status { color: var(--accent); } .am-stage.done .am-stage-status { color: var(--ok); } .am-stage.cut .am-stage-status { color: var(--warn); }
+.am-stage-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 6px 0 5px; overflow: hidden; }
+.am-stage-bar i { display: block; height: 100%; background: var(--ok); transition: width var(--t-med, 200ms) linear; }
+.am-stage.running .am-stage-bar i { background: var(--accent); } .am-stage.cut .am-stage-bar i { background: var(--warn); }
+.am-stage-foot { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.am-sum { margin: 0 0 4px; }
+.am-steps-bar { margin: 2px 0 6px; gap: 12px; }
+
 /* a step's barrier without and with the molecule on one axis */
-.am-steps td { vertical-align: middle; }
-.am-db-cell { min-width: 140px; width: 24%; }
-.am-steps td.rx-eq { min-width: 170px; }
+.am-steps { table-layout: fixed; }
+.am-steps td { vertical-align: middle; height: 34px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.am-steps th:nth-child(1) { width: 30%; } .am-steps th:nth-child(2), .am-steps th:nth-child(4) { width: 58px; }
+.am-steps th:nth-child(5) { width: 100px; } .am-steps th:nth-child(6) { width: 122px; } .am-steps th:nth-child(7) { width: 48px; }
+.am-steps td:nth-child(7) { text-overflow: clip; padding-left: 2px; padding-right: 2px; }
+.am-step { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.am-limit { display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--heading); transform: rotate(45deg); vertical-align: 1px; }
+.am-key i.am-limit { margin: 0 6px 0 12px; }
+/* an estimate looks like one: a hollow dashed mark, a dashed line, muted numbers */
+.am-est-row td.mono { color: var(--muted); }
+.am-db .am-db-dot.pos.est, .am-key i.am-db-dot.pos.est { background: var(--panel); border: 2px dashed var(--div-pos); }
+.am-db .am-db-dot.neg.est { background: var(--panel); border: 2px dashed var(--div-neg); }
+.am-db .am-db-bar.pos.est { background: none; height: 0; border-top: 2px dashed var(--div-pos); }
+.am-db .am-db-bar.neg.est { background: none; height: 0; border-top: 2px dashed var(--div-neg); }
+.am-key i.am-db-dot.est { width: 12px; height: 12px; }
+/* a row that just arrived or was replaced */
+@keyframes am-fresh { from { background: var(--accent-soft); } to { background: transparent; } }
+.am-steps tr.am-fresh td { animation: am-fresh 6s ease-out 1; }
+@media (prefers-reduced-motion: reduce) { .am-steps tr.am-fresh td { animation: none; box-shadow: inset 2px 0 0 var(--accent); } }
+.am-scans td { white-space: nowrap; height: 32px; }
+.am-scans .am-step { max-width: 260px; }
+.am-scans td, .am-scans th { padding-left: 5px; padding-right: 5px; }
+.am-path { overflow-wrap: anywhere; font-size: 11.5px; }
+.am-db-cell { min-width: 120px; }
 .am-db-head { display: flex; justify-content: space-between; font-family: var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--muted); font-weight: 400; }
 .am-db { position: relative; display: block; height: 14px; margin: 0 6px; }
 .am-db-bar { position: absolute; top: 6px; height: 2px; }
@@ -99,6 +144,9 @@
 .nm-added-ring { display: inline-block; width: 12px; height: 12px; border: 3px double var(--route); border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
 
 @media (max-width: 720px) {
+  .am-stages { grid-template-columns: 1fr; }
+  .am-stage { min-height: 0; }
+  .am-steps { width: 700px; max-width: none; }
   .am-card { padding: 2px 10px 10px; }
   .am-facts { grid-template-columns: 1fr; gap: 2px; }
   .am-facts dd { margin-bottom: 8px; }

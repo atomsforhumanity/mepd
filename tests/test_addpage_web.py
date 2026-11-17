@@ -335,3 +335,97 @@ def test_a_workspace_that_is_one_exploration_is_asked_through_its_run(mgr):
     # a question with a constant feed, or on electronic energies, is asked of the workspace's network
     qid = ask(mgr)
     assert addpage.view(mgr, qid)["source"] == "workspace" and addpage.view(mgr, qid)["asked"]["job"] is None
+
+
+# ---------------------------------------------------------------- a test as it runs: stages, kinds of rows, scans
+def staged(q, tmp_path, *, relay_status="searching", with_file=True):
+    """A result file as `mepd addmol test` writes it mid-scan: one step verified with the molecule beside it,
+    one TS with it taking part (a scan's), the scan still searching, one step left unscanned."""
+    st = q["steps"][0]
+    ts = tmp_path / "ts.xyz"
+    if with_file:
+        ts.write_text("4\nts\n" + "".join(f"{a} {k} 0 0\n" for k, a in enumerate("HCNO")))
+        (tmp_path / "irc.xyz").write_text(("4\nend\n" + "".join(f"{a} {k} 0 0\n" for k, a in enumerate("HCNO"))) * 3)
+    row = {"parent_step": st["id"], "status": "verified", "reactants": [st["reactants"][0], "added"],
+           "products": [st["products"][0], "added"], "level": "lvl", "spread": 0.4, "poses_verified": 2}
+    est = {"new_steps": [
+        {**row, "id": f"{st['id']}|verified pose 0", "layer": "verify", "takes_part": False,
+         "barrier": {"electronic": 40.0, "spread": 0.4}, "ts_file": str(tmp_path / "gone.xyz")},
+        {**row, "id": f"{st['id']}|ts_pair_1", "layer": "relay", "takes_part": True, "returned": True,
+         "barrier": {"electronic": 22.0}, "spread": None, "ts_file": str(ts), "irc_file": str(tmp_path / "irc.xyz")}]}
+    layers = [{"name": "bystander", "status": "done", "done": 1, "total": 1}, {"name": "verify", "status": "done", "done": 1, "total": 1},
+              {"name": "relay", "status": "running", "done": 0, "total": 1}]
+    extra = {"level_labels": {"lvl": "a level in words"},
+             "summary": {"steps": 1, "est": 0, "verified_beside": 0, "takes_part": 1, "leads_elsewhere": 0, "failed": 0,
+                         "reacted_in_the_estimate": 0, "not_reached": 0, "what": "..."},
+             "timings": {"first_bystander_s": 3.0, "first_verified_s": 20.0, "first_relay_s": 90.0},
+             "scan": {"rule": "the limiting steps first", "not_scanned": "0 other steps",
+                      "steps": [{"step": st["id"], "status": relay_status, "why": "limits the target",
+                                 "searches": {"searched": 3, "total": 9}, "with_molecule": 1, "lowest": {"with_molecule": 22.0},
+                                 "elsewhere": 2, "consumed": [{"ts": "x"}], "wall_s": 61.0, "command": "long"}],
+                      "left": [{"step": st["id"], "why": "reacted in the estimate; beyond --scan"},
+                               {"step": "other", "why": "reacted in the estimate; beyond --scan"}]}}
+    return est, layers, extra
+
+
+def put_staged(mgr, qid, name, tmp_path, status="running", **kw):
+    q, _ = put_result(mgr, qid, "blank")
+    est, layers, extra = staged(q, tmp_path, **kw)
+    _, file = put_result(mgr, qid, name, est, status=status, layers=layers)
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    fp.write_text(json.dumps({**json.loads(fp.read_text()), **extra}))
+    return q, file
+
+
+def test_a_running_test_says_its_stage_and_what_was_not_scanned(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file = put_staged(mgr, qid, "cat", tmp_path)
+    doc = json.loads((addpage.folder(mgr.ws, qid) / "results" / file).read_text())
+    p = addpage.progress(doc)
+    assert p["stage"] == {"name": "relay", "done": 0, "total": 1} and p["summary"]["takes_part"] == 1 and "what" not in p["summary"]
+    assert p["scans"] == {"asked": 1, "done": 0, "failed": 0, "running": q["steps"][0]["id"], "left": 2}
+    assert p["first"] == {"bystander": 3.0, "verified": 20.0, "relay": 90.0} and p["open"]
+    # finished, every scan done, nothing left: only then is the answer closed
+    done = {**doc, "status": "done", "scan": {"steps": [{**doc["scan"]["steps"][0], "status": "done"}], "left": []}}
+    assert not addpage.progress(done)["open"]
+    assert addpage.progress({**done, "scan": doc["scan"]})["open"]                     # (steps left unscanned)
+    assert addpage.progress({**done, "summary": {**doc["summary"], "est": 2}})["open"]   # (estimates only)
+    assert addpage.progress({"status": "done"}) == {"stage": None, "summary": None, "open": False, "first": {
+        "bystander": None, "verified": None, "relay": None}, "scans": {"asked": 0, "done": 0, "failed": 0, "running": None, "left": 0}}
+    row = next(r for r in addpage.view(mgr, qid)["results"] if r["name"] == "cat")
+    assert row["progress"]["scans"]["left"] == 2 and "spread" in row["target"]
+
+
+def test_rows_say_what_kind_of_number_they_are_and_scans_are_listed(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file = put_staged(mgr, qid, "cat", tmp_path)
+    st = q["steps"][0]
+    d = addpage.detail(mgr, qid, file)
+    (row,) = d["through_steps"]
+    # the lowest version of the step is the scan's TS with the molecule taking part; its files are there
+    assert row["kind"] == "takes part" and row["layer"] == "relay" and row["through"] == f"{st['id']}|ts_pair_1"
+    assert row["files"] == "there" and row["with_geometry"] and row["level"] == "a level in words" and row["rank"] == 0
+    assert d["new_steps"] == []                                 # (versions of a parent step are rows of the table)
+    (scan,) = d["scans"]
+    assert scan["steps"] == [st["id"]] and scan["status"] == "searching" and scan["consumed"] == 1 and "command" not in scan
+    assert scan["searches"] == {"searched": 3, "total": 9} and scan["lowest"] == {"with_molecule": 22.0}
+    assert d["scan_left"] == [{"why": "reacted in the estimate; beyond --scan", "n": 2, "labels": [st["label"], "other"]}]
+    assert d["scan_rule"] == "the limiting steps first" and d["not_scanned"] == "0 other steps"
+    # a scan that stands for several parent steps (one per reaction) is read the same way
+    assert addpage._scan_steps({"steps": ["a", "b"], "step": "a"}) == ["a", "b"] and addpage._scan_steps({}) == []
+    # an estimate reads as one
+    beside = {"steps": [{"step": st["id"], "status": "est", "layer": "bystander", "level": "lvl",
+                         "binding": {k: {"electronic": v} for k, v in (("r", -1.0), ("ts", -30.0), ("p", -1.0))}}]}
+    _, name = put_result(mgr, qid, "quick", beside)
+    assert addpage.detail(mgr, qid, name)["through_steps"][0]["kind"] == "estimate"
+
+
+def test_a_verified_ts_is_shown_from_its_own_file_or_said_to_be_gone(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file = put_staged(mgr, qid, "cat", tmp_path)
+    st = q["steps"][0]
+    g = addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")
+    assert g["with_molecule"] and g["ends"] == "irc" and len(g["frames"]) == 3 and g["frames"][1].startswith("4\n")
+    # the other row's file was lost with the machine it ran on: the parent's own TS, and the path, said plainly
+    gone = addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|verified pose 0")
+    assert not gone["with_molecule"] and gone["missing"].endswith("gone.xyz") and gone["frames"][1].startswith("3\n")

@@ -160,13 +160,20 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
 2. **Candidates**: SMILES lines (`SMILES name amount`), a candidates file (JSON), an `.xyz` file, or the molecule
    in Design; several at once. *Test* queues one hidden operation, `addmol-test` (`mepd addmol test`), for all of
    them. *Download the query file* gives a model what it needs.
-3. **Results** arrive without a reload: the job rewrites one result file per candidate as layers finish, and the
+3. **A test as it runs.** `mepd addmol test` runs quick estimate → verification → scan (the form's *Scans*: how
+   many scans for the molecule taking part; the endpoint also takes `steps` and `verify`). The detail leads with
+   the answer (route peak without and with, the target's amount with its spread interval, the molecule's fate,
+   what was not scanned and why, and *Not a verdict yet* while anything is open), then three stage boxes
+   (`addpage.progress`), the step table (rows keyed and in the order of work while it runs; an estimate hollow and
+   dashed, verified rows *beside* or *takes part*), and the scans (`scan.steps[]`; an entry may name several
+   steps). A verified TS is shown from its `ts_file` / `irc_file`; where they are gone the page says so.
+4. **Results** arrive without a reload: the job rewrites one result file per candidate as layers finish, and the
    page reads them every 3 s while it runs (and on the job's events). One line per candidate, ranked by the gain of
    the target (target, how soon, returned or not and where it rests, the largest step change with its spread),
    every number tagged `est.` or `verified`; the detail has the barrier of each step without and with the molecule
    in two groups (through the molecule; only because amounts moved), what is new, the layers, what failed and why,
    and the TS in 3D. Ticked candidates are compared step by step.
-4. **Show on the map** keeps a candidate as a variant of kind `added_molecule` (`mepd.web.added.put`, with what
+5. **Show on the map** keeps a candidate as a variant of kind `added_molecule` (`mepd.web.added.put`, with what
    the map marks under `marks`); the network map colours the steps that go through the molecule by the change of
    their barrier (dashed: an estimate), doubles the border of molecules it binds and fades the rest. The record follows its result
    file when the job finishes.
@@ -278,7 +285,7 @@ example, a future `mepd discovery nanoreactor` command becomes one `Params` mode
 | `GET /api/workspace/export?format=html\|csv` | Every reaction Analyze lists: one browsable page, or one CSV row per elementary step (`mepd/web/workspace_export.py`, `CSV_COLUMNS`) |
 | `GET /api/addmol`, `POST /api/addmol/query` `{target, initial, held?, temperature, time_s}` | Add a molecule: the questions asked; ask one (builds or reopens its query file) |
 | `GET /api/addmol/{q}`, `GET /api/addmol/{q}/query.json` | A question: what limits the target, one line per candidate; the query file |
-| `POST /api/addmol/{q}/test` `{text, filename?, amount?, dry_run?, workers?, steps?}` | Candidates (SMILES lines, a candidates file or an xyz file as text): read them (`dry_run`), or start one job that tests them |
+| `POST /api/addmol/{q}/test` `{text, filename?, amount?, scan?, dry_run?, workers?, steps?, verify?}` | Candidates (SMILES lines, a candidates file or an xyz file as text): read them (`dry_run`), or start one job that tests them |
 | `GET` / `DELETE /api/addmol/{q}/results/{file}`, `POST …/keep` | One candidate's detail; remove its result; keep it as a variant for the map |
 | `GET /api/addmol/{q}/geometry?step=&result=&through=` | A step's ends and TS as xyz frames, with the molecule where the estimate kept it |
 | `GET /api/sessions`, `POST /api/sessions/new` `{name \| path}`, `POST /api/sessions/open` `{path}` | Sessions |
