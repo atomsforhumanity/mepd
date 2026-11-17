@@ -295,15 +295,17 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["bystander", "verify", "relay"]
     assert all(x["status"] == "done" for x in doc["layers"]) and "quick setting" in doc["layers"][0]["what"]
     assert doc["layers"][0]["uncertainty"]["barrier_shift_kcal"]["mean_abs_difference_to_verified"] == 2.0
-    assert "--scan" not in doc["scan"]["rule"] and "at most 1 reactions" in doc["scan"]["rule"]
+    assert "--scan" not in doc["scan"]["rule"] and "or after 1 reactions" in doc["scan"]["rule"]
     for n in doc["estimates"]["new_steps"]:
         assert not n["ts_file"].startswith("/") and (tmp_path / "r" / n["ts_file"]).exists()
     (line,) = doc["scan"]["steps"]
     # one scan per net reaction, chosen by what the target would gain; it stands for the reaction's steps
-    assert line["step"] == "fast_0_1" and line["status"] == "done" and line["steps"] == ["fast_0_1"]
-    assert line["reaction"] == "C#N -> [C-]#[NH+]" and "if this reaction had no barrier" in line["why"]
+    assert line["step"] == "fast_0_1" and line["steps"] == ["fast_0_1"]
+    assert doc["scan"]["cores"]["lanes"] and line["status"] in ("done", "failed")
+    assert line["reaction"] == "C#N -> [C-]#[NH+]" and "with no barrier it would lower the target's route peak" in line["why"]
+    assert line["worth"] == "target" and doc["scan"]["ended"]["why"].startswith(("no reaction is left", "the limit"))
     assert not line["run"].startswith("/") and (tmp_path / "r" / line["run"] / "channels.log").exists()
-    assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] == 0
+    assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] in (0, 1)
     assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
     assert "net reaction" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
     (derived,) = doc["scan"]["derivations"]
@@ -376,11 +378,12 @@ def test_candidates_of_one_job_in_parallel(tmp_path):
     assert sorted(p.name for p in (tmp_path / "r").glob("*.json")) == ["CO.json", "N.json", "O.json"]
 
 
-def test_reactions_and_the_order_they_are_scanned_in():
-    """Steps with the same net change are one reaction (a molecule on both sides dropped). Next is the reaction
-    whose barrier, if it were gone, would lower the route peak to the target most; ties: flagged, then fewer
-    atoms; what lowers nothing last; with a chiral molecule the mirror twins after everything else."""
-    from mepd.cli_addmol import _reactions, _scan_ranking
+def test_reactions_and_which_are_worth_a_scan():
+    """Steps with the same net change are one reaction (a molecule on both sides dropped). Worth a scan: a
+    reaction that, with no barrier, would lower the target's route peak (first, by the resulting peak), or bring
+    another species below the target's present peak (then). The rest are not scanned. Twins last for a chiral
+    molecule. A reaction whose two sides do not hold the same atoms is no reaction to scan."""
+    from mepd.cli_addmol import _reactions, _scan_worth
 
     def sp(i, g, n=3):
         return {"id": i, "name": i, "g": g, "atoms": ["C"] * n}
@@ -389,26 +392,27 @@ def test_reactions_and_the_order_they_are_scanned_in():
         return {"id": i, "reactants": r, "products": p, "g_ts": ts, "geometry": {"atoms": []}, **kw}
 
     q = {"temperature": 298.15, "energies": "free",
-         "species": [sp("A", 0.0), sp("S", 0.0, 9), sp("I", 5.0), sp("B", -5.0), sp("X", 1.0), sp("W", 1.0, 2), sp("Bm", -5.0)],
+         "species": [sp("A", 0.0), sp("S", 0.0, 9), sp("I", 5.0), sp("B", -5.0), sp("X", 1.0), sp("Y", 60.0),
+                     sp("Bm", -5.0), sp("Lost", 0.0, 2), sp("W", 0.5), sp("Wm", 0.5)],
          "steps": [st("a_i", ["A"], ["I"], 50.0), st("a_i_shuttle", ["A", "S"], ["I", "S"], 45.0),   # one reaction
-                   st("i_b", ["I"], ["B"], 30.0), st("a_x", ["A"], ["X"], 20.0), st("a_w", ["A"], ["W"], 20.0),
-                   st("i_bm", ["I"], ["Bm"], 30.0, mirror_of="i_b")]}
+                   st("i_b", ["I"], ["B"], 30.0), st("a_x", ["A"], ["X"], 55.0), st("a_y", ["A"], ["Y"], 70.0),
+                   st("i_bm", ["I"], ["Bm"], 30.0, mirror_of="i_b"), st("a_lost", ["A"], ["Lost"], 20.0),
+                   st("a_w", ["A"], ["W"], 58.0), st("a_wm", ["A"], ["Wm"], 58.0, mirror_of="a_w")]}
     rx = {r["label"]: r for r in _reactions(q)}
     assert rx["A -> I"]["steps"] == ["a_i", "a_i_shuttle"] and rx["A -> I"]["lowest"] == "a_i_shuttle"
-    assert rx["I -> Bm"]["twin"] and not rx["I -> B"]["twin"] and rx["A -> I"]["atoms"] == 3
+    assert rx["I -> Bm"]["twin"] and not rx["I -> B"]["twin"] and "A -> Lost" not in rx
     net = {k: q[k] for k in ("temperature", "energies", "species", "steps")}
-    peak, order = _scan_ranking(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"], list(rx.values()),
-                                {rx["A -> X"]["key"]}, True)
+    peak, worth, rest = _scan_worth(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"],
+                                    list(rx.values()), set(), True)
     assert peak == pytest.approx(45.0)
-    labels = [r["label"] for r, _p in order]
-    # A -> I without a barrier: peak 30 (I -> B is next). The others lower nothing alone (I -> B: the peak stays
-    # A -> I's 45): among them the flagged one first; the twin after everything
-    assert labels == ["A -> I", "A -> X", "I -> B", "A -> W", "I -> Bm"]
-    assert order[0][1] == pytest.approx(30.0) and order[1][1] == pytest.approx(45.0)
-    # for a molecule that is its own mirror image the twin has no place of its own in the order
-    _peak, flat = _scan_ranking(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"],
-                                [r for r in rx.values() if not r["twin"]], set(), False)
-    assert [r["label"] for r, _p in flat][0] == "A -> I" and len(flat) == 4
+    # A -> I without a barrier: the target's peak falls to 30. A -> X without one: X (not the target) comes to 1,
+    # below the target's 45. I -> B alone lowers nothing (the peak is A -> I's), nor does A -> Y (Y lies above).
+    # I -> Bm starts from I, which cannot be had below the target's peak. A -> W and its twin A -> Wm would bring W
+    # and Wm to 0.5: both worth a scan, the twin after everything else although its number is lower than X's.
+    assert [(w[0]["label"], w[1]) for w in worth] == [("A -> I", "target"), ("A -> W", "other"), ("A -> X", "other"),
+                                                      ("A -> Wm", "other")]
+    assert worth[0][2] == pytest.approx(30.0) and worth[2][2] == pytest.approx(1.0) and worth[2][3] == "X"
+    assert sorted(r["label"] for r in rest) == ["A -> Y", "I -> B", "I -> Bm"]
 
 
 def test_a_run_stopped_from_outside_says_so_in_its_file(tmp_path):

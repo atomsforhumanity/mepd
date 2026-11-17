@@ -451,6 +451,81 @@ def peak_routes(network: dict, initial: dict, target, *, limit: int = 3, max_ste
     return out
 
 
+def reach_peaks(network: dict, initial: dict, ceiling: float, *, max_steps: int = 8, max_states: int = 20000) -> dict:
+    """For every species that some route from the starting mixture reaches with its highest point below `ceiling`:
+    that lowest highest point ({species id: peak}; the starting species are not in it). Heights as in
+    `peak_routes` (molecules in hand in lots); here at most two lots are in hand at a time, and the search
+    stops after `max_states` sets of molecules in hand (what it has by then is exact: states come in the order
+    of their peaks)."""
+    T = float(network["temperature"])
+    rt = mk.rt_kcal(T)
+    g = {s["id"]: float(s["g"]) for s in network["species"]}
+    start = {s: g[s] + rt * math.log(float(v)) for s, v in (initial or {}).items() if s in g and float(v) > 0}
+    moves = []
+    for j, st in enumerate(network["steps"]):
+        moves.append((j, st["reactants"], st["products"]))
+        moves.append((j, st["products"], st["reactants"]))
+    need: dict = {}
+    free_moves = []
+    for m, (_j, r, _p) in enumerate(moves):
+        inner = [x for x in r if x not in start]
+        if not inner:
+            free_moves.append(m)
+        for x in set(inner):
+            need.setdefault(x, []).append(m)
+    heap = [(-math.inf, 0, (), (), -1)]           # peak, steps, lots in hand, their costs, the last move
+    best: dict = {}
+    out: dict = {}
+    n = 0
+    while heap and n < max_states:
+        peak, depth, lots, costs, last = heapq.heappop(heap)
+        if peak >= ceiling:
+            break
+        if best.get(lots, (math.inf, 0)) < (peak, depth):
+            continue
+        n += 1
+        for lot in lots:
+            for x in lot:
+                out.setdefault(x, peak)
+        if depth >= max_steps:
+            continue
+        for m in dict.fromkeys(free_moves + [m for lot in lots for x in lot for m in need.get(x, ())]):
+            j, r, p = moves[m]
+            if last == (m ^ 1):
+                continue                          # straight back
+            left = [Counter(lot) for lot in lots]
+            taken = set()
+            for x in r:
+                if x in start:
+                    continue
+                i = next((i for i, lot in enumerate(left) if lot[x] > 0), None)
+                if i is None:
+                    break
+                left[i][x] -= 1
+                taken.add(i)
+            else:
+                if len(lots) - len(taken) + 1 > 2:
+                    continue
+                ref = sum(start.get(x, g[x]) for x in r)
+                top = max(float(network["steps"][j]["g_ts"]), sum(g[x] for x in r), sum(g[x] for x in p))
+                paid = sum(costs[i] for i in taken)
+                height = max(peak, paid + top - ref)
+                if height >= ceiling:
+                    continue
+                lot = tuple(sorted([x for i in taken for x in left[i].elements()] + [x for x in p if x not in start]))
+                rest = [(lots[i], costs[i]) for i in range(len(lots)) if i not in taken]
+                if lot:
+                    rest.append((lot, paid + sum(start.get(x, g[x]) for x in p) - ref))
+                rest.sort(key=lambda b: b[0])
+                new_lots = tuple(b[0] for b in rest)
+                item = (height, depth + 1)
+                if best.get(new_lots, (math.inf, 0)) <= item:
+                    continue
+                best[new_lots] = item
+                heapq.heappush(heap, (height, depth + 1, new_lots, tuple(b[1] for b in rest), m))
+    return out
+
+
 # ---------------------------------------------------------------- sensitivity
 def limits(network: dict, initial: dict, target, time_s: float, *, held: Sequence[str] = (),
            k: Optional[dict] = None) -> dict:
