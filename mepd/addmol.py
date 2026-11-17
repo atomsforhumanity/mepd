@@ -659,10 +659,30 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
         # When the variant holds what the parent takes `time_to_fraction_s` to make.
         tgt["time_to_parent_amount_s"] = time_to(kv["times"], _series(kv, target), fraction * tp["final"])
     versions: dict = {}
+    # A row found for a net reaction stands for every parent step of that reaction ("parent_steps"): the parent
+    # steps of one reaction are compared as one, from the reaction's own lowest parent TS, so a row is not
+    # credited with the difference between one parent step and another (a shuttle step's high TS against the
+    # reaction's lower one).
+    joined = {st["id"]: st["id"] for st in parent["steps"]}
+
+    def root(x):
+        while joined[x] != x:
+            joined[x] = joined[joined[x]]
+            x = joined[x]
+        return x
+
     for j, st in enumerate(variant["steps"]):
-        # (a row found for a net reaction stands for every parent step of that reaction: "parent_steps")
-        for sid in st.get("parent_steps") or [st.get("parent_step") or st["id"]]:
+        ids = [x for x in st.get("parent_steps") or [st.get("parent_step") or st["id"]] if x in joined]
+        for sid in ids:
             versions.setdefault(sid, []).append(j)
+        for x in ids[1:]:
+            joined[root(x)] = root(ids[0])
+    reaction: dict = {}
+    for st in parent["steps"]:
+        reaction.setdefault(root(st["id"]), []).append(st["id"])
+    p_index = {st["id"]: j for j, st in enumerate(parent["steps"])}
+    v_index = {st["id"]: i for i, st in enumerate(variant["steps"])}
+    parent_ids = set(p_index)
     cargo = _cargo(variant)
 
     def way(st, version) -> int:
@@ -676,11 +696,20 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
 
     steps = []
     for j, st in enumerate(parent["steps"]):
+        members = reaction[root(st["id"])]
         mine = [(i, way(st, variant["steps"][i])) for i in versions.get(st["id"], [])]
         # Read the way the material goes (with C; without it where nothing goes with C).
         went = sum(float(kv["res"].extent[i]) * (1 - 2 * w) for i, w in mine) or float(kp["res"].extent[j])
         d = 1 if went < 0 else 0
-        before = kp["apparent"][j][d]
+        own = kp["apparent"][j][d]
+        # before: the reaction's lowest parent TS; after: the lowest of the reaction's parent steps (with the
+        # molecule's amounts) and every row standing for one of them
+        sibs = [(p_index[m], way(st, parent["steps"][p_index[m]])) for m in members]
+        low = [kp["apparent"][k][d ^ w] for k, w in sibs if kp["apparent"][k][d ^ w] is not None]
+        before = min(low) if low else own
+        alls = dict.fromkeys([v_index[m] for m in members if m in v_index]
+                             + [i for m in members for i in versions.get(m, [])])
+        mine = [(i, way(st, variant["steps"][i])) for i in alls]
         cand = [(kv["apparent"][i][d ^ w], variant["steps"][i]) for i, w in mine]
         cand = [x for x in cand if x[0] is not None]
         after = min(cand, key=lambda x: x[0]) if cand else (None, None)
@@ -691,11 +720,12 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
                          else {}),
                       "barrier": float(st["g_ts"]) - sum(float(parent["species"][kp["pos"][x]]["g"]) for x in side),
                       "before": before, "after": after[0],
+                      **({"reaction_steps": members, "before_this_step": own} if len(members) > 1 else {}),
                       "change": after[0] - before if after[0] is not None and before is not None else None,
                       "through": after[1]["id"] if after[1] is not None else None,
                       # "through": its lowest version has C in it; "amounts": its own TS, the barrier moved only
                       # because its reactants' amounts moved; "none": unchanged
-                      "group": ("through" if after[1] is not None and after[1]["id"] != st["id"] else
+                      "group": ("through" if after[1] is not None and after[1]["id"] not in parent_ids else
                                 "amounts" if after[0] is not None and before is not None
                                 and abs(after[0] - before) > 0.05 else "none"),
                       "status": (after[1].get("status") or "verified") if after[1] is not None else None,
@@ -815,7 +845,8 @@ def query(net: dict, *, target: str, initial: dict, time_s: float, held=(), frac
                        "time_to_fraction_s": time_to(k["times"], series, fraction * final) if resolved else None},
             **({"reference": net["reference"]} if net.get("reference") else {}),
             "times": k["times"].tolist(), "species": net["species"], "steps": net["steps"], "limits": lim,
-            "notes": net.get("notes") or [], "left_out": len(net.get("excluded") or [])}
+            "notes": net.get("notes") or [], "left_out": len(net.get("excluded") or []),
+            **({"fixed_only_together": net["fixed_only_together"]} if "fixed_only_together" in net else {})}
 
 
 def _target_spread(net: dict, molecule: dict, estimates: dict, cond: dict, target, amount: float, tgt: dict

@@ -122,6 +122,32 @@ def query(
                            "wall_s": round(time.perf_counter() - t0, 1)}, indent=1))
 
 
+# Names of a few common molecules, by canonical SMILES (no lookup elsewhere): a candidate given only as SMILES is
+# called by one of these, or else by its formula.
+NAMES = {"O": "water", "C": "methane", "N": "ammonia", "O=C=O": "carbon dioxide", "[C-]#[O+]": "carbon monoxide",
+         "[HH]": "hydrogen", "O=CO": "formic acid", "CC(=O)O": "acetic acid", "CO": "methanol", "CCO": "ethanol",
+         "CC(C)=O": "acetone", "CC=O": "acetaldehyde", "C=O": "formaldehyde", "CC#N": "acetonitrile",
+         "CS(C)=O": "dimethyl sulfoxide", "C1CCOC1": "tetrahydrofuran", "c1ccccc1": "benzene", "Cc1ccccc1": "toluene",
+         "c1ccncc1": "pyridine", "Oc1ccccc1": "phenol", "c1c[nH]cn1": "imidazole", "NC(N)=O": "urea",
+         "CCN(CC)CC": "triethylamine", "CN(C)C": "trimethylamine", "CNC": "dimethylamine", "OO": "hydrogen peroxide",
+         "O=C(O)[C@@H]1CCCN1": "L-proline", "O=C(O)[C@H]1CCCN1": "D-proline", "O=C(O)C1CCCN1": "proline",
+         "C1CCNC1": "pyrrolidine", "NCC(=O)O": "glycine"}
+
+
+def _name_of(smiles: str) -> str:
+    """A candidate's name from its SMILES: a common name from NAMES, else its formula, else the SMILES."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.rdMolDescriptors import CalcMolFormula
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return smiles
+        return NAMES.get(Chem.MolToSmiles(mol)) or CalcMolFormula(mol)
+    except Exception:
+        return smiles
+
+
 def _candidates(smiles: List[str], files: Optional[Path], amount: Optional[float]) -> list:
     out = []
     for s in smiles:
@@ -134,7 +160,7 @@ def _candidates(smiles: List[str], files: Optional[Path], amount: Optional[float
                         "multiplicity": int(st.multiplicity),
                         "coordinates": [[float(v) * 0.529177210903 for v in row] for row in st.geometry]})
         else:
-            out.append({"name": s, "smiles": s})
+            out.append({"name": _name_of(s), "smiles": s, "_stem": s})     # (the result file keeps the SMILES' name)
     if files is not None:
         loaded = json.loads(files.read_text())
         out += loaded if isinstance(loaded, list) else loaded["candidates"]
@@ -144,7 +170,9 @@ def _candidates(smiles: List[str], files: Optional[Path], amount: Optional[float
             if amount is None:
                 raise typer.BadParameter(f"candidate {c.get('name') or k}: no amount (give --amount, or \"amount\" in the file)")
             c["amount"] = amount
-        c.setdefault("name", c.get("smiles") or f"candidate_{k}")
+        c.setdefault("name", _name_of(c["smiles"]) if c.get("smiles") else f"candidate_{k}")
+        if c["name"] in names and c.get("smiles") and c["smiles"] not in names:
+            c["name"] = c["smiles"]            # (two candidates with one formula: the SMILES tells them apart)
         if not (c.get("smiles") or (c.get("atoms") and c.get("coordinates"))):
             raise typer.BadParameter(f"candidate {c['name']}: give \"smiles\", or \"atoms\" and \"coordinates\"")
         if c["name"] in names:
@@ -898,6 +926,11 @@ def test(
     q = json.loads(query_file.read_text())
     if q.get("schema") != addmol.QUERY or q.get("version") != addmol.VERSION:
         raise typer.BadParameter(f"{query_file} is not a {addmol.QUERY} file of version {addmol.VERSION}")
+    if q.get("source") == "explorer run" and "fixed_only_together" not in q:
+        # (built before every box of the molecule fit went in on its free energy: some species' free energies
+        # are off by tens of kcal/mol, and nothing in the file says which)
+        raise typer.BadParameter(f"{query_file} was built from an explorer run by an older mepd, whose molecule free "
+                                 "energies can be off by tens of kcal/mol: build it again with `mepd addmol query`")
     cands = _candidates(candidate, candidates, amount)
     output.mkdir(parents=True, exist_ok=True)
     profile = inputs
@@ -950,7 +983,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     if opt["steps"] is not None:
         work = work[:max(0, opt["steps"])]
     level = (q.get("level") or {}).get("key")
-    fp = output / _file_name(cand["name"])
+    fp = output / _file_name(cand.pop("_stem", None) or cand["name"])
     given = cand.pop("estimates", None) or {}
     est = {k: [{"layer": "given", **e} for e in given.get(k) or []]
            for k in ("species", "steps", "new_species", "new_steps")}
@@ -1061,6 +1094,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             peaks = ((doc.get("readout") or {}).get("peak_routes") or {})
             now = (peaks.get("with") or [{}])[0].get("peak")
             hist = extra.setdefault("route_peak", {"parent": (peaks.get("parent") or [{}])[0].get("peak"), "with": []})
+            if now is not None and (not hist["with"] or abs(hist["with"][-1]["peak"] - now) > 1e-6) and \
+                    "target_route_settled" in extra and hist["with"]:
+                # the peak moved after the route was settled (a later verified row): said where it is read
+                extra["target_route_settled"].setdefault("changed_after_settled", []).append(
+                    {"t_s": since(), "route_peak": now, "rests_on": peaks["with"][0].get("rests_on")})
             if now is not None and (not hist["with"] or abs(hist["with"][-1]["peak"] - now) > 1e-6):
                 # with the read-out as it stood then (the page shows the answer over time without the kinetics)
                 r = doc["readout"]
@@ -1248,8 +1286,13 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     def settled(peak):
         """(with the lock held) No reaction is left that could lower the target's route: said in the file, once."""
         if "target_route_settled" not in extra:
+            doc = write("running")             # (the read-out as it stands, before the route is called settled)
+            low = (((doc.get("readout") or {}).get("peak_routes") or {}).get("with") or [{}])[0]
             extra["target_route_settled"] = {
-                "t_s": since(), "route_peak": peak,
+                "t_s": since(), "route_peak": low.get("peak", peak),
+                # what the peak rests on then ("verified": rows that are all verified; "estimate": one is not);
+                # with no "changed_after_settled" the page can say "settled and unchanged since"
+                "rests_on": low.get("rests_on"),
                 "in_words": "no reaction is left that could lower the target's route (every reaction that, with no "
                             "barrier above its ends, would lower the target's route peak has been scanned); the "
                             "estimates and the verification may still be running, and a later verified row can "

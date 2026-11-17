@@ -310,7 +310,10 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
                                 "explorer's molecule-level kinetics count them.",
             "excluded": [{"step": steps[j].label, **why} for j, why in sorted(net.left_out.items()) if j in used]
             + [{"step": steps[m].label, "reason": "thermal_correction_missing"} for m in missing],
-            "notes": notes, "counts": dict(net.counts), "fit": {**net.fit, "boxes_above_their_molecules": above},
+            "notes": notes, "counts": dict(net.counts),
+            # species whose free energies the boxes fix only as sums (g_fixed_only_together); its presence (also
+            # empty) says the network was built with every box of the fit on its free energy
+            "fixed_only_together": together, "fit": {**net.fit, "boxes_above_their_molecules": above},
             # what a TS with an added molecule is measured from (ts_step, on_parent_scale): the starting box
             "reference": {"seed_g_hartree": float(all_g[0]), "seed_atoms": sorted(str(x) for x in nodes[0].structure.symbols),
                           "seed_symbols": [str(x) for x in nodes[0].structure.symbols], **q,

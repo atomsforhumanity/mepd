@@ -30,6 +30,18 @@ target would gain) and side by side, each streamed into the result file:
 3. **the relay scan** (`--scan N`): `mepd channels` on the parent's reactions that are worth it, for transition
    states with the molecule taking part; it ends when no reaction is left that could matter.
 
+Each parent step's row in `readout.steps` compares the reaction, not the step: the parent steps of one net
+reaction (a row found by a scan stands for all of them, `parent_steps`) are read from the reaction's own lowest
+parent TS (`before`; `before_this_step` and `reaction_steps` where there are several), so a shuttle step with a
+high TS is not counted as lowered by a row that is no lower than its reaction's best. The kinetics hold each row
+once, as its own step beside the parent's.
+
+`target_route_settled` also says what the peak rested on then (`rests_on`) and, if a later verified row moved
+the peak, when (`changed_after_settled`). A query built from an explorer run carries `fixed_only_together`
+(also when empty); `mepd addmol test` refuses an explorer-run query without it (built by an older mepd, whose
+molecule free energies can be off by tens of kcal/mol). A candidate given as SMILES is named from a short table of
+common molecules, else by its formula; its result file keeps the SMILES' name.
+
 The file says what it is and is not under `scope` (the level, the phase, and that a route through species the
 parent network does not hold is not in it). Each change of the route peak is kept under `route_peak.with[]` with
 the read-out as it stood then (the target's amount with its spread, the molecule's fate and turnovers) and

@@ -329,6 +329,9 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     if doc["scan"]["ended"]["why"].startswith("no reaction is left"):
         assert doc["target_route_settled"]["t_s"] <= doc["scan"]["ended"]["t_s"] + 1e-6
         assert "no reaction is left that could lower the target's route" in doc["target_route_settled"]["in_words"]
+        assert doc["target_route_settled"]["rests_on"] in ("verified", "estimate")
+        for ev in doc["target_route_settled"].get("changed_after_settled", []):
+            assert ev["t_s"] >= doc["target_route_settled"]["t_s"]
     event = doc["route_peak"]["with"][-1]
     assert event["rests_on"] in ("verified", "estimate") and "final" in event["readout"]["target"]
     assert doc["readout"]["peak_routes"]["with"][0]["rests_on"] == event["rests_on"]
@@ -404,7 +407,7 @@ def test_candidates_of_one_job_in_parallel(tmp_path):
     res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "-c", "N", "-c", "CO", "--amount", "0.1", "--steps", "0",
                            "--jobs", "2", "-o", str(tmp_path / "r")])
     assert res.exit_code == 0, res.output
-    assert [x["candidate"] for x in json.loads(res.output)] == ["O", "N", "CO"]
+    assert [x["candidate"] for x in json.loads(res.output)] == ["water", "ammonia", "methanol"]
     assert sorted(p.name for p in (tmp_path / "r").glob("*.json")) == ["CO.json", "N.json", "O.json"]
 
 
@@ -495,3 +498,27 @@ def test_a_run_stopped_from_outside_says_so_in_its_file(tmp_path):
     doc = json.loads(fp.read_text())
     assert doc["status"] == "cut" and "signal" in doc["cut"]["why"] and doc["cut"]["t_s"] > 0
     assert {x["name"]: x["status"] for x in doc["layers"]}["relay"] == "cut"
+
+
+def test_a_query_from_a_run_built_before_the_fit_fix_is_refused(tmp_path):
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    run = _run(tmp_path)
+    q = parent.query(run, target="[C-]#[NH+]", initial={"C#N": 1.0}, time_s=10.0)
+    assert q["fixed_only_together"] == []
+    del q["fixed_only_together"]
+    fp = tmp_path / "old.json"
+    fp.write_text(json.dumps(q))
+    res = CliRunner().invoke(app, ["addmol", "test", str(fp), "-c", "O", "-o", str(tmp_path / "out")])
+    assert res.exit_code != 0 and "build it again" in res.output
+
+
+def test_a_candidate_given_as_smiles_gets_a_name():
+    from mepd.cli_addmol import _candidates
+
+    got = _candidates(["O", "OC(=O)[C@@H]1CCCN1", "CC(C)(C)O", "CCCCO"], None, 0.1)
+    assert [c["name"] for c in got] == ["water", "L-proline", "C4H10O", "CCCCO"]       # (one formula: the SMILES)
+    assert [c["_stem"] for c in got] == ["O", "OC(=O)[C@@H]1CCCN1", "CC(C)(C)O", "CCCCO"]
+    assert all(c["smiles"] for c in got)

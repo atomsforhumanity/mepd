@@ -366,3 +366,24 @@ def test_a_slow_catalyst_on_the_route_is_not_no_part():
         "r": both(0.0), "ts": both(-12.0), "p": both(0.0)}}]}), {"A": 1.0}, 0.1, "B", 100.0)["added"]
     assert near["on_route"] is True and near["route_role"] == "beside" and near["route_share_taking_part"] == 0.0
     assert "beside the transition states" in near["in_words"] and "taking part in none" in near["in_words"]
+
+
+def test_a_row_for_a_reaction_is_compared_with_the_reactions_lowest_parent_ts():
+    """A row found for a net reaction stands for all its parent steps; a shuttle step of that reaction (S on both
+    sides, its TS higher) is read from the reaction's own lowest parent TS, so a row above that is no gain."""
+    shuttle = network([("ab", ["A"], ["B"], 30.0), ("ab_s", ["A", "S"], ["B", "S"], 50.0)],
+                      species=("A", "B", "S"), g={"B": -10.0})
+    row = {"new_steps": [{"id": "scan", "reactants": ["A", "C"], "products": ["B", "C"], "barrier": both(40.0),
+                          "parent_step": "ab", "parent_steps": ["ab", "ab_s"], "status": "verified"}]}
+    out = A.readout(shuttle, A.added(shuttle, C, row), {"A": 1.0, "S": 1.0}, 0.1, "B", 20.0)
+    by = {r["step"]: r for r in out["steps"]}
+    for sid in ("ab", "ab_s"):
+        assert by[sid]["before"] == pytest.approx(30.0, abs=0.05) and by[sid]["group"] != "through"
+        assert abs(by[sid]["change"]) < 0.3 and by[sid]["reaction_steps"] == ["ab", "ab_s"]
+    assert by["ab_s"]["before_this_step"] == pytest.approx(50.0, abs=0.05)
+    # a row below the reaction's lowest TS is a gain through the molecule, for each of its steps
+    row["new_steps"][0]["barrier"] = both(20.0)
+    out = A.readout(shuttle, A.added(shuttle, C, row), {"A": 1.0, "S": 1.0}, 0.1, "B", 20.0)
+    by = {r["step"]: r for r in out["steps"]}
+    assert by["ab_s"]["group"] == "through" and by["ab_s"]["through"] == "scan"
+    assert by["ab_s"]["change"] == pytest.approx(by["ab"]["change"]) and by["ab"]["change"] < -5
