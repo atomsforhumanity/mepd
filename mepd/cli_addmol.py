@@ -428,6 +428,19 @@ def _task(args):
         return kind, ref, {"status": "failed", "why": f"{type(exc).__name__}: {exc}", "binding": {}}
 
 
+def _same_ts(rows: list, entry: dict) -> Optional[str]:
+    """The id of a row in `rows` that is the TS of `entry` found again (by another layer: the verification and a
+    scan can both reach it): the same molecules on each side, the molecule taking part or not alike, the
+    electronic barrier within 0.01 kcal/mol. Such a TS counts once in the kinetics."""
+    side = lambda n: (sorted(n["reactants"]), sorted(n["products"]))   # noqa: E731
+    for n in rows:
+        if (not n.get("mirror_image_of") and bool(n.get("takes_part")) == bool(entry.get("takes_part"))
+                and side(n) == side(entry) and n.get("barrier") and entry.get("barrier")
+                and abs(float(n["barrier"]["electronic"]) - float(entry["barrier"]["electronic"])) < 0.01):
+            return n["id"]
+    return None
+
+
 def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atoms: set, molecule: dict, engine,
             start_keys: list, end_keys: list) -> dict:
     """A TS found with the molecule present, with its IRC's two ends (qcdata Structures, one atom order), read as
@@ -1170,6 +1183,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             sid = entry["parent_step"]
             key = (sid, took, entry["layer"])
             if key in best and best[key]["barrier"]["free"] <= entry["barrier"]["free"]:
+                return False
+            again = _same_ts([n for n in est["new_steps"] if n.get("layer") != entry["layer"]], entry)
+            if again is not None:
+                if rec is not None:            # (the scan reached a TS the verification had: counted once)
+                    rec.setdefault("found_again", []).append({"ts": entry["id"], "as": again})
                 return False
             drop = {best[key]["id"], best[key]["id"] + "~mirror"} if key in best else set()
             best[key] = entry

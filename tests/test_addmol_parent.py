@@ -527,3 +527,15 @@ def test_a_candidate_given_as_smiles_gets_a_name():
     assert [c["name"] for c in got] == ["water", "L-proline", "C4H10O", "CCCCO"]       # (one formula: the SMILES)
     assert [c["_stem"] for c in got] == ["O", "OC(=O)[C@@H]1CCCN1", "CC(C)(C)O", "CCCCO"]
     assert all(c["smiles"] for c in got)
+
+
+def test_a_ts_found_by_the_verification_and_by_a_scan_counts_once():
+    from mepd.cli_addmol import _same_ts
+
+    row = {"id": "s|verified pose 0", "layer": "verify", "takes_part": True, "reactants": ["A", "added"],
+           "products": ["B", "added"], "barrier": {"electronic": 51.1900, "free": 89.130}}
+    again = {**row, "id": "s|ts_pair_0_3_leaf_0", "layer": "relay", "barrier": {"electronic": 51.1950, "free": 89.129}}
+    other = {**again, "barrier": {"electronic": 53.0, "free": 90.0}}
+    assert _same_ts([row], again) == row["id"] and _same_ts([row], other) is None
+    assert _same_ts([row], {**again, "takes_part": False}) is None
+    assert _same_ts([{**row, "mirror_image_of": "x"}], again) is None
