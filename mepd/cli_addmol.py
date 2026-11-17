@@ -1603,6 +1603,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     if rlay["status"] == "queued":
         rlay["status"] = "skipped"
     counts()
+    if hasattr(os, "sched_setaffinity"):
+        try:        # (this process was held to the estimates' cores: the next candidate gets every core again)
+            os.sched_setaffinity(0, set(cpus))
+        except OSError:
+            pass
     return _line(write("done"), fp)
 
 

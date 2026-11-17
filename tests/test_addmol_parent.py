@@ -307,8 +307,13 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     q = json.loads(qf.read_text())
     assert q["conditions"]["held"] and q["level"]["label"].startswith("gxtb")
     assert (run / "addmol_thermo").is_dir() or True            # (this run records every correction: nothing to keep)
+    import os
+
+    before = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
     res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "--amount", "0.1", "--scan", "1", "-o", str(tmp_path / "r")])
     assert res.exit_code == 0, res.output
+    # (the command held itself to the estimates' cores while the scans ran: the next candidate gets them all back)
+    assert before is None or os.sched_getaffinity(0) == before
     doc = json.loads((tmp_path / "r" / "O.json").read_text())
     # the order of work: the quick estimate, the verification with the molecule beside the step, the scan
     assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["bystander", "verify", "relay"]
