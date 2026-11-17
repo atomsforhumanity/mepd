@@ -397,27 +397,138 @@ def _scan_steps(entry: dict) -> list:
     return list(entry.get("steps") or ([entry["step"]] if entry.get("step") else []))
 
 
+OVER = ("done", "failed", "cut", "interrupted")      # a test that will write no more
+
+
 def progress(doc: dict) -> dict:
-    """Where a test stands: the stage it is in (the first layer still running), how every parent step
-    ended so far (`summary` of the result file), the scans (asked, done, the one running) and how many
-    steps were wanted for a scan but not scanned (`scan.left`). `open`: the answer can still change, or
-    was never looked for on some steps, so "no effect found" is not "no effect"."""
+    """Where a test stands: the stages that are running (`stages`: any of them at once; `stage`, the
+    first, for a one-line read), how every parent step ended so far (`summary` of the result file), the
+    scans (asked, done, those running) and how many reactions were wanted for a scan but not scanned
+    (`scan.left`). `open`: the answer can still change, or was never looked for on some steps, so
+    "no effect found" is not "no effect"."""
     layers = doc.get("layers") or []
-    stage = next((lay for lay in layers if lay.get("status") == "running"), None)
+    stages = [{k: lay.get(k) for k in ("name", "done", "total")} for lay in layers if lay.get("status") == "running"]
     scan = doc.get("scan") or {}
     scans = scan.get("steps") or []
-    live = next((x for x in scans if x.get("status") in ("mapping", "searching")), None)
+    live = [x.get("label") or ", ".join(_scan_steps(x)) for x in scans if x.get("status") in ("mapping", "searching")]
     unfinished = [x for x in scans if x.get("status") not in ("done", "failed")]
     summary = {k: v for k, v in (doc.get("summary") or {}).items() if k != "what"}
     left = len(scan.get("left") or [])
-    return {"stage": stage and {k: stage.get(k) for k in ("name", "done", "total")},
+    return {"stage": stages[0] if stages else None, "stages": stages,
             "summary": summary or None,
             "scans": {"asked": len(scans), "done": sum(1 for x in scans if x.get("status") == "done"),
                       "failed": sum(1 for x in scans if x.get("status") == "failed"),
-                      "running": live and (live.get("label") or ", ".join(_scan_steps(live))), "left": left},
+                      "running": live, "left": left, "of": scan.get("reactions")},
             "first": {k: (doc.get("timings") or {}).get(f"first_{k}_s") for k in ("bystander", "verified", "relay")},
             "open": bool(left or unfinished or doc.get("status") != "done"
                          or (summary.get("est") or 0) or (summary.get("not_reached") or 0))}
+
+
+# ---------------------------------------------------------------- a finished test as it was at an earlier time
+def _span(doc: dict, name: str) -> Optional[tuple]:
+    """(first, last) arrival time of a layer's rows, kept or failed; None when none carries a time."""
+    est = doc.get("estimates") or {}
+    rows = [e for e in est.get("steps") or [] if e.get("layer") == name] + \
+           [e for e in est.get("new_steps") or [] if e.get("layer") == name] + \
+           [f for f in doc.get("failed") or [] if f.get("layer") == name]
+    ts = [float(x["t_s"]) for x in rows if x.get("t_s") is not None]
+    if name == "relay":
+        for x in (doc.get("scan") or {}).get("steps") or []:
+            if x.get("t_started_s") is not None:
+                ts += [float(x["t_started_s"]), float(x["t_started_s"]) + float(x.get("wall_s") or 0.0)]
+    return (min(ts), max(ts)) if ts else None
+
+
+def duration(doc: dict) -> Optional[float]:
+    """How long the test ran (s), when its rows carry arrival times: a replay is possible then."""
+    spans = [x for x in (_span(doc, n) for n in ("bystander", "verify", "relay")) if x]
+    total = (doc.get("timings") or {}).get("total_s")
+    return max([float(total or 0.0)] + [b for _, b in spans]) if spans else None
+
+
+def replay(q: dict, doc: dict, t: float) -> dict:
+    """The result file as it stood `t` seconds into its test, built from the final file: the rows that had
+    arrived by then (their `t_s`), the kinetics run again on those rows (mepd.addmol.result), each scan as
+    far as it had come (its start, its arrivals), the route peak's history up to then, and every stage
+    marked by whether its rows had begun or ended (no order of stages is assumed).
+
+    What a final file no longer holds cannot be replayed: a row that a lower one of the same kind replaced
+    (the lower one appears at its own time), the estimate of a step that was later verified, and counts
+    of work done. `replay.kept` says so in numbers."""
+    t = float(t)
+    by = lambda rows: [e for e in rows or [] if e.get("t_s") is None or float(e["t_s"]) <= t]   # noqa: E731
+    est = {k: by(v) for k, v in (doc.get("estimates") or {}).items()}
+    failed = by(doc.get("failed"))
+    spans = {n: _span(doc, n) for n in ("bystander", "verify", "relay")}
+    layers = []
+    for lay in doc.get("layers") or []:
+        span = spans.get(lay.get("name"))
+        if span is None:
+            layers.append(lay)
+            continue
+        first, last = (0.0, span[1]) if lay["name"] == "bystander" else span
+        status = "queued" if t < first else "running" if t < last else lay.get("status")
+        kept = sum(1 for k in ("steps", "new_steps") for e in est[k] if e.get("layer") == lay["name"]) + \
+            sum(1 for f in failed if f.get("layer") == lay["name"])
+        layers.append({**{k: v for k, v in lay.items() if k not in ("done", "wall_s")}, "status": status,
+                       "done": lay.get("done") if t >= last else None, "seen": kept,
+                       "wall_s": lay.get("wall_s") if t >= last else None})
+    out = addmol.result(q, doc.get("candidate") or {}, est, status="running" if t < (duration(doc) or 0.0) else doc.get("status"),
+                        layers=layers, failed=failed)
+    out["level_labels"] = doc.get("level_labels")
+    out["timings"] = {k: v for k, v in (doc.get("timings") or {}).items() if k.startswith("first_") and v is not None and v <= t}
+    peak = doc.get("route_peak") or {}
+    out["route_peak"] = {**peak, "with": [x for x in peak.get("with") or [] if x["t_s"] <= t]}
+    scans = []
+    for x in (doc.get("scan") or {}).get("steps") or []:
+        start = x.get("t_started_s")
+        if start is None or t < start:
+            continue
+        if t >= start + float(x.get("wall_s") or 0.0):
+            scans.append(x)
+            continue
+        came = [a for a in x.get("arrivals") or [] if a["t_s"] <= t]
+        low = lambda part: min((a["free"] for a in came if bool(a.get("takes_part")) == part and a.get("free") is not None), default=None)   # noqa: E731
+        scans.append({**{k: v for k, v in x.items() if k not in ("searches", "elsewhere", "consumed", "failed_rows", "answer")},
+                      "status": "searching", "wall_s": t - start,
+                      "with_molecule": sum(1 for a in came if a.get("takes_part")) if x.get("arrivals") is not None else None,
+                      "beside": sum(1 for a in came if not a.get("takes_part")) if x.get("arrivals") is not None else None,
+                      "lowest": {k: v for k, v in (("with_molecule", low(True)), ("beside", low(False))) if v is not None}})
+    scan = doc.get("scan") or {}
+    over = t >= (duration(doc) or 0.0)
+    out["scan"] = {**{k: v for k, v in scan.items() if k not in ("steps", "left", "not_scanned", "derivations")}, "steps": scans,
+                   "left": scan.get("left") if over else [], "not_scanned": scan.get("not_scanned") if over else None}
+    # How the steps stood then, from the rows in by then.
+    steps = {st["id"] for st in q["steps"] if st.get("geometry")}
+    part = {i for e in est.get("new_steps") or [] if e.get("takes_part") for i in (e.get("parent_steps") or [e.get("parent_step")])}
+    beside = {e.get("parent_step") for e in est.get("new_steps") or [] if e.get("takes_part") is False} - part
+    quick = {e.get("step") for e in est.get("steps") or []} - part - beside
+    gone = {f.get("step") for f in failed if f.get("status") == "leads elsewhere"} - part - beside
+    out["summary"] = None if over and doc.get("summary") else {
+        "steps": len(steps), "est": len(quick & steps), "verified_beside": len(beside & steps), "takes_part": len(part & steps),
+        "leads_elsewhere": len(gone & steps), "failed": 0, "not_reached": 0}
+    if out["summary"] is None:
+        out["summary"] = doc.get("summary")
+    final = doc.get("estimates") or {}
+    out["replay"] = {"t_s": t, "of": duration(doc), "over": over,
+                     "kept": {"estimates": len(final.get("steps") or []), "verified": len(final.get("new_steps") or [])}}
+    return out
+
+
+_replays: dict = {}
+
+
+def at_time(fp: Path, q: dict, t: Optional[float]) -> dict:
+    """The result file, or (`t`) its replay at that time, kept for the times last asked for."""
+    doc = _load(fp)
+    if t is None or duration(doc) is None:
+        return doc
+    key = (str(fp), fp.stat().st_mtime_ns, round(float(t), 1))
+    if key not in _replays:
+        if len(_replays) > 64:
+            _replays.clear()
+        _replays[key] = replay(q, doc, float(t))
+    return _replays[key]
 
 
 def line(doc: dict, order=()) -> dict:
@@ -429,7 +540,7 @@ def line(doc: dict, order=()) -> dict:
     cand, r = doc.get("candidate") or {}, doc.get("readout")
     out = {"name": cand.get("name"), "smiles": cand.get("smiles"), "amount": cand.get("amount"),
            "status": doc.get("status"), "updated": doc.get("updated"),
-           "layers": [{k: lay.get(k) for k in ("name", "status", "done", "total", "wall_s", "level", "what", "entries")}
+           "layers": [{k: lay.get(k) for k in ("name", "status", "done", "total", "wall_s", "level", "what", "entries", "seen", "lanes")}
                       for lay in doc.get("layers") or []],
            "failed": len(doc.get("failed") or []), "used": {"est": 0, "verified": 0}, "progress": progress(doc)}
     for group in (doc.get("estimates") or {}).values():
@@ -460,9 +571,12 @@ def line(doc: dict, order=()) -> dict:
             "peak": peak, "on_route": _on_route(r),
             "fate": a.get("fate"), "returns": a.get("returns"), "shares": a.get("shares"),
             "resting_state": a.get("resting_state"),
+            "route_role": a.get("route_role"), "in_words": a.get("in_words"),
             "through": len(through),
-            "steps": [{k: s.get(k) for k in ("step", "label", "direction", "change", "status", "spread")}
-                      for s in sorted(through, key=lambda s: s["change"])[:6]],
+            "steps": [{**{k: s.get(k) for k in ("step", "label", "direction", "change", "status", "spread")},
+                       "limits": s["step"] in set(order)}
+                      # (the steps that limit the target first: a far-off step can change by more and matter less)
+                      for s in sorted(through, key=lambda s: (s["step"] not in set(order), s["change"]))[:6]],
             "best": best and {**{k: best.get(k) for k in ("step", "label", "direction", "before", "after", "change",
                                                           "status", "spread")}, "limits": bool(limiting)},
             "raised": worst and worst["change"] > MOVED and {k: worst.get(k) for k in ("step", "label", "change", "status")}}
@@ -511,14 +625,26 @@ def _source(doc: dict) -> dict:
     return out
 
 
-def detail(manager, qid: str, name: str) -> dict:
+def _species_words(text: str, names: dict, molecule: Optional[str]) -> list:
+    """An IRC end as the explorer writes it ("A.B.C", SMILES) in the names the page uses."""
+    out = []
+    for part in (text or "").split("."):
+        hit = addmol.match([{"id": k, "smiles": k} for k in names], part) if part else []
+        same = molecule and addmol.match([{"id": "m", "smiles": molecule}], part)
+        out.append("the molecule" if same else names.get(hit[0], part) if hit else part)
+    return out
+
+
+def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
     """One candidate's result as the page reads it: the read-out with, for every changed step, the layer
     and level its number is from; the two groups of barrier changes (through the molecule; only
     because amounts moved); what is new; what failed and why. The estimates' raw bindings stay in the
     file."""
     ws = manager.ws
     q = _query(ws, qid)
-    doc = _load(_result_path(ws, qid, name))
+    fp = _result_path(ws, qid, name)
+    whole = _load(fp)
+    doc = at_time(fp, q, t)
     r = doc.get("readout")
     steps = {st["id"]: st for st in q["steps"]}
     edges = _edges(ws, q)
@@ -528,10 +654,18 @@ def detail(manager, qid: str, name: str) -> dict:
                                                     if k not in ("coordinates", "pose", "atoms")},
            "failed": [{**{k: f.get(k) for k in ("layer", "status", "why", "step", "species")},
                        "label": labels.get(f.get("step")) or _names(q, ws).get(f.get("species"), f.get("species"))}
-                      for f in doc.get("failed") or []],
+                      for f in doc.get("failed") or [] if f.get("status") != "leads elsewhere"],
            "timings": doc.get("timings"), "through_steps": [], "moved_steps": [], "new_steps": [], "new_species": []}
     out["job"] = running(manager, qid).get(name)
-    if out["status"] == "running" and out["job"] is None:        # (cut short, as in `view`)
+    out["duration_s"] = duration(whole)
+    out["replay"] = doc.get("replay")
+    out["route_peak"] = doc.get("route_peak")
+    out["cut"] = doc.get("cut")
+    quick = next((lay for lay in doc.get("layers") or [] if lay.get("name") == "bystander"), {})
+    out["uncertainty"] = quick.get("uncertainty") if isinstance(quick.get("uncertainty"), dict) else None
+    out["level_words"] = (doc.get("level_labels") or {}).get((q.get("level") or {}).get("key")) or (q.get("level") or {}).get("label")
+    out["solvent"] = "solvation" in ((q.get("level") or {}).get("profile") or "")
+    if out["status"] == "running" and out["job"] is None and not doc.get("replay"):   # (cut short, as in `view`)
         out["status"] = "interrupted"
         out["layers"] = [{**lay, "status": "stopped early"} if lay.get("status") == "running" else lay
                          for lay in out["layers"]]
@@ -548,7 +682,7 @@ def detail(manager, qid: str, name: str) -> dict:
         kind = ("takes part" if e.get("takes_part") else "beside") if e.get("status") == "verified" else "estimate"
         files = None
         if e.get("ts_file"):
-            files = "there" if Path(e["ts_file"]).is_file() else "gone"
+            files = "there" if _file(fp, e["ts_file"], look=True) else "gone"
         return {**s, "layer": e.get("layer"), "level": level_labels.get(e.get("level"), e.get("level")),
                 "source": e.get("source"), "kind": kind, "poses_verified": e.get("poses_verified"),
                 "returned": e.get("returned"), "t_s": e.get("t_s"), "rank": rank.get(s["step"]),
@@ -581,16 +715,25 @@ def detail(manager, qid: str, name: str) -> dict:
     out["route_peak_with_added"] = (r.get("added") or {}).get("route_peak_with_added")
     out["mixed_levels"] = r.get("mixed_levels")
     scan = doc.get("scan") or {}
-    out["scans"] = [{**{k: x.get(k) for k in ("status", "why", "searches", "with_molecule", "beside", "lowest",
-                                               "elsewhere", "failed_rows", "wall_s", "t_started_s",
-                                               "first_with_molecule_s", "stopped", "answer", "cores")},
+    out["scans"] = [{**{k: x.get(k) for k in ("status", "why", "why_failed", "searches", "with_molecule", "beside", "lowest",
+                                               "elsewhere", "failed_rows", "wall_s", "t_started_s", "lane", "twin",
+                                               "first_with_molecule_s", "stopped", "answer", "cores",
+                                               "route_peak_now", "route_peak_if_no_barrier")},
                      "steps": _scan_steps(x), "labels": [labels.get(i, i) for i in _scan_steps(x)],
                      "consumed": len(x.get("consumed") or [])} for x in scan.get("steps") or []]
     grouped: dict = {}
     for x in scan.get("left") or []:
-        grouped.setdefault(x.get("why") or "not scanned", []).append(labels.get(x.get("step"), x.get("step")))
+        grouped.setdefault(x.get("why") or "not scanned", []).append(labels.get(x.get("step"), x.get("reaction") or x.get("step")))
     out["scan_left"] = [{"why": why, "n": len(names), "labels": names[:6]} for why, names in grouped.items()]
     out["scan_rule"], out["not_scanned"] = scan.get("rule"), scan.get("not_scanned")
+    out["scan_reactions"] = scan.get("reactions")
+    # Where a verification led when it did not join the step's own ends: each pose's two IRC ends, in names.
+    names = _names(q, ws)
+    smiles = (doc.get("candidate") or {}).get("smiles")
+    out["elsewhere"] = [{"step": f.get("step"), "label": labels.get(f.get("step"), f.get("step")), "t_s": f.get("t_s"),
+                         "poses": [{"pose": x.get("pose"), "ends": [_species_words(e, names, smiles) for e in x.get("ends") or []]}
+                                   for x in f.get("ends") or []]}
+                        for f in doc.get("failed") or [] if f.get("status") == "leads elsewhere"]
     return out
 
 
@@ -603,12 +746,39 @@ def remove(manager, qid: str, name: str) -> None:
 
 
 # ---------------------------------------------------------------- geometry for the 3D viewer
+def _file(result: Path, recorded: str, *, look: bool = False) -> Optional[Path]:
+    """A file a row names (`ts_file`, `irc_file`): as recorded if absolute, else relative to the result
+    file's folder; where it is not there but `files.tgz` beside the result holds it (a pod run), taken out
+    of the archive into its place. `look`: only say whether it could be had (the archive is not read: a
+    relative path with an archive beside counts)."""
+    fp = Path(recorded)
+    if not fp.is_absolute():
+        fp = result.parent / fp
+    if fp.is_file():
+        return fp
+    tgz = result.parent / "files.tgz"
+    if Path(recorded).is_absolute() or not tgz.is_file():
+        return None
+    if look:
+        return tgz
+    import tarfile
+
+    want = {recorded.lstrip("./"), "./" + recorded.lstrip("./")}
+    with tarfile.open(tgz) as tar:
+        for member in tar:
+            if member.name in want and member.isfile():
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_bytes(tar.extractfile(member).read())
+                return fp
+    return None
+
+
 def _xyz(symbols, coords, comment: str) -> str:
     rows = "\n".join(f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, (x, y, z) in zip(symbols, coords))
     return f"{len(symbols)}\n{comment}\n{rows}\n"
 
 
-def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optional[str] = None) -> dict:
+def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optional[str] = None) -> dict:  # noqa: C901
     """A parent step's reactant end, TS and product end as xyz frames. With a candidate's result file and
     the version of the step its number is read from (`through` of the read-out): the frames with the
     molecule where that estimate kept them (`complexes` of a bystander estimate, the step's atoms first,
@@ -623,14 +793,16 @@ def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optio
     words = (("reactant", "r", "reactant end"), ("ts", "ts", "TS"), ("product", "p", "product end"))
     if est.get("ts_file"):
         # A verified TS with the molecule: its own file, with the two ends of its IRC where that is there too.
-        ts, irc = Path(est["ts_file"]), Path(est.get("irc_file") or "")
-        if not ts.is_file():
+        result = _result_path(ws, qid, name)
+        ts = _file(result, est["ts_file"])
+        irc = _file(result, est["irc_file"]) if est.get("irc_file") else None
+        if ts is None:
             if g is None:
-                raise WorkspaceError(f"this transition state was written to {ts}, which is not there any more")
-            return {"label": label, "ts": 1, "with_molecule": False, "missing": str(ts),
+                raise WorkspaceError(f"this transition state was written to {est['ts_file']}, which is not there any more")
+            return {"label": label, "ts": 1, "with_molecule": False, "missing": est["ts_file"],
                     "frames": [_xyz(g["atoms"], g[k], f"{label} · {w}") for k, _, w in words]}
         (top,) = added._xyz_frames(ts.read_text())[:1]
-        path = added._xyz_frames(irc.read_text()) if irc.is_file() else []
+        path = added._xyz_frames(irc.read_text()) if irc is not None else []
         frames = [_xyz(*top, f"{label} · TS with the molecule")]
         if len(path) >= 2:
             frames = [_xyz(*path[0], f"{label} · one end of its IRC"), frames[0], _xyz(*path[-1], f"{label} · the other end")]
@@ -655,21 +827,33 @@ def geometry(ws, qid: str, step: str, name: Optional[str] = None, through: Optio
 
 # ---------------------------------------------------------------- the variant (Explore's Network picker, the map)
 def marks(q: dict, doc: dict, edges: dict, nodes: dict) -> dict:
-    """What the network map marks for a candidate: per parent step whose lowest version goes through the
-    molecule (by its edge) the change of its apparent barrier and whether that is an estimate; per parent
+    """What the network map marks for a candidate: per parent step that matters for the target and whose
+    lowest version goes through the molecule (by its edge) the change of its apparent barrier and whether
+    that is an estimate. A step matters when it is one of those that limit the target (the query's order
+    of work) or lies on the easiest route to the target with the molecule; once every step is verified
+    with the molecule beside it, most steps "go through" it, and marking them all marks nothing
+    (`more`: how many others do). Per parent
     species the complex with the molecule that holds material; what has no place on the parent's map (new
     species, steps without a parent step); and how many steps moved only because amounts moved (not
     marked: their own transition states are unchanged)."""
     r = doc.get("readout") or {}
     steps = {st["id"]: st for st in q["steps"]}
     names = _names(q)
-    out = {"edges": {}, "species": {}, "new": [], "moved": 0, "status": doc.get("status"), "updated": doc.get("updated")}
+    out = {"edges": {}, "species": {}, "new": [], "moved": 0, "more": 0, "status": doc.get("status"),
+           "updated": doc.get("updated")}
+    route = {x.get("step") for x in (((r.get("peak_routes") or {}).get("with") or [{}])[0].get("steps") or [])}
+    key = {o["step"] for o in q["limits"].get("order") or []}
     for s in r.get("steps") or []:
         edge = edges.get(s["step"])
         if edge is None or s.get("change") is None:
             continue
-        if _through(s):
-            out["edges"][edge] = {"change": round(s["change"], 2), "status": s.get("status"), "spread": s.get("spread")}
+        if _through(s) and not (s["step"] in key or s["step"] in route or s.get("through") in route):
+            out["more"] += 1
+        elif _through(s):
+            mark = {"change": round(s["change"], 2), "status": s.get("status"), "spread": s.get("spread")}
+            # (two steps on one edge: the larger lowering is drawn)
+            if edge not in out["edges"] or mark["change"] < out["edges"][edge]["change"]:
+                out["edges"][edge] = mark
         elif _moved(s):
             out["moved"] += 1
     total = sum((r.get("conditions") or {}).get("initial", {}).values()) or 1.0

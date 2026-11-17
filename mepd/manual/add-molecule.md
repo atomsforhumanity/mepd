@@ -70,43 +70,64 @@ cancel it there), one candidate after another.
 
 ## A test as it runs
 
-A test has three stages, in this order, and the page shows each as a box with
-its progress and the time its first number came:
+A test has three stages. They may run one after another or at the same time
+(the scans start while steps are still being verified), so the page shows
+each as a box of its own, with its state, its progress and the time its first
+number came:
 
-1. **Quick estimate.** The molecule is placed beside the two ends and the
-   transition state of every step, the step's own atoms held: seconds per
-   step. A row from it is an *estimate*: drawn hollow and dashed, in muted
-   figures. In the placer's test on 13 steps it differed from the verified
-   value by 2.0 kcal/mol on average (4.2 at most) and had the wrong sign once.
-2. **Verification.** Each step's transition state is optimized with the
-   molecule beside it and its IRC is run. A verified row replaces the step's
-   estimate (*verified · beside*); its spread is the difference between its
-   two poses. A verification that leads to other species is listed and the
-   step keeps its estimate.
-3. **Scan.** A search for transition states in which the molecule itself
-   takes part (a proton relay, an exchange), on the steps that limit the
-   target first: minutes per scan, on every core. Set how many with *Scans*
-   (0: none). Its rows read *verified · takes part*.
+- **Quick estimate.** The molecule is placed beside the two ends and the
+  transition state of every step, the step's own atoms held: seconds per
+  step. A row from it is an *estimate*: drawn hollow and dashed, in muted
+  figures, with the uncertainty the result file gives for such estimates
+  (how far they lay from the verified value where both were computed).
+- **Verification.** Each step's transition state is optimized with the
+  molecule beside it and its IRC is run. A verified row replaces the step's
+  estimate (*verified · beside*); its spread is the difference between its
+  two poses. A verification that leads to other species is listed with the
+  species each of its poses joined (*led to other species*), and the step
+  keeps its estimate.
+- **Scan.** A search for transition states in which the molecule itself
+  takes part (a proton relay, an exchange): one scan per reaction of the
+  network (it stands for every step between the same molecules), several
+  side by side, in the order of what the target would gain. Its rows read
+  *verified · takes part*. *Scans* in the form sets how many reactions are
+  scanned (0: none).
+
+**The route's highest point as the test went** is the curve to watch: the
+highest point of the easiest route to the target with the molecule, stepping
+down as rows arrive, against the same without the molecule (dashed) and
+what the conditions allow (the line the target forms under).
 
 The page reads the result file every few seconds. While a test runs the step
 table keeps one order (the steps that limit the target first, then by step),
 so a row that is replaced by a lower one stays where it is and is lit for a
 moment; once the test is over the largest change comes first. *Scans for the
-molecule taking part* lists every scan: its state, its searches, how many
-transition states with the molecule it found, the lowest, and how many led to
-other species.
+molecule taking part* lists every scan: the reaction, its lane, its state,
+its searches, how many transition states with the molecule it found, the
+lowest, and how many led to other species.
+
+**Replay.** Every row of a result carries the time it arrived, so a finished
+test can be played again: the bar under the candidate's name (or a click in
+the curve) shows the page as it stood at that time, from the rows that had
+arrived and the kinetics run again on them. A row that a lower one later
+replaced, and the estimate of a step that was later verified, are not in the
+final file and so not in the replay.
 
 **The answer comes first**: the easiest route's highest point without and
 with the molecule, the target's amount with the interval it has if every
 number with a spread is off by its spread, what became of the molecule, and
 **Not scanned**: the steps that were wanted for a scan and got none, with
 the reason. While anything is still running, rests on an estimate, or was
-not scanned, the page says *Not a verdict yet*: "no effect found" is then
-not "no effect".
+not scanned, the page says so (*Not a verdict yet*; for a molecule that
+already helps, *Not the whole picture yet*): "no effect found" is then not
+"no effect". Under it, one sentence says what the answer is: what this
+network gives at its level of theory, not a prediction of an experiment; a
+route the network does not hold is not in it.
 
-A verified transition state opens in 3D from its own file. Where the
-calculation ran on another machine and the file is gone, the page shows the
-network's own transition state and says so, with the path.
+A verified transition state opens in 3D from its own file, beside the result
+file or in the `files.tgz` a remote run leaves beside it. Where the file is
+gone, the page shows the network's own transition state and says so, with
+the path.
 
 ## Reading a candidate
 
@@ -162,9 +183,11 @@ column per candidate, the change of the barrier on a blue (lower) to red
 **Show on the map** keeps the candidate as a variant of the network (Explore's
 *Graph* view lists it in its Network picker) and opens the map with it:
 
-- steps whose fastest version goes through the molecule are coloured by the
-  change of their barrier, blue lower, red higher, dashed while that is an
-  estimate and solid once verified;
+- the steps that matter for the target (those that limit it, and those on
+  its easiest route with the molecule) and whose fastest version goes
+  through the molecule are coloured by the change of their barrier, blue
+  lower, red higher, dashed while that is an estimate and solid once
+  verified; the legend counts the other steps that go through it;
 - everything else is faded, so the few marked steps can be found; *Details*
   in the legend goes back to the candidate in the list, ✕ to the network
   without it;
@@ -194,8 +217,8 @@ Result files written elsewhere and copied into
   of a step of the network) are not searched for; such numbers can come with
   a candidate (`estimates` in a candidates file) and are shown with their
   source.
-- The estimate's uncertainty shown is the placer's test, not a number of this
-  run.
+- A replay runs the kinetics again for each time shown: seconds per frame on
+  a network of a few hundred steps.
 - Steps of an exploration's own network are drawn on the map through the
   workspace's edges; a step the workspace keeps no edge for (a second
   transition state of the same pair) is counted but not drawn.

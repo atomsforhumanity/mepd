@@ -166,7 +166,12 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
    what was not scanned and why, and *Not a verdict yet* while anything is open), then three stage boxes
    (`addpage.progress`), the step table (rows keyed and in the order of work while it runs; an estimate hollow and
    dashed, verified rows *beside* or *takes part*), and the scans (`scan.steps[]`; an entry may name several
-   steps). A verified TS is shown from its `ts_file` / `irc_file`; where they are gone the page says so.
+   steps; several may run at once, and so may the stages). A verified TS is shown from its `ts_file` / `irc_file`
+   (relative to the result file, or taken out of `files.tgz` beside it); where they are gone the page says so. The
+   route peak's history (`route_peak`) is drawn as a step curve. A finished test is replayed by its rows' `t_s`:
+   `GET …/results/{file}?t=<seconds>` is the result as it stood then (`addpage.replay`: the rows in by then, the
+   kinetics run again on them, each scan as far as its arrivals had come). The estimate's uncertainty is read from
+   the quick-estimate layer's `uncertainty`; *led to other species* rows show the `ends` of each pose.
 4. **Results** arrive without a reload: the job rewrites one result file per candidate as layers finish, and the
    page reads them every 3 s while it runs (and on the job's events). One line per candidate, ranked by the gain of
    the target (target, how soon, returned or not and where it rests, the largest step change with its spread),

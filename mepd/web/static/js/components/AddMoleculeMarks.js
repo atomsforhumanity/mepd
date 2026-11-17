@@ -43,9 +43,10 @@ export function MarksLegend({ workspace, network }) {
     analyze: { ...(state.analyze || {}), compose: false, view: 'addmol' }, view: { tab: 'analyze', jobId: null } });
   return html`<div class="nm-added" role="note">
     <b>${v.name}</b>
-    ${n ? html`<span class="nm-added-scale" title="Steps whose fastest version goes through the molecule: the change of their barrier (kcal/mol)">−${FULL}<i></i>+${FULL} kcal/mol</span>
+    ${n ? html`<span class="nm-added-scale" title="The steps that limit the target, or lie on its easiest route with the molecule, and whose fastest version goes through the molecule: the change of their barrier (kcal/mol)">−${FULL}<i></i>+${FULL} kcal/mol</span>
       <span><i class="nm-added-line est"></i>estimate</span><span><i class="nm-added-line"></i>verified</span><span class="muted">the rest is faded</span>`
       : html`<span class="muted">no step goes through it</span>`}
+    ${m.more > 0 && html`<span class="muted" title="Only the steps that limit the target, or lie on its easiest route with the molecule, are marked">${m.more} other steps go through it</span>`}
     ${m.moved > 0 && html`<span class="muted" title="Their own transition states are unchanged: their reactants hold more or less material">${m.moved} more moved with the amounts</span>`}
     ${held > 0 && html`<span title=${Object.values(m.species).map((s) => s.name).join('\n')}><i class="nm-added-ring"></i>binds it (${held})</span>`}
     ${m.new.length > 0 && html`<span class="muted" title=${m.new.map((x) => x.name).join('\n')}>${m.new.length} new species or step${m.new.length > 1 ? 's' : ''} not on this map</span>`}

@@ -383,15 +383,20 @@ def test_a_running_test_says_its_stage_and_what_was_not_scanned(mgr, tmp_path):
     doc = json.loads((addpage.folder(mgr.ws, qid) / "results" / file).read_text())
     p = addpage.progress(doc)
     assert p["stage"] == {"name": "relay", "done": 0, "total": 1} and p["summary"]["takes_part"] == 1 and "what" not in p["summary"]
-    assert p["scans"] == {"asked": 1, "done": 0, "failed": 0, "running": q["steps"][0]["id"], "left": 2}
+    assert p["scans"] == {"asked": 1, "done": 0, "failed": 0, "running": [q["steps"][0]["id"]], "left": 2, "of": None}
+    assert p["stages"] == [p["stage"]]
     assert p["first"] == {"bystander": 3.0, "verified": 20.0, "relay": 90.0} and p["open"]
     # finished, every scan done, nothing left: only then is the answer closed
     done = {**doc, "status": "done", "scan": {"steps": [{**doc["scan"]["steps"][0], "status": "done"}], "left": []}}
     assert not addpage.progress(done)["open"]
     assert addpage.progress({**done, "scan": doc["scan"]})["open"]                     # (steps left unscanned)
     assert addpage.progress({**done, "summary": {**doc["summary"], "est": 2}})["open"]   # (estimates only)
-    assert addpage.progress({"status": "done"}) == {"stage": None, "summary": None, "open": False, "first": {
-        "bystander": None, "verified": None, "relay": None}, "scans": {"asked": 0, "done": 0, "failed": 0, "running": None, "left": 0}}
+    assert addpage.progress({"status": "done"}) == {"stage": None, "stages": [], "summary": None, "open": False, "first": {
+        "bystander": None, "verified": None, "relay": None}, "scans": {"asked": 0, "done": 0, "failed": 0, "running": [], "left": 0, "of": None}}
+    # two stages running at once are both said; a test cut from outside stays open
+    both = {**doc, "layers": [{"name": "verify", "status": "running", "done": 3, "total": 9}, {"name": "relay", "status": "running", "done": 0, "total": 2}]}
+    assert [x["name"] for x in addpage.progress(both)["stages"]] == ["verify", "relay"]
+    assert addpage.progress({**done, "status": "cut"})["open"]
     row = next(r for r in addpage.view(mgr, qid)["results"] if r["name"] == "cat")
     assert row["progress"]["scans"]["left"] == 2 and "spread" in row["target"]
 
@@ -429,3 +434,88 @@ def test_a_verified_ts_is_shown_from_its_own_file_or_said_to_be_gone(mgr, tmp_pa
     # the other row's file was lost with the machine it ran on: the parent's own TS, and the path, said plainly
     gone = addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|verified pose 0")
     assert not gone["with_molecule"] and gone["missing"].endswith("gone.xyz") and gone["frames"][1].startswith("3\n")
+
+
+# ---------------------------------------------------------------- a finished test replayed by its rows' arrival times
+def timed(mgr, qid, tmp_path):
+    """The staged result, finished, every row with the time it arrived: the estimate's failure at 5 s, the verified
+    row at 20 s, the scan from 60 s with its TS at 90 s (and a higher one at 70 s that the file no longer holds)."""
+    q, file = put_staged(mgr, qid, "cat", tmp_path, status="done", relay_status="done")
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    doc = json.loads(fp.read_text())
+    st = q["steps"][0]
+    doc["estimates"]["new_steps"][0]["t_s"], doc["estimates"]["new_steps"][1]["t_s"] = 20.0, 90.0
+    doc["failed"] = [{"step": st["id"], "layer": "verify", "status": "leads elsewhere", "t_s": 25.0, "why": "joins other species",
+                      "ends": [{"pose": 1, "ends": ["C#N.O", "C#N.O"]}]}]
+    doc["layers"] = [{"name": "bystander", "status": "done", "done": 1, "total": 1,
+                      "uncertainty": {"barrier_shift_kcal": {"mean_abs_difference_to_verified": 2.0, "largest": 4.2, "same_sign": "9 of 10 steps"}}},
+                     {"name": "verify", "status": "done", "done": 1, "total": 1}, {"name": "relay", "status": "done", "done": 1, "total": 1, "lanes": 2}]
+    doc["scan"]["steps"][0].update(t_started_s=60.0, wall_s=40.0, steps=[st["id"], "twin"], lane=1,
+                                   arrivals=[{"t_s": 70.0, "takes_part": True, "ts": "a", "free": 30.0},
+                                             {"t_s": 90.0, "takes_part": True, "ts": "b", "free": 22.0}])
+    doc["route_peak"] = {"parent": 50.0, "with": [{"t_s": 6.0, "peak": 50.0}, {"t_s": 20.0, "peak": 40.0}, {"t_s": 90.0, "peak": 22.0}]}
+    doc["timings"] = {"first_bystander_s": 5.0, "first_verified_s": 20.0, "first_relay_s": 70.0, "total_s": 100.0}
+    fp.write_text(json.dumps(doc))
+    return q, file, doc
+
+
+def test_a_finished_test_is_replayed_from_its_rows_arrival_times(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    assert addpage.duration(doc) == 100.0 and addpage.duration({"timings": {"total_s": 9.0}}) is None
+    end = addpage.detail(mgr, qid, file)
+    assert end["replay"] is None and end["duration_s"] == 100.0 and end["through_steps"][0]["kind"] == "takes part"
+    assert end["uncertainty"]["barrier_shift_kcal"]["largest"] == 4.2          # (read from the file, not from the page)
+    assert end["route_peak"]["with"][-1] == {"t_s": 90.0, "peak": 22.0}
+    # 10 s in: nothing verified yet; the verification and the scan have not begun
+    d = addpage.detail(mgr, qid, file, 10.0)
+    assert d["status"] == "running" and d["replay"]["t_s"] == 10.0 and not d["replay"]["over"] and d["through_steps"] == []
+    assert [(x["name"], x["status"]) for x in d["layers"]] == [("bystander", "done"), ("verify", "queued"), ("relay", "queued")]
+    assert d["scans"] == [] and d["elsewhere"] == [] and d["route_peak"]["with"] == [{"t_s": 6.0, "peak": 50.0}]
+    assert d["progress"]["first"] == {"bystander": 5.0, "verified": None, "relay": None} and d["scan_left"] == []
+    # 30 s in: the verified row beside the step is in and counted by the kinetics; its other pose led elsewhere
+    d = addpage.detail(mgr, qid, file, 30.0)
+    (row,) = d["through_steps"]
+    assert row["kind"] == "beside" and row["through"] == f"{st['id']}|verified pose 0" and row["t_s"] == 20.0
+    assert d["progress"]["summary"]["verified_beside"] == 1 and d["progress"]["summary"]["takes_part"] == 0
+    (gone,) = d["elsewhere"]
+    assert gone["label"] == st["label"] and gone["poses"][0]["pose"] == 1 and len(gone["poses"][0]["ends"]) == 2
+    assert "the molecule" in gone["poses"][0]["ends"][0]                       # (the candidate's own SMILES, in words)
+    # 75 s in: the scan is searching; its first TS has arrived (30.0), the lower one has not; verify is done
+    d = addpage.detail(mgr, qid, file, 75.0)
+    (scan,) = d["scans"]
+    assert scan["status"] == "searching" and scan["with_molecule"] == 1 and scan["lowest"] == {"with_molecule": 30.0}
+    assert scan["steps"] == [st["id"], "twin"] and scan["lane"] == 1 and scan["wall_s"] == 15.0 and scan["searches"] is None
+    assert [(x["name"], x["status"]) for x in d["layers"]][1:] == [("verify", "done"), ("relay", "running")]
+    assert d["through_steps"][0]["kind"] == "beside"       # (the 30.0 row was replaced in the file: the replay cannot show it)
+    assert d["peak"]["with"] > addpage.detail(mgr, qid, file, 95.0)["peak"]["with"]
+    # at the end the replay is the file
+    last = addpage.detail(mgr, qid, file, 100.0)
+    assert last["replay"]["over"] and last["status"] == "done" and last["through_steps"][0]["through"] == end["through_steps"][0]["through"]
+    assert last["scans"][0]["status"] == "done" and last["scan_left"] == end["scan_left"]
+
+
+def test_a_rows_files_are_read_beside_the_result_or_from_its_archive(mgr, tmp_path):
+    import tarfile
+
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    # a pod run: paths relative to the result file, the files in files.tgz beside it
+    doc["estimates"]["new_steps"][1].update(ts_file="scan/ts.xyz", irc_file="scan/irc.xyz")
+    fp.write_text(json.dumps(doc))
+    (tmp_path / "scan").mkdir()
+    for n in ("ts.xyz", "irc.xyz"):
+        (tmp_path / "scan" / n).write_text((tmp_path / n).read_text())
+    with tarfile.open(fp.parent / "files.tgz", "w:gz") as tar:
+        tar.add(tmp_path / "scan" / "ts.xyz", arcname="./scan/ts.xyz")
+        tar.add(tmp_path / "scan" / "irc.xyz", arcname="./scan/irc.xyz")
+    assert addpage.detail(mgr, qid, file)["through_steps"][0]["files"] == "there"
+    g = addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")
+    assert g["with_molecule"] and len(g["frames"]) == 3 and (fp.parent / "scan" / "ts.xyz").is_file()   # (taken out once)
+    # a relative path with nothing beside it is gone, and said so
+    doc["estimates"]["new_steps"][1].update(ts_file="nowhere/ts.xyz")
+    fp.write_text(json.dumps(doc))
+    assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["missing"] == "nowhere/ts.xyz"

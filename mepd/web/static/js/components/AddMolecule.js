@@ -9,7 +9,7 @@
 import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, openReaction, openTab, set, setExploreView, state, toast, useStore } from '../store.js';
-import { cls, depictUrl, isSpecies, readFileText } from '../util.js';
+import { PHONE_QUERY, cls, depictUrl, isSpecies, readFileText } from '../util.js';
 import { ControlBars, Mixture, UNITS, fmtC, fmtTime } from './Kinetics.js';
 import { Viewer3D } from './Viewer3D.js';
 import { Why } from './Why.js';
@@ -246,8 +246,8 @@ function fateText(r) {
   const short = turn >= 0.001 ? `${fmtX(turn)} turnovers` : 'no turnover yet';
   if (r.fate === 'consumed') return { main: 'used up', fact: `${pct(r.shares?.covalent)} in new species`, sub: `${pct(r.shares?.covalent)} ends in new species` };
   if (r.fate === 'bound and inert') return { main: 'held, inert', fact: `${pct(r.shares?.bound)} bound`, sub: `${pct(r.shares?.bound)} bound in complexes` };
-  if (r.fate === 'regenerated') return { main: 'returned', fact: short, sub: `${turns}${on >= 0.001 ? ` · on the route of ${pct(on)} of the target` : ''}` };
-  if (on >= 0.001) return { main: 'on the route', fact: short, sub: `of ${pct(on)} of the target · ${turns}` };
+  if (r.fate === 'regenerated') return { main: r.route_role === 'takes part' ? 'returned, takes part' : 'returned', fact: short, sub: r.in_words || `${turns}${on >= 0.001 ? ` · on the route of ${pct(on)} of the target` : ''}` };
+  if (on >= 0.001) return { main: 'on the route', fact: short, sub: r.in_words || `of ${pct(on)} of the target · ${turns}` };
   return { main: 'takes no part', fact: '', sub: 'no step with it carries material' };
 }
 const restText = (r) => (r.resting_state ? { main: r.resting_state.id === 'added' ? 'free' : r.resting_state.name, sub: pct(r.resting_state.share) } : null);
@@ -255,10 +255,11 @@ const stateOf = (r) => (r.used?.est ? 'est' : r.used?.verified ? 'verified' : nu
 
 function Progress({ r }) {
   if (r.status === 'queued') return html`<span class="am-run">queued</span>`;
-  const lay = r.progress?.stage;
+  const live = r.progress?.stages || [];
   if (r.status === 'running') {
-    return html`<span class="am-run"><span class="spinner" aria-hidden="true"></span>${lay ? `${LAYER[lay.name] || lay.name} ${lay.done ?? 0}/${lay.total ?? '?'}` : r.readout ? 'running' : 'starting'}</span>`;
+    return html`<span class="am-run"><span class="spinner" aria-hidden="true"></span>${live.length ? live.map((l) => `${LAYER[l.name] || l.name} ${l.done ?? 0}/${l.total ?? '?'}`).join(' · ') : r.readout ? 'running' : 'starting'}</span>`;
   }
+  if (r.status === 'cut') return html`<span class="am-run warn" title="Stopped from outside before it was complete: the numbers are from what had arrived">cut short</span>`;
   if (r.status === 'interrupted') return html`<span class="am-run warn" title="Its calculation stopped before the last layer finished: the numbers are from the layers that did">stopped early</span>`;
   if (r.status === 'failed') return html`<span class="am-run bad">failed</span>`;
   return null;
@@ -327,14 +328,20 @@ function Dumbbell({ before, after, spread, lo, hi, est = false }) {
 // What kind of number a row is: a quick estimate (dashed), a verified transition state with the molecule
 // beside the step, or one with the molecule taking part.
 const KIND = {
-  estimate: ['estimate', 'A quick estimate: the molecule placed beside the step\'s frozen frames, no transition state optimized with it. In the placer\'s test on 13 steps it was off by 2.0 kcal/mol on average (4.2 at most), with one wrong sign.'],
+  estimate: ['estimate', 'A quick estimate: the molecule placed beside the step\'s frozen frames, no transition state optimized with it.'],
   beside: ['beside', 'Verified: the transition state optimized with the molecule beside the step, its IRC joining the step\'s ends.'],
   'takes part': ['takes part', 'Verified: a transition state in which the molecule\'s own bonds change (a relay, an exchange), its IRC checked.'],
 };
-const EST_SPREAD = 2.0;   // kcal/mol: the quick estimate's mean absolute difference from the verified value (the placer's test)
+// What the result file says about its quick estimates (the quick-estimate stage's `uncertainty`), in one sentence.
+const uncWords = (u) => {
+  const b = u?.barrier_shift_kcal;
+  if (!b) return 'The result file gives no measured uncertainty for its estimates.';
+  return `Measured uncertainty of such an estimate: ${b.mean_abs_difference_to_verified} kcal/mol from the verified value on average, ${b.largest} at most, the same sign on ${b.same_sign}${u.what ? ` (${u.what})` : ''}.${u.quick_setting ? ` ${u.quick_setting[0].toUpperCase()}${u.quick_setting.slice(1)}.` : ''}`;
+};
 
-function StepRows({ rows, onView, viewing, through, fresh }) {
-  const sp = (s) => (s.spread != null ? s.spread : s.kind === 'estimate' ? EST_SPREAD : 0);
+function StepRows({ rows, onView, viewing, through, fresh, unc }) {
+  const mean = unc?.barrier_shift_kcal?.mean_abs_difference_to_verified ?? null;   // kcal/mol, from the file
+  const sp = (s) => (s.spread != null ? s.spread : s.kind === 'estimate' ? mean || 0 : 0);
   const vals = rows.flatMap((s) => [s.before, s.after, s.after - sp(s), s.after + sp(s)]);
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const pad = Math.max(1, (hi - lo) * 0.06);
@@ -356,9 +363,9 @@ function StepRows({ rows, onView, viewing, through, fresh }) {
         <td class="mono">${kcal(s.after)}</td>
         <td class="mono"><b class=${within ? 'am-weak' : ''}>${kcal(s.change, true)}</b>${through ? html` <span class=${within ? 'am-warn' : 'muted'}
           title=${s.spread != null ? (est ? 'Spread over the estimate\'s repeats' : `Difference between the ${s.poses_verified || 2} verified poses`)
-            : est ? 'No spread of its own (one repeat): the quick estimate\'s mean error in the placer\'s test' : 'One verified pose: no spread'}>${
-          s.spread != null ? `± ${s.spread.toFixed(1)}` : est ? `± ~${EST_SPREAD.toFixed(0)}` : ''}</span>` : ''}</td>
-        ${through && html`<td class="small" title=${`${what}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}</span></td>
+            : est ? `No spread of its own (one repeat). ${uncWords(unc)}` : 'One verified pose: no spread'}>${
+          s.spread != null ? `± ${s.spread.toFixed(1)}` : est ? (mean != null ? `± ~${mean.toFixed(0)}` : '± ?') : ''}</span>` : ''}</td>
+        ${through && html`<td class="small" title=${`${what}${est ? ` ${uncWords(unc)}` : ''}${s.t_s != null ? `\nArrived ${fmtTime(s.t_s)} into the test.` : ''}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}</span></td>
           <td>${(s.geometry || s.with_geometry) && html`<button class="btn small ghost" title="Its transition state in 3D" onClick=${() => onView(s)}>3D</button>`}</td>`}
       </tr>`;
     })}</tbody></table></div>`;
@@ -401,22 +408,102 @@ function Stages({ d }) {
   if (!STAGES.some(([k]) => by[k])) return null;
   const parts = sum ? [[sum.verified_beside, 'verified with it beside'], [sum.takes_part, 'with it taking part'], [sum.est, 'an estimate only'],
     [sum.leads_elsewhere, 'led to other species when verified'], [(sum.failed || 0), 'gave no number'], [sum.not_reached, 'not reached']].filter(([n]) => n > 0) : [];
+  const word = { queued: 'queued', running: 'running', done: 'done', skipped: 'not asked', cut: 'cut short', 'stopped early': 'stopped early', failed: 'failed' };
+  // Each box reads its own stage: they may run one after another or all at once.
   return html`<div class="am-stages-wrap">
-    <div class="am-stages">${STAGES.map(([key, title, firstKey, what], k) => {
+    <div class="am-stages">${STAGES.map(([key, title, firstKey, what]) => {
       const l = by[key];
       const live = d.status === 'running';
-      const status = l ? l.status : live ? 'waiting' : 'not asked';
-      const frac = l?.total ? Math.min(1, (l.done || 0) / l.total) : l?.status === 'done' ? 1 : 0;
-      const unit = key === 'relay' ? 'scans' : 'steps';
-      return html`<div class=${cls('am-stage', l?.status === 'running' && 'running', l?.status === 'done' && 'done', ((!l && !live) || l?.status === 'skipped') && 'off', l?.status === 'stopped early' && 'cut')} title=${`${what}${l?.what ? `\n${l.what}` : ''}`}>
-        <div class="am-stage-head"><span class="am-stage-n">${k + 1}</span><b>${title}</b>
+      const status = l ? word[l.status] || l.status : live ? 'queued' : 'not asked';
+      const frac = l?.total && l.done != null ? Math.min(1, l.done / l.total) : l?.status === 'done' ? 1 : 0;
+      const unit = key === 'relay' ? 'reactions' : 'steps';
+      const count = !l ? (live ? 'not started' : 'not part of this test')
+        : l.done != null && l.total ? `${l.done} of ${l.total} ${unit}` : l.seen != null && l.status !== 'queued' ? `${l.seen} rows by then` : l.total ? `${l.total} ${unit} to do` : '—';
+      return html`<div class=${cls('am-stage', l?.status === 'running' && 'running', l?.status === 'done' && 'done', ((!l && !live) || l?.status === 'skipped') && 'off',
+        ['stopped early', 'cut'].includes(l?.status) && 'cut')} title=${`${what}${l?.what ? `\n${l.what}` : ''}`}>
+        <div class="am-stage-head"><b>${title}</b>
           <span class="am-stage-status">${l?.status === 'running' ? html`<span class="spinner" aria-hidden="true"></span>` : ''}${status}</span></div>
-        <div class="am-stage-bar"><i style=${{ width: `${frac * 100}%` }}></i></div>
-        <div class="small muted am-stage-foot">${l?.total ? `${l.done ?? 0} of ${l.total} ${unit}` : l ? '—' : live ? 'starts when the stage before it is done' : 'not part of this test'}${
+        <div class=${cls('am-stage-bar', l?.status === 'running' && l.done == null && 'open')}><i style=${{ width: `${frac * 100}%` }}></i></div>
+        <div class="small muted am-stage-foot">${count}${key === 'relay' && l?.lanes > 1 ? ` · ${l.lanes} lanes` : ''}${
           first[firstKey] != null ? ` · first after ${fmtTime(first[firstKey])}` : ''}</div>
       </div>`;
     })}</div>
     ${sum && html`<p class="small muted am-sum">How the ${sum.steps} steps stand: ${parts.map(([n, w]) => `${n} ${w}`).join(' · ') || 'none has a number yet'}.</p>`}
+  </div>`;
+}
+
+// The route's highest point with the molecule, over the time of the test: the one curve to watch. A step line
+// (the peak holds until a lower one arrives), the peak without the molecule and what the conditions allow as
+// reference lines, a marker where the replay stands; hover reads a time.
+function RoutePeak({ peak, cutoff, end, now, onPick }) {
+  const [hover, setHover] = useState(null);
+  const pts = (peak?.with || []).filter((x) => x.peak != null);
+  if (peak?.parent == null || !pts.length) return null;
+  // (drawn at the size it is shown: a phone gets its own, narrower drawing, not a shrunken one)
+  const small = useMemo(() => !!window.matchMedia?.(PHONE_QUERY).matches, []);
+  const W = small ? 340 : 640, H = small ? 190 : 170, pad = { l: 34, r: small ? 82 : 96, t: 12, b: 28 };
+  const tMax = Math.max(end || 0, pts[pts.length - 1].t_s, 1);
+  const lo = Math.min(cutoff ?? Infinity, ...pts.map((x) => x.peak), peak.parent), hi = Math.max(peak.parent, ...pts.map((x) => x.peak));
+  const y0 = Math.floor((lo - 3) / 5) * 5, y1 = Math.ceil((hi + 2) / 5) * 5;
+  const X = (t) => pad.l + (Math.min(t, tMax) / tMax) * (W - pad.l - pad.r);
+  const Y = (v) => pad.t + (1 - (v - y0) / (y1 - y0)) * (H - pad.t - pad.b);
+  const upto = now ?? tMax;
+  const at = (t) => { let v = peak.parent; for (const x of pts) if (x.t_s <= t) v = x.peak; return v; };
+  let path = `M${X(0)},${Y(peak.parent)}`;
+  let last = peak.parent;
+  for (const x of pts) { if (x.t_s > upto) break; path += ` H${X(x.t_s)} V${Y(x.peak)}`; last = x.peak; }
+  path += ` H${X(upto)}`;
+  const unit = tMax >= 7200 ? 3600 : tMax >= 300 ? 60 : 1, uw = unit === 3600 ? 'h' : unit === 60 ? 'min' : 's';
+  const stepT = [1, 2, 5, 10, 15, 20, 30, 60, 120].map((k) => k * unit).find((k) => tMax / k <= (small ? 4 : 7)) || tMax;
+  const ticksX = []; for (let t = 0; t <= tMax + 1e-6; t += stepT) ticksX.push(t);
+  const ticksY = []; for (let v = y0; v <= y1 + 1e-6; v += (y1 - y0) > 40 ? 10 : 5) ticksY.push(v);
+  const drops = pts.filter((x, k) => x.t_s <= upto && (k === 0 ? x.peak < peak.parent - 0.05 : x.peak < pts[k - 1].peak - 0.05));
+  const move = (e) => {
+    const box = e.currentTarget.getBoundingClientRect();
+    const t = (((e.clientX - box.left) / box.width) * W - pad.l) / (W - pad.l - pad.r) * tMax;
+    setHover(Math.max(0, Math.min(tMax, t)));
+  };
+  return html`<div class="am-peak">
+    <svg viewBox=${`0 0 ${W} ${H}`} role="img" aria-label=${`Highest point of the easiest route to the target over the time of the test: ${kcal(peak.parent)} kcal/mol without the molecule, ${kcal(last)} with it`}
+      onMouseMove=${move} onMouseLeave=${() => setHover(null)} onClick=${() => hover != null && onPick && onPick(hover)} style=${{ cursor: onPick ? 'pointer' : 'default' }}>
+      ${ticksY.map((v) => html`<line class="kn-grid" x1=${pad.l} x2=${W - pad.r} y1=${Y(v)} y2=${Y(v)} /><text class="kn-tick" x=${pad.l - 6} y=${Y(v) + 3.5} text-anchor="end">${v}</text>`)}
+      ${ticksX.map((t) => html`<text class="kn-tick" x=${X(t)} y=${H - pad.b + 14} text-anchor="middle">${+(t / unit).toFixed(1)}</text>`)}
+      <text class="kn-axis" x=${W - pad.r} y=${H - 2} text-anchor="end">time into the test (${uw})</text>
+      <text class="kn-axis" transform=${`translate(11 ${pad.t + (H - pad.t - pad.b) / 2}) rotate(-90)`} text-anchor="middle">kcal/mol</text>
+      <line class="am-peak-ref" x1=${pad.l} x2=${W - pad.r} y1=${Y(peak.parent)} y2=${Y(peak.parent)} />
+      <text class="am-peak-lab" x=${W - pad.r + 6} y=${Y(peak.parent) + 4}>without ${kcal(peak.parent)}</text>
+      ${cutoff != null && cutoff >= y0 && html`<line class="am-peak-cut" x1=${pad.l} x2=${W - pad.r} y1=${Y(cutoff)} y2=${Y(cutoff)} />
+        <text class="am-peak-lab" x=${W - pad.r + 6} y=${Y(cutoff) + 4}>allowed ${kcal(cutoff)}</text>`}
+      <path class="am-peak-line" d=${path} />
+      ${drops.map((x) => html`<circle class="am-peak-dot" cx=${X(x.t_s)} cy=${Y(x.peak)} r="4.5"><title>${`${kcal(x.peak)} kcal/mol from ${fmtTime(x.t_s)}`}</title></circle>`)}
+      ${Math.abs(Y(last) - Y(peak.parent)) > 12 && (cutoff == null || Math.abs(Y(last) - Y(cutoff)) > 12) && html`<text class="am-peak-lab strong" x=${W - pad.r + 6} y=${Y(last) + 4}>with ${kcal(last)}</text>`}
+      ${now != null && now < tMax && html`<line class="am-peak-now" x1=${X(now)} x2=${X(now)} y1=${pad.t} y2=${H - pad.b} />`}
+      ${hover != null && html`<line class="kn-cross" x1=${X(hover)} x2=${X(hover)} y1=${pad.t} y2=${H - pad.b} />`}
+    </svg>
+    <div class="am-peak-tip small">${hover != null ? html`<span class="mono">${fmtTime(hover)}</span> into the test: route peak with the molecule <span class="mono">${hover <= upto ? `${kcal(at(hover))} kcal/mol` : 'not replayed yet'}</span>${onPick ? ' · click to see the page as it stood then' : ''}`
+      : html`<span class="muted">Highest point of the easiest route to the target, with the molecule, as its rows arrived (kcal/mol, free energy). Lower is faster; under the "allowed" line the target forms.</span>`}</div>
+  </div>`;
+}
+
+// A finished test replayed by its rows' arrival times: a small bar under the candidate's name.
+function Replay({ d, at, setAt }) {
+  const [playing, setPlaying] = useState(false);
+  const total = d.duration_s;
+  const cur = at ?? total;
+  useEffect(() => {
+    if (!playing) return undefined;
+    if (cur >= total) { setPlaying(false); return undefined; }
+    if (at != null && d.replay?.t_s !== at) return undefined;      // (the next frame once this one is on the page)
+    const next = setTimeout(() => setAt(Math.min(total, cur + total / 24) >= total ? null : Math.min(total, cur + total / 24)), 1200);
+    return () => clearTimeout(next);
+  }, [playing, d.replay?.t_s, at]);
+  if (!total || d.status === 'running' && !d.replay) return null;
+  return html`<div class="am-replay" role="group" aria-label="Replay of the test">
+    <button class="btn small" title=${playing ? 'Pause' : 'Play the test again as its numbers arrived'} onClick=${() => { if (!playing && cur >= total) setAt(0); setPlaying(!playing); }}>${playing ? '❚❚' : '▶'} Replay</button>
+    <input type="range" min="0" max=${Math.ceil(total)} step=${Math.max(1, Math.round(total / 200))} value=${Math.round(cur)} aria-label="Time into the test"
+      onChange=${(e) => { setPlaying(false); setAt(+e.target.value >= Math.ceil(total) ? null : +e.target.value); }} />
+    <span class="mono small">${fmtTime(cur)}</span><span class="small muted">of ${fmtTime(total)}</span>
+    ${at != null && html`<button class="btn-link small" onClick=${() => { setPlaying(false); setAt(null); }}>as it ended</button>`}
   </div>`;
 }
 
@@ -436,16 +523,18 @@ function Answer({ d, q }) {
   const v = verdict(d, q), s = stateOf(d), t = d.target, peak = d.peak, p = d.progress || {};
   const fate = fateText(d), sp = t.spread, fo = d.first_order_detail;
   const open = [];
-  if (d.status === 'running' && p.stage) open.push(`the ${(STAGES.find(([k]) => k === p.stage.name) || [0, p.stage.name])[1].toLowerCase()} is still running`);
-  if (d.status === 'running' && !p.stage) open.push('the test is still running');
-  if (d.status === 'interrupted') open.push('the calculation stopped before it finished');
+  const live = (p.stages || []).map((l) => (STAGES.find(([k]) => k === l.name) || [0, l.name])[1].toLowerCase());
+  if (d.status === 'running' && live.length) open.push(`the ${live.join(' and the ')} ${live.length > 1 ? 'are' : 'is'} still running`);
+  if (d.status === 'running' && !live.length) open.push('the test is still running');
+  if (['interrupted', 'cut'].includes(d.status)) open.push(`the calculation was stopped before it finished${d.cut?.why ? ` (${d.cut.why})` : ''}`);
   if (p.summary?.est) open.push(`${p.summary.est} step${p.summary.est === 1 ? ' rests' : 's rest'} on a quick estimate only`);
   const left = (d.scan_left || []).reduce((a, x) => a + x.n, 0);
-  if (left) open.push(`${left} step${left === 1 ? ' was' : 's were'} wanted for a scan and not scanned`);
+  if (left) open.push(`${left} reaction${left === 1 ? ' was' : 's were'} not scanned for the molecule taking part`);
   else if (d.status !== 'running' && !(d.scans || []).length && (d.layers || []).some((l) => l.name === 'bystander')) open.push('no step was scanned for the molecule taking part');
   return html`<div class=${cls('am-answer', v.kind)}>
     <p class="am-verdict"><b>${v.text}</b> <${Tag} status=${s} /></p>
-    ${open.length > 0 && html`<p class="am-open"><b>Not a verdict yet:</b> ${open.join('; ')}.${left ? ' A step that was not scanned may still have a faster way through the molecule.' : ''}</p>`}
+    ${open.length > 0 && html`<p class="am-open"><b>${v.kind === 'pos' ? 'Not the whole picture yet:' : 'Not a verdict yet:'}</b> ${open.join('; ')}.${left ? ' A reaction that was not scanned may still have a faster way through the molecule.' : ''}</p>`}
+    <p class="am-scope small">This is what this network gives at ${d.level_words || 'its level of theory'}${d.solvent ? '' : ', in the gas phase'}: not a prediction of an experiment. A route the network does not hold (a species nobody explored, an intermediate the molecule forms) is not in it.</p>
     <dl class="am-facts">
       <dt>Easiest route to the target</dt><dd><span class="mono">${kcal(peak.parent)} → <b>${kcal(peak.with)}</b> kcal/mol</span> at its highest point <${Tag} status=${peak.with !== peak.parent ? s : 'verified'} />
         <span class="muted"> · ${kcal(q.limits.cutoff_kcal)} is what these conditions allow${d.route_peak_with_added === false && peak.with !== peak.parent ? ' · the route\'s highest step is not one with the molecule' : ''}</span></dd>
@@ -459,10 +548,11 @@ function Answer({ d, q }) {
       ${soonerText(d) && html`<dt>As much as today's half</dt><dd><span class="mono">${soonerText(d).main}</span> <span class="muted">(today: ${fmtTime(t.parent.time_to_fraction_s)})</span> <${Tag} status=${s} /></dd>`}
       <dt>The molecule itself<${Why} id="addmol.fate" label="Returned, used up or held" /></dt><dd><b>${fate.main}</b> <${Tag} status=${s} /> <span class="muted">${fate.sub}</span>
         <div class="small muted">${d.shares ? `At the end: free ${pct(d.shares.free)} · bound in complexes ${pct(d.shares.bound)} · in new species ${pct(d.shares.covalent)}. ` : ''}Turnovers per molecule in ${fmtTime(q.conditions.time_s)}: <span class="mono">${d.returns != null ? fmtC(d.returns) : '—'}</span>.</div></dd>
-      ${(left > 0 || (d.scans || []).length > 0) && html`<dt>Not scanned</dt><dd>${left ? html`<b>${left} step${left === 1 ? '' : 's'}</b> <span class="muted">wanted a scan for the molecule taking part and got none:</span>
-          <ul class="am-left">${(d.scan_left || []).map((x) => html`<li title=${x.labels.map((l) => stepLabel(l)).join('\n') + (x.n > x.labels.length ? `\n… ${x.n - x.labels.length} more` : '')}><span class="mono">${x.n}</span> ${x.why.replace(/; beyond --scan$/, '')}<span class="muted">${/beyond --scan$/.test(x.why) ? ' (more scans than were asked for)' : ''}</span></li>`)}</ul>`
-          : html`<span class="muted">Every step that was wanted for a scan was scanned.</span>`}
-        ${d.not_scanned && html`<div class="small muted">${d.not_scanned}.</div>`}</dd>`}
+      ${(left > 0 || (d.scans || []).length > 0) && html`<dt>Not scanned</dt><dd>${left ? html`<b>${left}${d.scan_reactions ? ` of ${d.scan_reactions}` : ''} reaction${left === 1 ? '' : 's'}</b> <span class="muted">got no scan for the molecule taking part:</span>
+          <ul class="am-left">${(d.scan_left || []).map((x) => html`<li title=${x.labels.map((l) => stepLabel(l)).join('\n') + (x.n > x.labels.length ? `\n… ${x.n - x.labels.length} more` : '')}><span class="mono">${x.n}</span> ${x.why}</li>`)}</ul>`
+          : d.status === 'running' ? html`<span class="muted">The scans are still running (${d.scans.length} started${d.scan_reactions ? ` of ${d.scan_reactions} reactions` : ''}): what is left unscanned is known when they end.</span>`
+            : html`<span class="muted">Every reaction that was wanted for a scan was scanned.</span>`}
+        ${d.not_scanned && !left && html`<div class="small muted">${d.not_scanned}.</div>`}</dd>`}
     </dl>
   </div>`;
 }
@@ -471,24 +561,26 @@ function Answer({ d, q }) {
 function Scans({ d }) {
   if (!(d.scans || []).length) return null;
   const word = { queued: 'queued', mapping: 'mapping atoms', searching: 'searching', done: 'done', failed: 'failed' };
-  return html`<div class="section-title">Scans for the molecule taking part (${d.scans.filter((x) => x.status === 'done').length} of ${d.scans.length})<${Why} id="addmol.scan" label="The scan" /></div>
+  const lanes = new Set(d.scans.map((x) => x.lane).filter((x) => x != null)).size > 1;
+  return html`<div class="section-title">Scans for the molecule taking part (${d.scans.filter((x) => x.status === 'done').length} of ${d.scans.length} started${d.scan_reactions ? `; the network has ${d.scan_reactions} reactions` : ''})<${Why} id="addmol.scan" label="The scan" /></div>
     <div class="rx-table-wrap"><table class="rx-table am-scans">
-      <thead><tr><th>Scanned</th><th>State</th><th title="Path searches finished, of those set up">searches</th>
+      <thead><tr><th title="One scan per reaction: it stands for every step of the network between the same molecules">Reaction scanned</th>${lanes ? html`<th title="Scans run side by side: which of the lanes this one ran in">lane</th>` : ''}<th>State</th><th title="Path searches finished, of those set up">searches</th>
         <th title="Verified transition states in which the molecule takes part">found</th><th title="The lowest of them, above the separated reactants and the molecule (kcal/mol, free energy)">lowest</th>
         <th title="Verified transition states that join other species than the step's two ends">elsewhere</th><th>time</th></tr></thead>
       <tbody>${d.scans.map((x) => {
         const live = ['mapping', 'searching'].includes(x.status) && d.status === 'running';
         const cut = ['mapping', 'searching', 'queued'].includes(x.status) && d.status !== 'running';
         return html`<tr key=${x.steps.join()}>
-          <td class="am-step" title=${`${x.labels.map((l) => stepLabel(l)).join('\n')}\nWhy this one: ${x.why || '—'}`}>${stepLabel(x.labels[0] || '')}${x.steps[0]?.endsWith('~mirror') ? ' (mirror image)' : ''}${x.labels.length > 1 ? html` <span class="muted">+ ${x.labels.length - 1} more of the same reaction</span>` : ''}</td>
-          <td class=${cls('small', cut && 'am-warn')}>${live ? html`<span class="spinner" aria-hidden="true"></span>` : ''}${cut ? `cut short while ${word[x.status] || x.status}` : word[x.status] || x.status}</td>
+          <td class="am-step" title=${`${x.labels.map((l) => stepLabel(l)).join('\n')}\nWhy this one: ${x.why || '—'}`}>${stepLabel(x.labels[0] || '')}${x.steps[0]?.endsWith('~mirror') ? ' (mirror image)' : ''}${x.labels.length > 1 ? html` <span class="muted">· ${x.labels.length} steps</span>` : ''}</td>
+          ${lanes ? html`<td class="mono small">${x.lane != null ? x.lane + 1 : '—'}</td>` : ''}
+          <td class=${cls('small', cut && 'am-warn')} title=${x.why_failed || ''}>${live ? html`<span class="spinner" aria-hidden="true"></span>` : ''}${cut ? `cut short while ${word[x.status] || x.status}` : word[x.status] || x.status}</td>
           <td class="mono">${x.searches ? `${x.searches.searched ?? 0}/${x.searches.total ?? '?'}` : '—'}</td>
           <td class="mono">${x.with_molecule ?? '—'}</td>
           <td class="mono">${x.lowest?.with_molecule != null ? html`${kcal(x.lowest.with_molecule)} <${Tag} status="verified" />` : '—'}</td>
           <td class="mono">${x.elsewhere ?? '—'}</td>
           <td class="mono small">${x.wall_s != null ? fmtTime(x.wall_s) : '—'}</td></tr>`;
       })}</tbody></table></div>
-    ${d.scan_rule && html`<p class="small muted">Scanned in this order: ${d.scan_rule}.</p>`}`;
+    ${d.scan_rule && html`<details class="small"><summary>How the order of the scans is chosen</summary><p class="small muted">${d.scan_rule}.</p></details>`}`;
 }
 
 function Detail({ q, file, tick, onGone }) {
@@ -496,13 +588,17 @@ function Detail({ q, file, tick, onGone }) {
   const [view, setView] = useState(null);
   const [order, setOrder] = useState(null);     // 'work' | 'change'; null: by whether the test still runs
   const [all, setAll] = useState(false);
+  const [at, setAt] = useState(null);           // seconds into the test (a replay); null: the file as it is
+  const [busy, setBusy] = useState(false);
   const seen = useRef({ rows: null, at: {} });
-  useEffect(() => { setD(null); setView(null); seen.current = { rows: null, at: {} }; }, [file]);
+  useEffect(() => { setD(null); setView(null); setAt(null); seen.current = { rows: null, at: {} }; }, [file]);
   useEffect(() => {
     let alive = true;
-    api.get(`/api/addmol/${q.id}/results/${encodeURIComponent(file)}`).then((out) => { if (alive) setD(out); }).catch(() => {});
+    setBusy(at != null);
+    api.get(`/api/addmol/${q.id}/results/${encodeURIComponent(file)}${at != null ? `?t=${at}` : ''}`)
+      .then((out) => { if (alive) { setD(out); setBusy(false); } }).catch(() => { if (alive) setBusy(false); });
     return () => { alive = false; };
-  }, [q.id, file, tick]);
+  }, [q.id, file, at, at == null ? tick : 0]);
   if (!d) return html`<section class="am-card"><p class="small muted">Reading the result…</p></section>`;
   const name = d.name;
   const variant = (q.results.find((r) => r.file === file) || {}).variant;
@@ -539,14 +635,19 @@ function Detail({ q, file, tick, onGone }) {
   const held = d.new_species.filter((x) => x.max > 1e-9);
   const why = {};
   d.failed.forEach((f) => { (why[f.why || f.status || 'failed'] ||= []).push(f.label || f.layer); });
-  // Rows that appeared or were replaced since the last poll are lit for two polls; nothing is lit on first sight.
+  // Rows that appeared or were replaced since the last look (a poll, or a step of the replay) are lit;
+  // nothing is lit on first sight.
   const now = Object.fromEntries(d.through_steps.map((x) => [x.step, `${x.through}:${x.after.toFixed(1)}`]));
-  if (seen.current.rows) for (const [k, v] of Object.entries(now)) if (seen.current.rows[k] !== v) seen.current.at[k] = tick;
-  seen.current.rows = now;
-  const fresh = new Set(Object.entries(seen.current.at).filter(([, at]) => tick - at <= 1).map(([k]) => k));
+  const stamp = d.replay ? `r${d.replay.t_s}` : `p${tick}`;
+  if (seen.current.stamp !== stamp) {
+    seen.current.fresh = new Set(seen.current.rows ? Object.keys(now).filter((k) => seen.current.rows[k] !== now[k]) : []);
+    seen.current.rows = now; seen.current.stamp = stamp;
+  }
+  const fresh = seen.current.fresh || new Set();
+  const playing = !!d.replay && !d.replay.over;
   // While a test runs the rows keep one order (the order of work, then by step), so a row that is replaced
   // stays where it is; once it is over they are read by the size of the change.
-  const mode = order || (d.status === 'running' ? 'work' : 'change');
+  const mode = order || (d.status === 'running' || playing ? 'work' : 'change');
   const sorted = [...d.through_steps].sort(mode === 'work'
     ? (a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || (a.step < b.step ? -1 : 1)
     : (a, b) => a.change - b.change || (a.step < b.step ? -1 : 1));
@@ -557,10 +658,17 @@ function Detail({ q, file, tick, onGone }) {
   const shown = all ? sorted : main;
   const nEst = d.through_steps.filter((x) => x.kind === 'estimate').length;
   return html`<section class="am-card">${head}
-    ${d.status === 'running' && html`<p class="level-note small">Still running: what follows is from the numbers that are in, and changes as more arrive.</p>`}
+    <${Replay} d=${d} at=${at} setAt=${setAt} />
+    ${d.replay && !d.replay.over && html`<p class="level-note small">${busy ? html`<span class="spinner" aria-hidden="true"></span>` : ''}A replay: the page as it stood <b>${fmtTime(d.replay.t_s)}</b> into the test, from the rows that had arrived by then and the kinetics run again on them.
+      A row that a lower one later replaced, and the estimate of a step that was later verified, are not in the final file and so not in the replay.</p>`}
+    ${d.status === 'running' && !d.replay && html`<p class="level-note small">Still running: what follows is from the numbers that are in, and changes as more arrive.</p>`}
+    ${d.status === 'cut' && html`<p class="warn-box small">Cut short${d.cut?.t_s != null ? ` ${fmtTime(d.cut.t_s)} into the test` : ''}${d.cut?.why ? `: ${d.cut.why}` : ''}. What follows is from the numbers that had arrived.</p>`}
     ${d.status === 'interrupted' && html`<p class="warn-box small">Its calculation stopped before the last stage finished: what follows is from the numbers that were in.</p>`}
     ${d.status === 'failed' && html`<p class="warn-box small">A stage failed: ${d.failed.filter((f) => !f.step).map((f) => f.why).join(' ')} What follows is from the stages that ran.</p>`}
     <${Answer} d=${d} q=${q} />
+    ${d.route_peak?.with?.length > 0 && html`<div class="section-title">The route's highest point as the test went</div>
+      <${RoutePeak} peak=${d.route_peak} cutoff=${q.limits.cutoff_kcal} end=${d.duration_s} now=${d.replay && !d.replay.over ? d.replay.t_s : null}
+        onPick=${d.duration_s && (d.status !== 'running' || d.replay) ? (t) => setAt(Math.round(t)) : null} />`}
     <${Stages} d=${d} />
 
     <div class="section-title">Steps that go through ${name} (${d.through_steps.length})<${Why} id="addmol.steps" label="Barrier before and after" /></div>
@@ -571,9 +679,9 @@ function Detail({ q, file, tick, onGone }) {
           <button class=${mode === 'change' ? 'on' : ''} title="The largest lowering first" onClick=${() => setOrder('change')}>largest change</button></div>
         ${main.length > 0 && main.length < sorted.length && html`<button class="btn-link small" onClick=${() => setAll(!all)}>${all ? (limiting.length ? `only the ${main.length} that limit the target` : 'the first 12') : `all ${sorted.length}`}</button>`}
         <span class="small muted">${all ? 'every step' : limiting.length ? 'the steps that limit the target' : 'the first 12'}${nEst ? ` · ${nEst} of ${d.through_steps.length} are quick estimates` : ''}</span></div>
-      <p class="small muted am-key"><i class="am-db-dot before"></i>without <i class="am-db-dot pos"></i>with, verified <i class="am-db-dot pos est"></i>with, a quick estimate <i class="am-db-spread"></i>its uncertainty
+      <p class="small muted am-key"><i class="am-db-dot before"></i>without <i class="am-db-dot pos"></i>with, verified <i class="am-db-dot pos est"></i>with, a quick estimate <i class="am-db-spread"></i><span title=${uncWords(d.uncertainty)}>its uncertainty</span>
         <i class="am-limit"></i>limits the target · blue lower, red higher · apparent barriers, ${q.energies === 'free' ? 'free energy' : 'electronic'}</p>
-      <${StepRows} rows=${shown} through fresh=${fresh} onView=${(x) => setView(view?.step === x.step ? null : x)} viewing=${view?.step} />
+      <${StepRows} rows=${shown} through fresh=${fresh} unc=${d.uncertainty} onView=${(x) => setView(view?.step === x.step ? null : x)} viewing=${view?.step} />
       ${view && html`<${StepViewer} qid=${q.id} file=${file} step=${d.through_steps.find((x) => x.step === view.step) || view} onClose=${() => setView(null)} />`}`
       : html`<p class="small muted">${d.used.est + d.used.verified ? `None: every step of the network is still fastest without ${name}.` : 'No stage has given a number for a step yet.'}</p>`}
     ${d.moved_steps.length > 0 && html`<details class="small"><summary>${d.moved_steps.length} step${d.moved_steps.length > 1 ? 's' : ''} moved only because amounts moved</summary>
@@ -596,6 +704,14 @@ function Detail({ q, file, tick, onGone }) {
         <td class="mono">${fmtC(x.max)} <${Tag} status=${x.status} /></td><td class="mono">${fmtC(x.final)}</td></tr>`)}</tbody></table>`}
     ${quiet > 0 && html`<p class="small muted">${quiet} ${held.length ? 'other ' : ''}complex${quiet === 1 ? '' : 'es'} or new species hold${quiet === 1 ? 's' : ''} next to nothing (under 1e-9 M).</p>`}
 
+    ${(d.elsewhere || []).length > 0 && html`<details class="small am-elsewhere"><summary>${d.elsewhere.length} step${d.elsewhere.length === 1 ? '' : 's'} led to other species when verified with ${name}</summary>
+      <p class="small muted">The transition state optimized with the molecule present did not join the step's own two ends. Where each of its poses led instead (the two ends of its IRC); the step keeps its estimate.</p>
+      <table class="rx-table"><thead><tr><th>Step of the network</th><th>pose</th><th>its transition state joins</th></tr></thead>
+        <tbody>${d.elsewhere.flatMap((x) => (x.poses.length ? x.poses : [{ pose: '—', ends: [] }]).map((p, k) => html`<tr>
+          ${k === 0 ? html`<td class="rx-eq" rowspan=${Math.max(1, x.poses.length)}>${stepLabel(x.label)}${x.t_s != null ? html`<div class="small muted">${fmtTime(x.t_s)} into the test</div>` : ''}</td>` : ''}
+          <td class="mono">${p.pose}</td>
+          <td class="rx-eq">${p.ends.length === 2 ? html`${p.ends[0].join(' + ')} <span class="muted">⇌</span> ${p.ends[1].join(' + ')}${
+            p.ends[0].slice().sort().join() === p.ends[1].slice().sort().join() ? html` <span class="am-flag" title="Both ends of the IRC are the same species: the molecules only moved against each other">the same species both ways</span>` : ''}` : html`<span class="muted">not recorded</span>`}</td></tr>`))}</tbody></table></details>`}
     ${d.failed.length > 0 && html`<details class="small" open=${d.failed.length < 4}><summary>${d.failed.length} calculation${d.failed.length === 1 ? '' : 's'} gave no number</summary>
       <ul class="am-failed">${Object.entries(why).map(([w, labels]) => html`<li>${w}${labels.filter(Boolean).length ? html` <span class="muted">(${labels.filter(Boolean).slice(0, 4).map((l) => stepLabel(l)).join('; ')}${labels.length > 4 ? `; ${labels.length - 4} more` : ''})</span>` : ''}</li>`)}</ul></details>`}
     ${(d.notes || []).map((w) => html`<p class="small muted">⚠ ${w}</p>`)}
@@ -607,12 +723,14 @@ function Detail({ q, file, tick, onGone }) {
 function CompareSteps({ rows }) {
   const steps = {};
   rows.forEach((r) => (r.steps || []).forEach((s) => { (steps[s.step] ||= { ...s, by: {} }).by[r.file] = s; }));
-  const list = Object.values(steps).sort((a, b) => Math.min(...Object.values(a.by).map((x) => x.change)) - Math.min(...Object.values(b.by).map((x) => x.change))).slice(0, 12);
+  // The steps that limit the target first (a far-off step can change by more and matter less), then the largest lowering.
+  const low = (x) => Math.min(...Object.values(x.by).map((y) => y.change));
+  const list = Object.values(steps).sort((a, b) => (b.limits ? 1 : 0) - (a.limits ? 1 : 0) || low(a) - low(b)).slice(0, 12);
   const max = Math.max(1, ...list.flatMap((s) => Object.values(s.by).map((x) => Math.abs(x.change))));
   if (!list.length) return html`<p class="small muted">No step goes through any of these candidates.</p>`;
   return html`<div class="rx-table-wrap"><table class="rx-table am-compare">
     <thead><tr><th>Step · change of its barrier (kcal/mol)</th>${rows.map((r) => html`<th title=${r.name}>${r.name}</th>`)}</tr></thead>
-    <tbody>${list.map((s) => html`<tr><td class="rx-eq">${stepLabel(s.label, s.direction)}</td>
+    <tbody>${list.map((s) => html`<tr><td class="rx-eq">${s.limits ? html`<i class="am-limit" title="One of the steps that limit the target"></i>` : ''}${stepLabel(s.label, s.direction)}</td>
       ${rows.map((r) => {
         const x = s.by[r.file];
         if (!x) return html`<td class="muted am-heat" title="Its fastest version does not go through this candidate">—</td>`;

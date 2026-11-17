@@ -79,7 +79,6 @@
 .am-stage.running { border-color: var(--accent); }
 .am-stage.off { opacity: .55; }
 .am-stage-head { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-sm); }
-.am-stage-n { color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
 .am-stage-status { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .am-stage.running .am-stage-status { color: var(--accent); } .am-stage.done .am-stage-status { color: var(--ok); } .am-stage.cut .am-stage-status { color: var(--warn); }
 .am-stage-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 6px 0 5px; overflow: hidden; }
@@ -88,6 +87,24 @@
 .am-stage-foot { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .am-sum { margin: 0 0 4px; }
 .am-steps-bar { margin: 2px 0 6px; gap: 12px; }
+
+.am-scope { margin: 0 0 6px; color: var(--muted); }
+.am-stage-bar.open i { width: 35% !important; background: var(--accent); opacity: .5; }
+/* the route peak over the time of the test: one series (accent), two reference lines, a replay marker */
+.am-peak { max-width: 760px; margin: 2px 0 10px; }
+.am-peak svg { width: 100%; height: auto; display: block; }
+.am-peak-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.am-peak-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.am-peak-ref { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 4; }
+.am-peak-cut { stroke: var(--heading); stroke-width: 1.5; }
+.am-peak-now { stroke: var(--route); stroke-width: 1.5; }
+.am-peak-lab { font: 11px var(--font-ui); fill: var(--muted); }
+.am-peak-lab.strong { fill: var(--text); font-weight: 600; }
+.am-peak-tip { min-height: 34px; }
+/* replay of a finished test */
+.am-replay { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 2px; }
+.am-replay input[type=range] { flex: 1; min-width: 140px; max-width: 420px; accent-color: var(--accent); }
+.am-elsewhere table { margin: 4px 0 10px; }
 
 /* a step's barrier without and with the molecule on one axis */
 .am-steps { table-layout: fixed; }

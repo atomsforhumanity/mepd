@@ -2701,10 +2701,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return {"job": job["id"], "candidates": len(cands)}
 
     @app.get("/api/addmol/{qid}/results/{name}")
-    def addmol_detail(qid: str, name: str):
+    async def addmol_detail(qid: str, name: str, t: Optional[float] = None):
+        """One candidate's result; `t` (seconds into its test): as it stood then (a replay of a finished test)."""
         from mepd.web import addpage
 
-        return addpage.detail(J(), qid, name)
+        return await run_in_threadpool(addpage.detail, J(), qid, name, t)
 
     @app.delete("/api/addmol/{qid}/results/{name}")
     def addmol_remove(qid: str, name: str):
