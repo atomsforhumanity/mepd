@@ -30,6 +30,16 @@ target would gain) and side by side, each streamed into the result file:
 3. **the relay scan** (`--scan N`): `mepd channels` on the parent's reactions that are worth it, for transition
    states with the molecule taking part; it ends when no reaction is left that could matter.
 
+**Level and standard state.** Every free energy the tool adds (the placer's binding, a TS row, the added
+molecule's lowest form) is at the query's standard state (`reference.standard_state`; 1 M for a workspace). Where a
+parent step carries the steering level's shift (its `level` ends in `+steer`), every row with the molecule beside
+that step (quick estimate, verification, scan) gets the same single points when `--steer PROFILE` is given (the run's
+steering profile): its barrier moves by the TS's shift less the molecule's and less its reference's (the starting
+box, or each parent molecule minimized alone: `reference_basis`), and its level says `+steer` (`steer` holds the
+numbers). A row there that is not steered (no profile, a failed single point) says why under `steer`, and the
+kinetics leave it out: it is not compared with the steered parent step (`readout.notes` counts them).
+`summary.rows_by_reference` counts the verified rows by reference.
+
 Each parent step's row in `readout.steps` compares the reaction, not the step: the parent steps of one net
 reaction (a row found by a scan stands for all of them, `parent_steps`) are read from the reaction's own lowest
 parent TS (`before`; `before_this_step` and `reaction_steps` where there are several), so a shuttle step with a
@@ -338,7 +348,8 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
   cores with `taskset` (`--workers` does not bound a channels run), and the estimates and the verification on
   the last quarter (32 threads: 8, 8, 8 and 8; `scan.cores`). When the scans end, every core goes to the
   estimates and the verification. On 4 to 7 cores: one scan on half of them; on fewer, one scan on one core.
-  **Pin the command itself** on a shared machine: the lanes divide the cores it may use.
+  **Pin the command itself** on a shared machine: the lanes divide the cores it may use. Under a CPU quota smaller
+  than the command's CPU mask (a container on a shared node) the lanes are not pinned (`scan.cores.pinned`).
 - **What a scan is.** `mepd channels` between the reaction's two ends with the molecule beside each: the ends of
   the reaction's lowest parent step (its TS's IRC ends), the unchanged molecules removed, the molecule placed by
   the bystander layer's placer (nothing is placed by hand), with

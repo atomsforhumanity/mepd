@@ -209,6 +209,9 @@ again at the end adds `[catalytic: <formula>]`.
   SLAPMapper's mappings only, so every conformer pair gets the same answer;
   it is computed once per process. On acetone → enol beside acetaldehyde and
   L-proline (34 atoms, 512 pairs) it was 1.2 s of each pair's 1.8 s.
+- **With `--explore-molecule` only** (an added molecule's scan, `mepd addmol test`), the two prunings below,
+  the queue order of steps 8-9, the shared lanes and `searches.json` apply; without it (`mepd discovery
+  expand`, a plain `mepd channels`) mechanisms are listed and queued as before them (by name).
 - **SLAPMapper's own mechanism is not listed again.** A mapping that is one
   of SLAPMapper's with the reactant's atoms renamed by a symmetry of its bond
   graph (the other methyl of an acetone) is the same mechanism and is left
@@ -312,13 +315,14 @@ paths*) when a missed channel would matter.
 ## 8–9. Path search, TS optimization, classification
 
 - One MSMEP per selected (pair, mechanism), run `--workers` at a time.
-- **Order.** The searches are queued mechanism by mechanism in the order of
-  step 6: SLAPMapper's own mechanisms, then the explored ones as ranked;
+- **Order.** With `--explore-molecule`, the searches are queued mechanism by mechanism in the order of
+  step 6: SLAPMapper's own mechanisms, then the explored ones as ranked (without it, by mechanism name);
   within a mechanism, its best-scoring pairs first. The order decides what
   is searched first (and what a `--search-budget` leaves out), never whether
   a mechanism is searched.
-- **`searches.json`** is rewritten whenever a search or a TS's IRC finishes,
-  so a reader can poll it and a stopped run leaves it:
+- **`searches.json`** (with `--explore-molecule`) is rewritten whenever a search or a TS's IRC finishes,
+  so a reader can poll it and a stopped run leaves it; a search's tree and a TS's IRC are read once their
+  process has finished (never half-written), and a write that fails never stops the run:
   - `start_molecules`: the molecules of the start, each with its atom indices
     and SMILES (from the bond graph, no stereochemistry);
   - `searches`: every path search in queue order with its `pair` folder, the

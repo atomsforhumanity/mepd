@@ -1,7 +1,8 @@
 #!/bin/bash
 # Formic acid with water added (team41 core round 5): the landed explorer run of HCOOH as the parent, two
 # targets (CO2 + H2, decarboxylation; CO + H2O, dehydration), water and methane (control) as candidates.
-#   hcooh_water.sh copy SRC_RUN DST_DIR | query RUN TARGET QUERY WORKERS | test QUERY OUT WORKERS
+#   hcooh_water.sh copy SRC_RUN DST_DIR | query RUN TARGET QUERY WORKERS | test QUERY OUT WORKERS [STEER_PROFILE]
+# (STEER_PROFILE: the run's steering profile; rows beside its steered steps then get the same single points)
 # Conditions fixed here for both targets: 700 K, 1 h, formic acid 1 M; each candidate at 1 M.
 set -e
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
@@ -14,5 +15,5 @@ case $what in
            --inputs "$here/../../hcooh_profile.toml" --workers "$4" -o "$3" ;;
   test) python -m mepd.cli addmol test "$1" -c O -c C --amount 1.0 --scan 25 \
           --scan-inputs "$here/../../hcooh_profile.toml" --inputs "$here/../../hcooh_profile.toml" \
-          --workers "$3" -o "$2" ;;
+          --workers "$3" ${4:+--steer "$4"} -o "$2" ;;
 esac
