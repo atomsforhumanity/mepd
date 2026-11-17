@@ -170,7 +170,9 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
    *Settled after* its time (and that rows still to come may move the peak); `scan.side_reactions.listed` is a folded
    list under it, scanned only with the form's *also scan side reactions* (`scan_side_reactions` → `--scan-side-reactions`);
    *Scans* is an upper bound (`--scan`, default 25). Rows releasing a species flagged `g_fixed_only_together` are
-   marked *shared G*; a scan's takes-part rows that all lie above its beside row are said so. A verified TS is shown from its `ts_file` / `irc_file`
+   marked *shared G* (the query's `fixed_only_together`); a scan's takes-part rows that all lie above its beside row are said
+   so. Rows on the steering level carry *+steer*; rows left out because they could not be steered are counted. A step read
+   as one reaction with others (`reaction_steps`) is marked *·N*. A verified TS is shown from its `ts_file` / `irc_file`
    (relative to the result file, or taken out of `files.tgz` beside it); where they are gone the page says so. The
    route peak's history (`route_peak`) is drawn as a step curve. A finished test is replayed by its rows' `t_s`:
    `GET …/results/{file}?t=<seconds>` is the result as it stood then (`addpage.replay`: the rows in by then, the

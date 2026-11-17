@@ -226,6 +226,8 @@ def summary(q: dict, edges: Optional[dict] = None, names: Optional[dict] = None)
             "conditions": {**cond, "initial": [{"id": k, "name": names.get(k, k), "amount": v}
                                                for k, v in cond["initial"].items()]},
             "energies": q.get("energies"), "level": (q.get("level") or {}).get("key"),
+            "level_label": (q.get("level") or {}).get("label"),
+            "standard_state": (q.get("reference") or {}).get("standard_state") or "1M",
             "limits": _limits(q, edges or {}, names), "notes": q.get("notes") or [], "left_out": q.get("left_out"),
             "source": q.get("source") or "workspace", "asked": q.get("asked"),
             "counts": {"species": len(q["species"]), "steps": len(q["steps"]),
@@ -610,8 +612,8 @@ def line(doc: dict, order=()) -> dict:
                       for s in sorted(through, key=lambda s: (s["step"] not in set(order), s["change"]))[:6]],
             "best": best and {**{k: best.get(k) for k in ("step", "label", "direction", "before", "after", "change",
                                                           "status", "spread")}, "limits": bool(limiting),
-                              # (its number is a scan's of the whole reaction, found from another of its steps)
-                              "via_reaction": (best.get("through") or "").split("|")[0] not in ("", best["step"])},
+                              # (read as one reaction with its other parent steps: `before` is the reaction's lowest)
+                              "reaction_steps": len(best.get("reaction_steps") or []) or None},
             "raised": worst and worst["change"] > MOVED and {k: worst.get(k) for k in ("step", "label", "change", "status")}}
 
 
@@ -719,7 +721,7 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
     names_ = _names(q, ws)
     # Species whose free energy the parent's fit fixes only together with others: a step that makes or uses one
     # (its net amount changes) rests on a share of a sum, not on a free energy of its own.
-    together = {sp["id"] for sp in q["species"] if sp.get("g_fixed_only_together")}
+    together = set(q.get("fixed_only_together") or ()) | {sp["id"] for sp in q["species"] if sp.get("g_fixed_only_together")}
 
     def alone(step: dict) -> list:
         c = {}
@@ -737,10 +739,10 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
         files = None
         if e.get("ts_file"):
             files = "there" if _file(fp, e["ts_file"], look=True) else "gone"
-        via = (s.get("through") or "").split("|")[0]
-        return {**s, "fixed_together": alone(st), "via_step": via if e.get("layer") == "relay" and via and via != s["step"] else None,
-                "via_label": labels.get(via) if e.get("layer") == "relay" and via != s["step"] else None,
-                "layer": e.get("layer"), "level": level_labels.get(e.get("level"), e.get("level")),
+        steer = e.get("steer") or {}
+        return {**s, "fixed_together": alone(st), "layer": e.get("layer"),
+                "steered": bool((e.get("level") or "").endswith("+steer") or "+steer " in (e.get("level") or "")),
+                "steer_shift": steer.get("shift_kcal"), "level": level_labels.get(e.get("level"), e.get("level")),
                 "source": e.get("source"), "kind": kind, "poses_verified": e.get("poses_verified"),
                 "returned": e.get("returned"), "t_s": e.get("t_s"), "rank": rank.get(s["step"]),
                 "via": e.get("label") if e.get("id") and e.get("layer") not in ("verify", "relay") else None,
@@ -783,6 +785,13 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
         grouped.setdefault(x.get("why") or "not scanned", []).append(labels.get(x.get("step"), x.get("reaction") or x.get("step")))
     out["scan_left"] = [{"why": why, "n": len(names), "labels": names[:6]} for why, names in grouped.items()]
     out["fixed_together_note"] = next((n for n in q.get("notes") or [] if "g_fixed_only_together" in n), None)
+    # Rows the kinetics left out because their parent step is steered and they could not be (readout.notes says so).
+    est_all = (doc.get("estimates") or {})
+    out["not_steered"] = [{"id": e.get("id") or e.get("step"), "label": labels.get(e.get("parent_step") or e.get("step")),
+                           "why": (e.get("steer") or {}).get("not_steered")}
+                          for e in (est_all.get("new_steps") or []) + (est_all.get("steps") or [])
+                          if "not_steered" in (e.get("steer") or {})]
+    out["rows_by_reference"] = (doc.get("summary") or {}).get("rows_by_reference")
     out["scan_rule"], out["not_scanned"] = scan.get("rule"), scan.get("not_scanned")
     out["scan_reactions"] = scan.get("reactions")
     names = names_

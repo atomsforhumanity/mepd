@@ -586,3 +586,26 @@ def test_each_result_may_bring_its_own_archive(mgr, tmp_path):
         tar.add(tmp_path / "ts.xyz", arcname="./own/ts.xyz")
         tar.add(tmp_path / "irc.xyz", arcname="./own/irc.xyz")
     assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["with_molecule"]
+
+
+
+def test_steered_rows_reactions_read_as_one_and_the_flag_list(mgr, tmp_path):
+    """(core round 5-6: `fixed_only_together` on the query, `reaction_steps` on read-out rows, `+steer` levels)"""
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    qf = addpage.folder(mgr.ws, qid) / "query.json"
+    qq = json.loads(qf.read_text())
+    qq["fixed_only_together"] = [st["products"][0]]
+    qq["reference"] = {"standard_state": "1atm"}
+    qf.write_text(json.dumps(qq))
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    rows = doc["estimates"]["new_steps"]
+    rows[1].update(level="lvl+steer", steer={"shift_kcal": -1.5})
+    rows.append({**rows[0], "id": "x|left", "steer": {"not_steered": "no single point for the complex"}})
+    fp.write_text(json.dumps(doc))
+    d = addpage.detail(mgr, qid, file)
+    (row,) = d["through_steps"]
+    assert row["steered"] and row["steer_shift"] == -1.5 and row["fixed_together"]
+    assert d["not_steered"] == [{"id": "x|left", "label": st["label"], "why": "no single point for the complex"}]
+    assert addpage.view(mgr, qid)["standard_state"] == "1atm"

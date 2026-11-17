@@ -185,7 +185,7 @@ function Limits({ q }) {
   const name = t.names.length > 1 ? `${t.names[0]} and its ${t.names.length - 1 === 1 ? 'stereoisomer' : `${t.names.length - 1} stereoisomers`}` : t.names[0];
   const total = c.initial.reduce((a, m) => a + m.amount, 0);
   const openStep = (r) => { if (r.edge) openReaction(r.edge); };
-  const energy = `${q.source === 'explorer run' ? 'The exploration\'s own network' : 'The workspace\'s network'}: ${q.counts.steps} verified steps, ${q.energies === 'free' ? 'free energies at 1 M' : 'electronic energies'}`;
+  const energy = `${q.source === 'explorer run' ? 'The exploration\'s own network' : 'The workspace\'s network'}: ${q.counts.steps} verified steps, ${q.energies === 'free' ? `free energies at ${(q.standard_state || '1M').replace(/^(\d+(?:\.\d+)?)(\D)/, '$1 $2')}` : 'electronic energies'}${q.level_label ? `, ${q.level_label}` : ''}`;
   const head = html`<p class="am-lede"><b>${name}</b>: ${t.resolved
     ? html`<span class="mono">${fmtC(t.final)} M</span> today (${fmtC((100 * t.final) / total)}% of the start), half of it after ${t.time_to_fraction_s != null ? fmtTime(t.time_to_fraction_s) : '—'}`
     : html`<b>none forms today</b> <span class="muted">(${fmtC(t.final)} M: below what the kinetics resolve)</span>`}
@@ -306,7 +306,7 @@ function Table({ q, rows, sel, onPick, picked, onToggle }) {
             <span class=${cls('am-main mono', within ? 'am-weak' : b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
             <span class="mono small"> ${b.spread != null ? `± ${b.spread.toFixed(1)}` : '± ?'}</span>
             <div class="small muted"><${Tag} status=${b.status} />${within ? html` <span class="am-flag">within spread</span>` : ''}${b.limits ? '' : html` <span class="am-flag" title="No step that limits the target goes through it">off-route</span>`}${
-              b.via_reaction ? html` <span class="am-flag" title="Its number is the scan's of the whole reaction, found from another of its steps: a step that carries a molecule along gets the reaction's lower one, which is no effect of the added molecule">·r</span>` : ''}</div></td>`
+              b.reaction_steps ? html` <span class="am-flag" title=${`Read as one reaction with its other ${b.reaction_steps - 1} parent step${b.reaction_steps === 2 ? '' : 's'}: the change is from the reaction's lowest transition state without the molecule`}>${b.reaction_steps} steps</span>` : ''}</div></td>`
             : html`<td class="muted small">none through it</td>`}`
           : html`<td colspan="5" class=${cls('small', r.status === 'failed' || r.why ? 'am-warn' : 'muted')} title=${none}><div class="am-two">${none}</div></td>`}
       </tr>`;
@@ -360,7 +360,7 @@ function StepRows({ rows, onView, viewing, through, fresh, unc }) {
       const label = `${stepLabel(s.label, s.direction)}${s.step.endsWith('~mirror') ? ' (mirror image)' : ''}`;
       return html`<tr key=${s.step} class=${cls(viewing === s.step && 'on', est && 'am-est-row', fresh?.has(s.step) && 'am-fresh')}>
         <td class="am-step" title=${`${label}${s.via ? `\n${s.via}` : ''}${s.rank != null ? '\nOne of the steps that limit the target.' : ''}${
-          s.via_label ? `\nIts number is the scan's of the whole reaction, found from the step ${stepLabel(s.via_label)}: the lowest transition state between the same molecules.` : ''}${
+          s.reaction_steps?.length > 1 ? `\nRead as one reaction with ${s.reaction_steps.length} parent steps: "without" is the reaction's lowest transition state${s.before_this_step != null && Math.abs(s.before_this_step - s.before) > 0.05 ? ` (this step's own: ${kcal(s.before_this_step)} kcal/mol)` : ''}.` : ''}${
           s.fixed_together?.length ? `\n${s.fixed_together.join(', ')}: free energy fixed only together with other species (the boxes never show it alone), so this barrier is not reliable.` : ''}`}>${
           s.rank != null ? html`<i class="am-limit" aria-label="limits the target"></i>` : ''}${s.fixed_together?.length ? html`<span class="am-flag" aria-label="rests on a shared free energy">shared G</span> ` : ''}${label}</td>
         <td class="mono">${kcal(s.before)}</td>
@@ -371,7 +371,8 @@ function StepRows({ rows, onView, viewing, through, fresh, unc }) {
           title=${s.spread != null ? (est ? 'Spread over the estimate\'s repeats' : `Difference between the ${s.poses_verified || 2} verified poses`)
             : est ? `No spread of its own (one repeat). ${uncWords(unc)}` : 'One verified pose: no spread'}>${
           s.spread != null ? `± ${s.spread.toFixed(1)}` : est ? (mean != null ? `± ~${mean.toFixed(0)}` : '± ?') : ''}</span>` : ''}</td>
-        ${through && html`<td class="small" title=${`${what}${s.via_label ? ' From the scan of the whole reaction (another step between the same molecules).' : ''}${est ? ` ${uncWords(unc)}` : ''}${s.t_s != null ? `\nArrived ${fmtTime(s.t_s)} into the test.` : ''}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}${s.via_label ? ' ·r' : ''}</span></td>
+        ${through && html`<td class="small" title=${`${what}${s.steered ? ` On the steering level by single points${s.steer_shift != null ? ` (shift ${kcal(s.steer_shift, true)} kcal/mol)` : ''}.` : ''}${est ? ` ${uncWords(unc)}` : ''}${s.t_s != null ? `\nArrived ${fmtTime(s.t_s)} into the test.` : ''}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}</span>${s.steered ? html` <span class="am-flag am-steer" title="On the steering level: the row has the steering level's single points, as its parent step">+steer</span>` : ''}${
+          s.reaction_steps?.length > 1 ? html` <span class="muted small" title="Read as one reaction with its other parent steps">·${s.reaction_steps.length}</span>` : ''}</td>
           <td>${(s.geometry || s.with_geometry) && html`<button class="btn small ghost" title="Its transition state in 3D" onClick=${() => onView(s)}>3D</button>`}</td>`}
       </tr>`;
     })}</tbody></table></div>`;
@@ -709,7 +710,9 @@ function Detail({ q, file, tick, onGone }) {
       ${view && html`<${StepViewer} qid=${q.id} file=${file} step=${d.through_steps.find((x) => x.step === view.step) || view} onClose=${() => setView(null)} />`}`
       : html`<p class="small muted">${d.used.est + d.used.verified ? `None: every step of the network is still fastest without ${name}.` : 'No stage has given a number for a step yet.'}</p>`}
     ${shown.some((x) => x.fixed_together?.length) && html`<p class="small muted"><span class="am-flag">shared G</span> the step makes or uses a species whose free energy the network fixes only together with others (the boxes never show it alone): its barrier is not reliable.</p>`}
-    ${shown.some((x) => x.via_label) && html`<p class="small muted"><span class="muted">·r</span> the number is the scan's of the whole reaction: the lowest transition state between the same molecules, found from another of its steps. A step that carries a molecule along (a shuttle) then gets the reaction's lower one, which is no effect of the added molecule.</p>`}
+    ${shown.some((x) => x.reaction_steps?.length > 1) && html`<p class="small muted"><span class="muted">·N</span> the step is read as one reaction with its other parent steps between the same molecules: "without" is the reaction's lowest transition state, and the change is from there.</p>`}
+    ${shown.some((x) => x.steered) && html`<p class="small muted"><span class="am-flag am-steer">+steer</span> the row is on the steering level (its single points, as its parent step's).</p>`}
+    ${(d.not_steered || []).length > 0 && html`<p class="warn-box small">${d.not_steered.length} row${d.not_steered.length === 1 ? ' was' : 's were'} left out of the kinetics: their parent step is on the steering level and they could not be put there${d.not_steered[0].why ? ` (${d.not_steered[0].why})` : ''}.</p>`}
     ${d.moved_steps.length > 0 && html`<details class="small"><summary>${d.moved_steps.length} step${d.moved_steps.length > 1 ? 's' : ''} moved only because amounts moved</summary>
       <p class="small muted">Their own transition states are unchanged: their reactants hold more or less material with ${name} in the flask.</p>
       <${StepRows} rows=${d.moved_steps.slice(0, 30)} /></details>`}

@@ -45,6 +45,7 @@
 .am-table .am-cand img { width: 40px; height: 30px; object-fit: contain; background: var(--node-bg); border-radius: 2px; flex: none; }
 .am-table .am-two { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .am-main.am-weak { color: var(--muted); font-weight: 400; }
+.am-flag.am-steer { background: var(--accent-soft); color: var(--accent); }
 .am-flag { display: inline-block; font-size: 11px; line-height: 1.5; padding: 0 5px; border-radius: 3px; background: var(--warn-soft); color: var(--warn); }
 .am-run { white-space: nowrap; color: var(--accent); }
 .am-run.warn { color: var(--warn); } .am-run.bad { color: var(--danger); }
@@ -117,8 +118,8 @@
 /* a step's barrier without and with the molecule on one axis */
 .am-steps { table-layout: fixed; }
 .am-steps td { vertical-align: middle; height: 34px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.am-steps th:nth-child(1) { width: 30%; } .am-steps th:nth-child(2), .am-steps th:nth-child(4) { width: 58px; }
-.am-steps th:nth-child(5) { width: 100px; } .am-steps th:nth-child(6) { width: 122px; } .am-steps th:nth-child(7) { width: 48px; }
+.am-steps th:nth-child(1) { width: 27%; } .am-steps th:nth-child(2), .am-steps th:nth-child(4) { width: 58px; }
+.am-steps th:nth-child(5) { width: 100px; } .am-steps th:nth-child(6) { width: 178px; } .am-steps th:nth-child(7) { width: 44px; }
 .am-steps td:nth-child(7) { text-overflow: clip; padding-left: 2px; padding-right: 2px; }
 .am-step { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 .am-limit { display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--heading); transform: rotate(45deg); vertical-align: 1px; }
@@ -171,7 +172,7 @@
 @media (max-width: 720px) {
   .am-stages { grid-template-columns: 1fr; }
   .am-stage { min-height: 0; }
-  .am-steps { width: 700px; max-width: none; }
+  .am-steps { width: 740px; max-width: none; }
   .am-card { padding: 2px 10px 10px; }
   .am-facts { grid-template-columns: 1fr; gap: 2px; }
   .am-facts dd { margin-bottom: 8px; }

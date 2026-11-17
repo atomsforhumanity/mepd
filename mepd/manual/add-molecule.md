@@ -134,9 +134,12 @@ above the same reaction with the molecule beside it, is said so with the
 numbers: such a "taking part" is no route anything goes by. A step marked
 *shared G* makes or uses a species whose free energy the network fixes only
 together with others (the boxes never show it alone): its barrier is not
-reliable. A step marked *·r* takes its number from the scan of its whole
-reaction (the lowest transition state between the same molecules, found from
-another of its steps).
+reliable. A step marked *·N* is read as one reaction with its other parent steps
+between the same molecules: *without* is then the reaction's lowest
+transition state, and the change is from there. *+steer* marks a row on the
+steering level (the run's steering single points, as its parent step's); a
+row whose parent step is steered but that could not be put there is left out
+of the kinetics, and the page says how many.
 
 **The answer comes first**: the easiest route's highest point without and
 with the molecule, the target's amount with the interval it has if every
