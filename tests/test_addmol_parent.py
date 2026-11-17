@@ -595,3 +595,31 @@ def test_a_given_ts_holds_the_candidate_before_a_parent_species_of_its_kind(monk
            "spectators": [], "ts_parts": None, "barrier": {"electronic": 1.0, "free": 1.0}, "counted": [8], "method": "m"}
     fields, _ = c._placed(q, got, water, None)
     assert fields["reactants"] == ["O=CO", "added"] and fields["products"] == ["O=C=O", "[H][H]", "added"]
+
+
+def test_the_steering_shift_of_a_row_is_balanced_on_either_reference(monkeypatch):
+    """A row measured from each parent molecule minimized alone moves by the shift of the TS less the molecule and
+    those molecules (not less the starting box, whose atoms are not the TS's then); from the starting box, by the
+    TS less the molecule and the box."""
+    import mepd.cli_addmol as c
+    from mepd.discovery import parent as P
+
+    shift = {"ts": 10.0, "added": 3.0, "a": 2.0, "b": 4.0}
+    monkeypatch.setattr(P, "steer_shift", lambda structure, parts, engine, steer: shift[structure])
+    needs = {"parts": None, "added": "added", "n_added": 1, "basis": "alone", "alone": ["a", "b"]}
+    assert c._steer_shift({}, "ts", needs, None, None)["shift_kcal"] == pytest.approx(10.0 - 3.0 - 6.0)
+    seed = c._steer_shift({}, "ts", {**needs, "basis": "seed"}, None, None, d_seed=5.0)
+    assert seed["shift_kcal"] == pytest.approx(10.0 - 3.0 - 5.0) and seed["basis"] == "seed"
+    with pytest.raises(ValueError):
+        c._steer_shift({}, "ts", {**needs, "alone": ["a", None]}, None, None)
+    # a row beside a steered parent step without a steering profile says so and keeps its level
+    entry = {"barrier": {"free": 50.0}, "level": "explorer"}
+    q = {"steps": [{"id": "s", "level": "explorer+steer"}, {"id": "t", "level": "explorer"}]}
+    c._steer_row(q, "s", entry, "ts", needs, None, None)
+    assert entry["level"] == "explorer" and "no steering profile" in entry["steer"]["not_steered"]
+    monkeypatch.setattr(c, "_steer_engine", lambda path: None)
+    c._steer_row(q, "s", entry, "ts", needs, None, "profile.toml")
+    assert entry["level"] == "explorer+steer" and entry["barrier"]["free"] == pytest.approx(51.0)
+    other = {"barrier": {"free": 50.0}, "level": "explorer"}
+    c._steer_row(q, "t", other, "ts", needs, None, "profile.toml")       # (its parent step is not steered)
+    assert other == {"barrier": {"free": 50.0}, "level": "explorer"}

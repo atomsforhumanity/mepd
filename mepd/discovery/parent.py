@@ -493,11 +493,11 @@ def on_parent_scale(got: dict, ids: list, network: dict, added_g_hartree: float)
     if ref.get("seed_g_hartree") is not None and atoms == list(ref.get("seed_atoms") or []):
         above_seed = (got["g_ts_hartree"] - n_added * added_g_hartree - float(ref["seed_g_hartree"])) * H_KCAL
         # (as molecules.build: the molecules that take no part taken out at the network's free energies)
-        return {"free": above_seed - sum(g[i] for _m, i, _t in parent),
+        return {"free": above_seed - sum(g[i] for _m, i, _t in parent), "basis": "seed",
                 "reference": "the parent network's free energies of its molecules (through its starting box); the "
                              "added molecule at its lowest known form"}
     alone = sum(m["g_hartree"] for m, _i, _t in parent)
-    return {"free": (got["g_ts_hartree"] - n_added * added_g_hartree - alone) * H_KCAL,
+    return {"free": (got["g_ts_hartree"] - n_added * added_g_hartree - alone) * H_KCAL, "basis": "alone",
             "reference": "the added molecule at its lowest known form; the parent's molecules each minimized alone "
                          "from its geometry in the complex (they are not, together, the parent's starting box)"}
 

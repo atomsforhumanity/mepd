@@ -293,12 +293,16 @@ def _placed(q: dict, got: dict, molecule: dict, engine, added: Optional[tuple] =
     placed = parent.on_parent_scale(got, r + beside, q, low["g_hartree"] if low else 0.0)
     fields = {"reactants": r, "products": p,
               "barrier": {"electronic": got["barrier"]["electronic"], "free": placed["free"]},
-              "level": (q.get("level") or {}).get("key"), "reference": placed["reference"], "counted": got["counted"],
+              "level": (q.get("level") or {}).get("key"), "reference": placed["reference"],
+              "reference_basis": placed.get("basis"), "counted": got["counted"],
               "added_form": None if low is None else ("a conformer of the candidate" if low["index"] < len(
                   molecule["conformers"]) else "the form in this complex"),
               "free_from_molecules_minimized_alone": got["barrier"]["free"],
               "spectators": [m["smiles"] for m in got["spectators"]], "barrier_method": got["method"]}
-    return fields, {"parts": got["ts_parts"], "added": low["structure"] if low else None, "n_added": len(mine)}
+    alone = [_structure(m["symbols"], m["coordinates"], 0, 1) if m.get("coordinates") else None
+             for m, i in zip(got["reactants"] + got["spectators"], r + beside) if i != addmol.ADDED_ID]
+    return fields, {"parts": got["ts_parts"], "added": low["structure"] if low else None, "n_added": len(mine),
+                    "basis": placed.get("basis"), "alone": alone}
 
 
 def _mirror_entry(q: dict, entry: dict, handed: bool) -> Optional[dict]:
@@ -358,6 +362,86 @@ def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list, kept
     return done
 
 
+def _steer_shift(q: dict, ts, needs: dict, engine, steer_engine, d_seed: Optional[float] = None) -> dict:
+    """The steering level's shift of a row's barrier, balanced in atoms: the TS (counted as its free energy counts
+    it) less the added molecule's reference form and the parent's reference the barrier was measured from: the
+    starting box ("seed", as the parent network's free energies are) or each parent molecule minimized alone
+    ("alone"). Single points by the run's own code (mepd.discovery.parent.steer_shift). kcal/mol."""
+    from mepd.discovery import parent
+
+    d_ts = parent.steer_shift(ts, needs["parts"], engine, steer_engine)
+    d_c = parent.steer_shift(needs["added"], None, engine, steer_engine) if needs.get("added") is not None else 0.0
+    if needs.get("basis") == "alone":
+        if any(x is None for x in needs.get("alone") or []):
+            raise ValueError("a parent molecule of the reference has no geometry to steer")
+        d_ref = sum(parent.steer_shift(x, None, engine, steer_engine) for x in needs.get("alone") or [])
+    else:
+        d_ref = d_seed if d_seed is not None else _seed_shift(q, engine, steer_engine)
+    return {"shift_kcal": d_ts - needs["n_added"] * d_c - d_ref, "ts": d_ts, "added": d_c,
+            "reference": d_ref, "basis": needs.get("basis") or "seed"}
+
+
+_SEED_SHIFT: dict = {}
+
+
+def _seed_shift(q: dict, engine, steer_engine) -> float:
+    """The steering shift of the parent's starting box, counted as its molecules apart (once per process)."""
+    from mepd.discovery import parent
+    from mepd.discovery.free_energy import FreeEnergies
+    from mepd.web.variants import _structure
+
+    ref = q.get("reference") or {}
+    if not ref.get("seed_coordinates"):
+        raise ValueError("the query has no starting box to measure the steering level from")
+    key = repr(ref["seed_coordinates"])
+    if key not in _SEED_SHIFT:
+        seed = _structure(ref["seed_symbols"], ref["seed_coordinates"], ref.get("charge", 0), ref.get("multiplicity", 1))
+        _SEED_SHIFT[key] = parent.steer_shift(seed, FreeEnergies(engine, q["temperature"]).parts(seed, False), engine,
+                                              steer_engine)
+    return _SEED_SHIFT[key]
+
+
+def _steered_step(q: dict, sid: Optional[str]) -> bool:
+    """Whether the parent's step carries the steering level's shift (its level says so)."""
+    from mepd.discovery import parent
+
+    st = next((x for x in q["steps"] if x["id"] == sid), None)
+    return st is not None and parent.STEERED in str(st.get("level") or "")
+
+
+_STEER_ENGINES: dict = {}
+
+
+def _steer_engine(path: str):
+    if path not in _STEER_ENGINES:
+        from mepd.cli_common import _open_run_inputs
+
+        _STEER_ENGINES[path] = _open_run_inputs(Path(path)).engine
+    return _STEER_ENGINES[path]
+
+
+def _steer_row(q: dict, sid: str, entry: dict, ts, needs: dict, engine, steer: Optional[str]) -> None:
+    """A verified row of a steered parent step on the steering level too (same single points as the parent's
+    TSs): its free barrier moves by the balanced shift and its level says so. Without a steering profile, or
+    where a single point fails, the row stays at the explorer level and says why; the kinetics then leave it out
+    beside the steered parent step (mepd.addmol.added)."""
+    from mepd.discovery import parent
+
+    if not _steered_step(q, sid):
+        return
+    if not steer:
+        entry["steer"] = {"not_steered": "its parent step is steered and no steering profile was given (--steer)"}
+        return
+    try:
+        got = _steer_shift(q, ts, needs, engine, _steer_engine(steer))
+    except Exception as exc:
+        entry["steer"] = {"not_steered": f"{type(exc).__name__}: {exc}"}
+        return
+    entry["barrier"] = {**entry["barrier"], "free": entry["barrier"]["free"] + got["shift_kcal"]}
+    entry["level"] = f"{entry['level']}{parent.STEERED}"
+    entry["steer"] = got
+
+
 def _steer(q: dict, est: dict, kept: dict, order: list, engine, steer_engine, lay: dict, failed: list, write) -> None:
     """The parent's steering level for the steps given with a TS (`kept`), in `order`: one single point of the
     TS (counted as its free energy counts it), of the added molecule's reference form and of the parent's
@@ -382,22 +466,14 @@ def _steer(q: dict, est: dict, kept: dict, order: list, engine, steer_engine, la
         failed.append({"layer": "steer", "status": "failed", "why": f"{type(exc).__name__}: {exc}"})
         write("running")
         return
-    d_added: dict = {}
     by_id = {n.get("id"): n for n in est["new_steps"]}
     for sid in order:
         n, k = by_id[sid], kept[sid]
         try:
-            d_ts = parent.steer_shift(k["ts"], k["parts"], engine, steer_engine)
-            d_c = 0.0
-            if k["added"] is not None:
-                key = np.round(np.asarray(k["added"].geometry, dtype=float), 4).tobytes()
-                if key not in d_added:
-                    d_added[key] = parent.steer_shift(k["added"], None, engine, steer_engine)
-                d_c = d_added[key]
-            shift = d_ts - k["n_added"] * d_c - d_seed
-            n["barrier"] = {**n["barrier"], "free": n["barrier"]["free"] + shift}
+            got = _steer_shift(q, k["ts"], k, engine, steer_engine, d_seed)
+            n["barrier"] = {**n["barrier"], "free": n["barrier"]["free"] + got["shift_kcal"]}
             n["level"] = f"{n['level']}{parent.STEERED}"
-            n["steer"] = {"shift_kcal": shift, "ts": d_ts, "added": d_c, "starting_box": d_seed}
+            n["steer"] = got
         except Exception as exc:
             failed.append({"step": sid, "layer": "steer", "status": "failed", "why": f"{type(exc).__name__}: {exc}"})
         lay["done"] += 1
@@ -430,14 +506,46 @@ def _engine(profile):
 
 def _task(args):
     """One bystander estimate in a worker process (the engine is made once per process)."""
-    profile, kind, ref, frames, molecule, temperature, starts, seed, setting = args
+    profile, kind, ref, frames, molecule, temperature, starts, seed, setting, *more = args
+    steer = more[0] if more else None          # (the steering profile, where the parent step is steered)
     from mepd import bystander as B
 
     try:
-        return kind, ref, B.bystander(frames, molecule, _engine(profile), temperature=temperature, starts=starts,
-                                      seed=seed, **setting)
+        out = B.bystander(frames, molecule, _engine(profile), temperature=temperature, starts=starts,
+                          seed=seed, **setting)
     except Exception as exc:
         return kind, ref, {"status": "failed", "why": f"{type(exc).__name__}: {exc}", "binding": {}}
+    if more and out.get("status") == "ok":
+        _steer_estimate(out, frames, molecule, _engine(profile), steer)
+    return kind, ref, out
+
+
+def _steer_estimate(out: dict, frames: dict, molecule: dict, engine, steer: Optional[str]) -> None:
+    """An estimate beside a steered parent step on the steering level too: its binding to the TS moves by the
+    single points of the complex, of the step's TS alone and of the molecule (the form the binding is measured
+    from), as the parent's TS carries its own. Without a steering profile, or where one fails, it says why."""
+    from mepd.discovery import parent
+    from mepd.web.variants import _structure
+
+    if not steer:
+        out["steer"] = {"not_steered": "its parent step is steered and no steering profile was given (--steer)"}
+        return
+    try:
+        se = _steer_engine(steer)
+        q_x, m_x = int(frames["charge"]), int(frames["multiplicity"])
+        q_c, m_c = int(molecule["charge"]), int(molecule["multiplicity"])
+        cx = _structure(list(frames["symbols"]) + list(molecule["symbols"]), out["complexes"]["ts"], q_x + q_c, m_x)
+        d_cx = parent.steer_shift(cx, None, engine, se)
+        d_x = parent.steer_shift(_structure(frames["symbols"], frames["ts"], q_x, m_x), None, engine, se)
+        d_c = parent.steer_shift(_structure(molecule["symbols"], molecule["conformers"][0], q_c, m_c), None, engine, se)
+    except Exception as exc:
+        out["steer"] = {"not_steered": f"{type(exc).__name__}: {exc}"}
+        return
+    shift = d_cx - d_x - d_c
+    ts = (out.get("binding") or {}).get("ts")
+    if ts and ts.get("free") is not None:
+        ts["free"] += shift
+    out["steer"] = {"shift_kcal": shift, "complex": d_cx, "step_ts": d_x, "added": d_c}
 
 
 def _same_ts(rows: list, entry: dict) -> Optional[str]:
@@ -454,7 +562,7 @@ def _same_ts(rows: list, entry: dict) -> Optional[str]:
 
 
 def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atoms: set, molecule: dict, engine,
-            start_keys: list, end_keys: list) -> dict:
+            start_keys: list, end_keys: list, steer: Optional[str] = None) -> dict:
     """A TS found with the molecule present, with its IRC's two ends (qcdata Structures, one atom order), read as
     the step `sid`: {"kind": "takes part" | "beside", "entry": the step on the parent's scale} when its IRC joins
     the step's two ends (the molecule's bonds changing between them or not), else {"kind": "elsewhere", "ends"}."""
@@ -498,15 +606,15 @@ def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atom
         a_r = a_p = still[-1]
     got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=not took,
                          standard_state=_standard(q))
-    fields, _steer_needs = _placed(q, got, molecule, engine,
-                                   (set(a_r) if a_r else None, set(a_p) if a_p else None))
-    return {"kind": "takes part" if took else "beside",
-            "entry": {"id": f"{sid}|{label}", "parent_step": sid, "layer": layer, "status": "verified",
-                      "label": (f"{sid}: the molecule takes part ({label})" if took
-                                else f"{sid}: with the molecule beside it ({label})"),
-                      "takes_part": took, "returned": True if took else None,
-                      "bonds_broken": sorted(list(x) for x in b0 - b1), "bonds_formed": sorted(list(x) for x in b1 - b0),
-                      **fields}}
+    fields, needs = _placed(q, got, molecule, engine, (set(a_r) if a_r else None, set(a_p) if a_p else None))
+    entry = {"id": f"{sid}|{label}", "parent_step": sid, "layer": layer, "status": "verified",
+             "label": (f"{sid}: the molecule takes part ({label})" if took
+                       else f"{sid}: with the molecule beside it ({label})"),
+             "takes_part": took, "returned": True if took else None,
+             "bonds_broken": sorted(list(x) for x in b0 - b1), "bonds_formed": sorted(list(x) for x in b1 - b0),
+             **fields}
+    _steer_row(q, sid, entry, s_ts.model_copy(), needs, engine, steer)
+    return {"kind": "takes part" if took else "beside", "entry": entry}
 
 
 def _verify_task(args):
@@ -515,7 +623,7 @@ def _verify_task(args):
     mepd.cli_variant._reoptimize (ends minimized, the TS optimized with the molecule present, its IRC); each
     TS read with `_ts_row`. Returns {"step", "rows": the lowest row of each kind with the difference between
     the two poses as its spread, "elsewhere": [...], "notes", "wall_s"}."""
-    profile, query_fp, sid, frames, molecule, first, out_dir, temperature = args
+    profile, query_fp, sid, frames, molecule, first, out_dir, temperature, steer = args
     import numpy as np
     from qcdata import Structure
 
@@ -564,7 +672,7 @@ def _verify_task(args):
                 q_ = {"charge": charge, "multiplicity": mult}
                 row = _ts_row(q, sid, f"verified pose {k}", "verify", Structure.open(str(ts_fp)).model_copy(update=q_),
                               irc[0].model_copy(update=q_), irc[-1].model_copy(update=q_), set(range(n_x, len(sym))),
-                              molecule, engine, keys(cx["r"]), keys(cx["p"]))
+                              molecule, engine, keys(cx["r"]), keys(cx["p"]), steer=steer)
             except Exception as exc:
                 out["notes"].append(f"pose {k}: {type(exc).__name__}: {exc}")
                 continue
@@ -755,7 +863,7 @@ def _scan_ends(q: dict, rx: dict, molecule: dict, engine) -> dict:
 
 
 def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: Path, folder: Path, rec: dict,
-                on_row, started: float, cores: Optional[list] = None, compute=None) -> None:
+                on_row, started: float, cores: Optional[list] = None, compute=None, steer: Optional[str] = None) -> None:
     """One reaction scanned for transition states with the added molecule: `mepd channels` between its two ends
     with the molecule beside each (`ends`: {"start", "end"}: qcdata Structures, the molecule's atoms last; they
     need not number the reaction's atoms alike: channels maps them), mechanisms through the molecule explored
@@ -842,7 +950,7 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
                                               Structure.open(str(out / ts["ts"])).model_copy(update=q_),
                                               irc[0].model_copy(update=q_), irc[-1].model_copy(update=q_),
                                               set().union(*c_atoms) if c_atoms else set(), molecule, engine,
-                                              start_keys, end_keys)
+                                              start_keys, end_keys, steer=steer)
                         except Exception as exc:
                             rec.setdefault("failed_rows", []).append({"ts": ts["label"], "why": f"{type(exc).__name__}: {exc}"})
                             continue
@@ -1184,6 +1292,10 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                             "takes_part": c["takes part"], "leads_elsewhere": c["elsewhere"],
                             "failed": c["failed"] + c["reacted"], "reacted_in_the_estimate": c["reacted"],
                             "not_reached": c["none"],
+                            # the verified rows by what their barrier is measured from (the "alone" reference is
+                            # not the parent network's own scale: each parent molecule minimized alone)
+                            "rows_by_reference": dict(Counter(n.get("reference_basis") or "unknown" for n in
+                                                              est["new_steps"] if n.get("status") == "verified")),
                             "what": "how each parent step with frames ends: an estimate only; verified with the "
                                     "molecule beside it; a verified TS with the molecule taking part (its own, or "
                                     "its reaction's from a scan); its verification led to other species; no "
@@ -1425,7 +1537,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
 
                 _relay_scan(q, rx["lowest"], molecule, ends, engine_k, Path(opt["scan_profile"]),
                             output / (fp.stem + "_relay") / f"{number:02d}_{_file_name(rx['lowest'])[:-5]}", rec, on_row,
-                            t0, cores=masks[k], compute=compute)
+                            t0, cores=masks[k], compute=compute, steer=opt["steer"])
             finally:
                 with lock:
                     active[0] -= 1
@@ -1530,7 +1642,12 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         entry = {"step": ref, "layer": "bystander", "level": level, "binding": out.get("binding") or {},
                  "poses": out.get("poses"), "wall_s": out.get("wall_s"), "free_method": out.get("free_method"),
                  "spread_method": out.get("spread_method"), "placer": out.get("placer"),
-                 "repeats": out.get("repeats"), "t_s": since()}
+                 "repeats": out.get("repeats"), "t_s": since(),
+                 **({"steer": out["steer"]} if out.get("steer") else {})}
+        if (out.get("steer") or {}).get("shift_kcal") is not None:
+            from mepd.discovery.parent import STEERED
+
+            entry["level"] = f"{level}{STEERED}"
         if all(k in (out.get("complexes") or {}) for k in ("r", "ts", "p")):
             complexes[ref] = out["complexes"]
         if out.get("status") == "ok":
@@ -1588,14 +1705,15 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     sid = pending_ver.popleft()
                     t_b = t_b or time.perf_counter()
                     fut = pool.submit(_verify_task, (profile, opt["query"], sid, frames_of(sid), molecule, complexes[sid],
-                                                     str(vdir / _file_name(sid)[:-5]), q["temperature"]))
+                                                     str(vdir / _file_name(sid)[:-5]), q["temperature"], opt["steer"]))
                     running[fut] = ("verify", sid)
                 else:
                     sid = pending_est.popleft()
                     fut = pool.submit(_task, (profile, "steps", sid, frames_of(sid), molecule, q["temperature"],
                                               ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
                                                if pose.get("step") == sid else ()), 0,
-                                              {**opt["setting"], "standard_state": _standard(q)}))
+                                              {**opt["setting"], "standard_state": _standard(q)},
+                                              *((opt["steer"],) if _steered_step(q, sid) else ())))
                     running[fut] = ("estimate", sid)
             done, _ = wait_for(list(running), timeout=10.0, return_when=FIRST_COMPLETED)
             changed = False

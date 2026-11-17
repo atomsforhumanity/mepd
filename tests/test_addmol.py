@@ -397,3 +397,17 @@ def test_a_shuttle_step_with_its_own_row_is_read_from_its_reactions_lowest_paren
                           "parent_step": "ab_s", "status": "verified"}]}
     by = {r["step"]: r for r in A.readout(shuttle, A.added(shuttle, C, row), {"A": 1.0, "S": 1.0}, 0.1, "B", 20.0)["steps"]}
     assert by["ab_s"]["before"] == pytest.approx(30.0, abs=0.05) and abs(by["ab_s"]["change"]) < 0.3
+
+
+def test_a_row_beside_a_steered_parent_step_counts_only_when_steered_too():
+    steered = network([("ab", ["A"], ["B"], 30.0)], g={"B": -10.0})
+    steered["steps"][0]["level"] = "explorer+steer"
+    row = {"new_steps": [{"id": "relay", "reactants": ["A", "C"], "products": ["B", "C"], "barrier": both(20.0),
+                          "parent_step": "ab", "status": "verified", "level": "explorer"}]}
+    v = A.added(steered, C, row)
+    assert [st["id"] for st in v["steps"]] == ["ab"] and any("not compared" in n for n in v["notes"])
+    row["new_steps"][0]["level"] = "explorer+steer"
+    assert [st["id"] for st in A.added(steered, C, row)["steps"]] == ["ab", "relay"]
+    # beside a parent step at the explorer level an explorer row counts, as before
+    assert [st["id"] for st in A.added(PARENT, C, {"new_steps": [{**row["new_steps"][0], "level": "explorer"}]})["steps"]] \
+        == ["ab", "relay"]

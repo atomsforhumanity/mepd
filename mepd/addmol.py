@@ -108,6 +108,18 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
             bind[x] = (v, e, est)
 
     used = lambda est: est.get("status") in USED   # noqa: E731
+    # A row beside a parent step that carries the steering level's shift ("+steer" in its level) is compared with
+    # it only when it carries the same: an explorer-level row there is left out (and counted in the notes).
+    steered = lambda level: "+steer" in str(level or "")   # noqa: E731
+    unsteered: list = []
+
+    def level_ok(row, sid):
+        st = by_id.get(sid)
+        if st is not None and steered(st.get("level")) and not steered(row.get("level")):
+            unsteered.append(row.get("id") or row.get("step") or sid)
+            return False
+        return True
+
     # A bound species needs a verified binding (a relaxed complex with its own thermal correction): an estimate
     # of the molecule beside a held frame shifts barriers, it does not make a resting state.
     for est in estimates.get("species") or []:
@@ -129,7 +141,7 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
     for est in estimates.get("steps") or []:
         st = by_id.get(est.get("step"))
         e_ts = (est.get("binding") or {}).get("ts")
-        if st is None or not used(est) or _value(e_ts, mode) is None:
+        if st is None or not used(est) or _value(e_ts, mode) is None or not level_ok(est, st["id"]):
             continue
         flag(e_ts, f"{st.get('label') or st['id']} with {sp[c]['name']}")
         side = lambda end: [complex_id(end[0], c)] if len(end) == 1 and end[0] in bind else list(end) + [c]   # noqa: E731
@@ -153,7 +165,7 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
                        "holds": sum(sp[x].get("holds", 0) for x in made) - sum(sp[x].get("holds", 0) for x in gone),
                        **{k: n[k] for k in ("smiles", "status", "spread", "level", "source") if n.get(k) is not None}}
     for n in estimates.get("new_steps") or []:
-        if not used(n):
+        if not used(n) or not level_ok(n, n.get("parent_step")):
             continue
         missing = [x for x in n["reactants"] + n["products"] if x not in sp]
         if missing:
@@ -165,6 +177,9 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
                              "g_ts": sum(sp[x]["g"] for x in n["reactants"]) + _value(n.get("barrier"), mode),
                              **{k: n[k] for k in ("parent_step", "parent_steps", "status", "spread", "level", "source",
                                                   "takes_part") if n.get(k) is not None}})
+    if unsteered:
+        notes.append(f"{len(unsteered)} row(s) with the molecule left out: at the explorer level beside a parent step "
+                     "at the steering level (no steering profile, or its single point failed): not compared")
     out["species"] = list(sp.values())
     out["added"] = c
     out["notes"] = list(dict.fromkeys((out.get("notes") or []) + notes))
