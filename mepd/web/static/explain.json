@@ -417,8 +417,8 @@
     "where": "Pairs from (advanced)"
    },
    {
-    "option": "Other seed strategies than conformers",
-    "where": "not exposed: --method only accepts 'conformers'; would plug in at mepd/sampling.py:generate_seed_pairs"
+    "option": "One search per step, on the best-scoring built pair",
+    "where": "MINMAX, the method switch on this card (--method minmax)"
    }
   ],
   "caveats": [
@@ -433,6 +433,33 @@
    "mepd/conformers.py:generate_conformers"
   ],
   "cli": "mepd channels --start a.xyz --end b.xyz --backend rdkit --pairs-per-mechanism 3 --workers 4 -i profile.toml",
+  "refs": "Reaction channels"
+ },
+ "method.channels:1": {
+  "title": "MINMAX (experimental)",
+  "does": "One path search per elementary step, on the most promising guess: the built reactant/product pair whose geodesic interpolation has the lowest GFN2-xTB peak (the minimum over pairs of the maximum along the path).",
+  "how": [
+   "Samples and minimizes conformers of both ends, as Reaction channels does (RDKit or CREST; snap-RMSD dedup, mirror images merged).",
+   "Lists the candidate mechanisms by atom mapping: SLAPMapper's minimal-edit ones plus up to Explore mechanisms explored ones.",
+   "For every reactant conformer builds the product once per mechanism, and for every product conformer the reactant (each atom where it is, the new bonds pulled to length, minimized; dropped if bonds or stereochemistry change): (N + M) × mechanisms pairs.",
+   "Scores every pair by the GFN2-xTB energy of the highest point of its geodesic interpolation and runs one path search on the lowest.",
+   "When that path splits (MSMEP), each piece's two minima go through the same steps again before the piece is searched; a pool already sampled for the same species (same atom numbering) is reused.",
+   "TS optimization + IRC for every leaf and the channel classification, as for Reaction channels. minmax.json and minmax/n<k>/ hold what each node sampled, built, scored and chose."
+  ],
+  "default": "5 explored mechanisms per pair of minima; the profile's path method; MSMEP's own split depth and cycle limits.",
+  "caveats": [
+   "One route, not every channel: it follows the best-scoring guess at each step.",
+   "The GI + xtb peak is a cheap proxy: a pair whose interpolation is high can still hold the lower TS.",
+   "Sample more paths does not extend a MINMAX run yet."
+  ],
+  "code": [
+   "mepd/minmax.py:run_minmax",
+   "mepd/minmax.py:MinmaxSearch.choose",
+   "mepd/msmep.py:MSMEP._piece_chain",
+   "mepd/channel_search.py:_built_pairs_by_mechanism",
+   "mepd/built_pair_mapping.py:_path_score"
+  ],
+  "cli": "mepd channels --start a.xyz --end b.xyz --method minmax --n-conformers 5 -i profile.toml",
   "refs": "Reaction channels"
  },
  "param.channels.backend": {

@@ -562,8 +562,9 @@ class JobManager:
                 design = self.ws.design if op.target == "design" else None
                 if design is not None:
                     names = design.get("name") or design.get("formula") or "design"
+                title = "MINMAX path search" if getattr(parsed, "search", None) == "minmax" else op.title
                 created.append({
-                    "id": jid, "op": op.key, "title": label or f"{op.title}: {names}",
+                    "id": jid, "op": op.key, "title": label or f"{title}: {names}",
                     "status": "queued", "created": time.time(), "started": None, "finished": None,
                     "returncode": None, "argv": argv,
                     "command": "mepd " + " ".join(shlex.quote(a) for a in argv),
