@@ -65,3 +65,32 @@ def test_explanations_link_to_existing_sections():
     features = {g["feature"] for g in references.references()}
     for key in ("other.bond-orbitals", "other.bond-arrows", "other.bond-charges"):
         assert entries[key]["refs"] in features, key
+
+
+def test_the_settings_reference_covers_every_calculation_and_setting():
+    """/manual/settings is written from the operations registry: every calculation has a section (the forms link to
+    `#<op key>`), every setting a form shows has an anchor and its default, and the interactive Reactor's MD
+    settings are there."""
+    from mepd.web.operations import OPERATIONS
+
+    out = manual.render("settings")
+    assert "settings" in manual.pages()
+    for key, op in OPERATIONS.items():
+        assert f'id="{key}"' in out, key
+        for name, finfo in (op.params_model.model_fields.items() if op.params_model else []):
+            fixed = {k for m in op.methods for k in (m.get("fixed") or {})}   # (shown with the card's methods)
+            if (finfo.json_schema_extra or {}).get("group") != "Hidden" and name not in fixed:
+                assert f'id="{key}--{name}"' in out, (key, name)
+    assert 'id="reactor"' in out and "Time step" in out
+    # mepd's own defaults behind a form: the nanoreactor's time step and smearing, which no form sets
+    nano = out[out.index('id="nanoreactor"'):out.index('id="network-splits"')]
+    assert "--step" in nano and "--electronic-temperature" in nano
+    assert "--temperature" not in nano.split("Not in the form")[1]   # (the form sets it)
+
+
+def test_the_manual_leads_back_to_the_app_outside_its_frame():
+    """The Learn drawer shows the manual in an iframe: its link to the app opens in the whole tab, and an app
+    loaded in a frame of itself takes over the tab, so mepd never opens inside mepd."""
+    for page in [None, "orbitals", "settings"]:
+        assert '<a href="/" target="_top">mepd</a>' in manual.render(page)
+    assert "window.top.location.replace" in (JS / "app.js").read_text()
