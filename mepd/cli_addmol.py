@@ -202,11 +202,16 @@ def _c_key(molecule: dict) -> Optional[str]:
                                              molecule["multiplicity"]))[0][1])
 
 
-def _species_ids(q: dict, mols: list, c_key: Optional[str]) -> list:
+def _species_ids(q: dict, mols: list, c_key: Optional[str], added: Optional[set] = None) -> list:
+    """The species ids of a complex's molecules. `added`: the atoms of the molecule that is the added one (known
+    from the TS's frames); without it, a molecule of the candidate's kind that is no species of the parent."""
     from mepd import addmol
 
     out = []
     for m in mols:
+        if added is not None and set(m.get("atoms") or ()) == added:
+            out.append(addmol.ADDED_ID)
+            continue
         hit = addmol.match(q["species"], m["smiles"]) or ([addmol.ADDED_ID] if _flat(m["smiles"]) == c_key else [])
         if len(hit) != 1:
             raise ValueError(f"{m['smiles']} in its TS is no species of the network (a new species has to be "
@@ -233,7 +238,7 @@ def _parent_of(q: dict, r: list, p: list) -> Optional[str]:
     return min(same, key=lambda st: st["g_ts"])["id"] if same else None
 
 
-def _placed(q: dict, got: dict, molecule: dict, engine) -> tuple:
+def _placed(q: dict, got: dict, molecule: dict, engine, added: Optional[tuple] = None) -> tuple:
     """A `ts_step` result as a step of the network: (the entry's fields, what a steering single point needs).
     Measured from the parent's own free energies of its molecules and the added molecule's lowest form over
     the candidate's conformers and the one this complex holds (mepd.discovery.parent.on_parent_scale)."""
@@ -242,7 +247,9 @@ def _placed(q: dict, got: dict, molecule: dict, engine) -> tuple:
     from mepd.web.variants import _structure
 
     c_key = _c_key(molecule)
-    r, p, beside = (_species_ids(q, got[k], c_key) for k in ("reactants", "products", "spectators"))
+    # (`added`: the added molecule's atoms at the reactant and at the product end, where the TS's frames say which)
+    a_r, a_p = added or (None, None)
+    r, p, beside = (_species_ids(q, got[k], c_key, a) for k, a in (("reactants", a_r), ("products", a_p), ("spectators", a_r)))
     mine = [m for m, i in zip(got["reactants"] + got["spectators"], r + beside) if i == addmol.ADDED_ID]
     forms = [_structure(molecule["symbols"], c, molecule["charge"], molecule["multiplicity"])
              for c in molecule["conformers"]]
@@ -413,21 +420,32 @@ def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atom
         return {"kind": "elsewhere", "ends": [".".join(k0), ".".join(k1)]}
     sym = [str(x) for x in s_ts.symbols]
     ts = {"atoms": sym, "coordinates": ang(s_ts), "charge": int(s_ts.charge), "multiplicity": int(s_ts.multiplicity)}
-    # Whether the molecule takes part is read where the barrier is: by the free-energy code's own bonds of the two
-    # ends (mepd.discovery.free_energy), in this TS's own frames. The molecule whole among the molecules that stand
-    # apart from the TS: it is beside the step; else it takes part. (A looser bond criterion here once called a
-    # close contact of the molecule a changed bond; and atom numbers from the scan's start once called a molecule
-    # that had swapped a hydrogen with a neighbour in an earlier step part of every later TS.)
-    got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"])
-    c_key = _c_key(molecule)
-    took = not any(_flat(m["smiles"]) == c_key for m in got["spectators"])
-    if not took:        # beside the step: the whole complex is the TS, the molecule among its molecules
-        got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=True)
-    fields, _steer_needs = _placed(q, got, molecule, engine)
+    # Whether the molecule takes part is read in this TS's own frames, with the bonds its free energy is counted
+    # with (mepd.discovery.free_energy): a whole molecule of the candidate's kind, the same atoms at both ends,
+    # none of them in a bond that breaks or forms, is the added molecule beside the step; without one, it takes
+    # part. (Earlier readings went wrong three ways: a looser bond criterion called a close contact a changed bond;
+    # atom numbers from the scan's start called a molecule that had swapped a hydrogen with a neighbour in an
+    # earlier step part of every later TS; and a molecule the free-energy code counts into the TS without any of
+    # its bonds changing was called taking part. A candidate that is also a species of the parent is told from the
+    # parent's own molecule of that kind the same way.)
     from mepd.discovery.free_energy import bonds
 
     pairs = lambda bs: {tuple(sorted((int(i), int(j)))) for i, j in bs}   # noqa: E731
     b0, b1 = pairs(bonds(sym, ang(first))), pairs(bonds(sym, ang(last)))
+    moved = {i for pair in b0 ^ b1 for i in pair}
+    c_key = _c_key(molecule)
+    mine = lambda st: [frozenset(int(i) for i in a) for a, key in M.molecule_parts(st) if _flat(key) == c_key]  # noqa: E731
+    at_r, at_p = mine(first), mine(last)
+    still = [a for a in at_r if a in at_p and not a & moved]
+    took = not still
+    if took:        # the added one: a molecule of its kind in a changing bond (the first, at each end)
+        a_r = next((a for a in at_r if a & moved), at_r[0] if at_r else None)
+        a_p = next((a for a in at_p if a & moved), at_p[0] if at_p else None)
+    else:
+        a_r = a_p = still[-1]
+    got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=not took)
+    fields, _steer_needs = _placed(q, got, molecule, engine,
+                                   (set(a_r) if a_r else None, set(a_p) if a_p else None))
     return {"kind": "takes part" if took else "beside",
             "entry": {"id": f"{sid}|{label}", "parent_step": sid, "layer": layer, "status": "verified",
                       "label": (f"{sid}: the molecule takes part ({label})" if took
