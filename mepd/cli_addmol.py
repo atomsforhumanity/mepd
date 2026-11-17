@@ -180,7 +180,7 @@ def _candidates(smiles: List[str], files: Optional[Path], amount: Optional[float
         names.add(c["name"])
     # the result files: one per candidate, never shared (two SMILES can read alike once made a file name:
     # C/C=C/C and C/C=C\C)
-    files: set = set()
+    files: set = {"provenance.json"}                  # (the run's own record, written beside the results)
     for k, c in enumerate(out):
         fn = _file_name(c.pop("_stem", None) or c["name"])
         if fn in files:
