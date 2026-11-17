@@ -116,6 +116,12 @@ def test_a_relay_returns_the_molecule():
     assert row["after"] == pytest.approx(20.0 - RT * math.log(c0), abs=0.6)
     assert out["target"]["with"]["time_to_fraction_s"] == pytest.approx(
         -math.log(1 - 0.5 * want) / (k_of(20.0) * c0), rel=0.1)
+    # the lowest-peak route says what it rests on: an estimate here, verified rows once the relay is verified
+    (peak,) = out["peak_routes"]["with"]
+    assert peak["rests_on"] == "estimate" and peak["estimated_steps"] == ["relay"]
+    sure = {"new_steps": [{**RELAY["new_steps"][0], "status": "verified"}]}
+    (peak,) = A.readout(PARENT, A.added(PARENT, C, sure), {"A": 1.0}, c0, "B", t)["peak_routes"]["with"]
+    assert peak["rests_on"] == "verified" and peak["estimated_steps"] == []
 
 
 def test_a_consumed_reagent():

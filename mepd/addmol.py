@@ -707,6 +707,12 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
     peaks = {"parent": peak_routes(parent, kp["initial"], target, limit=1),
              "with": peak_routes(variant, kv["initial"], target, limit=1)}
     carrying = routes["with"]
+    # what each lowest-peak route with the molecule rests on: verified rows only, or an estimate among its steps
+    status_of = {st["id"]: st.get("status") for st in variant["steps"]}
+    for r in peaks["with"]:
+        loose = [x["step"] for x in r["steps"] if (status_of.get(x["step"]) or "verified") != "verified"]
+        r["rests_on"] = "estimate" if loose else "verified"
+        r["estimated_steps"] = loose
     # the levels of the steps the comparison rests on: the routes that carry the target's material with C, and the
     # lowest-peak routes without and with it
     level_of = {st["id"]: st.get("level") for st in variant["steps"] if st.get("kind") != "association"}
@@ -881,6 +887,16 @@ def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done
            # what each `level` of a step stands for, in words
            "level_labels": _level_labels(query),
            "candidate": candidate, "layers": list(layers), "estimates": estimates, "failed": list(failed)}
+    level = query.get("level") or {}
+    doc["scope"] = {
+        "level": level.get("label") or level.get("key"),
+        "phase": (f"solvent: {level['solvent']}" if level.get("solvent") else
+                  "no solvent is named in the query: isolated molecules and complexes at the level as it is"),
+        "holds": "the parent network's species and steps, the added molecule, its complexes with the parent's "
+                 "species, and the rows of the layers listed under `layers` (each marked `est` or `verified`)",
+        "does_not_hold": "a route through species the parent network does not hold (a species the molecule would "
+                         "form that no layer here follows) is not in this result; the absence of an effect here "
+                         "does not rule such a route out"}
     try:
         # (the kinetics need no geometry: leave the coordinates and time series behind)
         net = {"temperature": query["temperature"], "energies": query["energies"],

@@ -1002,7 +1002,19 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             now = (peaks.get("with") or [{}])[0].get("peak")
             hist = extra.setdefault("route_peak", {"parent": (peaks.get("parent") or [{}])[0].get("peak"), "with": []})
             if now is not None and (not hist["with"] or abs(hist["with"][-1]["peak"] - now) > 1e-6):
-                hist["with"].append({"t_s": since(), "peak": now})
+                # with the read-out as it stood then (the page shows the answer over time without the kinetics)
+                r = doc["readout"]
+                tgt, fate = r.get("target") or {}, r.get("added") or {}
+                hist["with"].append({
+                    "t_s": since(), "peak": now, "rests_on": peaks["with"][0].get("rests_on"),
+                    "estimated_steps": peaks["with"][0].get("estimated_steps"),
+                    "readout": {"target": {"final": (tgt.get("with") or {}).get("final"),
+                                           "time_to_fraction_s": (tgt.get("with") or {}).get("time_to_fraction_s"),
+                                           "factor": tgt.get("factor"),
+                                           "low": (tgt.get("spread") or {}).get("with_low"),
+                                           "high": (tgt.get("spread") or {}).get("with_high")},
+                                "fate": fate.get("fate"), "route_role": fate.get("route_role"),
+                                "in_words": fate.get("in_words"), "turnovers": fate.get("turnovers")}})
             return doc
 
     def cut(signum, _frame):
@@ -1164,7 +1176,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                            f"{value:.1f} kcal/mol, below the target's {peak:.1f}")
                     rec = {"step": rx["lowest"], "label": rx["label"], "reaction": rx["label"], "reactants": rx["reactants"],
                            "products": rx["products"], "steps": rx["steps"], "status": "queued", "lane": k,
-                           "twin": rx["twin"], "flagged": rx["key"] in flags, "route_peak_now": peak,
+                           "twin": rx["twin"], "flagged": rx["key"] in flags, "route_peak_now": peak, "arrivals": [],
                            "worth": kind, "route_peak_if_no_barrier": value if kind == "target" else peak,
                            "other_species": species, "other_species_peak_if_no_barrier": value if kind == "other" else None,
                            "why": why + ("; the estimate or the verification saw the molecule react or take part"

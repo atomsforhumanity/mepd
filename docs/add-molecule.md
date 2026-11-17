@@ -30,6 +30,12 @@ target would gain) and side by side, each streamed into the result file:
 3. **the relay scan** (`--scan N`): `mepd channels` on the parent's reactions that are worth it, for transition
    states with the molecule taking part; it ends when no reaction is left that could matter.
 
+The file says what it is and is not under `scope` (the level, the phase, and that a route through species the
+parent network does not hold is not in it). Each change of the route peak is kept under `route_peak.with[]` with
+the read-out as it stood then (the target's amount with its spread, the molecule's fate and turnovers) and
+whether that route rests on verified rows only or on an estimate (`rests_on`, `estimated_steps`; the same on
+`readout.peak_routes.with[]`). Every scan has `arrivals` (empty where nothing arrived).
+
 A layer that follows new species the molecule forms is not built; such numbers can be given with a candidate
 (`estimates`, below).
 

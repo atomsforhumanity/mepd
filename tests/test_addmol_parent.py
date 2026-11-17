@@ -302,6 +302,10 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     # one scan per net reaction, chosen by what the target would gain; it stands for the reaction's steps
     assert line["step"] == "fast_0_1" and line["steps"] == ["fast_0_1"]
     assert doc["scan"]["cores"]["lanes"] and line["status"] in ("done", "failed")
+    assert isinstance(line["arrivals"], list) and "does_not_hold" in doc["scope"] and doc["scope"]["level"]
+    event = doc["route_peak"]["with"][-1]
+    assert event["rests_on"] in ("verified", "estimate") and "final" in event["readout"]["target"]
+    assert doc["readout"]["peak_routes"]["with"][0]["rests_on"] == event["rests_on"]
     assert line["reaction"] == "C#N -> [C-]#[NH+]" and "with no barrier it would lower the target's route peak" in line["why"]
     assert line["worth"] == "target" and doc["scan"]["ended"]["why"].startswith(("no reaction is left", "the limit"))
     assert not line["run"].startswith("/") and (tmp_path / "r" / line["run"] / "channels.log").exists()
