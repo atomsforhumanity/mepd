@@ -20,15 +20,15 @@ In Python: `mepd.discovery.parent` (an explorer run as the parent: `network`, `q
 `mepd.web.added` (a workspace as the parent: `network`, `query`, `put`, `adopt_run`) and `mepd.addmol` (the
 kinetics, on plain dicts: `added`, `readout`, `limits`, `first_order`, `bystander`, `query`, `result`).
 
-`mepd addmol test` works through three stages per candidate, each streamed into the result file and each in the
-order of what limits the target:
+`mepd addmol test` does three kinds of work per candidate, all in one order (reaction by reaction, by what the
+target would gain) and side by side, each streamed into the result file:
 
 1. **the quick estimate** (the bystander layer, [bystander.md](bystander.md)): the molecule beside every step's
    ends and TS, the step's atoms held; rows marked `est`;
 2. **the verification** of each step with the molecule beside it: the TS optimized with the molecule present,
    its IRC; a verified row replaces the step's estimate;
-3. **the relay scan** (`--scan N`): `mepd channels` on the steps that limit the target, and on the steps where
-   the first two stages showed the molecule reacting, for transition states with the molecule taking part.
+3. **the relay scan** (`--scan N`): `mepd channels` on the parent's reactions that are worth it, for transition
+   states with the molecule taking part; it ends when no reaction is left that could matter.
 
 A layer that follows new species the molecule forms is not built; such numbers can be given with a candidate
 (`estimates`, below).
@@ -286,18 +286,23 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
 - **What is scanned: a net reaction.** The parent's steps with the molecules that are the same on both sides
   dropped (its own shuttles too: the added molecule is tried in their place); steps with the same net change,
   either way round, are one reaction and share the scan's rows (`parent_steps`).
-- **In what order: what the target would gain.** For each reaction not yet scanned, the peak of the lowest-peak
-  route to the target *if that reaction alone had no barrier above its ends*, on the kinetics as they stand with
-  the molecule's rows in. Lowest such peak first. Ties (to 0.1 kcal/mol): reactions where the estimate or the
-  verification saw the molecule react or take part, then fewer atoms. Reactions that lower nothing go last. For a
-  chiral molecule the mirror twin of a reaction goes after every reaction that is not a twin (in the estimate
-  and the verification too). The list is derived again each time a lane frees; the result file keeps every
-  derivation (`scan.derivations`: when, the route peak then, the first eight of the list, which was chosen).
-  The verification runs in the order of the first derivation.
-- **Side by side.** Three scans at once on 32 threads (fewer on fewer cores), each `mepd channels` run held to
-  its own cores with `taskset` (`--workers` does not bound a channels run). The first lane starts when the
-  estimates are done, beside the verification; the others when the verification's cores are free. **Pin the
-  command itself** on a shared machine: the lanes divide the cores it may use.
+- **Which reactions, in what order, and when it ends.** A reaction is worth a scan if, *with no barrier above
+  its ends*, it would (i) lower the target's route peak, or (ii) bring some other species to a route peak below
+  the target's present one and below what that species has now (something that could outrun the target or eat
+  its material); judged on the kinetics as they stand with the molecule's rows in (`mepd.addmol.reach_peaks`).
+  Order: (i) by the resulting target peak, then (ii) by the resulting peak. Ties (to 0.1 kcal/mol): reactions
+  where the estimate or the verification saw the molecule react or take part, then fewer atoms. For a chiral
+  molecule the mirror twin of a reaction goes after every reaction that is not a twin. The list is derived at
+  the start from the parent alone, and again each time a lane frees (`scan.derivations`). **The stage ends when
+  no reaction is left under (i) or (ii)** (`scan.ended`), or after N reactions; the reactions not scanned are in
+  `scan.left`, each with its reason. A reaction whose two sides do not hold the same atoms (a species whose
+  identity lost atoms in the parent) is never scanned.
+- **Everything follows that order.** The steps are estimated, and then verified, in the order of the first
+  derivation; a verification that is ready goes before the next estimate.
+- **Side by side.** On 32 threads: two scans from the start, each `mepd channels` run held to its own ten cores
+  with `taskset` (`--workers` does not bound a channels run); the estimates and the verification on the other
+  twelve; a third scan lane on those when the verification ends (`scan.cores`). Fewer lanes on fewer cores.
+  **Pin the command itself** on a shared machine: the lanes divide the cores it may use.
 - **What a scan is.** `mepd channels` between the reaction's two ends with the molecule beside each: the ends of
   the reaction's lowest parent step (its TS's IRC ends), the unchanged molecules removed, the molecule placed by
   the bystander layer's placer (nothing is placed by hand), with
@@ -311,7 +316,10 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
   The kinetics keep the lowest of each kind per reaction, and are recomputed, and the file rewritten, each time
   that changes. A verified TS that leads elsewhere is counted (`elsewhere`); one in which the molecule changes
   and does not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the
-  molecule taking part: `answer: "none found ..."`, with what was searched.
+  molecule taking part: `answer: "none found ..."`, with what was searched. A scan whose path searches all failed
+  at their first step (or that started none) is `status: "failed"` with `why_failed`, not "none found".
+  Whether the molecule takes part in a TS is read from the same bonds of the IRC's two ends that its free energy
+  is counted with.
 - **When things arrived.** Every row (estimate, verified, relay) carries `t_s`, seconds after the command. A
   scan's line keeps every verified row's arrival and height (`arrivals`) and when its lowest came
   (`lowest_arrived_s`); `route_peak` at the top of the file is the history of the route peak with the molecule.
