@@ -414,10 +414,13 @@ def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atom
     sym = [str(x) for x in s_ts.symbols]
     ts = {"atoms": sym, "coordinates": ang(s_ts), "charge": int(s_ts.charge), "multiplicity": int(s_ts.multiplicity)}
     # Whether the molecule takes part is read where the barrier is: by the free-energy code's own bonds of the two
-    # ends (mepd.discovery.free_energy). The molecule among the reacting molecules: it takes part. (A looser bond
-    # criterion here once called a close contact of the molecule a changed bond.)
+    # ends (mepd.discovery.free_energy), in this TS's own frames. The molecule whole among the molecules that stand
+    # apart from the TS: it is beside the step; else it takes part. (A looser bond criterion here once called a
+    # close contact of the molecule a changed bond; and atom numbers from the scan's start once called a molecule
+    # that had swapped a hydrogen with a neighbour in an earlier step part of every later TS.)
     got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"])
-    took = any(set(m["atoms"]) & set(c_atoms) for m in got["reactants"] + got["products"])
+    c_key = _c_key(molecule)
+    took = not any(_flat(m["smiles"]) == c_key for m in got["spectators"])
     if not took:        # beside the step: the whole complex is the TS, the molecule among its molecules
         got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=True)
     fields, _steer_needs = _placed(q, got, molecule, engine)
@@ -1151,7 +1154,6 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         while True:
             with lock:
                 if len(taken) >= opt["scan"]:
-                    extra["scan"].setdefault("ended", {"t_s": since(), "why": f"the limit of {opt['scan']} reactions"})
                     return
             peak, worth, unworthy, flags = derive()
             with lock:
@@ -1362,6 +1364,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             rlay["status"] = "done"
             rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
             timing["relay_s"] = rlay["wall_s"]
+            extra["scan"].setdefault("ended", {"t_s": since(), "why": f"the limit of {opt['scan']} reactions"})
             _peak, worth, unworthy, _flags = derive()
             extra["scan"]["left"] = (
                 [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
