@@ -89,6 +89,14 @@
 .am-steps-bar { margin: 2px 0 6px; gap: 12px; }
 
 .am-scope { margin: 0 0 6px; color: var(--muted); }
+.am-settled { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--text); background: var(--ok-soft); border-radius: 3px; padding: 4px 8px; }
+.am-answer.settled { border-left-color: var(--ok); }
+.am-answer.settled.pos { border-left-color: var(--div-pos); }
+.am-settled-word { color: var(--ok); }
+.am-control { margin: 0 0 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; }
+.am-side summary { cursor: pointer; }
+.am-side ul { margin: 4px 0 2px; padding-left: 18px; font-size: var(--fs-sm); }
+.am-peak-settled { stroke: var(--ok); stroke-width: 1.5; stroke-dasharray: 3 3; }
 .am-stage-bar.open i { width: 35% !important; background: var(--accent); opacity: .5; }
 /* the route peak over the time of the test: one series (accent), two reference lines, a replay marker */
 .am-peak { max-width: 760px; margin: 2px 0 10px; }

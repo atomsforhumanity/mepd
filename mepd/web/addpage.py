@@ -329,7 +329,7 @@ def file_name(name: str) -> str:
 
 
 def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, verify: Optional[int] = None,
-          scan: int = 0, workers: int = 2) -> dict:
+          scan: int = 25, side: bool = False, workers: int = 2) -> dict:
     """Queue `mepd addmol test` for these candidates (one job; a result file each, in the query's
     `results/`). Refused: a candidate with an `error`, or one whose result is still being written."""
     ws = manager.ws
@@ -350,7 +350,7 @@ def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, v
     try:
         (job,) = manager.submit(OP, structure_ids=[(q.get("asked") or {}).get("target") or q["target"]["species"][0]],
                                 edge_ids=[],
-                                params={"query": qid, "steps": steps, "verify": verify, "scan": scan, "workers": workers,
+                                params={"query": qid, "steps": steps, "verify": verify, "scan": scan, "side": side, "workers": workers,
                                         "names": [file_name(c["name"]) for c in clean]},
                                 profile=None, label=f"Add a molecule: {names}")
     finally:
@@ -420,6 +420,8 @@ def progress(doc: dict) -> dict:
                       "failed": sum(1 for x in scans if x.get("status") == "failed"),
                       "running": live, "left": left, "of": scan.get("reactions")},
             "first": {k: (doc.get("timings") or {}).get(f"first_{k}_s") for k in ("bystander", "verified", "relay")},
+            # The target's route settled: no reaction left that could lower it (the rows still to come may move it).
+            "settled": doc.get("target_route_settled"),
             "open": bool(left or unfinished or doc.get("status") != "done"
                          or (summary.get("est") or 0) or (summary.get("not_reached") or 0))}
 
@@ -496,8 +498,35 @@ def replay(q: dict, doc: dict, t: float) -> dict:
                       "lowest": {k: v for k, v in (("with_molecule", low(True)), ("beside", low(False))) if v is not None}})
     scan = doc.get("scan") or {}
     over = t >= (duration(doc) or 0.0)
-    out["scan"] = {**{k: v for k, v in scan.items() if k not in ("steps", "left", "not_scanned", "derivations")}, "steps": scans,
-                   "left": scan.get("left") if over else [], "not_scanned": scan.get("not_scanned") if over else None}
+    ended = scan.get("ended") or {}
+    done_scanning = over or (ended.get("t_s") is not None and t >= float(ended["t_s"]))
+    side = scan.get("side_reactions") or {}
+    out["scan"] = {**{k: v for k, v in scan.items() if k not in ("steps", "left", "not_scanned", "derivations", "ended",
+                                                                 "side_reactions", "kinetic_test")}, "steps": scans,
+                   "left": scan.get("left") if done_scanning else [],
+                   "not_scanned": scan.get("not_scanned") if done_scanning else None,
+                   "ended": ended if done_scanning else None,
+                   "side_reactions": side if side and (over or t >= float(side.get("evaluated_t_s") or 0.0)) else None}
+    settled = doc.get("target_route_settled")
+    out["target_route_settled"] = settled if settled and t >= float(settled["t_s"]) else None
+    out["scope"] = doc.get("scope")
+    # The answer as the run itself had it then (its read-out at the last change of the route peak): the rows a
+    # later, lower row replaced are gone from the final file, so the kinetics run again on it cannot give it.
+    seen = [x for x in peak.get("with") or [] if x["t_s"] <= t and x.get("readout")]
+    if seen and out.get("readout") and not over:
+        then, r = seen[-1], out["readout"]
+        tg, a = then["readout"].get("target") or {}, r.get("added") or {}
+        total = sum((q["conditions"].get("initial") or {}).values()) or 1.0
+        if tg.get("final") is not None:
+            r["target"]["with"] = {**r["target"]["with"], "final": tg["final"], "time_to_fraction_s": tg.get("time_to_fraction_s"),
+                                   "resolved": tg["final"] > addmol.RESOLUTION * total}
+            r["target"]["spread"] = {"with_low": tg.get("low"), "with_high": tg.get("high"), "factor_low": None,
+                                     "factor_high": None, "what": "as the run had it then"} if tg.get("low") is not None else None
+        r["added"] = {**a, **{k: then["readout"][k] for k in ("fate", "route_role", "in_words", "turnovers") if k in then["readout"]},
+                      "returns": then["readout"].get("turnovers", a.get("returns"))}
+        r["peak_routes"] = {**(r.get("peak_routes") or {}),
+                            "with": [{**(((r.get("peak_routes") or {}).get("with") or [{}])[0]), "peak": then["peak"],
+                                      "rests_on": then.get("rests_on")}]}
     # How the steps stood then, from the rows in by then.
     steps = {st["id"] for st in q["steps"] if st.get("geometry")}
     part = {i for e in est.get("new_steps") or [] if e.get("takes_part") for i in (e.get("parent_steps") or [e.get("parent_step")])}
@@ -505,7 +534,7 @@ def replay(q: dict, doc: dict, t: float) -> dict:
     quick = {e.get("step") for e in est.get("steps") or []} - part - beside
     gone = {f.get("step") for f in failed if f.get("status") == "leads elsewhere"} - part - beside
     out["summary"] = None if over and doc.get("summary") else {
-        "steps": len(steps), "est": len(quick & steps), "verified_beside": len(beside & steps), "takes_part": len(part & steps),
+        "steps": (doc.get("summary") or {}).get("steps") or len(steps), "est": len(quick & steps), "verified_beside": len(beside & steps), "takes_part": len(part & steps),
         "leads_elsewhere": len(gone & steps), "failed": 0, "not_reached": 0}
     if out["summary"] is None:
         out["summary"] = doc.get("summary")
@@ -542,7 +571,8 @@ def line(doc: dict, order=()) -> dict:
            "status": doc.get("status"), "updated": doc.get("updated"),
            "layers": [{k: lay.get(k) for k in ("name", "status", "done", "total", "wall_s", "level", "what", "entries", "seen", "lanes")}
                       for lay in doc.get("layers") or []],
-           "failed": len(doc.get("failed") or []), "used": {"est": 0, "verified": 0}, "progress": progress(doc)}
+           "failed": len(doc.get("failed") or []), "used": {"est": 0, "verified": 0}, "progress": progress(doc),
+           "settled": doc.get("target_route_settled")}
     for group in (doc.get("estimates") or {}).values():
         for e in group or []:
             if e.get("status") in out["used"]:
@@ -553,6 +583,7 @@ def line(doc: dict, order=()) -> dict:
         return {**out, "readout": False, "effect": None}
     t, a = r["target"], r.get("added") or {}
     peak = {side: ((r.get("peak_routes") or {}).get(side) or [{}])[0].get("peak") for side in ("parent", "with")}
+    rests_on = ((r.get("peak_routes") or {}).get("with") or [{}])[0].get("rests_on")
     through = [s for s in r["steps"] if _through(s) and s.get("change") is not None]
     limiting = [s for s in through if s["step"] in set(order)]
     best = min(limiting or through, key=lambda s: s["change"], default=None)
@@ -568,7 +599,7 @@ def line(doc: dict, order=()) -> dict:
             "target": {"parent": t["parent"], "with": t["with"], "factor": t.get("factor"),
                        "time_to_parent_amount_s": t.get("time_to_parent_amount_s"), "spread": t.get("spread")},
             "first_order": (r.get("first_order") or {}).get("factor"),
-            "peak": peak, "on_route": _on_route(r),
+            "peak": peak, "peak_rests_on": rests_on, "on_route": _on_route(r),
             "fate": a.get("fate"), "returns": a.get("returns"), "shares": a.get("shares"),
             "resting_state": a.get("resting_state"),
             "route_role": a.get("route_role"), "in_words": a.get("in_words"),
@@ -578,7 +609,9 @@ def line(doc: dict, order=()) -> dict:
                       # (the steps that limit the target first: a far-off step can change by more and matter less)
                       for s in sorted(through, key=lambda s: (s["step"] not in set(order), s["change"]))[:6]],
             "best": best and {**{k: best.get(k) for k in ("step", "label", "direction", "before", "after", "change",
-                                                          "status", "spread")}, "limits": bool(limiting)},
+                                                          "status", "spread")}, "limits": bool(limiting),
+                              # (its number is a scan's of the whole reaction, found from another of its steps)
+                              "via_reaction": (best.get("through") or "").split("|")[0] not in ("", best["step"])},
             "raised": worst and worst["change"] > MOVED and {k: worst.get(k) for k in ("step", "label", "change", "status")}}
 
 
@@ -623,6 +656,15 @@ def _source(doc: dict) -> dict:
     out = {f"{e['step']}+{addmol.ADDED_ID}": e for e in est.get("steps") or [] if e.get("step")}
     out.update({e["id"]: e for e in est.get("new_steps") or [] if e.get("id")})
     return out
+
+
+def _reaction_words(text: Optional[str], names: dict) -> Optional[str]:
+    """A reaction as the core writes it ("A + B -> C", species ids) in the names the page uses."""
+    if not text or "->" not in text:
+        return text
+    side = lambda part: " + ".join(names.get(x.strip(), x.strip()) for x in part.split(" + "))   # noqa: E731
+    left, right = text.split("->", 1)
+    return f"{side(left)} -> {side(right)}"
 
 
 def _species_words(text: str, names: dict, molecule: Optional[str]) -> list:
@@ -674,6 +716,18 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
 
     level_labels = doc.get("level_labels") or {}
     rank = {o["step"]: k for k, o in enumerate(q["limits"].get("order") or [])}
+    names_ = _names(q, ws)
+    # Species whose free energy the parent's fit fixes only together with others: a step that makes or uses one
+    # (its net amount changes) rests on a share of a sum, not on a free energy of its own.
+    together = {sp["id"] for sp in q["species"] if sp.get("g_fixed_only_together")}
+
+    def alone(step: dict) -> list:
+        c = {}
+        for x in step.get("reactants") or []:
+            c[x] = c.get(x, 0) - 1
+        for x in step.get("products") or []:
+            c[x] = c.get(x, 0) + 1
+        return [names_.get(x, x) for x, n in c.items() if n and x in together]
 
     def row(s: dict) -> dict:
         e = source.get(s.get("through")) or {}
@@ -683,7 +737,10 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
         files = None
         if e.get("ts_file"):
             files = "there" if _file(fp, e["ts_file"], look=True) else "gone"
-        return {**s, "layer": e.get("layer"), "level": level_labels.get(e.get("level"), e.get("level")),
+        via = (s.get("through") or "").split("|")[0]
+        return {**s, "fixed_together": alone(st), "via_step": via if e.get("layer") == "relay" and via and via != s["step"] else None,
+                "via_label": labels.get(via) if e.get("layer") == "relay" and via != s["step"] else None,
+                "layer": e.get("layer"), "level": level_labels.get(e.get("level"), e.get("level")),
                 "source": e.get("source"), "kind": kind, "poses_verified": e.get("poses_verified"),
                 "returned": e.get("returned"), "t_s": e.get("t_s"), "rank": rank.get(s["step"]),
                 "via": e.get("label") if e.get("id") and e.get("layer") not in ("verify", "relay") else None,
@@ -725,10 +782,24 @@ def detail(manager, qid: str, name: str, t: Optional[float] = None) -> dict:
     for x in scan.get("left") or []:
         grouped.setdefault(x.get("why") or "not scanned", []).append(labels.get(x.get("step"), x.get("reaction") or x.get("step")))
     out["scan_left"] = [{"why": why, "n": len(names), "labels": names[:6]} for why, names in grouped.items()]
+    out["fixed_together_note"] = next((n for n in q.get("notes") or [] if "g_fixed_only_together" in n), None)
     out["scan_rule"], out["not_scanned"] = scan.get("rule"), scan.get("not_scanned")
     out["scan_reactions"] = scan.get("reactions")
+    names = names_
+    out["scan_ended"] = scan.get("ended")
+    out["settled"] = doc.get("target_route_settled")
+    out["scope"] = doc.get("scope")
+    side = scan.get("side_reactions")
+    out["side_reactions"] = side and {**{k: side.get(k) for k in ("asked_for", "ask_with", "what", "change_worth_listing")},
+                                      "listed": [{**x, "label": _reaction_words(x.get("reaction"), names),
+                                                  "species_name": names.get(x.get("species"), x.get("species"))}
+                                                 for x in side.get("listed") or []]}
+    # A takes-part row that lies above the same reaction with the molecule beside it is no catalysis.
+    out["takes_part_above"] = [{"reaction": _reaction_words(x.get("reaction"), names), "takes_part": x["lowest"]["with_molecule"],
+                                "beside": x["lowest"]["beside"]} for x in scan.get("steps") or []
+                               if (x.get("lowest") or {}).get("with_molecule") is not None and (x.get("lowest") or {}).get("beside") is not None
+                               and x["lowest"]["with_molecule"] > x["lowest"]["beside"]]
     # Where a verification led when it did not join the step's own ends: each pose's two IRC ends, in names.
-    names = _names(q, ws)
     smiles = (doc.get("candidate") or {}).get("smiles")
     out["elsewhere"] = [{"step": f.get("step"), "label": labels.get(f.get("step"), f.get("step")), "t_s": f.get("t_s"),
                          "poses": [{"pose": x.get("pose"), "ends": [_species_words(e, names, smiles) for e in x.get("ends") or []]}
@@ -756,7 +827,8 @@ def _file(result: Path, recorded: str, *, look: bool = False) -> Optional[Path]:
         fp = result.parent / fp
     if fp.is_file():
         return fp
-    tgz = result.parent / "files.tgz"
+    own = result.with_name(result.stem + ".files.tgz")      # (several pod outputs in one folder: one archive each)
+    tgz = own if own.is_file() else result.parent / "files.tgz"
     if Path(recorded).is_absolute() or not tgz.is_file():
         return None
     if look:

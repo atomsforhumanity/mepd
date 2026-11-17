@@ -113,6 +113,31 @@ arrived and the kinetics run again on them. A row that a lower one later
 replaced, and the estimate of a step that was later verified, are not in the
 final file and so not in the replay.
 
+**When to stop waiting.** The scans end by themselves when no reaction is
+left that could lower the target's route (every reaction that, with no
+barrier above its ends, would lower the route's peak has been scanned). From
+that moment the answer block says **Settled after** the time it took, and the
+curve has a dashed *settled* line. The quick estimates and the verification
+may still be running then: a verified row can still move the route's peak,
+and the page says so until they are done. A molecule that changes nothing
+then reads *No effect on the target's route: it is settled where it is
+without the molecule*; before that, *No effect found so far*.
+
+**Side reactions** are reactions that do not lower the target's route but
+could divert material if the molecule opened them: listed under the answer
+with the change they could cause, not scanned unless *also scan side
+reactions* is ticked. *Scans: at most* is an upper bound (25 by default);
+the scans usually end earlier.
+
+A scan that finds transition states with the molecule taking part, all
+above the same reaction with the molecule beside it, is said so with the
+numbers: such a "taking part" is no route anything goes by. A step marked
+*shared G* makes or uses a species whose free energy the network fixes only
+together with others (the boxes never show it alone): its barrier is not
+reliable. A step marked *·r* takes its number from the scan of its whole
+reaction (the lowest transition state between the same molecules, found from
+another of its steps).
+
 **The answer comes first**: the easiest route's highest point without and
 with the molecule, the target's amount with the interval it has if every
 number with a spread is off by its spread, what became of the molecule, and

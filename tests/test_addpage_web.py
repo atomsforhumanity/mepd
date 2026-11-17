@@ -131,11 +131,13 @@ def test_candidates_from_lines_a_file_or_a_structure():
 def test_one_job_tests_the_candidates_of_one_click(mgr):
     qid = ask(mgr)
     cands = addpage.parse_candidates("O water\nN ammonia", 0.1)
-    job = addpage.start(mgr, qid, cands, steps=3, workers=2)
+    job = addpage.start(mgr, qid, cands, steps=3, workers=2, side=True)
     base = addpage.folder(mgr.ws, qid)
     argv = job["argv"]
     assert argv[:3] == ["addmol", "test", str(base / "query.json")] and argv[-2:] == ["--output", str(base / "results")]
     assert argv[argv.index("--workers") + 1] == "2" and argv[argv.index("--steps") + 1] == "3"
+    # the scans: an upper bound of 25 reactions by default; side reactions only when asked for
+    assert argv[argv.index("--scan") + 1] == "25" and "--scan-side-reactions" in argv
     sent = json.loads(open(argv[argv.index("--candidates") + 1]).read())
     assert [c["name"] for c in sent] == ["water", "ammonia"] and "formula" not in sent[0]      # kept with the job
     assert not (base / addpage.PENDING).exists() and job["op"] == "addmol-test" and job["status"] == "queued"
@@ -391,7 +393,7 @@ def test_a_running_test_says_its_stage_and_what_was_not_scanned(mgr, tmp_path):
     assert not addpage.progress(done)["open"]
     assert addpage.progress({**done, "scan": doc["scan"]})["open"]                     # (steps left unscanned)
     assert addpage.progress({**done, "summary": {**doc["summary"], "est": 2}})["open"]   # (estimates only)
-    assert addpage.progress({"status": "done"}) == {"stage": None, "stages": [], "summary": None, "open": False, "first": {
+    assert addpage.progress({"status": "done"}) == {"stage": None, "stages": [], "summary": None, "open": False, "settled": None, "first": {
         "bystander": None, "verified": None, "relay": None}, "scans": {"asked": 0, "done": 0, "failed": 0, "running": [], "left": 0, "of": None}}
     # two stages running at once are both said; a test cut from outside stays open
     both = {**doc, "layers": [{"name": "verify", "status": "running", "done": 3, "total": 9}, {"name": "relay", "status": "running", "done": 0, "total": 2}]}
@@ -519,3 +521,68 @@ def test_a_rows_files_are_read_beside_the_result_or_from_its_archive(mgr, tmp_pa
     doc["estimates"]["new_steps"][1].update(ts_file="nowhere/ts.xyz")
     fp.write_text(json.dumps(doc))
     assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["missing"] == "nowhere/ts.xyz"
+
+
+
+# ---------------------------------------------------------------- settled, side reactions, the control
+def test_settled_side_reactions_and_takes_part_above_beside(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    a, b = st["reactants"][0], st["products"][0]
+    doc["target_route_settled"] = {"t_s": 80.0, "route_peak": 22.0, "in_words": "no reaction is left that could lower it"}
+    doc["scan"]["ended"] = {"t_s": 80.5, "why": "no reaction is left that could lower the target's route"}
+    doc["scan"]["side_reactions"] = {"asked_for": False, "ask_with": "--scan-side-reactions", "evaluated_t_s": 95.0,
+                                     "listed": [{"step": st["id"], "reaction": f"{a} -> {b}", "steps": [st["id"]], "species": a,
+                                                 "change": 0.5, "in_words": "could divert material; not scanned"}]}
+    doc["scan"]["steps"][0]["lowest"] = {"with_molecule": 30.0, "beside": 25.0}
+    doc["route_peak"]["with"][-1]["readout"] = {"target": {"final": 0.01, "low": 0.005, "high": 0.02, "time_to_fraction_s": 9.0},
+                                                "fate": "regenerated", "route_role": "takes part", "in_words": "takes part", "turnovers": 3.0}
+    doc["scope"] = {"level": "lvl", "phase": "gas", "does_not_hold": "routes through species not in the network"}
+    fp.write_text(json.dumps(doc))
+    end = addpage.detail(mgr, qid, file)
+    names = addpage._names(q, mgr.ws)
+    assert end["settled"]["t_s"] == 80.0 and end["progress"]["settled"]["route_peak"] == 22.0 and end["scope"]["phase"] == "gas"
+    (side,) = end["side_reactions"]["listed"]
+    assert side["label"] == f"{names[a]} -> {names[b]}" and side["species_name"] == names[a] and not end["side_reactions"]["asked_for"]
+    assert end["takes_part_above"] == [{"reaction": None, "takes_part": 30.0, "beside": 25.0}]
+    # replayed: before the moment it settled there is no "settled"; the side reactions come a little later
+    assert addpage.detail(mgr, qid, file, 70.0)["settled"] is None and addpage.detail(mgr, qid, file, 70.0)["side_reactions"] is None
+    at85 = addpage.detail(mgr, qid, file, 85.0)
+    assert at85["settled"]["t_s"] == 80.0 and at85["scan_ended"]["t_s"] == 80.5 and at85["side_reactions"] is None
+    assert addpage.detail(mgr, qid, file, 96.0)["side_reactions"]["listed"]
+    # the answer at 95 s is the run's own read-out at its last peak event (90 s), not the kinetics run again
+    at95 = addpage.detail(mgr, qid, file, 95.0)
+    assert at95["target"]["with"]["final"] == 0.01 and at95["target"]["spread"]["with_low"] == 0.005 and at95["fate"] == "regenerated"
+
+
+def test_a_step_that_makes_a_jointly_fixed_species_is_marked(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    qf = addpage.folder(mgr.ws, qid) / "query.json"
+    qq = json.loads(qf.read_text())
+    for sp in qq["species"]:
+        if sp["id"] == st["products"][0]:
+            sp["g_fixed_only_together"] = True
+    qq["notes"] = qq.get("notes", []) + ["1 species are never seen apart in the boxes of the fit (g_fixed_only_together on each)"]
+    qf.write_text(json.dumps(qq))
+    d = addpage.detail(mgr, qid, file)
+    assert d["through_steps"][0]["fixed_together"] == [addpage._names(qq, mgr.ws)[st["products"][0]]]
+    assert "g_fixed_only_together" in d["fixed_together_note"]
+
+
+def test_each_result_may_bring_its_own_archive(mgr, tmp_path):
+    import tarfile
+
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    doc["estimates"]["new_steps"][1].update(ts_file="own/ts.xyz", irc_file="own/irc.xyz")
+    fp.write_text(json.dumps(doc))
+    with tarfile.open(fp.with_name(fp.stem + ".files.tgz"), "w:gz") as tar:
+        tar.add(tmp_path / "ts.xyz", arcname="./own/ts.xyz")
+        tar.add(tmp_path / "irc.xyz", arcname="./own/irc.xyz")
+    assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["with_molecule"]

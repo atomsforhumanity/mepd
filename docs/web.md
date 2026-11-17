@@ -166,7 +166,11 @@ is the page over `mepd addmol` ([add-molecule.md](add-molecule.md); manual page 
    what was not scanned and why, and *Not a verdict yet* while anything is open), then three stage boxes
    (`addpage.progress`), the step table (rows keyed and in the order of work while it runs; an estimate hollow and
    dashed, verified rows *beside* or *takes part*), and the scans (`scan.steps[]`; an entry may name several
-   steps; several may run at once, and so may the stages). A verified TS is shown from its `ts_file` / `irc_file`
+   steps; several may run at once, and so may the stages). Once `target_route_settled` is in the file the answer says
+   *Settled after* its time (and that rows still to come may move the peak); `scan.side_reactions.listed` is a folded
+   list under it, scanned only with the form's *also scan side reactions* (`scan_side_reactions` → `--scan-side-reactions`);
+   *Scans* is an upper bound (`--scan`, default 25). Rows releasing a species flagged `g_fixed_only_together` are
+   marked *shared G*; a scan's takes-part rows that all lie above its beside row are said so. A verified TS is shown from its `ts_file` / `irc_file`
    (relative to the result file, or taken out of `files.tgz` beside it); where they are gone the page says so. The
    route peak's history (`route_peak`) is drawn as a step curve. A finished test is replayed by its rows' `t_s`:
    `GET …/results/{file}?t=<seconds>` is the result as it stood then (`addpage.replay`: the rows in by then, the

@@ -749,8 +749,9 @@ export function NetworkMap() {
   useEffect(() => {
     if (phoneOpened.current || !M.starts.length) return;
     phoneOpened.current = true;
-    if (isPhone() && M.nodes.size > 12 && view.mode === 'all') goMol(M.starts[0]);
+    if (isPhone() && M.nodes.size > 12 && view.mode === 'all' && !marks) goMol(M.starts[0]);   // (a molecule added: the marks are on the overview)
   }, [M]);
+  useEffect(() => { if (marks && isPhone() && view.mode !== 'all') toAll(); }, [network]);   // (Add a molecule › Show on the map)
 
   // Connecting two structures, or experimental conditions, happen on the editable graph.
   useEffect(() => { if (connectMode) setExploreView('graph'); }, [connectMode]);

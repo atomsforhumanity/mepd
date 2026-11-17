@@ -1898,8 +1898,11 @@ class AddmolTestParams(Params):
                              kind="custom")
     verify: Optional[int] = P(None, "Verify", "Verify the first N steps of the order of work only (0: none).",
                               kind="custom")
-    scan: int = P(0, "Scans", "Scan up to N steps for transition states with the molecule taking part.",
-                  kind="custom", ge=0, le=64)
+    scan: int = P(25, "Scans", "At most N reactions scanned for transition states with the molecule taking part "
+                  "(the scans end earlier once no reaction is left that could lower the target's route).",
+                  kind="custom", ge=0, le=200)
+    side: bool = P(False, "Side reactions", "Also scan the reactions that could divert material if the molecule "
+                   "opened them (listed, not scanned, by default).", kind="custom")
     workers: int = P(2, "Processes", "Processes for the quick estimates and the verification.", kind="custom", ge=1, le=64)
     names: list[str] = P([], "Results", "The result files this job writes.", kind="custom")
 
@@ -1921,8 +1924,9 @@ def _build_addmol_test(ctx: JobContext, p: AddmolTestParams) -> list[str]:
         argv += ["--steps", str(p.steps)]
     if p.verify is not None:
         argv += ["--verify", str(p.verify)]
-    if p.scan:
-        argv += ["--scan", str(p.scan)]
+    argv += ["--scan", str(p.scan)]
+    if p.side:
+        argv += ["--scan-side-reactions"]
     return [*argv, "--output", str(base / "results")]
 
 
@@ -2465,7 +2469,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "addmol-test", "Add a molecule: test candidates", "What one more molecule in the flask does to a target: "
         "the molecule beside every step, then the kinetics with it. (`mepd addmol test`)",
         "set", "Reaction conditions", AddmolTestParams, _build_addmol_test, hidden=True,
-        cli_path=("addmol", "test"), cli_extra_flags=("--candidates", "--workers", "--steps", "--verify", "--scan", "--output"),
+        cli_path=("addmol", "test"), cli_extra_flags=("--candidates", "--workers", "--steps", "--verify", "--scan", "--scan-side-reactions", "--output"),
         produces=["one result file per candidate"]),
     Operation(
         "substituents", "Substituent effects", "Swap hydrogens for functional groups, one at a time, and see how "

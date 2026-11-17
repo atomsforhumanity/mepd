@@ -112,11 +112,12 @@ function Candidates({ q, onStarted }) {
   const [text, setText] = useState('');
   const [filename, setFilename] = useState('');
   const [amount, setAmount] = useState(0.1);
-  const [scan, setScan] = useState(2);
+  const [scan, setScan] = useState(25);
+  const [side, setSide] = useState(false);
   const [read, setRead] = useState(null);
   const [busy, setBusy] = useState(false);
   const file = useRef(null);
-  const body = (dry) => ({ text, filename, amount, scan, dry_run: dry });
+  const body = (dry) => ({ text, filename, amount, scan, scan_side_reactions: side, dry_run: dry });
   const look = async (t = text, f = filename) => {
     if (!t.trim()) { setRead(null); return; }
     const out = await attempt(() => api.post(`/api/addmol/${q.id}/test`, { text: t, filename: f, amount, dry_run: true }));
@@ -152,8 +153,9 @@ function Candidates({ q, onStarted }) {
       ${design?.smiles && html`<button class="btn small" title=${`Add the molecule in Design: ${design.smiles}`}
         onClick=${() => { const t = `${text.trim() ? `${text.trim()}\n` : ''}${design.smiles} ${(design.name || 'design').replace(/\s+/g, '_')}`; setText(t); setFilename(''); look(t, ''); }}>From Design</button>`}
     </div>
-    <div class="kn-row"><label class="small" title="After the quick estimates and their verification: searches for transition states in which the molecule takes part (a relay, an exchange), on the steps that limit the target first. Minutes each, on every core. 0: none; the page then says that nothing was scanned.">Scans
-      <input type="number" class="tiny" min="0" max="64" step="1" value=${scan} onInput=${(e) => setScan(Math.max(0, Math.round(+e.target.value)))} /> steps, for the molecule taking part</label><${Why} id="addmol.scan" label="The scan" /></div>
+    <div class="kn-row"><label class="small" title="Searches for transition states in which the molecule takes part (a relay, an exchange), one per reaction, in the order of what the target would gain; they end by themselves once no reaction is left that could lower the target's route. This is the most they may take. Minutes each. 0: none.">Scans: at most
+      <input type="number" class="tiny" min="0" max="200" step="1" value=${scan} onInput=${(e) => setScan(Math.max(0, Math.round(+e.target.value)))} /> reactions</label><${Why} id="addmol.scan" label="The scan" /></div>
+    <label class="kn-row small" title="Reactions that do not lower the target's route but could divert material if the molecule opened them: listed, not scanned, unless this is ticked"><input type="checkbox" checked=${side} onChange=${(e) => setSide(e.target.checked)} /> also scan side reactions</label>
     ${read && read.length > 0 && html`<table class="rx-table am-read"><tbody>${read.map((c) => html`<tr class=${c.error ? 'am-bad' : ''}>
       <td>${c.smiles && !c.error ? html`<img src=${depictUrl(c.smiles, 60, 45)} alt="" />` : ''}</td>
       <td class="rx-eq">${c.name}<div class="small muted">${c.error || `${c.formula || `${c.natoms} atoms`} · ${fmtC(c.amount)} M`}</div></td></tr>`)}</tbody></table>`}
@@ -229,7 +231,7 @@ function effectText(r, q) {
   }
   if (t.with.resolved) return { main: `${fmtC(t.with.final)} M`, kind: 'pos', sub: 'none without it' };
   const drop = r.peak.parent != null && r.peak.with != null ? r.peak.with - r.peak.parent : 0;
-  return { main: r.progress?.open ? 'none found yet' : 'still none', kind: '', short: Math.abs(drop) > 0.05 ? `route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)}` : 'route unchanged',
+  return { main: r.settled ? 'no change' : r.progress?.open ? 'none found yet' : 'still none', kind: '', short: Math.abs(drop) > 0.05 ? `route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)}` : 'route unchanged',
     sub: Math.abs(drop) > 0.05 ? `easiest route ${kcal(r.peak.parent)} → ${kcal(r.peak.with)} kcal/mol (${kcal(q.limits.cutoff_kcal)} needed)`
       : 'easiest route unchanged' };
 }
@@ -257,7 +259,7 @@ function Progress({ r }) {
   if (r.status === 'queued') return html`<span class="am-run">queued</span>`;
   const live = r.progress?.stages || [];
   if (r.status === 'running') {
-    return html`<span class="am-run"><span class="spinner" aria-hidden="true"></span>${live.length ? live.map((l) => `${LAYER[l.name] || l.name} ${l.done ?? 0}/${l.total ?? '?'}`).join(' · ') : r.readout ? 'running' : 'starting'}</span>`;
+    return html`<span class="am-run">${r.settled ? html`<b class="am-settled-word" title="No reaction is left that could lower the target's route">settled</b> · ` : ''}<span class="spinner" aria-hidden="true"></span>${live.length ? live.map((l) => `${LAYER[l.name] || l.name} ${l.done ?? 0}/${l.total ?? '?'}`).join(' · ') : r.readout ? 'running' : 'starting'}</span>`;
   }
   if (r.status === 'cut') return html`<span class="am-run warn" title="Stopped from outside before it was complete: the numbers are from what had arrived">cut short</span>`;
   if (r.status === 'interrupted') return html`<span class="am-run warn" title="Its calculation stopped before the last layer finished: the numbers are from the layers that did">stopped early</span>`;
@@ -303,7 +305,8 @@ function Table({ q, rows, sel, onPick, picked, onToggle }) {
               within ? '\nThe change is no larger than its spread between repeats: not a signal.' : ''}${b.limits ? '' : '\nNo step that limits the target goes through it: this is the largest change anywhere.'}`}>
             <span class=${cls('am-main mono', within ? 'am-weak' : b.change < 0 ? 'pos' : 'neg')}>${kcal(b.change, true)}</span>
             <span class="mono small"> ${b.spread != null ? `± ${b.spread.toFixed(1)}` : '± ?'}</span>
-            <div class="small muted"><${Tag} status=${b.status} />${within ? html` <span class="am-flag">within spread</span>` : ''}${b.limits ? '' : html` <span class="am-flag" title="No step that limits the target goes through it">off-route</span>`}</div></td>`
+            <div class="small muted"><${Tag} status=${b.status} />${within ? html` <span class="am-flag">within spread</span>` : ''}${b.limits ? '' : html` <span class="am-flag" title="No step that limits the target goes through it">off-route</span>`}${
+              b.via_reaction ? html` <span class="am-flag" title="Its number is the scan's of the whole reaction, found from another of its steps: a step that carries a molecule along gets the reaction's lower one, which is no effect of the added molecule">·r</span>` : ''}</div></td>`
             : html`<td class="muted small">none through it</td>`}`
           : html`<td colspan="5" class=${cls('small', r.status === 'failed' || r.why ? 'am-warn' : 'muted')} title=${none}><div class="am-two">${none}</div></td>`}
       </tr>`;
@@ -356,7 +359,10 @@ function StepRows({ rows, onView, viewing, through, fresh, unc }) {
       const [word, what] = KIND[s.kind] || [s.kind || '', ''];
       const label = `${stepLabel(s.label, s.direction)}${s.step.endsWith('~mirror') ? ' (mirror image)' : ''}`;
       return html`<tr key=${s.step} class=${cls(viewing === s.step && 'on', est && 'am-est-row', fresh?.has(s.step) && 'am-fresh')}>
-        <td class="am-step" title=${`${label}${s.via ? `\n${s.via}` : ''}${s.rank != null ? '\nOne of the steps that limit the target.' : ''}`}>${s.rank != null ? html`<i class="am-limit" aria-label="limits the target"></i>` : ''}${label}</td>
+        <td class="am-step" title=${`${label}${s.via ? `\n${s.via}` : ''}${s.rank != null ? '\nOne of the steps that limit the target.' : ''}${
+          s.via_label ? `\nIts number is the scan's of the whole reaction, found from the step ${stepLabel(s.via_label)}: the lowest transition state between the same molecules.` : ''}${
+          s.fixed_together?.length ? `\n${s.fixed_together.join(', ')}: free energy fixed only together with other species (the boxes never show it alone), so this barrier is not reliable.` : ''}`}>${
+          s.rank != null ? html`<i class="am-limit" aria-label="limits the target"></i>` : ''}${s.fixed_together?.length ? html`<span class="am-flag" aria-label="rests on a shared free energy">shared G</span> ` : ''}${label}</td>
         <td class="mono">${kcal(s.before)}</td>
         <td class="am-db-cell" title=${`${kcal(s.before)} → ${kcal(s.after)} kcal/mol${spread ? `, ± ${spread.toFixed(1)}` : ''}`}>
           <${Dumbbell} before=${s.before} after=${s.after} spread=${spread || null} lo=${lo - pad} hi=${hi + pad} est=${est} /></td>
@@ -365,7 +371,7 @@ function StepRows({ rows, onView, viewing, through, fresh, unc }) {
           title=${s.spread != null ? (est ? 'Spread over the estimate\'s repeats' : `Difference between the ${s.poses_verified || 2} verified poses`)
             : est ? `No spread of its own (one repeat). ${uncWords(unc)}` : 'One verified pose: no spread'}>${
           s.spread != null ? `± ${s.spread.toFixed(1)}` : est ? (mean != null ? `± ~${mean.toFixed(0)}` : '± ?') : ''}</span>` : ''}</td>
-        ${through && html`<td class="small" title=${`${what}${est ? ` ${uncWords(unc)}` : ''}${s.t_s != null ? `\nArrived ${fmtTime(s.t_s)} into the test.` : ''}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}</span></td>
+        ${through && html`<td class="small" title=${`${what}${s.via_label ? ' From the scan of the whole reaction (another step between the same molecules).' : ''}${est ? ` ${uncWords(unc)}` : ''}${s.t_s != null ? `\nArrived ${fmtTime(s.t_s)} into the test.` : ''}${s.level ? `\nLevel: ${s.level}` : ''}${s.source ? `\n${s.source}` : ''}`}><${Tag} status=${s.status} /> <span class="muted">${word}${s.via_label ? ' ·r' : ''}</span></td>
           <td>${(s.geometry || s.with_geometry) && html`<button class="btn small ghost" title="Its transition state in 3D" onClick=${() => onView(s)}>3D</button>`}</td>`}
       </tr>`;
     })}</tbody></table></div>`;
@@ -435,7 +441,7 @@ function Stages({ d }) {
 // The route's highest point with the molecule, over the time of the test: the one curve to watch. A step line
 // (the peak holds until a lower one arrives), the peak without the molecule and what the conditions allow as
 // reference lines, a marker where the replay stands; hover reads a time.
-function RoutePeak({ peak, cutoff, end, now, onPick }) {
+function RoutePeak({ peak, cutoff, end, now, onPick, settled }) {
   const [hover, setHover] = useState(null);
   const pts = (peak?.with || []).filter((x) => x.peak != null);
   if (peak?.parent == null || !pts.length) return null;
@@ -477,6 +483,9 @@ function RoutePeak({ peak, cutoff, end, now, onPick }) {
       <path class="am-peak-line" d=${path} />
       ${drops.map((x) => html`<circle class="am-peak-dot" cx=${X(x.t_s)} cy=${Y(x.peak)} r="4.5"><title>${`${kcal(x.peak)} kcal/mol from ${fmtTime(x.t_s)}`}</title></circle>`)}
       ${Math.abs(Y(last) - Y(peak.parent)) > 12 && (cutoff == null || Math.abs(Y(last) - Y(cutoff)) > 12) && html`<text class="am-peak-lab strong" x=${W - pad.r + 6} y=${Y(last) + 4}>with ${kcal(last)}</text>`}
+      ${settled && settled.t_s <= upto && html`<line class="am-peak-settled" x1=${X(settled.t_s)} x2=${X(settled.t_s)} y1=${pad.t} y2=${H - pad.b} />
+        <text class="am-peak-lab strong" x=${X(settled.t_s) + (X(settled.t_s) > W - pad.r - 90 ? -4 : 4)} y=${H - pad.b - 6}
+          text-anchor=${X(settled.t_s) > W - pad.r - 90 ? 'end' : 'start'}>settled ${fmtTime(settled.t_s)}</text>`}
       ${now != null && now < tMax && html`<line class="am-peak-now" x1=${X(now)} x2=${X(now)} y1=${pad.t} y2=${H - pad.b} />`}
       ${hover != null && html`<line class="kn-cross" x1=${X(hover)} x2=${X(hover)} y1=${pad.t} y2=${H - pad.b} />`}
     </svg>
@@ -516,6 +525,7 @@ function verdict(d, q) {
   if (t.factor != null && t.factor <= 0.95) return { kind: 'neg', text: `It costs target: ${fmtX(1 / t.factor)}× less.` };
   if (t.with.resolved && !t.parent.resolved) return { kind: 'pos', text: `It helps: the target forms (${fmtC(t.with.final)} M), where none does without it.` };
   if (drop >= 0.5) return { kind: '', text: `It lowers the easiest route by ${kcal(drop)} kcal/mol${over > 0 ? `, which is still ${kcal(over)} above what these conditions allow: no target forms` : ''}.` };
+  if (d.settled) return { kind: '', text: 'No effect on the target\'s route: it is settled where it is without the molecule.' };
   return { kind: '', text: d.progress?.open ? 'No effect found so far.' : 'No effect at these conditions.' };
 }
 
@@ -528,15 +538,25 @@ function Answer({ d, q }) {
   if (d.status === 'running' && !live.length) open.push('the test is still running');
   if (['interrupted', 'cut'].includes(d.status)) open.push(`the calculation was stopped before it finished${d.cut?.why ? ` (${d.cut.why})` : ''}`);
   if (p.summary?.est) open.push(`${p.summary.est} step${p.summary.est === 1 ? ' rests' : 's rest'} on a quick estimate only`);
-  const left = (d.scan_left || []).reduce((a, x) => a + x.n, 0);
+  // Reactions left unscanned because they could not lower the target's route are no reason to wait; those that could, are.
+  const settled = d.settled;
+  const sideN = (d.side_reactions?.listed || []).length;
+  const left = settled ? 0 : (d.scan_left || []).reduce((a, x) => a + x.n, 0);
   if (left) open.push(`${left} reaction${left === 1 ? ' was' : 's were'} not scanned for the molecule taking part`);
   else if (d.status !== 'running' && !(d.scans || []).length && (d.layers || []).some((l) => l.name === 'bystander')) open.push('no step was scanned for the molecule taking part');
-  return html`<div class=${cls('am-answer', v.kind)}>
-    <p class="am-verdict"><b>${v.text}</b> <${Tag} status=${s} /></p>
-    ${open.length > 0 && html`<p class="am-open"><b>${v.kind === 'pos' ? 'Not the whole picture yet:' : 'Not a verdict yet:'}</b> ${open.join('; ')}.${left ? ' A reaction that was not scanned may still have a faster way through the molecule.' : ''}</p>`}
-    <p class="am-scope small">This is what this network gives at ${d.level_words || 'its level of theory'}${d.solvent ? '' : ', in the gas phase'}: not a prediction of an experiment. A route the network does not hold (a species nobody explored, an intermediate the molecule forms) is not in it.</p>
+  const peakState = d.peak_rests_on || (peak.with !== peak.parent ? s : 'verified');
+  const above = d.takes_part_above || [];
+  return html`<div class=${cls('am-answer', v.kind, settled && 'settled')}>
+    <p class="am-verdict"><b>${v.text}</b> <${Tag} status=${peakState} title=${peakState === 'verified' ? 'The route this rests on is made of verified steps only' : 'The route this rests on has steps that are estimates only'} /></p>
+    ${settled && html`<p class="am-settled"><b>Settled after ${fmtTime(settled.t_s)}:</b> no reaction is left that could lower the target's route (every one that could, with no barrier, has been scanned).
+      ${d.status === 'running' ? html` The quick estimates and the verification are still running: a verified row can still move the route's peak.` : ''}</p>`}
+    ${open.length > 0 && html`<p class="am-open"><b>${settled ? (d.status === 'running' ? 'Still running:' : 'Left open:') : v.kind === 'pos' ? 'Not the whole picture yet:' : 'Not a verdict yet:'}</b> ${open.join('; ')}.${left ? ' A reaction that was not scanned may still have a faster way through the molecule.' : ''}</p>`}
+    <p class="am-scope small">This is what this network gives at ${d.scope?.level || d.level_words || 'its level of theory'}${d.scope?.phase ? ` (${d.scope.phase})` : d.solvent ? '' : ', in the gas phase'}: not a prediction of an experiment.${' '}
+      ${d.scope?.does_not_hold ? `${d.scope.does_not_hold[0].toUpperCase()}${d.scope.does_not_hold.slice(1)}.` : 'A route the network does not hold (a species nobody explored, an intermediate the molecule forms) is not in it.'}</p>
+    ${above.length > 0 && html`<p class="am-control small"><b>${above.length} scan${above.length === 1 ? '' : 's'} found transition states with the molecule taking part, all above the same reaction with it beside</b>${' '}
+      (${above.slice(0, 4).map((x) => `${kcal(x.takes_part)} against ${kcal(x.beside)}`).join('; ')}${above.length > 4 ? '; …' : ''} kcal/mol): its taking part there is no route anything goes by.</p>`}
     <dl class="am-facts">
-      <dt>Easiest route to the target</dt><dd><span class="mono">${kcal(peak.parent)} → <b>${kcal(peak.with)}</b> kcal/mol</span> at its highest point <${Tag} status=${peak.with !== peak.parent ? s : 'verified'} />
+      <dt>Easiest route to the target</dt><dd><span class="mono">${kcal(peak.parent)} → <b>${kcal(peak.with)}</b> kcal/mol</span> at its highest point <${Tag} status=${peakState} />
         <span class="muted"> · ${kcal(q.limits.cutoff_kcal)} is what these conditions allow${d.route_peak_with_added === false && peak.with !== peak.parent ? ' · the route\'s highest step is not one with the molecule' : ''}</span></dd>
       <dt>Target at the end</dt><dd><span class="mono">${t.parent.resolved ? fmtC(t.parent.final) : 'none'} → <b>${t.with.resolved ? `${fmtC(t.with.final)} M` : 'none'}</b></span>
         ${t.factor != null && html` <b class=${cls('am-main', effectText(d, q).kind)}>${effectText(d, q).main}</b>`} <${Tag} status=${s} />
@@ -548,11 +568,15 @@ function Answer({ d, q }) {
       ${soonerText(d) && html`<dt>As much as today's half</dt><dd><span class="mono">${soonerText(d).main}</span> <span class="muted">(today: ${fmtTime(t.parent.time_to_fraction_s)})</span> <${Tag} status=${s} /></dd>`}
       <dt>The molecule itself<${Why} id="addmol.fate" label="Returned, used up or held" /></dt><dd><b>${fate.main}</b> <${Tag} status=${s} /> <span class="muted">${fate.sub}</span>
         <div class="small muted">${d.shares ? `At the end: free ${pct(d.shares.free)} · bound in complexes ${pct(d.shares.bound)} · in new species ${pct(d.shares.covalent)}. ` : ''}Turnovers per molecule in ${fmtTime(q.conditions.time_s)}: <span class="mono">${d.returns != null ? fmtC(d.returns) : '—'}</span>.</div></dd>
-      ${(left > 0 || (d.scans || []).length > 0) && html`<dt>Not scanned</dt><dd>${left ? html`<b>${left}${d.scan_reactions ? ` of ${d.scan_reactions}` : ''} reaction${left === 1 ? '' : 's'}</b> <span class="muted">got no scan for the molecule taking part:</span>
+      ${sideN > 0 && html`<dt>Side reactions</dt><dd><details class="am-side"><summary><b>${sideN}</b> could divert material if the molecule opened them; ${d.side_reactions.asked_for ? 'scanned' : 'not scanned'}</summary>
+        <ul>${d.side_reactions.listed.map((x) => html`<li title=${x.in_words || ''}>${stepLabel(x.label || x.reaction)}${x.steps?.length > 1 ? html` <span class="muted">· ${x.steps.length} steps</span>` : ''}
+          <span class="muted"> · with no barrier, ${x.species_name} would change by <span class="mono">${x.change > 0 ? '+' : ''}${fmtC(x.change)} M</span></span></li>`)}</ul>
+        ${!d.side_reactions.asked_for && html`<p class="small muted">They do not lower the target's route, so they were not scanned. To scan them, tick <i>also scan side reactions</i> before Test (minutes each).</p>`}</details></dd>`}
+      ${(left > 0 || (d.scans || []).length > 0) && html`<dt>Not scanned</dt><dd>${settled && d.not_scanned ? html`<span class="muted">${d.not_scanned}.</span>` : left ? html`<b>${left}${d.scan_reactions ? ` of ${d.scan_reactions}` : ''} reaction${left === 1 ? '' : 's'}</b> <span class="muted">got no scan for the molecule taking part:</span>
           <ul class="am-left">${(d.scan_left || []).map((x) => html`<li title=${x.labels.map((l) => stepLabel(l)).join('\n') + (x.n > x.labels.length ? `\n… ${x.n - x.labels.length} more` : '')}><span class="mono">${x.n}</span> ${x.why}</li>`)}</ul>`
           : d.status === 'running' ? html`<span class="muted">The scans are still running (${d.scans.length} started${d.scan_reactions ? ` of ${d.scan_reactions} reactions` : ''}): what is left unscanned is known when they end.</span>`
             : html`<span class="muted">Every reaction that was wanted for a scan was scanned.</span>`}
-        ${d.not_scanned && !left && html`<div class="small muted">${d.not_scanned}.</div>`}</dd>`}
+        ${d.not_scanned && !left && !settled && html`<div class="small muted">${d.not_scanned}.</div>`}</dd>`}
     </dl>
   </div>`;
 }
@@ -667,7 +691,7 @@ function Detail({ q, file, tick, onGone }) {
     ${d.status === 'failed' && html`<p class="warn-box small">A stage failed: ${d.failed.filter((f) => !f.step).map((f) => f.why).join(' ')} What follows is from the stages that ran.</p>`}
     <${Answer} d=${d} q=${q} />
     ${d.route_peak?.with?.length > 0 && html`<div class="section-title">The route's highest point as the test went</div>
-      <${RoutePeak} peak=${d.route_peak} cutoff=${q.limits.cutoff_kcal} end=${d.duration_s} now=${d.replay && !d.replay.over ? d.replay.t_s : null}
+      <${RoutePeak} peak=${d.route_peak} cutoff=${q.limits.cutoff_kcal} end=${d.duration_s} settled=${d.settled} now=${d.replay && !d.replay.over ? d.replay.t_s : null}
         onPick=${d.duration_s && (d.status !== 'running' || d.replay) ? (t) => setAt(Math.round(t)) : null} />`}
     <${Stages} d=${d} />
 
@@ -684,6 +708,8 @@ function Detail({ q, file, tick, onGone }) {
       <${StepRows} rows=${shown} through fresh=${fresh} unc=${d.uncertainty} onView=${(x) => setView(view?.step === x.step ? null : x)} viewing=${view?.step} />
       ${view && html`<${StepViewer} qid=${q.id} file=${file} step=${d.through_steps.find((x) => x.step === view.step) || view} onClose=${() => setView(null)} />`}`
       : html`<p class="small muted">${d.used.est + d.used.verified ? `None: every step of the network is still fastest without ${name}.` : 'No stage has given a number for a step yet.'}</p>`}
+    ${shown.some((x) => x.fixed_together?.length) && html`<p class="small muted"><span class="am-flag">shared G</span> the step makes or uses a species whose free energy the network fixes only together with others (the boxes never show it alone): its barrier is not reliable.</p>`}
+    ${shown.some((x) => x.via_label) && html`<p class="small muted"><span class="muted">·r</span> the number is the scan's of the whole reaction: the lowest transition state between the same molecules, found from another of its steps. A step that carries a molecule along (a shuttle) then gets the reaction's lower one, which is no effect of the added molecule.</p>`}
     ${d.moved_steps.length > 0 && html`<details class="small"><summary>${d.moved_steps.length} step${d.moved_steps.length > 1 ? 's' : ''} moved only because amounts moved</summary>
       <p class="small muted">Their own transition states are unchanged: their reactants hold more or less material with ${name} in the flask.</p>
       <${StepRows} rows=${d.moved_steps.slice(0, 30)} /></details>`}

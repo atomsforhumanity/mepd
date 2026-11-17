@@ -4243,9 +4243,9 @@
   "title": "the scan",
   "does": "After the quick estimates and their verification, a search for transition states in which the molecule itself takes part (a proton relay, an exchange): the case a molecule placed beside a step cannot show.",
   "how": [
-   "The steps that limit the target are scanned first, then those whose estimate or verification showed the molecule reacting; as many as asked for.",
-   "Each scan is a reaction-channels search between the step's two ends with the molecule on both sides; every verified transition state is put on the network's scale as a whole.",
-   "The lowest row of each kind per step (beside it, taking part) enters the kinetics, so a row can be replaced by a lower one while the test runs."
+   "The reactions that, with no barrier above their ends, would lower the target's route are scanned, by the peak that would give, three side by side; the scans end when none is left (the target's route is then settled), or at the upper bound set in the form.",
+   "Each scan is a reaction-channels search between the reaction's two ends with the molecule on both sides; every verified transition state is put on the network's scale as a whole.",
+   "Reactions that could divert material if the molecule opened them are listed, not scanned, unless asked for."
   ],
   "caveats": [
    "A scan takes minutes and every core.",
