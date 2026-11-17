@@ -214,9 +214,10 @@ again at the end adds `[catalytic: <formula>]`.
   graph (the other methyl of an acetone) is the same mechanism and is left
   out; the symmetry variants of step 3 and snap's picks cover it.
 - **A mechanism is listed once.** A mapping that is one of SLAPMapper's, or
-  an earlier explored one, with the reactant's atoms renamed by a symmetry
-  of its bond graph is left out the same way, and its place goes to the next
-  mechanism in the ranking. (Keys ending `[route 2]` remain where two
+  an earlier explored one, through symmetry-equivalent atoms of the reactant
+  or the product (the reactant's bonds and the bonds the mapping gives the
+  product, as one two-layer graph, are isomorphic) is left out the same way,
+  and its place goes to the next mechanism in the ranking. (Keys ending `[route 2]` remain where two
   mechanisms share a name by symmetry class but are not related by a
   symmetry of the whole reactant.)
 - **`--explore-molecule SMILES`** keeps, of the explored mechanisms, the N
