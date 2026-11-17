@@ -55,7 +55,7 @@ def put_result(mgr, qid, name, estimates=None, **kw):
     q = json.loads((addpage.folder(mgr.ws, qid) / "query.json").read_text())
     est = {"species": [], "steps": [], "new_species": [], "new_steps": [], **(estimates or {})}
     doc = addmol.result(q, {"name": name, "smiles": "O", "amount": 0.1}, est, **kw)
-    fp = addpage.folder(mgr.ws, qid) / "results" / addpage.file_name(name)
+    fp = addpage.folder(mgr.ws, qid) / "results" / addpage.result_files([{"name": name, "smiles": "O", "amount": 0.1}])[0]
     fp.parent.mkdir(exist_ok=True)
     addmol.write_json(fp, doc)
     return q, fp.name
@@ -268,9 +268,8 @@ def test_a_kept_candidate_is_a_variant_the_map_can_mark(mgr):
     assert list(m["species"]) == [st["reactants"][0]] and m["species"][st["reactants"][0]]["status"] == "verified"
     assert m["new"] == [{"name": "an adduct", "kind": "species", "status": "est"}] and m["status"] == "running"
     assert addpage.view(mgr, qid)["results"][0]["variant"] == rec["id"]
-    # the kinetics of the record are those of the result file
-    net = added.variant_network(mgr.ws, mgr.jobs, q["level"]["key"], 300.0, rec["id"], free_energy=False)
-    assert any(s["id"] == "relay" for s in net["steps"])
+    # the record names its result file and holds none of its rows (the workspace snapshot goes to every tab)
+    assert rec["addmol"]["result"] == name and not any(rec["estimates"].values()) and len(json.dumps(rec)) < 4000
     # its job finished with a verified step: the record follows the file, under the same id
     put_result(mgr, qid, "cat", {**est, **relay(q, status="verified")})
     assert addpage.after_job(mgr, {"params": {"query": qid, "names": [name]}})
@@ -344,17 +343,19 @@ def staged(q, tmp_path, *, relay_status="searching", with_file=True):
     """A result file as `mepd addmol test` writes it mid-scan: one step verified with the molecule beside it,
     one TS with it taking part (a scan's), the scan still searching, one step left unscanned."""
     st = q["steps"][0]
+    # (the files a row names are relative to the result file's folder: here its "run" folder is `tmp_path`)
     ts = tmp_path / "ts.xyz"
     if with_file:
+        tmp_path.mkdir(parents=True, exist_ok=True)
         ts.write_text("4\nts\n" + "".join(f"{a} {k} 0 0\n" for k, a in enumerate("HCNO")))
         (tmp_path / "irc.xyz").write_text(("4\nend\n" + "".join(f"{a} {k} 0 0\n" for k, a in enumerate("HCNO"))) * 3)
     row = {"parent_step": st["id"], "status": "verified", "reactants": [st["reactants"][0], "added"],
            "products": [st["products"][0], "added"], "level": "lvl", "spread": 0.4, "poses_verified": 2}
     est = {"new_steps": [
         {**row, "id": f"{st['id']}|verified pose 0", "layer": "verify", "takes_part": False,
-         "barrier": {"electronic": 40.0, "spread": 0.4}, "ts_file": str(tmp_path / "gone.xyz")},
+         "barrier": {"electronic": 40.0, "spread": 0.4}, "ts_file": "run/gone.xyz"},
         {**row, "id": f"{st['id']}|ts_pair_1", "layer": "relay", "takes_part": True, "returned": True,
-         "barrier": {"electronic": 22.0}, "spread": None, "ts_file": str(ts), "irc_file": str(tmp_path / "irc.xyz")}]}
+         "barrier": {"electronic": 22.0}, "spread": None, "ts_file": "run/ts.xyz", "irc_file": "run/irc.xyz"}]}
     layers = [{"name": "bystander", "status": "done", "done": 1, "total": 1}, {"name": "verify", "status": "done", "done": 1, "total": 1},
               {"name": "relay", "status": "running", "done": 0, "total": 1}]
     extra = {"level_labels": {"lvl": "a level in words"},
@@ -372,7 +373,7 @@ def staged(q, tmp_path, *, relay_status="searching", with_file=True):
 
 def put_staged(mgr, qid, name, tmp_path, status="running", **kw):
     q, _ = put_result(mgr, qid, "blank")
-    est, layers, extra = staged(q, tmp_path, **kw)
+    est, layers, extra = staged(q, addpage.folder(mgr.ws, qid) / "results" / "run", **kw)
     _, file = put_result(mgr, qid, name, est, status=status, layers=layers)
     fp = addpage.folder(mgr.ws, qid) / "results" / file
     fp.write_text(json.dumps({**json.loads(fp.read_text()), **extra}))
@@ -494,7 +495,7 @@ def test_a_finished_test_is_replayed_from_its_rows_arrival_times(mgr, tmp_path):
     assert d["peak"]["with"] > addpage.detail(mgr, qid, file, 95.0)["peak"]["with"]
     # at the end the replay is the file
     last = addpage.detail(mgr, qid, file, 100.0)
-    assert last["replay"]["over"] and last["status"] == "done" and last["through_steps"][0]["through"] == end["through_steps"][0]["through"]
+    assert last["replay"] is None and last["status"] == "done" and last["through_steps"][0]["through"] == end["through_steps"][0]["through"]
     assert last["scans"][0]["status"] == "done" and last["scan_left"] == end["scan_left"]
 
 
@@ -510,7 +511,7 @@ def test_a_rows_files_are_read_beside_the_result_or_from_its_archive(mgr, tmp_pa
     fp.write_text(json.dumps(doc))
     (tmp_path / "scan").mkdir()
     for n in ("ts.xyz", "irc.xyz"):
-        (tmp_path / "scan" / n).write_text((tmp_path / n).read_text())
+        (tmp_path / "scan" / n).write_text((fp.parent / "run" / n).read_text())
     with tarfile.open(fp.parent / "files.tgz", "w:gz") as tar:
         tar.add(tmp_path / "scan" / "ts.xyz", arcname="./scan/ts.xyz")
         tar.add(tmp_path / "scan" / "irc.xyz", arcname="./scan/irc.xyz")
@@ -583,8 +584,8 @@ def test_each_result_may_bring_its_own_archive(mgr, tmp_path):
     doc["estimates"]["new_steps"][1].update(ts_file="own/ts.xyz", irc_file="own/irc.xyz")
     fp.write_text(json.dumps(doc))
     with tarfile.open(fp.with_name(fp.stem + ".files.tgz"), "w:gz") as tar:
-        tar.add(tmp_path / "ts.xyz", arcname="./own/ts.xyz")
-        tar.add(tmp_path / "irc.xyz", arcname="./own/irc.xyz")
+        tar.add(fp.parent / "run" / "ts.xyz", arcname="./own/ts.xyz")
+        tar.add(fp.parent / "run" / "irc.xyz", arcname="./own/irc.xyz")
     assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["with_molecule"]
 
 
@@ -609,3 +610,77 @@ def test_steered_rows_reactions_read_as_one_and_the_flag_list(mgr, tmp_path):
     assert row["steered"] and row["steer_shift"] == -1.5 and row["fixed_together"]
     assert d["not_steered"] == [{"id": "x|left", "label": st["label"], "why": "no single point for the complex"}]
     assert addpage.view(mgr, qid)["standard_state"] == "1atm"
+
+
+# ---------------------------------------------------------------- the review's findings (round 6)
+def test_result_files_are_named_as_the_command_names_them(mgr):
+    qid = ask(mgr)
+    cands = addpage.parse_candidates("C/C=C/C a\nC/C=C\\C b\nO provenance", 0.1)
+    for c in cands:
+        c["name"] = c["smiles"] if c["name"] != "provenance" else "provenance"
+    files = addpage.result_files([{k: c[k] for k in addpage.CANDIDATE_KEYS if k in c} for c in cands])
+    assert len(set(files)) == 3 and "provenance.json" not in files
+    job = addpage.start(mgr, qid, cands + [{"name": "x", "smiles": "N", "amount": 1.0, "secret": "/etc/passwd"}])
+    assert job["params"]["names"][:3] == files
+    sent = json.loads(open(job["argv"][job["argv"].index("--candidates") + 1]).read())
+    assert all(set(c) <= set(addpage.CANDIDATE_KEYS) for c in sent)          # (only the documented keys go on)
+    assert job["argv"][job["argv"].index("--cores") + 1] == "4"              # (a bound on the CPUs of the test)
+
+
+def test_malformed_candidates_are_refused_with_a_reason():
+    out = addpage.parse_candidates(json.dumps([{"name": ["a"], "smiles": "O", "amount": 1}, {"name": "b", "smiles": "O", "amount": "x"}]), None)
+    assert [c["error"] for c in out] == ["name must be text", "amount must be a number"]
+    with pytest.raises(WorkspaceError, match="whole numbers"):
+        addpage.parse_candidates("1\ncharge=x\nO 0 0 0\n", 0.1, "a.xyz")
+    with pytest.raises(WorkspaceError, match="3 atoms declared"):
+        addpage.parse_candidates("3\nx\nO 0 0 0\nH 1 0 0\n", 0.1, "a.xyz")
+    with pytest.raises(WorkspaceError, match="too much"):
+        addpage.parse_candidates("O\n" * (addpage.MAX_TEXT // 2 + 1), 0.1)
+
+
+def test_paths_of_rows_stay_inside_the_result_folder(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    st = q["steps"][0]
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    for bad in (str(tmp_path / "ts.xyz"), "../../../ts.xyz", "./../x.xyz"):
+        doc["estimates"]["new_steps"][1]["ts_file"] = bad
+        fp.write_text(json.dumps(doc))
+        assert addpage._file(fp, bad) is None
+        assert addpage.geometry(mgr.ws, qid, st["id"], file, f"{st['id']}|ts_pair_1")["missing"] == bad
+    assert addpage._member("./a/b.xyz") == "a/b.xyz" and addpage._member("..x/b.xyz") == "..x/b.xyz"
+
+
+def test_a_replay_at_the_end_is_the_file_and_questions_count_results_only(mgr, tmp_path):
+    qid = ask(mgr)
+    q, file, doc = timed(mgr, qid, tmp_path)
+    fp = addpage.folder(mgr.ws, qid) / "results" / file
+    assert addpage.at_time(fp, q, 100.0) is addpage._load(fp) and addpage.at_time(fp, q, 5000.0) is addpage._load(fp)
+    (fp.parent / "provenance.json").write_text("{}")
+    (row,) = [x for x in addpage.queries(mgr.ws) if x["id"] == qid]
+    assert row["results"] == 2                     # ("blank" and "cat"; not provenance.json)
+
+
+def test_the_demo_offers_neither_question_nor_test(mgr, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+    from mepd.web.demo import DemoPolicy
+
+    app = create_app(tmp_path / "demo", max_concurrent=1, demo=DemoPolicy(), demo_password="pw")
+    with TestClient(app) as c:
+        c.post("/login", data={"password": "pw"})
+        r = c.post("/api/addmol/query", json={"target": "x", "initial": {"x": 1.0}})
+        assert r.status_code in (400, 403) and "demo" in r.text
+        r = c.post("/api/addmol/q_x/test", json={"text": "O", "amount": 0.1, "dry_run": True})
+        assert r.status_code in (400, 403) and "demo" in r.text
+
+
+def test_starting_amounts_must_be_numbers_not_below_zero(mgr, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from mepd.web.app import create_app
+
+    with TestClient(create_app(tmp_path / "ws", max_concurrent=1)) as c:
+        for bad in ({"a": "x"}, {"a": -1.0}):
+            assert c.post("/api/addmol/query", json={"target": "a", "initial": bad}).status_code == 422

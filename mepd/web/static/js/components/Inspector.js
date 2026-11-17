@@ -516,7 +516,7 @@ export function Inspector() {
     links = [
       n > 0 && { key: 'x-reactions', icon: 'network', name: `Its reactions (${n})`, tip: `The reactions ${nS > 1 ? 'these take' : 'this takes'} part in`,
         act: () => openAnalyze({ species: [...sids], reaction: null }) },
-      n > 0 && nS === 1 && map.tab('analyze') && { key: 'x-addmol', icon: 'product', name: 'Make more of it',
+      n > 0 && nS === 1 && map.tab('analyze') && !state.demo && { key: 'x-addmol', icon: 'product', name: 'Make more of it',
         tip: 'What holds this species back in the network, and what a molecule added to the flask (a catalyst, an additive) does to it',
         act: () => openAddMolecule(sids[0]) },
     ].filter(Boolean);

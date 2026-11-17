@@ -204,7 +204,7 @@ export function KineticsView() {
 
   return html`<div class="kinetics">
     <div class="kn-setup">
-      ${Object.keys(variants).length > 0 && html`<div class="kn-row"><label>Network <select value=${net}
+      ${Object.values(variants).some((v) => v.kind !== 'added_molecule') && html`<div class="kn-row"><label>Network <select value=${net}
         onChange=${(e) => { setNet(e.target.value); if (!e.target.value) setCmp(false); }}>
         <option value="">parent</option>
         ${Object.values(variants).filter((v) => v.kind !== 'added_molecule').map((v) => html`<option value=${v.id}>${v.name}</option>`)}</select></label>

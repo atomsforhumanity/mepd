@@ -417,6 +417,9 @@ then each molecule of the run's mixtures is minimized on its own. The workspace'
   stereo marks to count them together.
 - One concentration per species, as given to `query`; the run's own kinetics are not read.
 
+`mepd addmol test --cores N` keeps the whole test (the scan lanes and the estimate and verification pool) on at most N
+CPUs of those it may run on; without it the test takes them all.
+
 ## In the web UI
 
 `mepd web` has a page over all of this: *Add a molecule* (beside Kinetics; [web.md](web.md#add-a-molecule), manual

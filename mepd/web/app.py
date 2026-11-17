@@ -22,7 +22,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -221,7 +221,7 @@ class VariantIn(BaseModel):
 class AddmolQueryIn(BaseModel):
     target: str                         # a structure id
     together: bool = True               # count its stereoisomers as one
-    initial: dict                       # structure id -> M
+    initial: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]   # structure id -> M
     source: str = "auto"                # "workspace": the workspace's network even where it is one exploration
     held: list[str] = []
     temperature: float = Field(298.15, gt=0)
@@ -237,7 +237,7 @@ class AddmolTestIn(BaseModel):
     verify: Optional[int] = Field(None, ge=0)     # verify the first N only (0: none)
     scan: int = Field(25, ge=0, le=200)           # at most N reactions scanned for the molecule taking part
     scan_side_reactions: bool = False             # also scan the reactions that could divert material (--scan-side-reactions)
-    workers: int = Field(2, ge=1, le=64)
+    workers: int = Field(4, ge=1, le=64)          # CPUs for the whole test (--cores), as for other long jobs
     dry_run: bool = False               # read the candidates and say what would be tested
 
 
@@ -2662,6 +2662,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """What limits a target at these conditions (the query file, kept in the workspace)."""
         from mepd.web import addpage
 
+        if demo is not None:            # (Add a molecule is not offered in the demo: its test is not, so neither is this)
+            demo.check_op("addmol-test", {})
         try:
             qid = await run_in_threadpool(
                 addpage.make_query, W(), dict(J().jobs), target=body.target, initial=body.initial, held=body.held,
@@ -2691,13 +2693,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """Candidates in (typed, pasted or a file's text); one calculation tests them all, cheapest layer first."""
         from mepd.web import addpage
 
+        if demo is not None:            # (before anything is parsed)
+            demo.check_text(body.text)
+            demo.check_op("addmol-test", {})
+            demo.check_capacity(J().list())
         cands = await run_in_threadpool(addpage.parse_candidates, body.text, body.amount, body.filename)
         if body.dry_run:
             return {"candidates": [{k: v for k, v in c.items() if k not in ("coordinates", "atoms", "pose", "estimates")}
                                    for c in cands]}
-        if demo is not None:
-            demo.check_op("addmol-test", {})
-            demo.check_capacity(J().list())
         job = addpage.start(J(), qid, cands, steps=body.steps, verify=body.verify, scan=body.scan,
                              side=body.scan_side_reactions, workers=body.workers)
         return {"job": job["id"], "candidates": len(cands)}

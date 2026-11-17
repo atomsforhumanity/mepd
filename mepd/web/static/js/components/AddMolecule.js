@@ -445,9 +445,9 @@ function Stages({ d }) {
 function RoutePeak({ peak, cutoff, end, now, onPick, settled }) {
   const [hover, setHover] = useState(null);
   const pts = (peak?.with || []).filter((x) => x.peak != null);
-  if (peak?.parent == null || !pts.length) return null;
   // (drawn at the size it is shown: a phone gets its own, narrower drawing, not a shrunken one)
   const small = useMemo(() => !!window.matchMedia?.(PHONE_QUERY).matches, []);
+  if (peak?.parent == null || !pts.length) return null;
   const W = small ? 340 : 640, H = small ? 190 : 170, pad = { l: 34, r: small ? 82 : 96, t: 12, b: 28 };
   const tMax = Math.max(end || 0, pts[pts.length - 1].t_s, 1);
   const lo = Math.min(cutoff ?? Infinity, ...pts.map((x) => x.peak), peak.parent), hi = Math.max(peak.parent, ...pts.map((x) => x.peak));
@@ -772,6 +772,7 @@ function CompareSteps({ rows }) {
 
 // ------------------------------------------------------------ the page
 export function AddMoleculeView() {
+  const demo = useStore((s) => s.demo);
   const saved = useStore((s) => s.addmol) || {};
   const jobKey = useStore((s) => Object.values(s.jobs).filter((j) => j.op === 'addmol-test').map((j) => `${j.id}:${j.status}`).join());
   const [q, setQ] = useState(null);
@@ -807,6 +808,10 @@ export function AddMoleculeView() {
   const shown = sel && rows.some((r) => r.file === sel) ? sel : null;
   const toggle = (f) => { const p = new Set(picked); if (p.has(f)) p.delete(f); else p.add(f); setPicked(p); };
   const compared = rows.filter((r) => picked.has(r.file) && r.readout);
+  if (demo) {
+    return html`<div class="empty-hint"><p><b>Add a molecule</b> is not offered in the demo: its test runs for minutes on many cores.
+      It runs in mepd web on your own machine (<code>mepd web</code>).</p></div>`;
+  }
   return html`<div class="kinetics addmol">
     <div class="kn-setup">
       <${Setup} q=${q} busy=${busy} onAsk=${ask} queries=${queries} onOpen=${open} />

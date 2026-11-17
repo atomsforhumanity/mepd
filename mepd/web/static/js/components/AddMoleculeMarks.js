@@ -23,7 +23,8 @@ const markKind = (mark) => (!mark ? undefined : mark.status !== 'verified' ? 'es
 // ('est' | 'ver') and on a molecule it binds; `amfade` on everything else, so the few marked steps can be
 // found among hundreds (their two ends stay as they are).
 export function markData(marks, steps) {
-  if (!marks) return { node: () => ({}), edge: () => ({}) };
+  // (nothing marked: nothing faded either, or a molecule that changes no step would fade the whole network)
+  if (!marks || (!Object.keys(marks.edges || {}).length && !Object.keys(marks.species || {}).length)) return { node: () => ({}), edge: () => ({}) };
   const ends = new Set(steps.filter((s) => marks.edges[s.id]).flatMap((s) => [s.a, s.b]));
   return {
     node: (id) => (marks.species[id] ? { am: 1 } : ends.has(id) ? {} : { amfade: 1 }),

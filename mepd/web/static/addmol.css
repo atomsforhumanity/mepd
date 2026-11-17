@@ -66,6 +66,10 @@
 .am-facts dd { margin: 0; }
 .am-failed { margin: 6px 0; padding-left: 18px; }
 
+/* the tab's label: shorter on a phone, so the five tabs fit */
+.canvas-tabs .tab-short { display: none; }
+@media (max-width: 720px) { .canvas-tabs .tab-short { display: inline; } }
+
 /* the answer first */
 .am-answer { border-left: 3px solid var(--border-strong); background: var(--panel-2); border-radius: 0 var(--radius) var(--radius) 0; padding: 10px 14px 8px; margin: 12px 0 14px; }
 .am-answer.pos { border-left-color: var(--div-pos); } .am-answer.neg { border-left-color: var(--div-neg); }
@@ -170,6 +174,9 @@
 .nm-added-ring { display: inline-block; width: 12px; height: 12px; border: 3px double var(--route); border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
 
 @media (max-width: 720px) {
+  .canvas-tabs button { white-space: nowrap; }
+  .canvas-tabs { gap: 12px; }
+  .canvas-tabs .tab-long { display: none; }
   .am-stages { grid-template-columns: 1fr; }
   .am-stage { min-height: 0; }
   .am-steps { width: 740px; max-width: none; }

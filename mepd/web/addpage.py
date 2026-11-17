@@ -20,6 +20,12 @@ from mepd.web import added
 from mepd.web.workspace import WorkspaceError
 
 OP = "addmol-test"
+# Building a question from an exploration runs `mepd addmol query` beside the server, not in the job queue:
+# one at a time, and at most this long.
+QUERY_TIMEOUT_S = 1800
+_QUERY_SLOTS = __import__("threading").BoundedSemaphore(1)
+# Candidates read from one request at most (and the text's size), before any of them is parsed.
+MAX_CANDIDATES, MAX_TEXT = 500, 2_000_000
 PENDING = "pending-candidates.json"
 # A parent step's barrier that moved by less than this (kcal/mol) is not listed as changed.
 MOVED = 0.05
@@ -114,14 +120,24 @@ def make_query(ws, jobs: dict, *, target: str, initial: dict, temperature: float
         import subprocess
         import sys
 
-        tmp = fp.with_name("query.making.json")
+        import uuid
+
+        tmp = fp.with_name(f"query.making.{uuid.uuid4().hex[:8]}.json")      # (two identical requests: one file each)
         tmp.parent.mkdir(parents=True, exist_ok=True)
         argv = [sys.executable, "-m", "mepd.cli", "addmol", "query", str(found[1]), "--target",
                 goal if goal != target else smiles(target), "--temperature", str(float(temperature)),
                 "--time", str(float(time_s)), "--workers", str(workers), "--output", str(tmp)]
         for k, v in initial.items():
             argv += ["--initial", f"{smiles(k)}={float(v)}"]
-        done = subprocess.run(argv, capture_output=True, text=True)
+        try:
+            with _QUERY_SLOTS:          # (outside the job queue: at most this many at once, and never for ever)
+                done = subprocess.run(argv, capture_output=True, text=True, timeout=QUERY_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            tmp.unlink(missing_ok=True)
+            raise WorkspaceError(f"building the question took more than {QUERY_TIMEOUT_S // 60} min and was stopped") from None
+        if fp.exists():                 # (another request built the same question meanwhile)
+            tmp.unlink(missing_ok=True)
+            return qid
         if done.returncode != 0 or not tmp.exists():
             tmp.unlink(missing_ok=True)
             lines = [ln.strip(" │╭╰─╮╯") for ln in (done.stderr or done.stdout).strip().splitlines() if ln.strip(" │╭╰─╮╯")]
@@ -244,7 +260,9 @@ def queries(ws) -> list:
             continue
         s = summary(q, names=_names(q, ws))
         out.append({"id": fp.parent.name, "target": s["target"], "conditions": s["conditions"],
-                    "results": len(list((fp.parent / "results").glob("*.json"))), "made": fp.stat().st_mtime})
+                    "results": sum(1 for x in (fp.parent / "results").glob("*.json")
+                                   if x.name != "provenance.json" and not x.name.endswith(".provenance.json")),
+                    "made": fp.stat().st_mtime})
     return sorted(out, key=lambda r: -r["made"])
 
 
@@ -254,6 +272,8 @@ def parse_candidates(text: str, amount: Optional[float] = None, filename: str = 
     an xyz file (every frame one candidate), or lines of `SMILES [name] [amount in mol/L]`. Each comes
     back as the candidate `mepd addmol test` takes, plus `formula`, `natoms` and, if it cannot be used,
     `error`."""
+    if len(text) > MAX_TEXT:
+        raise WorkspaceError(f"too much text: at most {MAX_TEXT // 1_000_000} MB of candidates at once")
     text = text.strip()
     stem = Path(filename).stem if filename else ""
     out = []
@@ -262,21 +282,30 @@ def parse_candidates(text: str, amount: Optional[float] = None, filename: str = 
             loaded = json.loads(text)
         except ValueError as exc:
             raise WorkspaceError(f"not a candidates file: {exc}") from None
-        out = list(loaded if isinstance(loaded, list) else loaded.get("candidates") or [])
+        out = list(loaded if isinstance(loaded, list) else (loaded.get("candidates") or [] if isinstance(loaded, dict) else []))
         if not all(isinstance(c, dict) for c in out):
             raise WorkspaceError("a candidates file is a list of {name, smiles | atoms + coordinates, amount}")
     elif text.split("\n", 1)[0].strip().isdigit():
-        frames = added._xyz_frames(text)
+        try:
+            frames = added._xyz_frames(text)
+        except (ValueError, IndexError):
+            raise WorkspaceError("not an xyz file: every atom line is an element and three numbers") from None
         lines = text.splitlines()
         at = 0
         for k, (symbols, coords) in enumerate(frames):
             while not lines[at].strip().isdigit():
                 at += 1
             comment = lines[at + 1].strip() if at + 1 < len(lines) else ""
+            declared = int(lines[at].strip())
             at += len(symbols) + 2
-            charge = next((int(t.split("=")[1]) for t in comment.split() if t.startswith(("charge=", "qcdata_charge="))), 0)
-            mult = next((int(t.split("=")[1]) for t in comment.split()
-                         if t.startswith(("multiplicity=", "qcdata_multiplicity="))), 1)
+            if len(symbols) != declared or coords.shape != (declared, 3):
+                raise WorkspaceError(f"xyz frame {k + 1}: {declared} atoms declared, {len(symbols)} given")
+            try:
+                charge = next((int(t.split("=")[1]) for t in comment.split() if t.startswith(("charge=", "qcdata_charge="))), 0)
+                mult = next((int(t.split("=")[1]) for t in comment.split()
+                             if t.startswith(("multiplicity=", "qcdata_multiplicity="))), 1)
+            except ValueError:
+                raise WorkspaceError(f"xyz frame {k + 1}: charge and multiplicity must be whole numbers") from None
             out.append({"name": (stem or "structure") + (f"_{k + 1}" if len(frames) > 1 else ""), "atoms": symbols,
                         "coordinates": coords.tolist(), "charge": charge, "multiplicity": mult})
     else:
@@ -294,9 +323,16 @@ def parse_candidates(text: str, amount: Optional[float] = None, filename: str = 
                     pass
             cand["name"] = " ".join(rest) or parts[0]
             out.append(cand)
+    if len(out) > MAX_CANDIDATES:
+        raise WorkspaceError(f"{len(out)} candidates: at most {MAX_CANDIDATES} at once")
     seen = set()
     for k, c in enumerate(out):
         c.setdefault("name", c.get("smiles") or f"candidate_{k + 1}")
+        bad = [key for key in ("name", "smiles") if c.get(key) is not None and not isinstance(c[key], str)]
+        if bad or (c.get("amount") is not None and (isinstance(c["amount"], bool) or not isinstance(c["amount"], (int, float)))):
+            c["error"] = f"{(bad or ['amount'])[0]} must be {'text' if bad else 'a number'}"
+            c["name"] = str(c["name"]) if not isinstance(c["name"], str) else c["name"]
+            continue
         if c.get("amount") is None and amount is not None:
             c["amount"] = float(amount)
         problem = None
@@ -324,14 +360,30 @@ def parse_candidates(text: str, amount: Optional[float] = None, filename: str = 
     return out
 
 
-def file_name(name: str) -> str:
-    from mepd.cli_addmol import _file_name
+# What a candidate may carry into the job (docs/add-molecule.md, "Candidates"): nothing else is passed on.
+CANDIDATE_KEYS = ("name", "smiles", "atoms", "coordinates", "charge", "multiplicity", "amount", "pose", "estimates")
 
-    return _file_name(name)
+
+def result_files(candidates: list) -> list:
+    """The result file of each candidate, as `mepd addmol test` names them (mepd.cli_addmol._candidates: one
+    per candidate, never shared, never the run's provenance.json)."""
+    import tempfile
+
+    import typer
+
+    from mepd.cli_addmol import _candidates
+
+    with tempfile.TemporaryDirectory() as tmp:
+        fp = Path(tmp) / "c.json"
+        fp.write_text(json.dumps(candidates))
+        try:
+            return [c["_file"] for c in _candidates([], fp, None)]
+        except typer.BadParameter as exc:
+            raise WorkspaceError(str(exc)) from None
 
 
 def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, verify: Optional[int] = None,
-          scan: int = 25, side: bool = False, workers: int = 2) -> dict:
+          scan: int = 25, side: bool = False, workers: int = 4) -> dict:
     """Queue `mepd addmol test` for these candidates (one job; a result file each, in the query's
     `results/`). Refused: a candidate with an `error`, or one whose result is still being written."""
     ws = manager.ws
@@ -339,11 +391,12 @@ def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, v
     bad = [f"{c['name']}: {c['error']}" for c in candidates if c.get("error")]
     if bad or not candidates:
         raise WorkspaceError("; ".join(bad) or "no candidate given")
+    clean = [{k: c[k] for k in CANDIDATE_KEYS if k in c} for c in candidates]
+    files = result_files(clean)
     busy = running(manager, qid)
-    taken = [c["name"] for c in candidates if file_name(c["name"]) in busy]
+    taken = [c["name"] for c, f in zip(clean, files) if f in busy]
     if taken:
         raise WorkspaceError(f"{', '.join(taken)}: still being tested")
-    clean = [{k: v for k, v in c.items() if k not in ("formula", "natoms", "error")} for c in candidates]
     base = folder(ws, qid)
     (base / "results").mkdir(exist_ok=True)
     pending = base / PENDING           # (the job's builder moves it into the job's inputs)
@@ -353,7 +406,7 @@ def start(manager, qid: str, candidates: list, *, steps: Optional[int] = None, v
         (job,) = manager.submit(OP, structure_ids=[(q.get("asked") or {}).get("target") or q["target"]["species"][0]],
                                 edge_ids=[],
                                 params={"query": qid, "steps": steps, "verify": verify, "scan": scan, "side": side, "workers": workers,
-                                        "names": [file_name(c["name"]) for c in clean]},
+                                        "names": files},
                                 profile=None, label=f"Add a molecule: {names}")
     finally:
         pending.unlink(missing_ok=True)
@@ -552,7 +605,7 @@ _replays: dict = {}
 def at_time(fp: Path, q: dict, t: Optional[float]) -> dict:
     """The result file, or (`t`) its replay at that time, kept for the times last asked for."""
     doc = _load(fp)
-    if t is None or duration(doc) is None:
+    if t is None or duration(doc) is None or float(t) >= duration(doc):
         return doc
     key = (str(fp), fp.stat().st_mtime_ns, round(float(t), 1))
     if key not in _replays:
@@ -826,32 +879,57 @@ def remove(manager, qid: str, name: str) -> None:
 
 
 # ---------------------------------------------------------------- geometry for the 3D viewer
+def _inside(folder: Path, recorded: str) -> Optional[Path]:
+    """`recorded` (a row's `ts_file` / `irc_file`, relative to the result's folder) as a path inside that folder;
+    None for an absolute path or one that leads out of it."""
+    if not recorded or Path(recorded).is_absolute():
+        return None
+    base = folder.resolve()
+    fp = (base / recorded).resolve()
+    return fp if fp.is_relative_to(base) else None
+
+
+def _member(name: str) -> str:
+    return name[2:] if name.startswith("./") else name
+
+
 def _file(result: Path, recorded: str, *, look: bool = False) -> Optional[Path]:
-    """A file a row names (`ts_file`, `irc_file`): as recorded if absolute, else relative to the result
-    file's folder; where it is not there but `files.tgz` beside the result holds it (a pod run), taken out
-    of the archive into its place. `look`: only say whether it could be had (the archive is not read: a
-    relative path with an archive beside counts)."""
-    fp = Path(recorded)
-    if not fp.is_absolute():
-        fp = result.parent / fp
+    """A file a row names (`ts_file`, `irc_file`): relative to the result file's folder and inside it (an
+    absolute path, or one that leads out of the folder, is not read). Where it is not there but the result's
+    archive beside it (`<result>.files.tgz`, else `files.tgz`: a pod run) holds it, the files every row of
+    that result names are taken out of the archive at once, into their places (one pass over the archive per
+    result). `look`: only say whether it could be had."""
+    fp = _inside(result.parent, recorded)
+    if fp is None:
+        return None
     if fp.is_file():
         return fp
     own = result.with_name(result.stem + ".files.tgz")      # (several pod outputs in one folder: one archive each)
     tgz = own if own.is_file() else result.parent / "files.tgz"
-    if Path(recorded).is_absolute() or not tgz.is_file():
+    if not tgz.is_file():
         return None
     if look:
         return tgz
-    import tarfile
+    done = result.with_name(result.stem + ".files.taken")
+    if not done.exists():
+        import tarfile
 
-    want = {recorded.lstrip("./"), "./" + recorded.lstrip("./")}
-    with tarfile.open(tgz) as tar:
-        for member in tar:
-            if member.name in want and member.isfile():
-                fp.parent.mkdir(parents=True, exist_ok=True)
-                fp.write_bytes(tar.extractfile(member).read())
-                return fp
-    return None
+        doc = _load(result)
+        est = doc.get("estimates") or {}
+        want = {}
+        for e in (est.get("new_steps") or []) + (est.get("steps") or []):
+            for key in ("ts_file", "irc_file"):
+                dst = _inside(result.parent, e.get(key) or "")
+                if dst is not None:
+                    want[_member(Path(e[key]).as_posix())] = dst
+        with tarfile.open(tgz) as tar:
+            for member in tar:
+                dst = want.get(_member(member.name))
+                if dst is not None and member.isfile():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    dst.write_bytes(tar.extractfile(member).read())
+        done.write_text("")
+    return fp if fp.is_file() else None
 
 
 def _xyz(symbols, coords, comment: str) -> str:
@@ -961,8 +1039,10 @@ def keep(ws, qid: str, name: str) -> dict:
     cand = doc["candidate"]
     old = next((v for v in ws.variants.values() if (v.get("addmol") or {}).get("query") == qid
                 and v["addmol"].get("result") == name), None)
+    # The record holds no rows (they are in the result file, and every workspace event would carry them to every
+    # tab): `addmol` names the file, `marks` holds what the map draws.
     rec = added.put(ws, {"id": addmol.ADDED_ID, "name": cand.get("name"), "smiles": cand.get("smiles")},
-                    float(cand["amount"]), doc.get("estimates") or {}, vid=(old or {}).get("id"))
+                    float(cand["amount"]), {}, vid=(old or {}).get("id"))
     rec["edit"] = [f"{cand['amount']:g} M of {cand.get('name') or cand.get('smiles')} added"]   # (a list, as the picker reads it)
     rec["addmol"] = {"query": qid, "result": name}
     rec["marks"] = marks(q, doc, _edges(ws, q), _nodes(ws, q))

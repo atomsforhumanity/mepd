@@ -369,11 +369,11 @@ function styles() {
     { selector: 'edge', style: { 'curve-style': 'bezier', width: 'data(w)', 'line-color': 'data(col)', 'target-arrow-color': 'data(col)',
       'target-arrow-shape': 'triangle', 'arrow-scale': 0.7, opacity: 0.85 } },
     { selector: 'edge[am = "est"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4] } },
-    { selector: '[?amfade]', style: { opacity: 0.1 } },
     { selector: 'node[?am]', style: { 'border-style': 'double', 'border-width': 5, 'border-color': css('--route') } },
     { selector: 'edge[kind = "ns"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [5, 4], opacity: 0.6 } },
     { selector: 'edge[kind = "nots"]', style: { 'line-style': 'dotted', opacity: 0.7 } },
     { selector: 'edge[kind = "run"]', style: { 'line-style': 'dashed', 'line-dash-pattern': [7, 4], 'line-color': css('--accent'), 'target-arrow-color': css('--accent'), width: 2.4, opacity: 1 } },
+    { selector: '[?amfade]', style: { opacity: 0.1 } },   // (after the kinds: it fades those too)
     { selector: 'edge.ego', style: { 'curve-style': 'unbundled-bezier', 'control-point-distances': [0], 'control-point-weights': [0.5], opacity: 1 } },
     { selector: 'edge.back', style: { 'curve-style': 'bezier', 'control-point-step-size': 26, 'line-style': 'dashed', 'line-dash-pattern': [4, 4], opacity: 0.8 } },
     { selector: 'edge.rt', style: { label: 'data(lab)', 'text-wrap': 'wrap', 'font-family': font, 'font-size': 13, color: css('--heading'),

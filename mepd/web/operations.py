@@ -1903,7 +1903,8 @@ class AddmolTestParams(Params):
                   kind="custom", ge=0, le=200)
     side: bool = P(False, "Side reactions", "Also scan the reactions that could divert material if the molecule "
                    "opened them (listed, not scanned, by default).", kind="custom")
-    workers: int = P(2, "Processes", "Processes for the quick estimates and the verification.", kind="custom", ge=1, le=64)
+    workers: int = P(4, "Cores", "CPUs for the whole test: the scan lanes and the estimates and the verification "
+                     "share them (`--cores`, and as many processes for the estimates).", kind="custom", ge=1, le=64)
     names: list[str] = P([], "Results", "The result files this job writes.", kind="custom")
 
 
@@ -1919,7 +1920,8 @@ def _build_addmol_test(ctx: JobContext, p: AddmolTestParams) -> list[str]:
     dst = ctx.job_dir / "inputs" / "candidates.json"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)
-    argv = ["addmol", "test", str(base / "query.json"), "--candidates", str(dst), "--workers", str(p.workers)]
+    argv = ["addmol", "test", str(base / "query.json"), "--candidates", str(dst), "--workers", str(p.workers),
+            "--cores", str(p.workers)]
     if p.steps is not None:
         argv += ["--steps", str(p.steps)]
     if p.verify is not None:
@@ -2469,7 +2471,7 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "addmol-test", "Add a molecule: test candidates", "What one more molecule in the flask does to a target: "
         "the molecule beside every step, then the kinetics with it. (`mepd addmol test`)",
         "set", "Reaction conditions", AddmolTestParams, _build_addmol_test, hidden=True,
-        cli_path=("addmol", "test"), cli_extra_flags=("--candidates", "--workers", "--steps", "--verify", "--scan", "--scan-side-reactions", "--output"),
+        cli_path=("addmol", "test"), cli_extra_flags=("--candidates", "--workers", "--cores", "--steps", "--verify", "--scan", "--scan-side-reactions", "--output"),
         produces=["one result file per candidate"]),
     Operation(
         "substituents", "Substituent effects", "Swap hydrogens for functional groups, one at a time, and see how "
