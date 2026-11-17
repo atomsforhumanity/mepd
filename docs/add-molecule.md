@@ -20,10 +20,18 @@ In Python: `mepd.discovery.parent` (an explorer run as the parent: `network`, `q
 `mepd.web.added` (a workspace as the parent: `network`, `query`, `put`, `adopt_run`) and `mepd.addmol` (the
 kinetics, on plain dicts: `added`, `readout`, `limits`, `first_order`, `bystander`, `query`, `result`).
 
-Two layers make estimates today: the bystander layer (the molecule beside every step; a stand-in placer whose
-numbers move by kcal/mol between repeats) and the relay layer (`--scan`: transition states with the molecule, found
-by `mepd channels` on the steps that limit the target). A layer that follows new species the molecule forms is not
-built; such numbers can be given with a candidate (`estimates`, below).
+`mepd addmol test` works through three stages per candidate, each streamed into the result file and each in the
+order of what limits the target:
+
+1. **the quick estimate** (the bystander layer, [bystander.md](bystander.md)): the molecule beside every step's
+   ends and TS, the step's atoms held; rows marked `est`;
+2. **the verification** of each step with the molecule beside it: the TS optimized with the molecule present,
+   its IRC; a verified row replaces the step's estimate;
+3. **the relay scan** (`--scan N`): `mepd channels` on the steps that limit the target, and on the steps where
+   the first two stages showed the molecule reacting, for transition states with the molecule taking part.
+
+A layer that follows new species the molecule forms is not built; such numbers can be given with a candidate
+(`estimates`, below).
 
 ## The parent network
 
@@ -57,10 +65,17 @@ from.
 
 | estimate | what it adds |
 |---|---|
-| `species`: C's binding to a species X | a species **X.C** with G = G(X) + G(C) + binding, and the barrierless step X + C ⇌ X.C |
-| `steps`: C's binding to the reactant end, TS and product end of a parent step | the parent step with C beside it, its TS at G(TS) + G(C) + binding(TS). From X.C to Y.C where an end is one molecule; from the separated molecules + C where an end is several molecules |
+| `species`: C's binding to a species X, `status: "verified"` only | a species **X.C** with G = G(X) + G(C) + binding, and the barrierless step X + C ⇌ X.C |
+| `steps`: C's binding to the reactant end, TS and product end of a parent step | the parent step with C beside it, its TS at G(TS) + G(C) + binding(TS), from the separated molecules + C (from X.C where an end is one molecule with a verified complex) |
 | `new_species`: a species formed from named species (some released) | that species, G = Σ G(formed from) − Σ G(released) + energy; it holds C when its makers do |
 | `new_steps`: reactants, products, the TS above the reactants | that step. C on both sides: it takes part and is returned |
+
+**Bound species come from verified numbers only.** An estimate of the molecule beside a held end shifts a
+barrier; it does not make a resting state: the bystander layer's rigid-body free energy of binding is about
+1 kcal/mol too favourable against a full quasi-RRHO of the relaxed complex ([bystander.md](bystander.md)), and at
+this level (g-xTB, gas) L-proline's complexes with the aldol parent's species are not resting states at 1 M. No
+stage makes a bound species yet (a verified complex of one parent molecule with C would; the verification's ends
+here hold several molecules); one can be given under `species` with `status: "verified"`.
 
 Each estimate has `status` `est` or `verified`; anything else (a bystander run in which C reacted, did not move,
 or failed) is listed under `failed` and not used. Each energy is `{"electronic": x, "free": y, "spread": s}`: the
@@ -242,15 +257,34 @@ One per candidate, `<output>/<name>.json`, written whole each time (a reader nev
 `candidate.geometry` (`atoms`, `coordinates`: the lowest conformer as tested) and `candidate.chiral` are added once
 the molecule is built. `--jobs N` works on N candidates at once (a screen without `--scan`).
 
-## The relay layer (`--scan N`)
+## The three stages of `mepd addmol test`
 
-For the parent steps that limit the target, the tool looks for transition states with the molecule in them.
+**1. The quick estimate.** `mepd.bystander.bystander` in its quick setting (1 repeat, carry 1, no polish) for every
+step with frames, in the order of what limits the target (the query's order of work, then the other steps by
+apparent barrier). A row: `layer: "bystander"`, `status: "est"`, `binding` per frame. `reacted` (the molecule's or
+the step's bonds changed) and `failed` rows go under `failed` with their `why`. `--estimate-spread` runs the
+placer's default setting instead (3 repeats, polish; about seven times the time): each row then carries the spread
+over its repeats. `--steps N`: only the first N steps.
 
-- **Which steps, in what order.** Where the parent makes the target: the steps with a degree of rate control of at
-  least 0.05, largest first. Where it makes none: the steps of its lowest-peak routes, highest first. At most N;
-  then, once, the parent steps that are on the lowest-peak route *with* the molecule and were not scanned yet.
-  Every other step stays on the bystander layer. The result file says which steps were scanned, why, and how many
-  were not (`scan`).
+**2. The verification** (`--verify N`, default every step with an estimate). `mepd variant --mode reoptimize`'s
+function on the estimate's lowest complexes: both ends minimized, the TS optimized with the molecule present, its
+IRC. From two poses (the estimate's and a second, independent quick estimate's); the lower TS is the row, the
+difference between the two its `spread`. What the IRC says decides the row (`layer: "verify"`, `status:
+"verified"`):
+- it joins the step's two ends and the molecule's bonds are the same at both: the step **with the molecule beside
+  it** (`takes_part: false`), the whole complex counted as the TS; it **replaces the step's estimate**;
+- it joins the step's two ends and bonds of the molecule differ between them: a verified step **with the molecule
+  taking part** (`takes_part: true`), filed like a relay row of the scan;
+- its ends are other species: **leads elsewhere**, listed under `failed` with its ends, not used in the kinetics;
+  the step keeps its estimate and becomes a candidate for the scan.
+
+**3. The relay scan** (`--scan N`).
+
+- **Which steps, in what order.** First the steps that limit the target: where the parent makes it, the steps
+  with a degree of rate control of at least 0.05, largest first; where it makes none, the steps of its lowest-peak
+  routes, highest first. Then the steps whose estimate came back `reacted` or whose verification led elsewhere,
+  most limiting first. At most N scans; `scan` in the result file says which steps were scanned and why, which
+  were left (`left`) and how many were never candidates.
 - **What a scan is.** `mepd channels` between the step's two ends with the molecule beside each: the bystander
   layer's lowest complexes of the reactant end and the product end (nothing is placed by hand), with
   `--explore-mechanisms 8 --explore-molecule <the molecule> --search-budget 300` ([channels_candidates.md](channels_candidates.md)):
@@ -266,38 +300,27 @@ For the parent steps that limit the target, the tool looks for transition states
   changes. A verified TS that leads elsewhere is counted (`elsewhere`); one in which the molecule changes and does
   not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the molecule
   taking part: `answer: "none found ..."`, with what was searched.
+- **`summary`** in the result file: how many of the parent's steps ended `est`, `verified_beside`, `takes_part`,
+  `leads_elsewhere`, `failed` (of them `reacted_in_the_estimate`).
 - **`scan.steps[]`** in the result file: `step`, `why`, `status` (`queued`, `mapping`, `searching`, `done`,
   `failed`), `searches` {`queued`, `running`, `searched`, `total`}, `with_molecule` and `beside` (verified TSs of
   each kind), `lowest` (their lowest free barriers), `first_with_molecule_s`, `t_started_s`, `wall_s`, `command`,
   `run` (its folder, with `channels.log`), `stopped`, `elsewhere`, `consumed`, `failed_rows`.
-- For a candidate that is its own mirror image a step's mirror twin is not scanned: its rows are the original's,
-  between the mirror-image species (`mirror_image_of`). The same holds for a step given with its TS.
+- For a candidate that is its own mirror image a step's mirror twin is neither estimated, verified nor scanned:
+  its rows are the original's, between the mirror-image species (`mirror_image_of`). The same holds for a step
+  given with its TS.
+- Solvent: the stages run at the parent's level as it is. For a solvated parent the plan is to search in the gas
+  phase and take solvated single points (the placer's `final_engine`); that is not wired in yet, and no solvated
+  parent has been run through this. The molecule's form (neutral, zwitterion) is the caller's input.
 
 Its barriers are g-xTB in the gas phase with the level's quasi-RRHO: the level of the parent, not a judgement.
 
-## The bystander layer and its contract
+## The bystander layer
 
-For every parent step with a geometry (in the query's order of work) and every species that holds material, C is
-placed beside the reactant end, the TS and the product end, relaxed with the step's own atoms held, and its binding
-to each frame recorded. `mepd.addmol.bystander` is the one function the CLI calls; today it is a stand-in:
-
-```python
-bystander(frames, molecule, engine, *, temperature=298.15, starts=(), seed=0, poses=6) -> dict
-```
-
-- `frames`: `{"symbols", "charge", "multiplicity", "r", "ts" (or None), "p"}`, Å, one atom order.
-- `molecule`: `{"symbols", "charge", "multiplicity", "conformers": [coords, ...]}`, minima at the engine's level.
-- `starts`: `[{"frame", "coords"}]`, proposed poses, added to the generic placements.
-- returns `status` (`ok`, `reacted`, `unmoved`, `failed`) with `why`; `binding` per frame
-  `{"electronic", "free", "spread"}` with `electronic` = E(frame + C) − E(frame) − E(C) for the lowest complex whose
-  C kept its bonds, `free` the binding free energy at 1 M (G(X.C) = G(X) + G(C) + free); `barrier_shift`,
-  `reaction_shift`; `complexes` (frame atoms first, then C's); `free_method`, `spread_method`, `poses`, `wall_s`.
-
-The stand-in places C at random around the TS (`mepd.complexes.packed`), carries each placement to both ends, and
-estimates `free` as the electronic binding plus the rigid-rotor and translational free-energy change, which
-overstates the cost of binding (the six new intermolecular vibrations are not counted). Its `spread` is the
-difference between the lowest binding over two halves of the placements. Treat its numbers as a way to order
-work.
+`mepd.bystander.bystander(frames, molecule, engine, *, temperature, starts, seed, ...)`: [bystander.md](bystander.md)
+has what the number is, how the molecule is placed and what was measured. `mepd.addmol.bystander` is that function.
+Its `status` is `ok`, `reacted` (the molecule's or the step's own bonds changed; `why` says which), `unmoved` or
+`failed` (also: no pose stayed in contact).
 
 ## Adopting an exploration into a workspace, and what is lost on the way
 

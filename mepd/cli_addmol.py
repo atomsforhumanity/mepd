@@ -472,7 +472,9 @@ def _verify_task(args):
             folder = Path(out_dir) / f"pose_{k}"
             try:
                 summary = _reoptimize(d, _INPUTS, folder)
-                ts_fp, irc_fp = folder / "reopt" / "ts.xyz", folder / "reopt" / "ts_irc.xyz"
+                ts_fp = folder / "reopt" / "ts.xyz"
+                irc_fp = next((f for f in (folder / "reopt" / "irc.xyz", folder / "reopt" / "ts_irc.xyz") if f.exists()),
+                              folder / "reopt" / "irc.xyz")
                 if not (ts_fp.exists() and irc_fp.exists()):
                     out["notes"].append(f"pose {k}: {summary.get('headline') or summary.get('status')}")
                     continue
@@ -496,6 +498,7 @@ def _verify_task(args):
             # two poses: the difference between them is the row's spread
             low["barrier"] = {**low["barrier"], "spread": (entries[1]["barrier"]["free"] - low["barrier"]["free"])
                               if len(entries) > 1 else None}
+            low["spread"] = low["barrier"]["spread"]
             low["poses_verified"] = len(entries)
             out["rows"].append(low)
     except Exception as exc:
@@ -555,7 +558,9 @@ def _relay_scan(q: dict, sid: str, molecule: dict, complexes: dict, engine, prof
     smiles = M.molecule_parts(_structure(molecule["symbols"], molecule["conformers"][0], molecule["charge"],
                                          molecule["multiplicity"]))[0][1]
     out = folder / "out"
-    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    from mepd.cpus import available_cpus
+
+    cpus = available_cpus()         # (the affinity mask and the container's limit: what the scan may use)
     cmd = [sys.executable, "-m", "mepd.cli", "channels", "--start", str(folder / "start.xyz"), "--end",
            str(folder / "end.xyz"), "-i", str(profile), "--workers", str(cpus), "--parallel-workers", "1",
            "--search-budget", str(int(RELAY_BUDGET_S)), "--explore-mechanisms", str(RELAY_EXPLORE),
