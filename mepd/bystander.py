@@ -354,8 +354,8 @@ def rigid_modes(hessian, symbols, xyz, n_x: int) -> np.ndarray:
 
 
 def binding_free_correction(engine, symbols, xyz, n_x: int, *, charge: int = 0, multiplicity: int = 1,
-                            temperature: float = 298.15) -> dict:
-    """G - E of binding at 1 mol/L, estimated without relaxing the complex: C's translation and rotation
+                            temperature: float = 298.15, standard_state: str = "1M") -> dict:
+    """G - E of binding at `standard_state` ("1M" or "1atm"), estimated without relaxing the complex: C's translation and rotation
     (and the step's) are replaced by the complex's, and by the six rigid-body vibrations of C against the
     step (`rigid_modes`, quasi-RRHO as mepd.thermo.qrrho). The internal vibrations of both are taken as
     unchanged, and rotational symmetry numbers as 1. kcal/mol."""
@@ -363,9 +363,9 @@ def binding_free_correction(engine, symbols, xyz, n_x: int, *, charge: int = 0, 
 
     xyz = np.asarray(xyz, dtype=float)
     freqs = rigid_modes(engine.compute_hessian(_node(symbols, xyz, charge, multiplicity)), symbols, xyz, n_x)
-    g = (qrrho([abs(f) for f in freqs], symbols, xyz, temperature)["g_corr"]
-         - qrrho([], symbols[:n_x], xyz[:n_x], temperature)["g_corr"]
-         - qrrho([], symbols[n_x:], xyz[n_x:], temperature)["g_corr"])
+    g = (qrrho([abs(f) for f in freqs], symbols, xyz, temperature, standard_state=standard_state)["g_corr"]
+         - qrrho([], symbols[:n_x], xyz[:n_x], temperature, standard_state=standard_state)["g_corr"]
+         - qrrho([], symbols[n_x:], xyz[n_x:], temperature, standard_state=standard_state)["g_corr"])
     return {"g_corr_kcal": float(g), "rigid_modes_cm": [float(f) for f in freqs]}
 
 
@@ -515,7 +515,8 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
               seed: int = 0, placer: str = "mixed", poses: int = 6, repeats: int = 3, carry: int = 3,
               relax_substrate: bool = False, reaction_atoms: Optional[Sequence[int]] = None, final_engine=None,
               final_keep: int = 3, free_energy: bool = True, charges: Optional[Callable] = gfn2_charges,
-              pool: int = 200, fmax: float = 0.05, steps: int = 300, polish: int = 2) -> dict:
+              pool: int = 200, fmax: float = 0.05, steps: int = 300, polish: int = 2,
+              standard_state: str = "1M") -> dict:
     """The bystander estimate of one step with the molecule C beside it (docs/bystander.md).
 
     frames          one step in one atom order, coordinates in A: {"symbols", "charge", "multiplicity", "r",
@@ -670,7 +671,8 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
         for f in binding:
             try:
                 fe = binding_free_correction(engine, symx + csym, best_pose[f]["xyz"], n_x, charge=charge,
-                                             multiplicity=mult, temperature=temperature)
+                                             multiplicity=mult, temperature=temperature,
+                                             standard_state=standard_state)
             except Exception as exc:
                 out["binding"][f]["free_error"] = f"{type(exc).__name__}: {exc}"
                 continue
@@ -678,7 +680,7 @@ def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.
             out["binding"][f].update(free=g[f], **fe)
         for key, val in shifts(g).items():
             out[key]["free"] = val
-        out["free_method"] = FREE_METHOD
+        out["free_method"] = FREE_METHOD.replace("1 mol/L", "1 atm") if standard_state == "1atm" else FREE_METHOD
     if final_engine is not None:
         try:
             out["final"] = _final(final_engine, x_nodes, c_nodes, runs, order, symx + csym, charge, mult, final_keep)

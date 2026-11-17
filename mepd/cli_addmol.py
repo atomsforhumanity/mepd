@@ -283,7 +283,7 @@ def _placed(q: dict, got: dict, molecule: dict, engine, added: Optional[tuple] =
              for c in molecule["conformers"]]
     forms += [_structure(m["symbols"], m["coordinates"], molecule["charge"], molecule["multiplicity"])
               for m in mine if m.get("coordinates")]
-    low = parent.lowest_form(forms, engine, temperature=q["temperature"]) if mine else None
+    low = parent.lowest_form(forms, engine, temperature=q["temperature"], standard_state=_standard(q)) if mine else None
     placed = parent.on_parent_scale(got, r + beside, q, low["g_hartree"] if low else 0.0)
     fields = {"reactants": r, "products": p,
               "barrier": {"electronic": got["barrier"]["electronic"], "free": placed["free"]},
@@ -338,7 +338,7 @@ def _ts_steps(q: dict, entries: list, molecule: dict, engine, failed: list, kept
             ends = n["ts"]["ends"]
             got = parent.ts_step({k: n["ts"].get(k) for k in ("atoms", "coordinates", "charge", "multiplicity", "comment")
                                   if n["ts"].get(k) is not None}, np.asarray(ends[0]), np.asarray(ends[1]), engine,
-                                 temperature=q["temperature"])
+                                 temperature=q["temperature"], standard_state=_standard(q))
             fields, steer = _placed(q, got, molecule, engine)
             kept[n.get("id")] = {"ts": _structure(n["ts"]["atoms"], n["ts"]["coordinates"], n["ts"].get("charge", 0),
                                                   n["ts"].get("multiplicity", 1)), **steer}
@@ -404,6 +404,12 @@ _ENGINE = None
 _INPUTS = None
 _QUERY: dict = {}
 QUICK = {"repeats": 1, "carry": 1, "polish": 0}     # the placer's quick setting (docs/bystander.md)
+
+
+def _standard(q: dict) -> str:
+    """The parent query's standard state ("1M" or "1atm"): every free energy the tool adds is at it (an
+    explorer run's is recorded under `reference`; a workspace's is 1 M)."""
+    return str((q.get("reference") or {}).get("standard_state") or "1M")
 
 
 def _engine(profile):
@@ -484,7 +490,8 @@ def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atom
         a_p = next((a for a in at_p if a & moved), at_p[0] if at_p else None)
     else:
         a_r = a_p = still[-1]
-    got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=not took)
+    got = parent.ts_step(ts, ang(first), ang(last), engine, temperature=q["temperature"], whole=not took,
+                         standard_state=_standard(q))
     fields, _steer_needs = _placed(q, got, molecule, engine,
                                    (set(a_r) if a_r else None, set(a_p) if a_p else None))
     return {"kind": "takes part" if took else "beside",
@@ -524,7 +531,8 @@ def _verify_task(args):
         charge, mult = int(frames["charge"]) + int(molecule["charge"]), int(frames["multiplicity"])
         poses = [first]
         try:
-            again = B.bystander(frames, molecule, engine, temperature=temperature, seed=1, **QUICK)
+            again = B.bystander(frames, molecule, engine, temperature=temperature, seed=1, **QUICK,
+                                standard_state=_standard(q))
             if again.get("status") == "ok" and all(k in again.get("complexes", {}) for k in ("r", "ts", "p")):
                 same = np.abs(np.asarray(again["complexes"]["ts"]) - np.asarray(first["ts"])).max() < 0.1
                 if not same:
@@ -1580,7 +1588,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     sid = pending_est.popleft()
                     fut = pool.submit(_task, (profile, "steps", sid, frames_of(sid), molecule, q["temperature"],
                                               ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
-                                               if pose.get("step") == sid else ()), 0, opt["setting"]))
+                                               if pose.get("step") == sid else ()), 0,
+                                              {**opt["setting"], "standard_state": _standard(q)}))
                     running[fut] = ("estimate", sid)
             done, _ = wait_for(list(running), timeout=10.0, return_when=FIRST_COMPLETED)
             changed = False

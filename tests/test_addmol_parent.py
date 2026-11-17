@@ -539,3 +539,29 @@ def test_a_ts_found_by_the_verification_and_by_a_scan_counts_once():
     assert _same_ts([row], again) == row["id"] and _same_ts([row], other) is None
     assert _same_ts([row], {**again, "takes_part": False}) is None
     assert _same_ts([{**row, "mirror_image_of": "x"}], again) is None
+
+
+def test_every_free_energy_the_tool_adds_is_at_the_parents_standard_state(monkeypatch):
+    """A 1 atm parent (an explorer run at 1 atm): the placer's binding is counted at 1 atm too (5.6 kcal/mol a
+    molecule apart at 700 K from 1 M); TS rows and the molecule's lowest form take the query's standard state."""
+    import inspect
+
+    import mepd.cli_addmol as c
+    import mepd.thermo as T
+    from mepd import bystander as B
+
+    assert c._standard({"reference": {"standard_state": "1atm"}}) == "1atm" and c._standard({}) == "1M"
+    seen = []
+    monkeypatch.setattr(T, "qrrho", lambda *a, **k: seen.append(k.get("standard_state")) or {"g_corr": 0.0})
+    monkeypatch.setattr(B, "rigid_modes", lambda *a, **k: [10.0] * 6)
+
+    class Eng:
+        def compute_hessian(self, node):
+            return None
+
+    B.binding_free_correction(Eng(), ["O", "H", "H", "H", "H"], np.zeros((5, 3)), 3, temperature=700.0,
+                              standard_state="1atm")
+    assert seen == ["1atm"] * 3
+    assert "standard_state" in inspect.signature(B.bystander).parameters
+    src = inspect.getsource(c)
+    assert src.count("standard_state=_standard(q)") >= 4      # TS rows (twice), lowest form, the second pose
