@@ -845,11 +845,19 @@ def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, st
     base_orders = [tuple(int(v) for v in b.as_order()) for b in bases]
     known = {ec.route(o) for o in base_orders}
     best: dict[tuple, tuple[int, tuple]] = {}
+    if not through:
+        # (as on develop: no molecule asked for, no other filter and no symmetry pruning)
+        for order, c in seen.items():
+            key = ec.route(order)
+            if key not in known and (key not in best or c < best[key][0]):
+                best[key] = (c, order)
+        ranked = sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1]))[:max_new]
+        return ranked, len(best)
     for order, c in seen.items():
         key = ec.route(order)
         if key in known or any(ec.relabels(o, order) for o in base_orders):
             continue   # a base, or one written with other, symmetry-equivalent atoms: not a new mechanism
-        if through and not ec.changed_atoms(order) & through:
+        if not ec.changed_atoms(order) & through:
             continue
         if key not in best or c < best[key][0]:
             best[key] = (c, order)

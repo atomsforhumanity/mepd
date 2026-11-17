@@ -44,7 +44,8 @@ def test_searches_are_queued_in_the_mechanisms_ranked_order_not_by_name(tmp_path
                 for n, key in enumerate(ranked)]
 
     monkeypatch.setattr("mepd.atom_mapping_selection.select_per_mechanism", choices)
-    run_inputs = SimpleNamespace(atom_mapping_inputs=SimpleNamespace(metric="endpoint-rmsd", n_candidates=4))
+    run_inputs = SimpleNamespace(atom_mapping_inputs=SimpleNamespace(metric="endpoint-rmsd", n_candidates=4,
+                                                                      explore_molecule="O"))   # (the order: asked for)
     _, cands, summary = cs._expand_pairs_by_mechanism(structures, [(0, 2), (0, 3), (1, 2), (1, 3)], True, run_inputs,
                                                       pairs_per_mechanism=2, workers=1, output=tmp_path)
     table = json.loads((tmp_path / "pair_mechanisms.json").read_text())

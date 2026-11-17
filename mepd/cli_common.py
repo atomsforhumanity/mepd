@@ -1046,14 +1046,18 @@ class PairFollowUp:
     At most `during` run at once while searches are still running or
     queued, `after` once none are (nothing else is left to use the cores).
     Whatever has not run when the pairs are done is the caller's to finish.
-    `done()`, if given, is called (in the parent) after each pair and each
-    task that finishes."""
+    `done(kind, item)`, if given, is called (in the parent) after each pair
+    ("pair", (i, j)) and each task ("task", the task) that finishes.
+    `share_lanes`: searches and follow-ups share the `workers` lanes, a
+    follow-up taking a freed lane before the next search does (outside an
+    explorer's steps only); off, as on develop, follow-ups run beside."""
 
     tasks: Callable[[Path], list]
     run: Callable[[object], object]
     during: int = 1
     after: int = 1
-    done: Optional[Callable[[], None]] = None
+    done: Optional[Callable[[str, object], None]] = None
+    share_lanes: bool = False
 
 
 def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, follow_up: PairFollowUp,
@@ -1075,7 +1079,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
     # One run on its own: searches and follow-ups share `workers` lanes, a follow-up taking a freed lane
     # before the next search does (its transition state is verified at once, and no more processes work
     # than were asked for). An explorer's steps (a share): follow-ups beside the searches, as before.
-    lanes_shared = share is None
+    lanes_shared = share is None and follow_up.share_lanes
     size = max(workers, follow_up.after) if lanes_shared else max(workers + max(1, follow_up.during), follow_up.after)
     pairs, extra = collections.deque(todo), collections.deque()
     running: dict = {}   # future -> (kind, item, pool)
@@ -1166,7 +1170,7 @@ def _fork_pairs_with_follow_up(one, todo: list, pairs_dir: Path, workers: int, f
                             _say(f"After pair ({i}, {j}): {type(exc).__name__}: {exc}")
                     if follow_up.done is not None:
                         try:
-                            follow_up.done()
+                            follow_up.done(kind, item)
                         except Exception as exc:
                             _say(f"After {kind} {item!r:.80}: {type(exc).__name__}: {exc}")
     except BrokenProcessPool:

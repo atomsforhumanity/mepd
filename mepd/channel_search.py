@@ -154,13 +154,17 @@ def _expand_pairs_by_mechanism(
             rows.append({"i": i, "j": j, "key": key, "score": score, "n_variants": n_variants,
                          "structure": None if is_identity else end_structure, "order": order[0] if order else 0})
 
-    # The mechanisms in the order they were ranked (SLAPMapper's own, then the explored ones: fewest bond
-    # changes, a proton passed between heteroatoms before an H handed on through a C-H), which is the order
-    # their path searches are queued in: an order of work, every mechanism is still searched.
-    first = {}
-    for r in rows:
-        first[r["key"]] = min(first.get(r["key"], r.get("order", 0)), r.get("order", 0))
-    keys = sorted(first, key=lambda k: (first[k], k))
+    if getattr(run_inputs.atom_mapping_inputs, "explore_molecule", None):
+        # With a molecule asked for (--explore-molecule): the mechanisms in the order they were ranked
+        # (SLAPMapper's own, then the explored ones: fewest bond changes, a proton passed between heteroatoms
+        # before an H handed on through a C-H), which is the order their path searches are queued in: an order
+        # of work, every mechanism is still searched. Otherwise by name, as on develop.
+        first = {}
+        for r in rows:
+            first[r["key"]] = min(first.get(r["key"], r.get("order", 0)), r.get("order", 0))
+        keys = sorted(first, key=lambda k: (first[k], k))
+    else:
+        keys = sorted({r["key"] for r in rows})
     if filtered:
         rows = _gi_near_lowest_rmsd(rows, keys, _one, workers, rmsd_window(run_inputs),
                                     max(1, pairs_per_mechanism), near_lowest)
@@ -816,13 +820,28 @@ class _SearchTable:
             self.rows.append(row)
         self.steps: dict = {}    # pair -> its transition states' labels, once its search is done
         self.final: dict = {}    # label -> its entry, once nothing more will be written for it
+        # What is known to be written whole: the pairs and follow-ups the run has seen finish (`done`), and what
+        # an earlier run into this folder left (nothing is being written yet). A tree or an IRC file a worker
+        # is still writing is not read: its adj_matrix.txt comes before its nodes, an IRC is written frame by frame.
+        self.searched = {row["pair"] for row in self.rows
+                         if (output / "pairs" / row["pair"] / "tree" / "adj_matrix.txt").exists()}
+        self.complete = {fp.name[:-len("_irc.xyz")] for fp in (output / "ts").glob("*_irc.xyz")} \
+            if (output / "ts").is_dir() else set()
 
-    def _step(self, label: str, mechanism: Optional[str]) -> dict:
+    def done(self, kind: str, item) -> None:
+        """A pair's search or a follow-up (TS optimization and IRC) finished: its files are whole."""
+        if kind == "pair":
+            self.searched.add(f"pair_{item[0]}_{item[1]}")
+        elif kind == "task":
+            self.complete.add(item[0])
+        self.write()
+
+    def _step(self, label: str, mechanism: Optional[str], finished: bool = False) -> dict:
         ts_dir = self.output / "ts"
         entry: dict = {"label": label}
         if _ts_opt_failed(ts_dir, label):
             return {**entry, "status": "ts_failed"}
-        if not (ts_dir / f"{label}.xyz").exists():
+        if not (ts_dir / f"{label}.xyz").exists() or not (finished or label in self.complete):
             return {**entry, "status": "ts_pending"}
         irc_fp = ts_dir / f"{label}_irc.xyz"
         if not irc_fp.exists():
@@ -869,13 +888,13 @@ class _SearchTable:
         searches = []
         for row in self.rows:
             pair_dir = self.output / "pairs" / row["pair"]
-            done = (pair_dir / "tree" / "adj_matrix.txt").exists()
+            done = (pair_dir / "tree" / "adj_matrix.txt").exists() and (finished or row["pair"] in self.searched)
             if done and row["pair"] not in self.steps:
                 self.steps[row["pair"]] = [label for label, _ in _pair_ts_guess_tasks(pair_dir, self.q, self.m)]
             steps = []
             for label in self.steps.get(row["pair"], []):
                 if label not in self.final:
-                    entry = self._step(label, row["mechanism"])
+                    entry = self._step(label, row["mechanism"], finished)
                     if not entry["status"].endswith("_pending"):
                         self.final[label] = entry
                 else:
@@ -1741,8 +1760,24 @@ def run_channels(
     # searches were given (pairs x branches x images), not just --workers.
     q, m = int(start_node.structure.charge), int(start_node.structure.multiplicity)
     ts_dir = output / "ts"
-    table = _SearchTable(output, structures, n_start, candidates, start_node, end_node, q, m)
-    table.write()
+    # searches.json (what each search found, as it comes): with a molecule asked for (--explore-molecule) only,
+    # which is what a scan for an added molecule reads; a table that cannot be written never stops the run
+    table = None
+    if getattr(run_inputs.atom_mapping_inputs, "explore_molecule", None):
+        try:
+            table = _SearchTable(output, structures, n_start, candidates, start_node, end_node, q, m)
+        except Exception as exc:
+            _log(f"searches.json will not be written ({type(exc).__name__}: {exc})")
+
+    def write_table(kind=None, item=None, finished=False):
+        if table is None:
+            return
+        try:
+            table.done(kind, item) if kind else table.write(finished=finished)
+        except Exception as exc:
+            _log(f"searches.json not written this time ({type(exc).__name__}: {exc})")
+
+    write_table()
     search_procs = workers * (parallel_workers if parallel else 1) * max(1, int(stats.get("engine_parallel") or 1))
     analysis_width = max(workers, min(search_procs, cpu_count))
     follow_up = PairFollowUp(
@@ -1750,7 +1785,8 @@ def run_channels(
                                 if _load_ts_and_irc_from_disk(ts_dir, t[0], q, m) is None
                                 and not _ts_opt_failed(ts_dir, t[0])],
         run=lambda task: _ts_and_irc_once(task[1], task[0], ts_dir, run_inputs, q, m) and None,
-        during=workers, after=analysis_width, done=table.write,
+        during=workers, after=analysis_width, done=write_table if table is not None else None,
+        share_lanes=table is not None,
     )
     from mepd.network_aware import resolve_cutoff
 
@@ -1793,7 +1829,7 @@ def run_channels(
         stats["direct_only"] = direct_only_counts(pairs_dir)
     _write_stats()
 
-    table.write()
+    write_table()
     tree_dirs = _completed_tree_dirs(pairs_dir)
     if not tree_dirs:
         if (stats.get("direct_only") or {}).get("pairs_not_characterized"):
@@ -1830,7 +1866,7 @@ def run_channels(
     if mismatch_warnings:
         stats["endpoint_mismatch_warnings"] = mismatch_warnings
     stats["ts_discovery_seconds"] = round(time.perf_counter() - t0, 3)
-    table.write(finished=True)
+    write_table(finished=True)
     _write_stats()
 
 

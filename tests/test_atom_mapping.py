@@ -534,17 +534,20 @@ def test_explore_searches_once_for_all_conformer_pairs_of_a_reaction(monkeypatch
 
 def test_explore_does_not_list_slapmappers_mechanism_again_through_the_other_methyl():
     """Acetone's enolisation through its other methyl is SLAPMapper's own mechanism with symmetry-equivalent
-    atoms: it was listed (and searched) again as 'explored: <the same bonds>'."""
-    from mepd.atom_mapping import _EditCount, explore_mechanisms, mechanism_key, suggest_mechanism_candidates
+    atoms: it was listed (and searched) again as 'explored: <the same bonds>'. Pruned only with a molecule asked
+    for (--explore-molecule; as on develop otherwise)."""
+    from mepd.atom_mapping import (_EditCount, atoms_of_molecule, explore_mechanisms, mechanism_key,
+                                   suggest_mechanism_candidates)
 
     start, end = _scrambled("keto_enol_1water")
     base = suggest_atom_mapping(start, end)
     own = mechanism_key(start, realign_end_to_start(base, end))
     # few symmetry variants kept, as when the symmetry group is larger than the cap (acetone beside proline)
-    keys = list(suggest_mechanism_candidates(start, end, explore=10, max_variants_per_mechanism=2))
+    keys = list(suggest_mechanism_candidates(start, end, explore=10, max_variants_per_mechanism=2,
+                                             explore_molecule="CC(C)=O"))
     assert keys[0] == own and f"explored: {own}" not in keys
     ec = _EditCount(start, end)
-    explored = explore_mechanisms(start, end, [base], max_new=10)
+    explored = explore_mechanisms(start, end, [base], max_new=10, through=atoms_of_molecule(start, "CC(C)=O"))
     assert len(explored) == 10 and not any(ec.relabels(base.as_order(), m.as_order()) for m in explored)
 
 
@@ -557,7 +560,7 @@ def test_explore_molecule_keeps_slapmappers_mechanism_and_the_explored_ones_thro
     assert atoms_of_molecule(start, "CCO") == frozenset()
     base = suggest_atom_mapping(start, end)
     ec = _EditCount(start, end)
-    everything = explore_mechanisms(start, end, [base], max_new=1000)
+    everything = explore_mechanisms(start, end, [base], max_new=1000, through=frozenset(range(len(start.symbols))))
     through = explore_mechanisms(start, end, [base], max_new=4, through=water)
     # the best-ranked of the mechanisms with a changed bond on the water, in the ranking's order
     assert [m.as_order() for m in through] == \
@@ -580,15 +583,34 @@ def test_explore_lists_a_mechanism_once_not_again_through_symmetry_equivalent_at
     base = suggest_atom_mapping(start, end)
     ec = am._EditCount(start, end)
     am._EXPLORED.clear()
-    explored = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10)]
+    every_atom = frozenset(range(len(start.symbols)))      # (a molecule asked for: here any atom of the start)
+    explored = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10, through=every_atom)]
     assert len(explored) == 10
     assert not any(ec.same_mechanism(a, b) for k, b in enumerate(explored) for a in [base.as_order(), *explored[:k]])
     assert all(ec.same_mechanism(a, a) for a in explored)
     # every route found, ranked: the kept ones are its first 10 that repeat no earlier kept one
-    everything = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10_000)]
+    everything = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10_000,
+                                                                     through=every_atom)]
     assert explored == everything[:10]
     costs = [(int(ec.cost(o)), ec.carbon_h_changes(o)) for o in everything]
     assert costs == sorted(costs)                                   # still in the ranking's order
+
+
+def test_without_a_molecule_asked_for_explore_lists_routes_as_on_develop():
+    """Without a molecule asked for, symmetry-equivalent routes are not pruned (as on develop, so that
+    `mepd discovery expand`, which explores 2 mechanisms, is unchanged): the best-ranked new routes by edit count."""
+    import mepd.atom_mapping as am
+
+    start, end = _scrambled("keto_enol_1water")
+    base = suggest_atom_mapping(start, end)
+    ec = am._EditCount(start, end)
+    am._EXPLORED.clear()
+    plain = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10)]
+    pruned = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10,
+                                                                 through=frozenset(range(len(start.symbols))))]
+    assert len(plain) == 10 and plain != pruned
+    assert any(ec.relabels(base.as_order(), o) or any(ec.same_mechanism(a, o) for a in plain[:k])
+               for k, o in enumerate(plain))
 
 
 def test_same_mechanism_sees_equivalent_atoms_of_the_end_too():
@@ -653,13 +675,14 @@ def test_snap_places_each_mechanism_once_per_pair_and_other_variants_ends_are_no
     start, end = _scrambled("keto_enol_1water")
     run_inputs = RunInputs()
     run_inputs.atom_mapping_inputs.explore_mechanisms = 3
+    run_inputs.atom_mapping_inputs.explore_molecule = "O"
     calls, built = [], []
     real_snap, real_realign, real_once = snap_module.snap_rmsd_align_assign, am.realign_end_to_start, am._once
     monkeypatch.setattr(snap_module, "snap_rmsd_align_assign", lambda *a, **k: calls.append(1) or real_snap(*a, **k))
     monkeypatch.setattr(am, "realign_end_to_start", lambda m, e: built.append(1) or real_realign(m, e))
     am._PER_GEOMETRY.clear()
     choices = select_per_mechanism(start, end, "snap", run_inputs)
-    groups = am.suggest_mechanism_candidates(start, end, explore=3)
+    groups = am.suggest_mechanism_candidates(start, end, explore=3, explore_molecule="O")
     assert len(choices) == len(groups) >= 3
     n_calls = len(calls)
     monkeypatch.setattr(am, "_once", lambda what, structures, compute: compute())
