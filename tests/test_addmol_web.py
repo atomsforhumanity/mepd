@@ -110,9 +110,11 @@ def test_the_added_molecule_variant_record(adopted):
                       "binding": {"r": {"electronic": -4.0}, "ts": {"electronic": -9.0}, "p": {"electronic": -1.0}}}]}
     var = added.put(ws, {"id": "water", "name": "water", "smiles": "O"}, 0.1, est)
     rec = ws.variants[var["id"]]
+    assert rec["edit"] == ["added water"]
     assert rec["kind"] == "added_molecule" and rec["added"]["amount"] == 0.1 and rec["replaced"] == []
     net = added.variant_network(ws, mgr.jobs, key, 298.15, var["id"], free_energy=False)
-    assert net["added"] == "water" and len(net["species"]) == 5 and len(net["steps"]) == 4
+    # (an estimate beside the step: its version with the molecule, no bound species)
+    assert net["added"] == "water" and len(net["species"]) == 3 and len(net["steps"]) == 2
     with_c = next(s for s in net["steps"] if s.get("parent_step") == step["id"])
     assert with_c["g_ts"] == pytest.approx(step["g_ts"] - 9.0) and with_c["status"] == "est"
     # the parent's own network is what it was: the variant replaces nothing
@@ -201,7 +203,8 @@ def test_the_cli_from_a_run_to_a_result_file(run, tmp_path):
 
 
 def test_the_bystander_layer_beside_a_step(run, tmp_path):
-    """The stand-in on HCN -> HNC with water: bindings to the three frames, the shifts, a proposed pose."""
+    """mepd.addmol.bystander is mepd.bystander's placer (its own tests: tests/test_bystander.py): HCN -> HNC with
+    water, quick setting; bindings to the three frames, the shifts, the step's atoms held."""
     pytest.importorskip("axtb")
     from mepd.engines.gxtb import GXTBCalculator
     from mepd.nodes.node import StructureNode
@@ -213,19 +216,11 @@ def test_the_bystander_layer_beside_a_step(run, tmp_path):
     w = engine.compute_geometry_optimization(StructureNode(structure=smiles_to_structure("O")))[-1].structure
     water = {"symbols": list(w.symbols), "charge": 0, "multiplicity": 1,
              "conformers": [np.asarray(w.geometry) * 0.529177210903]}
-    out = addmol.bystander(frames, water, engine, poses=4)
-    assert out["status"] == "ok" and set(out["binding"]) == {"r", "ts", "p"} and out["poses"] == 4
-    for b in out["binding"].values():
-        assert -15.0 < b["electronic"] < 0.0 and b["free"] > b["electronic"] and b["spread"] >= 0.0
-    assert out["barrier_shift"]["electronic"] == pytest.approx(out["binding"]["ts"]["electronic"] - out["binding"]["r"]["electronic"])
-    assert np.allclose(np.array(out["complexes"]["ts"])[:3], FRAMES["ts"])            # the step's atoms are held
+    out = addmol.bystander(frames, water, engine, repeats=1, carry=1, polish=0)
+    assert out["status"] in ("ok", "reacted") and out["placer"] == "mixed"
+    if out["status"] == "ok":
+        assert set(out["binding"]) == {"r", "ts", "p"}
+        assert out["barrier_shift"]["electronic"] == pytest.approx(
+            out["binding"]["ts"]["electronic"] - out["binding"]["r"]["electronic"])
+        assert np.allclose(np.array(out["complexes"]["ts"])[:3], FRAMES["ts"])        # the step's atoms are held
     json.dumps(out)                                                                    # plain numbers and lists
-    # a species alone (no TS): its binding only; a proposed pose is one more placement
-    alone = addmol.bystander({**frames, "ts": None, "p": None}, water, engine, poses=2,
-                             starts=[{"frame": "r", "coords": np.array(out["complexes"]["r"])[3:]}])
-    assert set(alone["binding"]) == {"r"} and alone["poses"] == 3 and alone["barrier_shift"] is None
-    assert alone["binding"]["r"]["electronic"] <= out["binding"]["r"]["electronic"] + 0.05
-    # far away, nothing pulls on it: a failure, not a number
-    far = addmol.bystander({**frames, "ts": None, "p": None}, water, engine, poses=0,
-                           starts=[{"frame": "r", "coords": np.array(water["conformers"][0]) + [0.0, 40.0, 0.0]}])
-    assert far["status"] == "unmoved" and "did not move" in far["why"]

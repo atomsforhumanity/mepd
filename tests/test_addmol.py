@@ -32,7 +32,12 @@ C = {"id": "C", "name": "cat"}
 
 
 def beside(r, ts, p, status="est"):
-    return {"steps": [{"step": "ab", "status": status, "binding": {"r": both(r), "ts": both(ts), "p": both(p)}}]}
+    """The molecule beside the step A -> B: its binding to the TS (an estimate), and to A and to B as verified
+    bound species (an estimate of the molecule beside a held end makes no bound species)."""
+    out = {"steps": [{"step": "ab", "status": status, "binding": {"r": both(r), "ts": both(ts), "p": both(p)}}]}
+    if status == "est":
+        out["species"] = [{"species": x, "status": "verified", "binding": both(b)} for x, b in (("A", r), ("B", p))]
+    return out
 
 
 def total(net, k, sid):
@@ -142,14 +147,17 @@ def test_a_covalent_cycle_is_a_catalyst():
 def test_an_inert_binder_and_a_molecule_that_does_nothing():
     fast = network([("ab", ["A"], ["B"], 22.0)], g={"B": -10.0})
     t = 1.0 / k_of(22.0)
-    binder = A.added(fast, C, {"species": [{"species": "A", "binding": both(-8.0), "status": "est"}]})
+    binder = A.added(fast, C, {"species": [{"species": "A", "binding": both(-8.0), "status": "verified"}]})
     out = A.readout(fast, binder, {"A": 0.1}, 1.0, "B", t)
     assert out["added"]["fate"] == "bound and inert" and out["added"]["resting_state"]["id"] == "C"
     # (C is in excess: most of it stays free, but it holds nearly all of A)
     out = A.readout(fast, binder, {"A": 1.0}, 0.5, "B", t)
     assert out["added"]["fate"] == "bound and inert" and out["added"]["shares"]["bound"] > 0.9
     assert out["target"]["factor"] < 0.9                      # A held in the complex: less B
-    nothing = A.added(fast, C, {"species": [{"species": "A", "binding": both(5.0), "status": "est"}]})
+    nothing = A.added(fast, C, {"species": [{"species": "A", "binding": both(5.0), "status": "verified"}]})
+    # an estimated binding makes no bound species at all
+    est_only = A.added(fast, C, {"species": [{"species": "A", "binding": both(-8.0), "status": "est"}]})
+    assert [x["id"] for x in est_only["species"]] == ["A", "B", "C"] and any("only a verified" in n for n in est_only["notes"])
     out = A.readout(fast, nothing, {"A": 1.0}, 0.5, "B", t)
     assert out["added"]["fate"] == "no part" and out["target"]["factor"] == pytest.approx(1.0, abs=1e-3)
 
@@ -160,7 +168,8 @@ def test_estimates_that_failed_are_left_out():
 
 
 def test_an_electronic_number_stands_in_and_is_said():
-    est = {"steps": [{"step": "ab", "status": "est",
+    est = {"species": [{"species": "A", "status": "verified", "binding": {"electronic": -9.0, "free": 2.0}}],
+           "steps": [{"step": "ab", "status": "est",
                       "binding": {"r": {"electronic": -9.0, "free": 2.0}, "ts": {"electronic": -12.0}, "p": {"electronic": 0.0}}}]}
     v = A.added(PARENT, C, est)
     cx = next(s for s in v["species"] if s["id"] == "A.C")
@@ -234,6 +243,8 @@ def test_the_first_order_estimate_beside_the_full_kinetics():
     net = network([("ab", ["A"], ["B"], 24.0)], g={"B": -10.0})
     est = beside(0.0, -3.0, 0.0)
     est["steps"][0]["binding"]["r"] = est["steps"][0]["binding"]["p"] = {"electronic": 5.0, "free": 5.0}
+    for x in est["species"]:
+        x["binding"] = {"electronic": 5.0, "free": 5.0}
     v = A.added(net, C, est)
     want = 1 + 0.1 * math.exp(3.0 / RT)
     for t, close in ((0.001 / k_of(24.0), True), (3.0 / k_of(24.0), False)):

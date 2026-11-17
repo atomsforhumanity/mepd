@@ -364,21 +364,144 @@ def _steer(q: dict, est: dict, kept: dict, order: list, engine, steer_engine, la
 
 
 _ENGINE = None
+_INPUTS = None
+_QUERY: dict = {}
+QUICK = {"repeats": 1, "carry": 1, "polish": 0}     # the placer's quick setting (docs/bystander.md)
+
+
+def _engine(profile):
+    global _ENGINE, _INPUTS
+    if _ENGINE is None:
+        from mepd.cli_common import _open_run_inputs
+
+        _INPUTS = _open_run_inputs(Path(profile))
+        _ENGINE = _INPUTS.engine
+    return _ENGINE
 
 
 def _task(args):
     """One bystander estimate in a worker process (the engine is made once per process)."""
-    global _ENGINE
-    profile, kind, ref, frames, molecule, temperature, starts, seed = args
-    from mepd import addmol
-    from mepd.cli_common import _open_run_inputs
+    profile, kind, ref, frames, molecule, temperature, starts, seed, setting = args
+    from mepd import bystander as B
 
-    if _ENGINE is None:
-        _ENGINE = _open_run_inputs(Path(profile)).engine
     try:
-        return kind, ref, addmol.bystander(frames, molecule, _ENGINE, temperature=temperature, starts=starts, seed=seed)
+        return kind, ref, B.bystander(frames, molecule, _engine(profile), temperature=temperature, starts=starts,
+                                      seed=seed, **setting)
     except Exception as exc:
         return kind, ref, {"status": "failed", "why": f"{type(exc).__name__}: {exc}", "binding": {}}
+
+
+def _ts_row(q: dict, sid: str, label: str, layer: str, s_ts, first, last, c_atoms: set, molecule: dict, engine,
+            start_keys: list, end_keys: list) -> dict:
+    """A TS found with the molecule present, with its IRC's two ends (qcdata Structures, one atom order), read as
+    the step `sid`: {"kind": "takes part" | "beside", "entry": the step on the parent's scale} when its IRC joins
+    the step's two ends (the molecule's bonds changing between them or not), else {"kind": "elsewhere", "ends"}."""
+    import numpy as np
+
+    from mepd.discovery import molecules as M
+    from mepd.discovery import parent
+    from mepd.network_variants import adjacency
+
+    BOHR = 0.529177210903
+    ang = lambda st: np.asarray(st.geometry, dtype=float).reshape(-1, 3) * BOHR   # noqa: E731
+    keys = lambda st: sorted(key for _a, key in M.molecule_parts(st))               # noqa: E731
+    k0, k1 = keys(first), keys(last)
+    if (k0, k1) == (end_keys, start_keys) and start_keys != end_keys:
+        first, last, k0, k1 = last, first, k1, k0
+    if (k0, k1) != (start_keys, end_keys):
+        return {"kind": "elsewhere", "ends": [".".join(k0), ".".join(k1)]}
+    sym = [str(x) for x in s_ts.symbols]
+    changed = adjacency(sym, ang(first)) != adjacency(sym, ang(last))
+    idx = sorted(c_atoms)
+    took = bool(changed[idx].any())
+    got = parent.ts_step({"atoms": sym, "coordinates": ang(s_ts), "charge": int(s_ts.charge),
+                          "multiplicity": int(s_ts.multiplicity)}, ang(first), ang(last), engine,
+                         temperature=q["temperature"], whole=not took)
+    fields, _steer_needs = _placed(q, got, molecule, engine)
+    pairs = lambda m: [[int(i), int(j)] for i, j in zip(*np.nonzero(np.triu(m)))]   # noqa: E731
+    a0, a1 = adjacency(sym, ang(first)), adjacency(sym, ang(last))
+    return {"kind": "takes part" if took else "beside",
+            "entry": {"id": f"{sid}|{label}", "parent_step": sid, "layer": layer, "status": "verified",
+                      "label": (f"{sid}: the molecule takes part ({label})" if took
+                                else f"{sid}: with the molecule beside it ({label})"),
+                      "takes_part": took, "returned": True if took else None,
+                      "bonds_broken": pairs(a0 & ~a1), "bonds_formed": pairs(a1 & ~a0), **fields}}
+
+
+def _verify_task(args):
+    """One step verified with the molecule beside it, in a worker process: from the quick estimate's lowest
+    complexes and from those of a second, independent quick estimate (two TS poses), each through
+    mepd.cli_variant._reoptimize (ends minimized, the TS optimized with the molecule present, its IRC); each
+    TS read with `_ts_row`. Returns {"step", "rows": the lowest row of each kind with the difference between
+    the two poses as its spread, "elsewhere": [...], "notes", "wall_s"}."""
+    profile, query_fp, sid, frames, molecule, first, out_dir, temperature = args
+    import numpy as np
+    from qcdata import Structure
+
+    from mepd import bystander as B
+    from mepd.cli_variant import _reoptimize
+    from mepd.discovery import molecules as M
+    from mepd.network_variants import adjacency
+    from mepd.web.variants import _structure
+
+    t0 = time.perf_counter()
+    out = {"step": sid, "rows": [], "elsewhere": [], "notes": []}
+    try:
+        engine = _engine(profile)
+        if query_fp not in _QUERY:
+            _QUERY[query_fp] = json.loads(Path(query_fp).read_text())
+        q = _QUERY[query_fp]
+        sym = list(frames["symbols"]) + list(molecule["symbols"])
+        n_x = len(frames["symbols"])
+        charge, mult = int(frames["charge"]) + int(molecule["charge"]), int(frames["multiplicity"])
+        poses = [first]
+        try:
+            again = B.bystander(frames, molecule, engine, temperature=temperature, seed=1, **QUICK)
+            if again.get("status") == "ok" and all(k in again.get("complexes", {}) for k in ("r", "ts", "p")):
+                same = np.abs(np.asarray(again["complexes"]["ts"]) - np.asarray(first["ts"])).max() < 0.1
+                if not same:
+                    poses.append(again["complexes"])
+        except Exception as exc:
+            out["notes"].append(f"second pose: {type(exc).__name__}: {exc}")
+        pairs = lambda m: [[int(i), int(j)] for i, j in zip(*np.nonzero(np.triu(m)))]   # noqa: E731
+        keys = lambda x: sorted(key for _a, key in M.molecule_parts(_structure(sym, x, charge, mult)))   # noqa: E731
+        found: dict = {}
+        for k, cx in enumerate(poses):
+            d = {"symbols": sym, "charge": charge, "multiplicity": mult, **{f: np.asarray(cx[f]).tolist() for f in ("r", "ts", "p")},
+                 "bonds_r": pairs(adjacency(sym, np.asarray(cx["r"]))), "bonds_p": pairs(adjacency(sym, np.asarray(cx["p"])))}
+            folder = Path(out_dir) / f"pose_{k}"
+            try:
+                summary = _reoptimize(d, _INPUTS, folder)
+                ts_fp, irc_fp = folder / "reopt" / "ts.xyz", folder / "reopt" / "ts_irc.xyz"
+                if not (ts_fp.exists() and irc_fp.exists()):
+                    out["notes"].append(f"pose {k}: {summary.get('headline') or summary.get('status')}")
+                    continue
+                irc = Structure.open_multi(str(irc_fp))
+                q_ = {"charge": charge, "multiplicity": mult}
+                row = _ts_row(q, sid, f"verified pose {k}", "verify", Structure.open(str(ts_fp)).model_copy(update=q_),
+                              irc[0].model_copy(update=q_), irc[-1].model_copy(update=q_), set(range(n_x, len(sym))),
+                              molecule, engine, keys(cx["r"]), keys(cx["p"]))
+            except Exception as exc:
+                out["notes"].append(f"pose {k}: {type(exc).__name__}: {exc}")
+                continue
+            if row["kind"] == "elsewhere":
+                out["elsewhere"].append({"pose": k, "ends": row["ends"]})
+                continue
+            row["entry"].update(ts_file=str(ts_fp), irc_file=str(irc_fp), source="mepd variant --mode reoptimize's "
+                                "function on the bystander estimate's complexes (TS optimized, IRC joins the step's ends)")
+            found.setdefault(row["kind"], []).append(row["entry"])
+        for kind, entries in found.items():
+            entries.sort(key=lambda e: e["barrier"]["free"])
+            low = entries[0]
+            # two poses: the difference between them is the row's spread
+            low["barrier"] = {**low["barrier"], "spread": (entries[1]["barrier"]["free"] - low["barrier"]["free"])
+                              if len(entries) > 1 else None}
+            low["poses_verified"] = len(entries)
+            out["rows"].append(low)
+    except Exception as exc:
+        out["notes"].append(f"{type(exc).__name__}: {exc}")
+    out["wall_s"] = round(time.perf_counter() - t0, 1)
+    return out
 
 
 RELAY_EXPLORE = 8            # `mepd channels --explore-mechanisms`: mechanisms through the added molecule, by rank
@@ -441,6 +564,7 @@ def _relay_scan(q: dict, sid: str, molecule: dict, complexes: dict, engine, prof
         time.perf_counter() - started, 1))
     t0 = time.perf_counter()
     start_keys = sorted(key for _a, key in M.molecule_parts(ends["start"]))
+    end_keys = sorted(key for _a, key in M.molecule_parts(ends["end"]))
     seen: set = set()
     rows: list = []
     with open(folder / "channels.log", "w") as log:
@@ -473,36 +597,29 @@ def _relay_scan(q: dict, sid: str, molecule: dict, complexes: dict, engine, prof
                                 rec.setdefault("consumed", []).append({"ts": ts["label"], "irc_ends": ts.get("irc_ends")})
                             continue
                         e = ts.get("ts_energy_hartree")
-                        if any(r["takes_part"] == took and e is not None and abs(r["e"] - e) < 1e-5 for r in rows):
+                        if any(e is not None and abs(r - e) < 1e-5 for r in rows):
                             continue                    # the same TS again (another conformer pair found it)
                         try:
-                            s_ts = Structure.open(str(out / ts["ts"]))
+                            q_ = {"charge": charge, "multiplicity": mult}
                             irc = Structure.open_multi(str(out / ts["irc"]))
-                            first, last = irc[0], irc[-1]
-                            if sorted(key for _a, key in M.molecule_parts(first)) != start_keys:
-                                first, last = last, first
-                            ang = lambda st: np.asarray(st.geometry, dtype=float).reshape(-1, 3) * BOHR   # noqa: E731
-                            got = parent.ts_step({"atoms": [str(x) for x in s_ts.symbols], "coordinates": ang(s_ts),
-                                                  "charge": charge, "multiplicity": mult}, ang(first), ang(last),
-                                                 engine, temperature=q["temperature"], whole=not took)
-                            fields, _steer_needs = _placed(q, got, molecule, engine)
+                            row = _ts_row(q, sid, ts["label"], "relay", Structure.open(str(out / ts["ts"])).model_copy(update=q_),
+                                          irc[0].model_copy(update=q_), irc[-1].model_copy(update=q_),
+                                          set().union(*c_atoms) if c_atoms else set(), molecule, engine, start_keys, end_keys)
                         except Exception as exc:
                             rec.setdefault("failed_rows", []).append({"ts": ts["label"], "why": f"{type(exc).__name__}: {exc}"})
                             continue
-                        rows.append({"takes_part": took, "e": e if e is not None else 0.0})
+                        rows.append(e if e is not None else 0.0)
+                        if row["kind"] == "elsewhere":
+                            rec["elsewhere"] = rec.get("elsewhere", 0) + 1
+                            continue
+                        took = row["kind"] == "takes part"
                         kind = "with_molecule" if took else "beside"
                         rec[kind] = rec.get(kind, 0) + 1
                         now = round(time.perf_counter() - started, 1)
                         if took and "first_with_molecule_s" not in rec:
                             rec["first_with_molecule_s"] = now
-                        entry = {"id": f"{sid}|{ts['label']}", "parent_step": sid, "layer": "relay", "status": "verified",
-                                 "label": (f"{sid}: the molecule takes part ({ts['label']})" if took
-                                           else f"{sid}: with the molecule beside it ({ts['label']})"),
-                                 "takes_part": took, "returned": all(m.get("returned") for m in touched) if took else None,
-                                 "bonds_broken": ts.get("bonds_broken"), "bonds_formed": ts.get("bonds_formed"),
-                                 "source": "mepd channels (TS optimized, IRC joins the step's two ends)",
-                                 "ts_file": str(out / ts["ts"]), "irc_file": str(out / ts["irc"]), "t_s": now, **fields}
-                        on_row(entry, took)
+                        on_row({**row["entry"], "source": "mepd channels (TS optimized, IRC joins the step's two ends)",
+                                "ts_file": str(out / ts["ts"]), "irc_file": str(out / ts["irc"]), "t_s": now}, took)
                 rec["wall_s"] = round(time.perf_counter() - t0, 1)
                 on_row(None, None)
                 if ended:
@@ -538,10 +655,17 @@ def test(
     steps: Optional[int] = typer.Option(None, "--steps", help="Bystander estimates for the first N steps of the "
                                         "query's order of work only (0: none, the kinetics of the estimates "
                                         "given with the candidates). Default: every step with geometries."),
-    scan: int = typer.Option(0, "--scan", help="The relay layer: scan up to N of the steps that limit the target "
-                             "for transition states with the molecule (`mepd channels` with the molecule on both "
-                             "sides; minutes per step on all the cores this command may use: pin it with "
-                             "taskset). 0: none."),
+    verify: Optional[int] = typer.Option(None, "--verify", help="Verify the first N steps of the order of work "
+                                         "with the molecule beside them (TS optimized with it, IRC; 15-40 s per "
+                                         "step and process). Default: every step with an estimate. 0: none."),
+    spread: bool = typer.Option(False, "--estimate-spread", help="Estimates with the placer's default setting "
+                                "(3 repeats, polish; about 7 times the quick setting's time): each estimate row "
+                                "then carries the spread over its repeats."),
+    scan: int = typer.Option(0, "--scan", help="The relay layer: scan up to N steps for transition states with "
+                             "the molecule taking part (`mepd channels` with the molecule on both sides; minutes "
+                             "per step on all the cores this command may use: pin it with taskset): the steps "
+                             "that limit the target first, then those whose estimate or verification showed the "
+                             "molecule reacting. 0: none."),
     scan_inputs: Optional[Path] = typer.Option(None, "--scan-inputs", help="Profile of the relay layer's path "
                                                "searches (same engine as the level; its path method). Default: "
                                                "the bystander layer's profile."),
@@ -580,6 +704,7 @@ def test(
         raise typer.BadParameter("the bystander layer, the relay layer and a step given with a TS need a profile: "
                                  "give --inputs (the query keeps none)")
     opt = {"query": str(query_file), "profile": str(profile) if profile else None, "steps": steps, "scan": scan,
+           "verify": verify, "setting": {} if spread else dict(QUICK),
            "scan_profile": str(scan_inputs or profile) if (scan_inputs or profile) else None,
            "steer": str(steer) if steer else None, "workers": workers, "output": str(output)}
     if jobs > 1 and len(cands) > 1:
@@ -618,10 +743,6 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     work = order + [st["id"] for st in rest]
     if opt["steps"] is not None:
         work = work[:max(0, opt["steps"])]
-    to_scan = _scan_order(q)[:max(0, opt["scan"])] if opt["scan"] else []
-    total = sum(s["amount"]["initial"] for s in q["species"])
-    held = [s for s in q["species"] if s.get("atoms") and (s["id"] in q["target"]["species"]
-                                                       or s["amount"]["max"] >= 1e-6 * total)]
     level = (q.get("level") or {}).get("key")
     fp = output / _file_name(cand["name"])
     given = cand.pop("estimates", None) or {}
@@ -630,13 +751,10 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     failed: list = []
     layers = [{"name": "given", "status": "done", "what": "estimates that came with the candidate",
                "entries": sum(len(v) for v in est.values())}] if any(est.values()) else []
-    n_by = len(set(work) | set(to_scan))
-    lay = {"name": "bystander", "status": "running" if n_by else "skipped", "done": 0,
-           "total": (n_by + len(held)) if n_by else 0, "level": level, "wall_s": 0.0,
-           "what": "the molecule beside each step's ends and TS, the step's atoms held (stand-in placer: "
-                   "random packed placements)"}
+    n_by = len(work)
+    lay = {"name": "bystander", "status": "running" if n_by else "skipped", "done": 0, "total": n_by, "level": level,
+           "wall_s": 0.0, "what": "the molecule beside each step's ends and TS, the step's atoms held (mepd.bystander)"}
     layers.append(lay)
-    scans: list = []
     extra: dict = {}
     timing: dict = {}
 
@@ -696,160 +814,202 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     if not n_by:
         return _line(doc, fp)
 
-    # A complex a given step starts from or ends in needs its binding.
-    named = {x[:-len(addmol.ADDED_ID) - 1] for n in est["new_steps"] for x in n["reactants"] + n["products"]
-             if x.endswith("." + addmol.ADDED_ID)}
-    held_c = held + [s for s in q["species"] if s["id"] in named and s not in held and s.get("atoms")]
     # A step and its mirror image are one step for a molecule that is its own mirror image: computed once, the
-    # twin's row a copy. With a chiral molecule they are two (diastereomeric) steps, each computed.
-    every = list(dict.fromkeys(to_scan + work))
+    # twin's rows a copy. With a chiral molecule they are two (diastereomeric) steps, each computed.
     twin_of = {} if handed else {st["mirror_of"]: st["id"] for st in q["steps"]
-                                 if st.get("mirror_of") and st["id"] in every and st["mirror_of"] in every}
-    lay["total"] = len(every) - len(twin_of) + len(held_c)
+                                 if st.get("mirror_of") and st["id"] in work and st["mirror_of"] in work}
+    todo = [sid for sid in work if sid not in twin_of.values()]        # in the order of what limits the target
+    lay["total"] = len(todo)
     pose = cand.get("pose") or {}
     complexes: dict = {}
-    t_by = time.perf_counter()
+    state: dict = {sid: "none" for sid in todo}        # how each step ends: est / verified / takes part / ...
+    reacted: list = []
+    best: dict = {}                                    # (step, takes part) -> its lowest verified row
+    scans: list = []
 
-    def bystander(kinds_refs, keep=()):
-        tasks = []
-        for kind, ref in kinds_refs:
-            if kind == "species":
-                s = next(x for x in held_c if x["id"] == ref)
-                fr = {"symbols": s["atoms"], "charge": s.get("charge", 0), "multiplicity": s.get("multiplicity", 1),
-                      "r": s["coordinates"], "ts": None, "p": None}
-                tasks.append((profile, "species", ref, fr, molecule, q["temperature"], (), 0))
-            else:
-                g = by_id[ref]["geometry"]
-                fr = {"symbols": g["atoms"], "charge": g["charge"], "multiplicity": g["multiplicity"],
-                      "r": g["reactant"], "ts": g["ts"], "p": g["product"]}
-                starts = ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
-                          if pose.get("step") == ref else ())
-                tasks.append((profile, "steps", ref, fr, molecule, q["temperature"], starts, 0))
-        last = time.perf_counter()
+    def frames_of(sid):
+        g = by_id[sid]["geometry"]
+        return {"symbols": g["atoms"], "charge": g["charge"], "multiplicity": g["multiplicity"],
+                "r": g["reactant"], "ts": g["ts"], "p": g["product"]}
+
+    def counts():
+        from collections import Counter
+
+        c = Counter(state.values())
+        extra["summary"] = {"steps": len(todo), "est": c["est"], "verified_beside": c["verified"],
+                            "takes_part": c["takes part"], "leads_elsewhere": c["elsewhere"],
+                            "failed": c["failed"] + c["reacted"], "reacted_in_the_estimate": c["reacted"],
+                            "not_reached": c["none"],
+                            "what": "how each parent step with frames ends: an estimate only; verified with the "
+                                    "molecule beside it; a verified TS with the molecule taking part; its "
+                                    "verification led to other species; no usable number"}
+
+    def pooled(fn, tasks):
         if opt["workers"] > 1 and len(tasks) > 1:
             import multiprocessing as mp
 
             pool = mp.get_context("spawn").Pool(min(opt["workers"], len(tasks)))
-            stream = pool.imap(_task, tasks)       # in the order of work
-        else:
-            pool, stream = None, map(_task, tasks)
+            return pool, pool.imap(fn, tasks)       # in the order of work
+        return None, map(fn, tasks)
+
+    def take(entry, took, rec=None):
+        """A verified row (from the verification or a scan) into the kinetics, if it is its step's lowest of its
+        kind; with the molecule beside the step it replaces the step's estimate."""
+        sid = entry["parent_step"]
+        key = (sid, took)
+        if key in best and best[key]["barrier"]["free"] <= entry["barrier"]["free"]:
+            return False
+        drop = {best[key]["id"], best[key]["id"] + "~mirror"} if key in best else set()
+        best[key] = entry
+        twin = _mirror_entry(q, entry, handed)
+        est["new_steps"][:] = [n for n in est["new_steps"] if n.get("id") not in drop] + [entry] + ([twin] if twin else [])
+        if not took:
+            est["steps"][:] = [e for e in est["steps"] if e.get("step") not in (sid, twin_of.get(sid))]
+        if sid in state and (took or state[sid] != "takes part"):
+            state[sid] = "takes part" if took else "verified"
+        timing.setdefault("first_verified_s", round(time.perf_counter() - t0, 1))
+        if took:
+            timing.setdefault("first_relay_s", round(time.perf_counter() - t0, 1))
+        if rec is not None:
+            rec.setdefault("lowest", {})["with_molecule" if took else "beside"] = entry["barrier"]["free"]
+        return True
+
+    # a. the quick estimate of every step, in the order of what limits the target
+    lay["what"] = ("the molecule beside each step's ends and TS, the step's atoms held (mepd.bystander, "
+                   + ("default setting: 3 repeats" if not opt["setting"] else "quick setting: 1 repeat, no polish") + ")")
+    t_a, last = time.perf_counter(), time.perf_counter()
+    pool, stream = pooled(_task, [(profile, "steps", sid, frames_of(sid), molecule, q["temperature"],
+                                   ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
+                                    if pose.get("step") == sid else ()), 0, opt["setting"]) for sid in todo])
+    try:
+        for _kind, ref, out in stream:
+            lay["done"] += 1
+            lay["wall_s"] = round(time.perf_counter() - t_a, 1)
+            timing.setdefault("first_bystander_s", round(time.perf_counter() - t0, 1))
+            entry = {"step": ref, "layer": "bystander", "level": level, "binding": out.get("binding") or {},
+                     "poses": out.get("poses"), "wall_s": out.get("wall_s"), "free_method": out.get("free_method"),
+                     "spread_method": out.get("spread_method"), "placer": out.get("placer"), "repeats": out.get("repeats")}
+            if all(k in (out.get("complexes") or {}) for k in ("r", "ts", "p")):
+                complexes[ref] = out["complexes"]
+            if out.get("status") == "ok":
+                state[ref] = "est"
+                est["steps"].append({**entry, "status": "est"})
+                if ref in twin_of:
+                    est["steps"].append({**entry, "step": twin_of[ref], "status": "est", "mirror_image_of": ref})
+            else:
+                state[ref] = "reacted" if out.get("status") == "reacted" else "failed"
+                if out.get("status") == "reacted":
+                    reacted.append(ref)
+                failed.append({**entry, "status": out.get("status"), "why": out.get("why")})
+            if time.perf_counter() - last > 10.0:      # the file follows the layer
+                counts()
+                write("running")
+                last = time.perf_counter()
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+    lay["status"] = "done"
+    timing["bystander_s"] = lay["wall_s"]
+    counts()
+    doc = write("running")
+
+    # b. each step verified with the molecule beside it, from the estimate's lowest complexes
+    left_ends: list = []
+    n_verify = len(todo) if opt["verify"] is None else max(0, opt["verify"])
+    to_verify = [sid for sid in todo if sid in complexes and state[sid] == "est"][:n_verify]
+    if to_verify:
+        vlay = {"name": "verify", "status": "running", "done": 0, "total": len(to_verify), "wall_s": 0.0, "level": level,
+                "what": "each step with the molecule beside it: the TS optimized with the molecule present from the "
+                        "estimate's complex (two poses), its IRC, the ends as found; replaces the step's estimate"}
+        layers.append(vlay)
+        t_b, last = time.perf_counter(), time.perf_counter()
+        vdir = output / (fp.stem + "_verify")
+        pool, stream = pooled(_verify_task, [(profile, opt["query"], sid, frames_of(sid), molecule, complexes[sid],
+                                              str(vdir / _file_name(sid)[:-5]), q["temperature"]) for sid in to_verify])
         try:
-            for kind, ref, out in stream:
-                lay["done"] += 1
-                lay["wall_s"] = round(time.perf_counter() - t_by, 1)
-                timing.setdefault("first_bystander_s", round(time.perf_counter() - t0, 1))
-                entry = {("species" if kind == "species" else "step"): ref, "layer": "bystander", "level": level,
-                         "binding": out.get("binding") or {}, "poses": out.get("poses"),
-                         "wall_s": out.get("wall_s"), "free_method": out.get("free_method"),
-                         "spread_method": out.get("spread_method")}
-                if out["status"] == "ok":
-                    if ref in keep:
-                        complexes[ref] = out["complexes"]
-                    if kind == "species":
-                        entry["binding"] = entry["binding"]["r"]
-                    est[kind].append({**entry, "status": "est"})
-                    if kind == "steps" and ref in twin_of:
-                        est[kind].append({**entry, "step": twin_of[ref], "status": "est", "mirror_image_of": ref})
-                else:
-                    failed.append({**entry, "status": out["status"], "why": out.get("why")})
-                if time.perf_counter() - last > 10.0:      # the file follows the layer
+            for res in stream:
+                sid = res["step"]
+                vlay["done"] += 1
+                vlay["wall_s"] = round(time.perf_counter() - t_b, 1)
+                changed = False
+                for row in res["rows"]:
+                    changed |= take(row, bool(row["takes_part"]))
+                if not res["rows"]:
+                    if res["elsewhere"]:
+                        state[sid] = "elsewhere"
+                        left_ends.append(sid)
+                        failed.append({"step": sid, "layer": "verify", "status": "leads elsewhere",
+                                       "why": "the TS optimized with the molecule present joins other species; the "
+                                              "step keeps its estimate", "ends": res["elsewhere"]})
+                    else:
+                        failed.append({"step": sid, "layer": "verify", "status": "failed",
+                                       "why": "; ".join(res["notes"]) or "no verified TS"})
+                elif res["elsewhere"]:
+                    left_ends.append(sid)
+                if changed or time.perf_counter() - last > 10.0:
+                    counts()
                     write("running")
                     last = time.perf_counter()
         finally:
             if pool is not None:
                 pool.close()
                 pool.join()
+        vlay["status"] = "done"
+        timing["verify_s"] = vlay["wall_s"]
+        counts()
+        doc = write("running")
 
-    # 1. the species that hold material, and the steps the relay layer is about to scan
-    mine = [sid for sid in to_scan if sid not in twin_of.values()]
-    bystander([("species", s["id"]) for s in held_c] + [("steps", sid) for sid in mine], keep=set(mine))
-    doc = write("running")
+    # c. the relay layer: the limiting steps, then the steps where the molecule reacted in the estimate or the
+    #    verification left the step's ends, each list most limiting first; one scan at a time, at most --scan
+    if opt["scan"]:
+        limiting = [sid for sid in _scan_order(q) if sid in todo]
+        flagged = [sid for sid in todo if sid in set(reacted) | set(left_ends) and sid not in limiting]
+        wanted = limiting + flagged
+        chosen = [sid for sid in wanted if sid in complexes][:opt["scan"]]
+        why = {o["step"]: o for o in q["limits"]["order"]}
 
-    # 2. the relay layer: those steps, the most limiting first, one scan at a time on every core this may use
-    if to_scan:
-        rlay = {"name": "relay", "status": "running", "done": 0, "total": len(mine), "wall_s": 0.0, "level": level,
-                "what": f"mepd channels between each scanned step's two ends with the molecule beside them "
+        def reason(sid):
+            if sid in limiting:
+                return ("degree of rate control " + format(why[sid]["control"], ".2f") if q["limits"].get("defined")
+                        else "on a lowest-peak route to the target, " + format(why[sid]["height"], ".1f")
+                        + " kcal/mol above the mixture")
+            return ("the molecule's or the step's bonds changed in the estimate" if sid in reacted
+                    else "its verification with the molecule beside it led to other species")
+
+        rlay = {"name": "relay", "status": "running", "done": 0, "total": len(chosen), "wall_s": 0.0, "level": level,
+                "what": f"mepd channels between a step's two ends with the molecule beside them "
                         f"(--explore-mechanisms {RELAY_EXPLORE} --explore-molecule, --search-budget "
                         f"{RELAY_BUDGET_S:g}): every verified TS on the parent's scale"}
-        layers.insert(len(layers) - 1, rlay)
-        why = {o["step"]: o for o in q["limits"]["order"]}
-        scans += [{"step": sid, "label": by_id[sid].get("label"), "status": "queued",
-                   "why": ("degree of rate control " + format(why[sid]["control"], ".2f") if q["limits"].get("defined")
-                           else "on a lowest-peak route to the target, " + format(why[sid]["height"], ".1f")
-                           + " kcal/mol above the mixture")} for sid in mine]
-        n_rest = len([st for st in q["steps"] if st["id"] not in set(mine) | set(twin_of.values())])
+        layers.append(rlay)
+        scans += [{"step": sid, "label": by_id[sid].get("label"), "status": "queued", "why": reason(sid)} for sid in chosen]
         extra["scan"] = {
             "rule": ("the steps with a degree of rate control of at least " + format(SCAN_CONTROL, "g")
                      + " for the target, largest first" if q["limits"].get("defined") else
                      "the steps of the parent's lowest-peak routes to the target (it makes none of it), highest "
-                     "first") + f"; at most --scan {opt['scan']}; then, once, the parent steps on the lowest-peak "
-                     "route with the molecule that were not scanned yet",
+                     "first") + "; then the steps whose estimate came back reacted or whose verification led to other "
+                     f"species, most limiting first; at most --scan {opt['scan']}",
             "steps": scans,
-            "not_scanned": f"{n_rest} other steps: not among what limits the target (bystander layer only)"
-            + (f"; {len(twin_of)} mirror-image twins take their original's rows (the molecule is its own mirror image)"
-               if twin_of else "")}
-        best: dict = {}                      # (step, takes part) -> its lowest entry
+            "left": [{"step": sid, "why": reason(sid) + ("; no complex of its two ends to start from"
+                                                           if sid not in complexes else "; beyond --scan")}
+                     for sid in wanted if sid not in chosen],
+            "not_scanned": f"{len(todo) - len(wanted)} other steps: not among what limits the target, and nothing "
+                           "in their estimate or verification showed the molecule reacting"}
         t_rel = time.perf_counter()
-
-        def scan_one(rec):
-            sid = rec["step"]
-            if sid not in complexes:
-                rec.update(status="failed", why="no bystander complex of its two ends to start from")
-                return
-
-            def on_row(entry, took):
-                if entry is not None:
-                    key = (sid, took)
-                    if key in best and best[key]["barrier"]["free"] <= entry["barrier"]["free"]:
-                        return                           # not lower than what the kinetics already have
-                    drop = {best[key]["id"], best[key]["id"] + "~mirror"} if key in best else set()
-                    best[key] = entry
-                    twin = _mirror_entry(q, entry, handed)
-                    est["new_steps"][:] = [n for n in est["new_steps"] if n.get("id") not in drop] + [entry] + (
-                        [twin] if twin else [])
-                    if not took:
-                        # a verified TS with the molecule beside it replaces the step's bystander estimate
-                        est["steps"][:] = [e for e in est["steps"] if e.get("step") not in (sid, twin_of.get(sid))]
-                        rec["bystander_estimate"] = "replaced by the verified TS with the molecule beside it"
-                    rec.setdefault("lowest", {})["with_molecule" if took else "beside"] = entry["barrier"]["free"]
-                    timing.setdefault("first_verified_s", round(time.perf_counter() - t0, 1))
-                    if took:
-                        timing.setdefault("first_relay_s", round(time.perf_counter() - t0, 1))
-                rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
-                write("running")
-
-            _relay_scan(q, sid, molecule, complexes[sid], engine, Path(opt["scan_profile"]),
-                        output / (fp.stem + "_relay") / _file_name(sid)[:-5], rec, on_row, t0)
-            rlay["done"] += 1
-
         for rec in scans:
-            scan_one(rec)
-        # once more: the parent steps that are now on the lowest-peak route with the molecule, and were not scanned
-        doc = write("running")
-        room = opt["scan"] - len(scans)
-        route = [x["step"] for r in ((doc.get("readout") or {}).get("peak_routes") or {}).get("with") or []
-                 for x in r["steps"]]
-        more = [sid for sid in route if sid in by_id and by_id[sid].get("geometry") and sid not in {r["step"] for r in scans}
-                and sid not in twin_of.values()][:max(0, room)]
-        if more:
-            bystander([("steps", sid) for sid in more], keep=set(more))      # (their complexes: the scans' two ends)
-            est["steps"][:] = list({e["step"]: e for e in est["steps"]}.values())
-            for sid in more:
-                rec = {"step": sid, "label": by_id[sid].get("label"), "status": "queued",
-                       "why": "on the lowest-peak route once the first scans were in"}
-                scans.append(rec)
-                rlay["total"] += 1
-                scan_one(rec)
+            def on_row(entry, took, rec=rec):
+                if entry is None or take(entry, took, rec):
+                    rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
+                    counts()
+                    write("running")
+
+            _relay_scan(q, rec["step"], molecule, complexes[rec["step"]], engine, Path(opt["scan_profile"]),
+                        output / (fp.stem + "_relay") / _file_name(rec["step"])[:-5], rec, on_row, t0)
+            rlay["done"] += 1
         rlay["status"] = "done"
         rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
         timing["relay_s"] = rlay["wall_s"]
-        doc = write("running")
-
-    # 3. the bystander layer for the rest of the parent
-    seen = {e.get("step") for e in est["steps"]} | {f.get("step") for f in failed} | set(to_scan) | {r["step"] for r in scans}
-    bystander([("steps", sid) for sid in work if sid not in seen and sid not in twin_of.values()])
-    lay["status"] = "done"
-    timing["bystander_s"] = lay["wall_s"]
+    counts()
     return _line(write("done"), fp)
 
 

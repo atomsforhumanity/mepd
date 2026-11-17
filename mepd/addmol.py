@@ -69,13 +69,13 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
 
     `molecule`: {"id", "name"} (its own free energy cancels in every rate; 0 unless "g" is given).
     `estimates` (every entry with "status": "est" | "verified"; others are left out):
-      "species": [{"species": id, "binding": {"electronic", "free", "spread"}}]
+      "species": [{"species": id, "binding": {"electronic", "free", "spread"}}], status "verified" only
           -> a species X.C with g = g(X) + g(C) + binding and the barrierless step X + C <=> X.C;
       "steps": [{"step": parent step id, "binding": {"r": {...}, "ts": {...}, "p": {...}}}]
           -> the parent step with C beside it, its TS at g_ts + g(C) + binding(ts): from X.C to Y.C where an
-             end is one molecule (its complex made from binding(r) / binding(p), the lowest known), from the
-             separated molecules + C where an end is several. The TS is counted from the separated
-             molecules, so binding(r) never enters the rate from a dilute C twice;
+             end is one molecule with a (verified) complex, from the separated molecules + C otherwise. The
+             TS is counted from the separated molecules, so binding(r) never enters the rate from a dilute
+             C twice; an estimate's binding(r), binding(p) make no bound species;
       "new_species": [{"id", "name", "formed_from": [ids], "released": [ids], "energy": {...}}]
           -> g = sum g(formed_from) - sum g(released) + energy;
       "new_steps": [{"id", "reactants": [ids], "products": [ids], "barrier": {...}, "parent_step": id}]
@@ -108,16 +108,13 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
             bind[x] = (v, e, est)
 
     used = lambda est: est.get("status") in USED   # noqa: E731
+    # A bound species needs a verified binding (a relaxed complex with its own thermal correction): an estimate
+    # of the molecule beside a held frame shifts barriers, it does not make a resting state.
     for est in estimates.get("species") or []:
-        if used(est):
+        if est.get("status") == "verified":
             offer(est["species"], est.get("binding"), est)
-    for est in estimates.get("steps") or []:
-        st = by_id.get(est.get("step"))
-        if st is None or not used(est):
-            continue
-        for end, key in ((st["reactants"], "r"), (st["products"], "p")):
-            if len(end) == 1:
-                offer(end[0], (est.get("binding") or {}).get(key), est)
+        elif used(est):
+            notes.append("an estimated binding to a species makes no bound species (only a verified one does)")
     for x, (v, e, est) in bind.items():
         cid = complex_id(x, c)
         flag(e, f"{sp[x].get('name') or x} + {sp[c]['name']}")
@@ -624,114 +621,13 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
                            "initial": kp["initial"], "amount": float(amount), "energies": parent.get("energies")}}
 
 
-# ---------------------------------------------------------------- the bystander layer (stand-in)
-def _rigid_g(symbols, coords, temperature: float) -> float:
-    from mepd import thermo
+# ---------------------------------------------------------------- the bystander layer
+def bystander(frames: dict, molecule: dict, engine, **kwargs) -> dict:
+    """The molecule beside the frames of one parent step: mepd.bystander.bystander (docs/bystander.md), which
+    replaced the stand-in that was here behind the same contract."""
+    from mepd.bystander import bystander as placed
 
-    return float(thermo.qrrho([], list(symbols), np.asarray(coords, dtype=float), float(temperature))["g_corr"])
-
-
-def bystander(frames: dict, molecule: dict, engine, *, temperature: float = 298.15, starts: Sequence[dict] = (),
-              seed: int = 0, poses: int = 6) -> dict:
-    """The molecule C beside the frames of one parent step, the step's own atoms held: C's binding to the
-    reactant end, the TS and the product end, and the barrier and reaction-energy shifts.
-
-    This is the stand-in until the measured placer lands (the contract both keep is in docs/add-molecule.md):
-    `poses` random packed placements of C around the TS (mepd.complexes.packed; its conformers take
-    turns), each carried unchanged to both ends, plus the proposed `starts`; C relaxed with the frame held
-    (mepd.substituents.relax_group); per frame the lowest complex whose C kept its bonds. Its numbers move
-    by kcal/mol with the placements (see `spread`): estimates to rank work by, not results.
-
-    frames: {"symbols", "charge", "multiplicity", "r", "ts" (or None), "p"}, Angstrom, one atom order.
-    molecule: {"symbols", "charge", "multiplicity", "conformers": [coords, ...]}, minima at the engine's level.
-    starts: [{"frame": "r" | "ts" | "p", "coords": C's atoms in that frame's own Cartesian frame}].
-    """
-    import time
-
-    from mepd.cli_variant import _angstrom, _node
-    from mepd.complexes import packed
-    from mepd.network_variants import adjacency
-    from mepd.substituents import relax_group
-
-    t0 = time.perf_counter()
-    sym, q, mult = list(frames["symbols"]), int(frames.get("charge", 0)), int(frames.get("multiplicity", 1))
-    csym, cq = list(molecule["symbols"]), int(molecule.get("charge", 0))
-    keys = [k for k in ("r", "ts", "p") if frames.get(k) is not None]
-    x = {k: np.asarray(frames[k], dtype=float) for k in keys}
-    n = len(sym)
-    confs = [np.asarray(c, dtype=float) for c in molecule["conformers"]]
-    e_conf = [float(e) for e in engine.compute_energies([_node(csym, c, cq, molecule.get("multiplicity", 1))
-                                                         for c in confs])]
-    e_c, low = min(e_conf), confs[int(np.argmin(e_conf))]
-    e_frame = dict(zip(keys, (float(e) for e in engine.compute_energies([_node(sym, x[k], q, mult) for k in keys]))))
-    anchor = "ts" if "ts" in x else "r"
-    placed = []                                       # C's coordinates, in the frames' Cartesian frame
-    for k in range(int(poses)):                       # (the conformers of C take turns)
-        a = _node(sym, x[anchor], q, mult).structure
-        pk = _angstrom(_node_of(packed([a, _node(csym, confs[k % len(confs)], cq, 1).structure], seed=seed + k)))
-        # back into the anchor frame's own coordinates (packing moved both)
-        pa, xa = pk[:n] - pk[:n].mean(axis=0), x[anchor] - x[anchor].mean(axis=0)
-        u, _s, vt = np.linalg.svd(pa.T @ xa)
-        rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
-        placed.append((pk[n:] - pk[:n].mean(axis=0)) @ rot + x[anchor].mean(axis=0))
-    placed += [np.asarray(s["coords"], dtype=float) for s in starts if s.get("frame") in keys]
-    free = list(range(n, n + len(csym)))
-    found: dict = {k: [] for k in keys}               # per frame: (energy, pose index, coords, moved)
-    reacted = {k: 0 for k in keys}
-    for i, xc in enumerate(placed):
-        for k in keys:
-            start = np.vstack([x[k], xc])
-            before = adjacency(sym + csym, start)
-            try:
-                node = relax_group(engine, _node(sym + csym, start, q + cq, mult), free)
-            except Exception:
-                continue
-            end = _angstrom(node)
-            if not np.array_equal(before[free], adjacency(sym + csym, end)[free]):
-                reacted[k] += 1
-                continue
-            found[k].append((float(node.energy), i, end, float(np.linalg.norm(end[n:] - xc, axis=1).max())))
-    out = {"status": "ok", "why": None, "binding": {}, "complexes": {}, "molecule_energy_hartree": e_c,
-           "free_method": "electronic binding + the change of the rigid-rotor and translational free energy at "
-                          "1 M (no vibrations: the six new intermolecular modes are not counted, so the cost of "
-                          "binding is overstated by their free energy)",
-           "spread_method": "difference between the lowest binding over the even and over the odd placements",
-           "level": type(engine).__name__, "poses": len(placed), "gradient_calls": None}
-    for k in keys:
-        if not found[k]:
-            out["status"] = "reacted" if reacted[k] else "failed"
-            out["why"] = (f"the molecule changed bonds in every placement beside the {_FRAME[k]}" if reacted[k]
-                          else f"no placement beside the {_FRAME[k]} could be relaxed")
-            continue
-        if max(f[3] for f in found[k]) < 1e-3 and out["status"] == "ok":
-            out["status"], out["why"] = "unmoved", f"the molecule did not move from where it was placed beside the {_FRAME[k]}"
-        e, _i, xyz, _m = min(found[k], key=lambda f: f[0])
-        halves = [[f[0] for f in found[k] if f[1] % 2 == h] for h in (0, 1)]
-        el = (e - e_frame[k] - e_c) * 627.509474
-        rigid = _rigid_g(sym + csym, xyz, temperature) - _rigid_g(sym, x[k], temperature) - _rigid_g(csym, low, temperature)
-        out["binding"][k] = {"electronic": el, "free": el + rigid,
-                             "spread": abs(min(halves[0]) - min(halves[1])) * 627.509474 if all(halves) else None}
-        out["complexes"][k] = xyz.tolist()
-
-    def shift(k):
-        a, b = out["binding"].get(k), out["binding"].get("r")
-        if not a or not b:
-            return None
-        return {"electronic": a["electronic"] - b["electronic"], "free": a["free"] - b["free"],
-                "spread": None if a["spread"] is None or b["spread"] is None else a["spread"] + b["spread"]}
-
-    out["barrier_shift"], out["reaction_shift"] = shift("ts"), shift("p")
-    out["wall_s"] = time.perf_counter() - t0
-    return out
-
-
-_FRAME = {"r": "reactant end", "ts": "TS", "p": "product end"}
-
-
-def _node_of(structure):
-    from mepd.nodes.node import StructureNode
-
-    return StructureNode(structure=structure)
+    return placed(frames, molecule, engine, **kwargs)
 
 
 # ---------------------------------------------------------------- the query and result files

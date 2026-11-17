@@ -198,50 +198,6 @@ def test_a_mirror_twin_has_its_originals_frames_reflected(tmp_path):
     assert {st["level"] for st in net["steps"]} == {"explorer"}
 
 
-def test_the_bystander_layer_tells_mirror_frames_apart_only_for_a_chiral_molecule():
-    """A chiral species and its mirror image: an achiral molecule placed in mirror-image poses binds both alike
-    (numerical noise); a chiral one, the same hand beside both, does not."""
-    pytest.importorskip("axtb")
-    from mepd.engines.gxtb import GXTBCalculator
-    from mepd.nodes.node import StructureNode
-    from mepd.structures import smiles_to_structure
-
-    engine = GXTBCalculator(backend="axtb")
-    ang = lambda st: np.asarray(st.geometry, dtype=float).reshape(-1, 3) * 0.529177210903     # noqa: E731
-    opt = lambda smi: engine.compute_geometry_optimization(StructureNode(structure=smiles_to_structure(smi)))[-1].structure   # noqa: E731
-    host = opt("C[C@H](O)F")
-    mirror = np.array([-1.0, 1.0, 1.0])
-    frame = {"symbols": [str(x) for x in host.symbols], "charge": 0, "multiplicity": 1, "r": ang(host), "ts": None, "p": None}
-    twin = {**frame, "r": ang(host) * mirror}
-
-    def molecule(smi):
-        st = opt(smi)
-        return {"symbols": [str(x) for x in st.symbols], "charge": 0, "multiplicity": 1, "conformers": [ang(st)]}
-
-    def beside(fr, mol, pose):
-        return addmol.bystander(fr, mol, engine, poses=0, starts=[{"frame": "r", "coords": pose}])
-
-    water = molecule("O")
-    first = addmol.bystander(frame, water, engine, poses=2)
-    pose = np.asarray(first["complexes"]["r"])[len(frame["symbols"]):]
-    a, b = beside(frame, water, pose), beside(twin, water, pose * mirror)
-    assert a["binding"]["r"]["electronic"] == pytest.approx(b["binding"]["r"]["electronic"], abs=0.02)
-    # a chiral molecule: the same molecule (not its mirror image) beside the mirror frame, put where its mirror
-    # image would sit
-    chiral = molecule("C[C@@H](O)Cl")
-    first = addmol.bystander(frame, chiral, engine, poses=2)
-    pose = np.asarray(first["complexes"]["r"])[len(frame["symbols"]):]
-    want = pose * mirror                               # the mirror image's place: the same hand fitted onto it
-    x = np.asarray(chiral["conformers"][0])
-    pc, qc = x - x.mean(axis=0), want - want.mean(axis=0)
-    u, _s, vt = np.linalg.svd(pc.T @ qc)
-    rot = u @ np.diag([1.0, 1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
-    a, b = beside(frame, chiral, pose), beside(twin, chiral, pc @ rot + want.mean(axis=0))
-    # (with the one given pose and no generic ones, a pose that is already relaxed reads "unmoved": the binding
-    # is there all the same)
-    assert abs(a["binding"]["r"]["electronic"] - b["binding"]["r"]["electronic"]) > 0.05
-
-
 def test_the_steering_level_for_a_step_given_with_its_ts(tmp_path):
     """--steer: the step moves to the parent's steering level by single points and says so; the read-out says
     that the comparison mixes levels when the parent's own steps are not there. (Here the steering profile is the
@@ -294,7 +250,7 @@ def test_a_step_and_its_mirror_twin_in_the_result(tmp_path):
     assert cli.invoke(app, ["addmol", "query", str(run), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
                             "--time", "3600", "-o", str(qf)]).exit_code == 0
     res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "-c", "C[C@@H](O)Cl", "--amount", "0.1",
-                           "-o", str(tmp_path / "r")])
+                           "--verify", "0", "-o", str(tmp_path / "r")])
     assert res.exit_code == 0, res.output
     water = json.loads((tmp_path / "r" / "O.json").read_text())
     rows = {e["step"]: e for e in water["estimates"]["steps"]}
@@ -335,20 +291,26 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "--amount", "0.1", "--scan", "1", "-o", str(tmp_path / "r")])
     assert res.exit_code == 0, res.output
     doc = json.loads((tmp_path / "r" / "O.json").read_text())
-    assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["relay", "bystander"]
+    # the order of work: the quick estimate, the verification with the molecule beside the step, the scan
+    assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["bystander", "verify", "relay"]
+    assert all(x["status"] == "done" for x in doc["layers"]) and "quick setting" in doc["layers"][0]["what"]
     (line,) = doc["scan"]["steps"]
     assert line["step"] == "fast_0_1" and line["status"] == "done" and "lowest-peak route" in line["why"]
     assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
     assert "lowest-peak routes" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
-    found = [n for n in doc["estimates"]["new_steps"] if n["layer"] == "relay"]
-    assert len(found) == sum(1 for k in ("with_molecule", "beside") if line.get(k))    # the lowest of each kind
-    for n in found:
+    rows = [n for n in doc["estimates"]["new_steps"] if n["layer"] in ("verify", "relay")]
+    kinds = [n["takes_part"] for n in rows]
+    assert len(kinds) == len(set(kinds))                       # the kinetics keep the lowest row of each kind
+    for n in rows:
         assert n["status"] == "verified" and n["parent_step"] == "fast_0_1" and n["barrier"]["free"] is not None
         assert n["level"] == "explorer" and set(n["reactants"]) <= {"C#N", "[C-]#[NH+]", "added"}
-    if line.get("beside"):      # a verified TS with the molecule beside it replaces the bystander estimate
+    if False in kinds:          # a verified TS with the molecule beside it replaces the bystander estimate
         assert not [e for e in doc["estimates"]["steps"] if e["step"] == "fast_0_1"]
     if not line.get("with_molecule"):
         assert "none found" in line["answer"]
+    # how the parent's steps ended, in one place
+    sm = doc["summary"]
+    assert sm["steps"] == 1 and sm["est"] + sm["verified_beside"] + sm["takes_part"] + sm["leads_elsewhere"] + sm["failed"] == 1
     assert doc["candidate"]["geometry"]["atoms"] == ["O", "H", "H"] and doc["level_labels"]["explorer"]
 
 
