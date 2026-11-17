@@ -294,10 +294,15 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     # the order of work: the quick estimate, the verification with the molecule beside the step, the scan
     assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["bystander", "verify", "relay"]
     assert all(x["status"] == "done" for x in doc["layers"]) and "quick setting" in doc["layers"][0]["what"]
+    assert doc["layers"][0]["uncertainty"]["barrier_shift_kcal"]["mean_abs_difference_to_verified"] == 2.0
+    assert "--scan" not in doc["scan"]["rule"] and "at most 1 reactions" in doc["scan"]["rule"]
+    for n in doc["estimates"]["new_steps"]:
+        assert not n["ts_file"].startswith("/") and (tmp_path / "r" / n["ts_file"]).exists()
     (line,) = doc["scan"]["steps"]
     # one scan per net reaction, chosen by what the target would gain; it stands for the reaction's steps
     assert line["step"] == "fast_0_1" and line["status"] == "done" and line["steps"] == ["fast_0_1"]
     assert line["reaction"] == "C#N -> [C-]#[NH+]" and "if this reaction had no barrier" in line["why"]
+    assert not line["run"].startswith("/") and (tmp_path / "r" / line["run"] / "channels.log").exists()
     assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] == 0
     assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
     assert "net reaction" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
@@ -404,3 +409,43 @@ def test_reactions_and_the_order_they_are_scanned_in():
     _peak, flat = _scan_ranking(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"],
                                 [r for r in rx.values() if not r["twin"]], set(), False)
     assert [r["label"] for r, _p in flat][0] == "A -> I" and len(flat) == 4
+
+
+def test_a_run_stopped_from_outside_says_so_in_its_file(tmp_path):
+    """SIGTERM (a time limit) while it works: the result file's status is "cut", not "running" and not "done"."""
+    pytest.importorskip("axtb")
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    run = _run(tmp_path)
+    qf = tmp_path / "q.json"
+    q = parent.query(run, target="C#N", initial={"[C-]#[NH+]": 1.0}, time_s=3600.0)
+    qf.write_text(json.dumps(q))
+    out = tmp_path / "r"
+    proc = subprocess.Popen([sys.executable, "-m", "mepd.cli", "addmol", "test", str(qf), "-c", "O", "--amount", "0.1",
+                             "--scan", "1", "-o", str(out)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env={**os.environ, "OMP_NUM_THREADS": "1"})
+    fp = out / "O.json"
+    try:
+        for _ in range(600):                      # until the scan runs (or the run is over)
+            if proc.poll() is not None:
+                break
+            try:
+                if any(x["name"] == "relay" and x["status"] == "running" for x in json.loads(fp.read_text())["layers"]):
+                    break
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.2)
+        if proc.poll() is not None:
+            pytest.skip("the run finished before it could be stopped")
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=60) == 124
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    doc = json.loads(fp.read_text())
+    assert doc["status"] == "cut" and "signal" in doc["cut"]["why"] and doc["cut"]["t_s"] > 0
+    assert {x["name"]: x["status"] for x in doc["layers"]}["relay"] == "cut"

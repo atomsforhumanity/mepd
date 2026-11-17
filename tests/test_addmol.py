@@ -351,4 +351,12 @@ def test_a_slow_catalyst_on_the_route_is_not_no_part():
     assert f["on_route"] is True and f["turnovers"] < 1e-3 and f["fate"] == "regenerated"
     # no steps with it at all: neither fact holds
     idle = A.readout(hard, A.added(hard, C, {}), {"A": 1.0}, 0.1, "B", 100.0)["added"]
-    assert idle["on_route"] is None and idle["fate"] == "no part" and idle["route_peak_with_added"] is False
+    assert not idle["on_route"] and idle["fate"] == "no part" and idle["route_peak_with_added"] is False
+    assert idle["route_role"] is None and "not on the routes" in idle["in_words"]
+    assert f["route_role"] == "takes part" and "takes part in a step of the routes" in f["in_words"]
+    # beside the TS of the route's only step (an estimate of the molecule beside it), taking part in nothing:
+    # on the route, and said as that
+    near = A.readout(hard, A.added(hard, C, {"steps": [{"step": "ab", "status": "est", "binding": {
+        "r": both(0.0), "ts": both(-12.0), "p": both(0.0)}}]}), {"A": 1.0}, 0.1, "B", 100.0)["added"]
+    assert near["on_route"] is True and near["route_role"] == "beside" and near["route_share_taking_part"] == 0.0
+    assert "beside the transition states" in near["in_words"] and "taking part in none" in near["in_words"]

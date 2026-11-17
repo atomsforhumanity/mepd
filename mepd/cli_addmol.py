@@ -512,6 +512,14 @@ def _verify_task(args):
 RELAY_EXPLORE = 8            # `mepd channels --explore-mechanisms`: mechanisms through the added molecule, by rank
 RELAY_BUDGET_S = 300.0       # its --search-budget: no new search starts after this
 RELAY_STOP_S = 1200.0        # a scan still running then is stopped; what it has verified by then counts
+_SCANS: set = set()          # the running scans' process groups (stopped with the command)
+# What the bystander estimate's barrier shift was measured to be worth (docs/bystander.md: g-xTB, gas; proline on
+# aldol steps, water on HCOOH, AlCl3 on isoprene + methyl acrylate), for a page to show beside estimate rows.
+ESTIMATE_UNCERTAINTY = {
+    "barrier_shift_kcal": {"mean_abs_difference_to_verified": 2.0, "largest": 4.2, "same_sign": "9 of 10 steps"},
+    "what": "the estimate (default setting) against the same step verified with the molecule present, ten steps",
+    "quick_setting": "the quick setting against the default one over a 178-step network: rms 3.6 kcal/mol",
+    "source": "docs/bystander.md"}
 LANES = 3                    # scans side by side, each on its own cores (a scan keeps about a third of 32 busy)
 
 
@@ -661,6 +669,7 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
     with open(folder / "channels.log", "w") as log:
         # (its own session: stopping it stops its workers too; it inherits this process's CPU mask)
         proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        _SCANS.add(proc.pid)
         try:
             while True:
                 ended = proc.poll() is not None
@@ -728,6 +737,7 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
                     continue
                 time.sleep(3.0)
         finally:
+            _SCANS.discard(proc.pid)
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
     rec["wall_s"] = round(time.perf_counter() - t0, 1)
@@ -852,6 +862,18 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     lay = {"name": "bystander", "status": "running" if n_by else "skipped", "done": 0, "total": n_by, "level": level,
            "wall_s": 0.0, "what": "the molecule beside each step's ends and TS, the step's atoms held (mepd.bystander)"}
     layers.append(lay)
+    # the stages still to come are in the file from the start ("queued")
+    vlay = {"name": "verify", "status": "queued" if opt["verify"] != 0 else "skipped", "done": 0, "total": 0, "wall_s": 0.0,
+            "level": level, "uncertainty": "each row's spread: the difference between its two verified poses",
+            "what": "each step with the molecule beside it: the TS optimized with the molecule present from the "
+                    "estimate's complex (two poses), its IRC, the ends as found; replaces the step's estimate"}
+    rlay = {"name": "relay", "status": "queued" if opt["scan"] else "skipped", "done": 0, "total": 0, "wall_s": 0.0,
+            "level": level, "what": f"mepd channels between a reaction's two ends with the molecule beside them "
+                                    f"(--explore-mechanisms {RELAY_EXPLORE} --explore-molecule, --search-budget "
+                                    f"{RELAY_BUDGET_S:g}): every verified TS on the parent's scale"}
+    if n_by:
+        lay["uncertainty"] = ESTIMATE_UNCERTAINTY
+        layers += [vlay, rlay]
     extra: dict = {}
     timing: dict = {}
 
@@ -942,6 +964,31 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 hist["with"].append({"t_s": since(), "peak": now})
             return doc
 
+    def cut(signum, _frame):
+        """Stopped from outside (a time limit) before it was complete: the file says so, the scans are stopped."""
+        import signal as _signal
+
+        extra["cut"] = {"t_s": since(), "why": "stopped by a signal before it was complete (a time limit)"}
+        for item in layers:
+            if item.get("status") in ("running", "queued"):
+                item["status"] = "cut"
+        for pid in list(_SCANS):
+            try:
+                os.killpg(pid, _signal.SIGTERM)
+            except OSError:
+                pass
+        try:
+            if lock.acquire(timeout=20):
+                counts()
+                plain_write("cut")
+        finally:
+            os._exit(124)
+
+    if threading.current_thread() is threading.main_thread():
+        import signal as _signal
+
+        _signal.signal(_signal.SIGTERM, cut)
+
     def frames_of(sid):
         g = by_id[sid]["geometry"]
         return {"symbols": g["atoms"], "charge": g["charge"], "multiplicity": g["multiplicity"],
@@ -979,6 +1026,9 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 return False
             drop = {best[key]["id"], best[key]["id"] + "~mirror"} if key in best else set()
             best[key] = entry
+            for k in ("ts_file", "irc_file"):          # beside the result file: paths relative to its folder
+                if entry.get(k) and os.path.isabs(str(entry[k])):
+                    entry[k] = os.path.relpath(entry[k], output)
             if shared:
                 entry["parent_steps"] = list(shared)
             twin = _mirror_entry(q, entry, handed)
@@ -1067,7 +1117,6 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
 
     # c (begun here, beside the verification). The relay layer: one scan per reaction, scans side by side, each
     # lane on its own cores; the next reaction is chosen anew each time a lane frees.
-    rlay = None
     threads: list = []
     if opt["scan"] and reactions:
         import os
@@ -1080,17 +1129,14 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         n_lanes = max(1, min(LANES, len(cpus) // 4 or 1, opt["scan"]))
         width = max(1, len(cpus) // n_lanes)
         masks = [cpus[k * width:(k + 1) * width] for k in range(n_lanes)]
-        rlay = {"name": "relay", "status": "running", "done": 0, "total": 0, "wall_s": 0.0, "level": level, "lanes": n_lanes,
-                "what": f"mepd channels between a reaction's two ends with the molecule beside them "
-                        f"(--explore-mechanisms {RELAY_EXPLORE} --explore-molecule, --search-budget "
-                        f"{RELAY_BUDGET_S:g}): every verified TS on the parent's scale; {n_lanes} scans side by side"}
+        rlay.update(status="running", lanes=n_lanes, what=rlay["what"] + f"; {n_lanes} scans side by side")
         extra["scan"] = {
             "rule": "one scan per net reaction of the parent (molecules the same on both sides dropped). Next is the "
                     "reaction with the lowest route peak to the target if that reaction alone had no barrier above "
                     "its ends, on the kinetics as they stand; ties: reactions where the estimate or the verification "
                     "saw the molecule react or take part, then fewer atoms; reactions that lower nothing last; for a "
                     "chiral molecule mirror twins after everything else. Derived again each time a lane frees; at "
-                    f"most --scan {opt['scan']} reactions",
+                    f"most {opt['scan']} reactions",
             "steps": scans, "derivations": [], "reactions": len(reactions)}
         t_rel = time.perf_counter()
 
@@ -1132,6 +1178,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 last_write = [time.perf_counter()]
 
                 def on_row(entry, took, rec=rec, rx=rx, last_write=last_write):
+                    if rec.get("run") and os.path.isabs(str(rec["run"])):
+                        rec["run"] = os.path.relpath(rec["run"], output)
                     changed = entry is not None and take(entry, took, rec, replaces_estimate=False, shared=rx["steps"])
                     if changed and took:
                         with lock:
@@ -1150,8 +1198,6 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     rlay["done"] += 1
 
         threads = [threading.Thread(target=lane, args=(k,), daemon=True) for k in range(n_lanes)]
-        with lock:
-            layers.append(rlay)
         threads[0].start()                 # the first lane beside the verification; the others when its cores free
 
     # b. each step verified with the molecule beside it, from the estimate's lowest complexes, in that order
@@ -1159,11 +1205,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     to_verify = sorted((sid for sid in todo if sid in complexes and state[sid] == "est"),
                        key=lambda sid: (bool(by_id[sid].get("mirror_of")), rank.get(sid, len(rank))))[:n_verify]
     if to_verify:
-        vlay = {"name": "verify", "status": "running", "done": 0, "total": len(to_verify), "wall_s": 0.0, "level": level,
-                "what": "each step with the molecule beside it: the TS optimized with the molecule present from the "
-                        "estimate's complex (two poses), its IRC, the ends as found; replaces the step's estimate"}
         with lock:
-            layers.insert(len(layers) - (1 if rlay else 0), vlay)
+            vlay.update(status="running", total=len(to_verify))
         t_b, last = time.perf_counter(), time.perf_counter()
         vdir = output / (fp.stem + "_verify")
         n_free = opt["workers"] - (len(masks[0]) if threads else 0)
@@ -1210,6 +1253,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             counts()
             doc = write("running")
 
+    if vlay["status"] == "queued":
+        vlay["status"] = "skipped"
     if threads:
         for th in threads[1:]:
             th.start()
@@ -1221,9 +1266,12 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             timing["relay_s"] = rlay["wall_s"]
             done_keys = set(taken)
             extra["scan"]["left"] = [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
-                                      "why": f"beyond --scan {opt['scan']}"} for rx in reactions if rx["key"] not in done_keys]
+                                      "why": f"not reached: the limit of {opt['scan']} reactions was used up"}
+                                     for rx in reactions if rx["key"] not in done_keys]
             extra["scan"]["not_scanned"] = (f"{len(extra['scan']['left'])} of {len(reactions)} reactions were not "
-                                            f"scanned (beyond --scan {opt['scan']})")
+                                            f"scanned (the limit was {opt['scan']} reactions)")
+    if rlay["status"] == "queued":
+        rlay["status"] = "skipped"
     counts()
     return _line(write("done"), fp)
 

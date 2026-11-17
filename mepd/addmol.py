@@ -163,8 +163,8 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
         out["steps"].append({"id": n["id"], "label": n.get("label") or n["id"], "reactants": list(n["reactants"]),
                              "products": list(n["products"]), "kind": "new",
                              "g_ts": sum(sp[x]["g"] for x in n["reactants"]) + _value(n.get("barrier"), mode),
-                             **{k: n[k] for k in ("parent_step", "parent_steps", "status", "spread", "level", "source")
-                                if n.get(k) is not None}})
+                             **{k: n[k] for k in ("parent_step", "parent_steps", "status", "spread", "level", "source",
+                                                  "takes_part") if n.get(k) is not None}})
     out["species"] = list(sp.values())
     out["added"] = c
     out["notes"] = list(dict.fromkeys((out.get("notes") or []) + notes))
@@ -230,8 +230,9 @@ def fate(network: dict, k: dict, routes: Sequence[dict] = (), peak: Optional[dic
     follows from them. `routes`: `flux_routes` of the target in these kinetics; `peak`: its lowest-peak route.
 
     * `on_route`: whether C is on the routes that carry the target's material (at least half of it goes
-      through steps with a C-holding species; None when no material was made), with `route_share` (that
-      share), `route_peak` (the highest point of the lowest-peak route to the target, kcal/mol above the
+      through steps with a C-holding species; None when no route makes any), with `route_share` (that
+      share) and `route_role`: "takes part" (in a step of those routes) or "beside" (only beside the TSs of
+      their steps); `route_share_taking_part`; `in_words`: the same in a sentence; `route_peak` (the highest point of the lowest-peak route to the target, kcal/mol above the
       mixture) and `route_peak_with_added` (whether that route has C in it);
     * `turnovers` (= `returns`): how often, per C put in, C came back from a step it took part in, in the
       run's time.
@@ -278,6 +279,18 @@ def fate(network: dict, k: dict, routes: Sequence[dict] = (), peak: Optional[dic
     on_route = None if share is None else bool(share >= 0.5)
     holds_c = {s["id"] for s in holders}
     by_id = {st["id"]: st for st in network["steps"]}
+
+    def part(sid):
+        """How C is in a step: "takes part" (a step given or found with C's bonds changing, or one that makes or
+        uses a species holding C), "beside" (the parent's step with C beside its TS), None (not in it)."""
+        st = by_id[sid]
+        if not holds_c & set(st["reactants"] + st["products"]) or st.get("kind") == "association":
+            return None
+        return "beside" if st.get("kind") == "bystander" or st.get("takes_part") is False else "takes part"
+
+    roles = {part(x) for r in carried if r.get("with_added") for x in r["steps"]} - {None}
+    role = "takes part" if "takes part" in roles else "beside" if roles else None
+    share_part = sum(r["share"] for r in carried if any(part(x) == "takes part" for x in r["steps"])) if carried else None
     peak_with = bool(peak) and any(holds_c & set(by_id[x["step"]]["reactants"] + by_id[x["step"]]["products"])
                                    for x in peak["steps"])
     if not on_route and returns < TRACE and shares["covalent"] < TRACE:
@@ -286,7 +299,20 @@ def fate(network: dict, k: dict, routes: Sequence[dict] = (), peak: Optional[dic
         verdict = "bound and inert" if shares["bound"] >= 0.5 or holds else "no part"
     else:
         verdict = "regenerated" if returns >= shares["covalent"] else "consumed"
-    return {"fate": verdict, "on_route": on_route, "route_share": share,
+    words = []
+    if on_route:
+        words.append((f"takes part in a step of the routes that carry {share_part:.0%} of the target" if role == "takes part"
+                      else f"beside the transition states of the routes that carry {share:.0%} of the target, taking "
+                           "part in none of their steps"))
+    elif carried:
+        words.append("not on the routes that carry the target's material")
+    else:
+        words.append("no route makes the target")
+    words.append(f"{returns:.2g} turnovers per molecule in the run's time")
+    return {"fate": verdict, "in_words": "; ".join(words),
+            # on the route as what: "takes part" in a step of it, or only "beside" the TSs of its steps
+            "route_role": role if on_route else None, "route_share_taking_part": share_part,
+            "on_route": on_route, "route_share": share,
             "route_peak": peak["peak"] if peak else None, "route_peak_with_added": peak_with if peak else None,
             "turnovers": returns, "shares": shares, "returns": returns,
             "resting_state": {"id": rest["id"], "name": rest.get("name") or rest["id"],
@@ -605,8 +631,7 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
     routes = {"parent": flux_routes(parent, kp, target), "with": flux_routes(variant, kv, target)}
     peaks = {"parent": peak_routes(parent, kp["initial"], target, limit=1),
              "with": peak_routes(variant, kv["initial"], target, limit=1)}
-    made = _series(kv, target)
-    carrying = routes["with"] if made is not None and float(made[-1]) > 1e-13 else ()   # (below: integration noise)
+    carrying = routes["with"]
     # the levels of the steps the comparison rests on: the routes that carry the target's material with C, and the
     # lowest-peak routes without and with it
     level_of = {st["id"]: st.get("level") for st in variant["steps"] if st.get("kind") != "association"}

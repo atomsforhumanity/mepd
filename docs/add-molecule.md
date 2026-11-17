@@ -150,7 +150,9 @@ Parent and variant are run from the same mixture, the variant with C at its amou
 
   | number | meaning |
   |---|---|
-  | `on_route`, `route_share` | whether at least half of the target's material goes through steps with a C-holding species, and that share (`null` when no material was made) |
+  | `on_route`, `route_share` | whether at least half of the target's material goes through steps with a C-holding species, and that share (`null` when no route makes any) |
+  | `route_role`, `route_share_taking_part` | on the route as what: `takes part` (C's bonds change in a step of it, or a step makes or uses a species holding C) or `beside` (C is only beside the TSs of its steps); the share of the material through steps in which C takes part |
+  | `in_words` | the two facts as a sentence, e.g. "beside the transition states of the routes that carry 99% of the target, taking part in none of their steps; 1e-05 turnovers per molecule in the run's time" |
   | `route_peak`, `route_peak_with_added` | the highest point of the lowest-peak route to the target with C in the flask, and whether that route has C in it |
   | `turnovers` (= `returns`) | how often, per C put in, a step that changed what C carries handed C back free or in a complex, in the run's time |
   | `shares` | where C is at the end: `free`, `bound` (in complexes), `covalent` (in new species that hold it) |
@@ -243,10 +245,10 @@ One per candidate, `<output>/<name>.json`, written whole each time (a reader nev
 | key | content |
 |---|---|
 | `schema`, `version`, `units`, `updated` | |
-| `status` | `running`, `done` or `failed` |
+| `status` | `running`, `done` (complete), `cut` (stopped from outside before it was complete, e.g. by a time limit; `cut` says when) or `failed` |
 | `query` | the `target` and `conditions` it was tested at |
 | `candidate` | as given |
-| `layers[]` | `name`, `status`, `done` / `total`, `wall_s`, `level`, `what` |
+| `layers[]` | `name` (`given`, `steer`, `bystander`, `verify`, `relay`), `status` (`queued`, `running`, `done`, `skipped`, `cut`, `failed`), `done` / `total`, `wall_s`, `level`, `what`, `uncertainty` (the estimate layer: what its barrier shifts were measured to be worth against verified steps); the stages still to come are listed from the start as `queued` |
 | `estimates` | every number used, in the form `added` takes, each with `status` (`est` / `verified`), `layer`, `level`, `spread` and where given `source` |
 | `failed[]` | what gave no usable number, and `why` |
 | `readout` | the section "What you read"; `null` with an entry in `failed` if the kinetics could not be built |
@@ -254,7 +256,8 @@ One per candidate, `<output>/<name>.json`, written whole each time (a reader nev
 | `level_labels` | what each `level` stands for, in words |
 | `timings` | seconds per part, and since the start `first_bystander_s`, `first_verified_s`, `first_relay_s` |
 
-`candidate.geometry` (`atoms`, `coordinates`: the lowest conformer as tested) and `candidate.chiral` are added once
+Paths in the file (`ts_file`, `irc_file` of verified and relay rows, a scan's `run` folder) are relative to the
+result file's folder. `candidate.geometry` (`atoms`, `coordinates`: the lowest conformer as tested) and `candidate.chiral` are added once
 the molecule is built. `--jobs N` works on N candidates at once (a screen without `--scan`).
 
 ## The three stages of `mepd addmol test`

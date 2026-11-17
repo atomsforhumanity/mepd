@@ -26,7 +26,8 @@ pack() {
      && mv $OUT_DIR/files.tgz.tmp $OUT_DIR/files.tgz) || true
   tail -c 20000 test.log > $OUT_DIR/test_tail.log 2>/dev/null || true
 }
-trap 'pack; exit 124' TERM
+# (on TERM the command is told first: it writes its result file with status "cut" and stops its scans)
+trap 'pkill -TERM -f "mepd.cli addmol test" || true; sleep 25; pack; exit 124' TERM
 (while true; do sleep 30; pack; done) &
 LOOP=$!
 s=$(date +%s)
