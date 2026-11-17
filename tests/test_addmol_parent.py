@@ -534,7 +534,9 @@ def test_a_candidate_given_as_smiles_gets_a_name():
 
     got = _candidates(["O", "OC(=O)[C@@H]1CCCN1", "CC(C)(C)O", "CCCCO"], None, 0.1)
     assert [c["name"] for c in got] == ["water", "L-proline", "C4H10O", "CCCCO"]       # (one formula: the SMILES)
-    assert [c["_stem"] for c in got] == ["O", "OC(=O)[C@@H]1CCCN1", "CC(C)(C)O", "CCCCO"]
+    assert [c["_file"] for c in got] == ["O.json", "OC__O__C__H_1CCCN1.json", "CC_C__C_O.json", "CCCCO.json"]
+    two = _candidates(["C/C=C/C", "C/C=C\\C"], None, 0.1)
+    assert len({c["_file"] for c in two}) == 2                    # (they read alike as file names)
     assert all(c["smiles"] for c in got)
 
 
@@ -623,3 +625,84 @@ def test_the_steering_shift_of_a_row_is_balanced_on_either_reference(monkeypatch
     other = {"barrier": {"free": 50.0}, "level": "explorer"}
     c._steer_row(q, "t", other, "ts", needs, None, "profile.toml")       # (its parent step is not steered)
     assert other == {"barrier": {"free": 50.0}, "level": "explorer"}
+
+
+def test_every_thread_of_the_process_is_moved_and_scans_are_stopped_on_the_way_out():
+    import os
+    import subprocess
+    import threading
+    import time
+
+    import mepd.cli_addmol as c
+
+    if not hasattr(os, "sched_setaffinity"):
+        pytest.skip("no CPU masks here")
+    before = os.sched_getaffinity(0)
+    one = {min(before)}
+    seen, go = {}, threading.Event()
+
+    def worker():
+        seen["tid"] = threading.get_native_id()
+        go.wait()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.1)
+    try:
+        c._set_affinity(os.getpid(), one)
+        assert os.sched_getaffinity(seen["tid"]) == one and os.sched_getaffinity(0) == one   # (a thread started earlier too)
+    finally:
+        c._set_affinity(os.getpid(), before)
+        go.set()
+        t.join()
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    c._SCANS.add(proc.pid)
+    c._stop_scans()
+    assert proc.wait(timeout=10) != 0 and not c._SCANS
+
+
+def test_a_scan_line_changes_only_under_the_lock(tmp_path, monkeypatch):
+    """The result file is written by another thread from the scan's line: every change to it is made holding the
+    lock (a dict changed while json serialises it raises RuntimeError)."""
+    import subprocess
+    import threading
+
+    import mepd.cli_addmol as c
+    from mepd.web.variants import _structure
+
+    lock = threading.RLock()
+    changed = []
+
+    class Line(dict):
+        def _held(self):
+            changed.append(lock._is_owned())
+
+        def __setitem__(self, k, v):
+            self._held()
+            super().__setitem__(k, v)
+
+        def update(self, *a, **k):
+            self._held()
+            super().update(*a, **k)
+
+        def setdefault(self, k, v=None):
+            self._held()
+            return super().setdefault(k, v)
+
+    class Done:
+        pid, returncode = 999999, 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: Done())
+    water = {"symbols": ["O", "H", "H"], "charge": 0, "multiplicity": 1,
+             "conformers": [[[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]]]}
+    st = _structure(["O", "H", "H"], water["conformers"][0], 0, 1)
+    rec = Line(status="queued")
+    c._relay_scan({}, "s", water, {"start": st, "end": st}, None, tmp_path / "p.toml", tmp_path / "scan", rec,
+                  lambda e, t: None, 0.0, lock=lock)
+    assert changed and all(changed) and rec["status"] == "failed"

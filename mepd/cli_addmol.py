@@ -178,6 +178,17 @@ def _candidates(smiles: List[str], files: Optional[Path], amount: Optional[float
         if c["name"] in names:
             raise typer.BadParameter(f"two candidates are called {c['name']!r}")
         names.add(c["name"])
+    # the result files: one per candidate, never shared (two SMILES can read alike once made a file name:
+    # C/C=C/C and C/C=C\C)
+    files: set = set()
+    for k, c in enumerate(out):
+        fn = _file_name(c.pop("_stem", None) or c["name"])
+        if fn in files:
+            fn = _file_name(c["name"])
+        if fn in files:
+            fn = f"{fn[:-5]}_{k}.json"
+        files.add(fn)
+        c["_file"] = fn
     return out
 
 
@@ -660,6 +671,10 @@ def _verify_task(args):
             d = {"symbols": sym, "charge": charge, "multiplicity": mult, **{f: np.asarray(cx[f]).tolist() for f in ("r", "ts", "p")},
                  "bonds_r": pairs(adjacency(sym, np.asarray(cx["r"]))), "bonds_p": pairs(adjacency(sym, np.asarray(cx["p"])))}
             folder = Path(out_dir) / f"pose_{k}"
+            if folder.exists():             # (an earlier run into this folder: its files are not this pose's)
+                import shutil
+
+                shutil.rmtree(folder)
             try:
                 summary = _reoptimize(d, _INPUTS, folder)
                 ts_fp = folder / "reopt" / "ts.xyz"
@@ -701,6 +716,19 @@ RELAY_EXPLORE = 8            # `mepd channels --explore-mechanisms`: mechanisms 
 RELAY_BUDGET_S = 300.0       # its --search-budget: no new search starts after this
 RELAY_STOP_S = 1200.0        # a scan still running then is stopped; what it has verified by then counts
 _SCANS: set = set()          # the running scans' process groups (stopped with the command)
+
+
+def _stop_scans() -> None:
+    """Stop every scan still running (each is its own process group): on any way out of the command."""
+    import os
+    import signal
+
+    for pid in list(_SCANS):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        _SCANS.discard(pid)
 # What the bystander estimate's barrier shift was measured to be worth (docs/bystander.md: g-xTB, gas; proline on
 # aldol steps, water on HCOOH, AlCl3 on isoprene + methyl acrylate), for a page to show beside estimate rows.
 ESTIMATE_UNCERTAINTY = {
@@ -863,14 +891,16 @@ def _scan_ends(q: dict, rx: dict, molecule: dict, engine) -> dict:
 
 
 def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: Path, folder: Path, rec: dict,
-                on_row, started: float, cores: Optional[list] = None, compute=None, steer: Optional[str] = None) -> None:
+                on_row, started: float, cores: Optional[list] = None, compute=None, steer: Optional[str] = None,
+                lock=None, n_cores: Optional[int] = None) -> None:
     """One reaction scanned for transition states with the added molecule: `mepd channels` between its two ends
     with the molecule beside each (`ends`: {"start", "end"}: qcdata Structures, the molecule's atoms last; they
     need not number the reaction's atoms alike: channels maps them), mechanisms through the molecule explored
     (--explore-mechanisms, --explore-molecule). Its searches.json is read as it grows: every verified TS that
     joins the two ends is put on the parent's scale (`_ts_row`) and handed to `on_row(entry, takes_part)`; `rec`
     (the scan's line in the result file) follows. `cores`: the CPUs the scan is held to (taskset); `compute`: a
-    lock held while this process's engine works (scans side by side share it)."""
+    lock held while this process's engine works (scans side by side share it); `lock`: held while `rec` changes
+    (the result file is written from it by another thread)."""
     import contextlib
     import os
     import shutil
@@ -884,7 +914,11 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
     from mepd.web.variants import _structure
 
     compute = compute or contextlib.nullcontext()
+    lock = lock or contextlib.nullcontext()
     charge, mult = int(ends["start"].charge), int(ends["start"].multiplicity)
+    if (folder / "out").exists():
+        # (a scan run into this folder before: its searches.json and TSs are not this scan's)
+        shutil.rmtree(folder / "out")
     folder.mkdir(parents=True, exist_ok=True)
     for name in ("start", "end"):
         ends[name].save(str(folder / f"{name}.xyz"))
@@ -894,7 +928,7 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
     out = folder / "out"
     from mepd.cpus import available_cpus
 
-    cpus = len(cores) if cores else available_cpus()   # (the mask, else the affinity mask and the container's limit)
+    cpus = len(cores) if cores else (n_cores or available_cpus())    # (the mask, else this lane's share)
     cmd = [sys.executable, "-m", "mepd.cli", "channels", "--start", str(folder / "start.xyz"), "--end",
            str(folder / "end.xyz"), "-i", str(profile), "--workers", str(cpus), "--parallel-workers", "1",
            "--search-budget", str(int(RELAY_BUDGET_S)), "--explore-mechanisms", str(RELAY_EXPLORE),
@@ -902,8 +936,9 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
     if cores and shutil.which("taskset"):
         # (--workers does not bound a channels run: only its CPU mask does)
         cmd = ["taskset", "-c", ",".join(str(c) for c in cores)] + cmd
-    rec.update(status="mapping", command=" ".join(cmd), run=str(folder), cores=cpus, t_started_s=round(
-        time.perf_counter() - started, 1))
+    with lock:
+        rec.update(status="mapping", command=" ".join(cmd), run=str(folder), cores=cpus, t_started_s=round(
+            time.perf_counter() - started, 1))
     t0 = time.perf_counter()
     start_keys = sorted(key for _a, key in M.molecule_parts(ends["start"]))
     end_keys = sorted(key for _a, key in M.molecule_parts(ends["end"]))
@@ -925,7 +960,9 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
                     searches = data.get("searches") or []
                     c_atoms = [set(m["atoms"]) for m in data.get("start_molecules") or [] if _flat(m.get("smiles")) == c_key]
                     counts = {k: sum(1 for x in searches if x.get("status") == k) for k in ("queued", "running", "searched")}
-                    rec.update(status="searching" if not ended else rec["status"], searches={**counts, "total": len(searches)})
+                    with lock:
+                        rec.update(status="searching" if not ended else rec["status"],
+                                   searches={**counts, "total": len(searches)})
                     todo = sorted((ts for x in searches for ts in x.get("transition_states") or []
                                    if ts.get("status") == "verified" and ts.get("label") not in seen),
                                   key=lambda ts: ts.get("ts_energy_hartree") or 0.0)
@@ -934,10 +971,11 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
                         touched = [m for m in ts.get("molecules") or [] if any(set(m["atoms"]) & c for c in c_atoms)]
                         took = bool(touched)
                         if not ts.get("joins_start_and_end"):
-                            rec["elsewhere"] = rec.get("elsewhere", 0) + 1
-                            if took and not all(m.get("returned") for m in touched):
-                                # the molecule changed and did not come back: a step to a new species (not followed)
-                                rec.setdefault("consumed", []).append({"ts": ts["label"], "irc_ends": ts.get("irc_ends")})
+                            with lock:
+                                rec["elsewhere"] = rec.get("elsewhere", 0) + 1
+                                if took and not all(m.get("returned") for m in touched):
+                                    # the molecule changed and did not come back: a step to a new species (not followed)
+                                    rec.setdefault("consumed", []).append({"ts": ts["label"], "irc_ends": ts.get("irc_ends")})
                             continue
                         e = ts.get("ts_energy_hartree")
                         if any(e is not None and abs(r - e) < 1e-5 for r in rows):
@@ -952,30 +990,36 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
                                               set().union(*c_atoms) if c_atoms else set(), molecule, engine,
                                               start_keys, end_keys, steer=steer)
                         except Exception as exc:
-                            rec.setdefault("failed_rows", []).append({"ts": ts["label"], "why": f"{type(exc).__name__}: {exc}"})
+                            with lock:
+                                rec.setdefault("failed_rows", []).append({"ts": ts["label"],
+                                                                          "why": f"{type(exc).__name__}: {exc}"})
                             continue
                         rows.append(e if e is not None else 0.0)
                         if row["kind"] == "elsewhere":
-                            rec["elsewhere"] = rec.get("elsewhere", 0) + 1
+                            with lock:
+                                rec["elsewhere"] = rec.get("elsewhere", 0) + 1
                             continue
                         took = row["kind"] == "takes part"
                         kind = "with_molecule" if took else "beside"
-                        rec[kind] = rec.get(kind, 0) + 1
                         now = round(time.perf_counter() - started, 1)
-                        if took and "first_with_molecule_s" not in rec:
-                            rec["first_with_molecule_s"] = now
-                        # every verified row of the scan: when it came and how high (to judge when a scan could stop)
-                        rec.setdefault("arrivals", []).append({"t_s": now, "takes_part": took, "ts": ts["label"],
-                                                               "free": row["entry"]["barrier"]["free"]})
+                        with lock:
+                            rec[kind] = rec.get(kind, 0) + 1
+                            if took and "first_with_molecule_s" not in rec:
+                                rec["first_with_molecule_s"] = now
+                            # every verified row of the scan: when it came and how high (to judge when a scan could stop)
+                            rec.setdefault("arrivals", []).append({"t_s": now, "takes_part": took, "ts": ts["label"],
+                                                                   "free": row["entry"]["barrier"]["free"]})
                         on_row({**row["entry"], "source": "mepd channels (TS optimized, IRC joins the step's two ends)",
                                 "ts_file": str(out / ts["ts"]), "irc_file": str(out / ts["irc"]), "t_s": now}, took)
-                rec["wall_s"] = round(time.perf_counter() - t0, 1)
+                with lock:
+                    rec["wall_s"] = round(time.perf_counter() - t0, 1)
                 on_row(None, None)
                 if ended:
                     break
                 if time.perf_counter() - t0 > RELAY_STOP_S:
                     os.killpg(proc.pid, signal.SIGTERM)       # (our own child's session)
-                    rec["stopped"] = f"after {RELAY_STOP_S:g} s"
+                    with lock:
+                        rec["stopped"] = f"after {RELAY_STOP_S:g} s"
                     proc.wait(timeout=60)
                     continue
                 time.sleep(3.0)
@@ -983,6 +1027,12 @@ def _relay_scan(q: dict, sid: str, molecule: dict, ends: dict, engine, profile: 
             _SCANS.discard(proc.pid)
             if proc.poll() is None:
                 os.killpg(proc.pid, signal.SIGTERM)
+    with lock:
+        _scan_status(rec, proc, folder, out, t0)
+
+
+def _scan_status(rec: dict, proc, folder: Path, out: Path, t0: float) -> None:
+    """How a scan ended, into its line (`rec`)."""
     rec["wall_s"] = round(time.perf_counter() - t0, 1)
     if proc.returncode not in (0, None) and not rec.get("stopped") and not (out / "searches.json").exists():
         rec.update(status="failed", why=f"mepd channels ended with code {proc.returncode} (see {folder / 'channels.log'})")
@@ -1081,13 +1131,36 @@ def test(
            "side": side, "verify": verify, "setting": {} if spread else dict(QUICK),
            "scan_profile": str(scan_inputs or profile) if (scan_inputs or profile) else None,
            "steer": str(steer) if steer else None, "workers": workers, "output": str(output)}
-    if jobs > 1 and len(cands) > 1:
-        import multiprocessing as mp
+    import atexit
+    import signal
+    import threading
 
-        with mp.get_context("spawn").Pool(jobs) as pool:
-            summary = pool.map(_candidate_job, [(c, opt) for c in cands])
-    else:
-        summary = [_candidate(q, c, opt) for c in cands]
+    atexit.register(_stop_scans)
+    main = threading.current_thread() is threading.main_thread()
+    before = signal.getsignal(signal.SIGTERM) if main else None
+    try:
+        if jobs > 1 and len(cands) > 1:
+            import multiprocessing as mp
+
+            def stop(signum, _frame):
+                """Stopped from outside: each candidate's process is told (it writes its file as "cut" and stops
+                its scans), then this one ends."""
+                for child in mp.active_children():
+                    child.terminate()
+                for child in mp.active_children():
+                    child.join(timeout=30)
+                os._exit(124)
+
+            if main:
+                signal.signal(signal.SIGTERM, stop)
+            with mp.get_context("spawn").Pool(jobs) as pool:
+                summary = pool.map(_candidate_job, [(c, opt) for c in cands])
+        else:
+            summary = [_candidate(q, c, opt) for c in cands]
+    finally:
+        _stop_scans()
+        if main:
+            signal.signal(signal.SIGTERM, before)        # (the command's handler goes with it)
     typer.echo(json.dumps(summary, indent=1))
 
 
@@ -1118,7 +1191,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     if opt["steps"] is not None:
         work = work[:max(0, opt["steps"])]
     level = (q.get("level") or {}).get("key")
-    fp = output / _file_name(cand.pop("_stem", None) or cand["name"])
+    fp = output / (cand.pop("_file", None) or _file_name(cand.pop("_stem", None) or cand["name"]))
     given = cand.pop("estimates", None) or {}
     est = {k: [{"layer": "given", **e} for e in given.get(k) or []]
            for k in ("species", "steps", "new_species", "new_steps")}
@@ -1272,6 +1345,10 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 counts()
                 plain_write("cut")
         finally:
+            import multiprocessing as _mp
+
+            for child in _mp.active_children():  # (the estimate and verification workers)
+                child.terminate()
             os._exit(124)
 
     if threading.current_thread() is threading.main_thread():
@@ -1379,11 +1456,13 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 t = time.perf_counter()
                 _p, kept, out = _scan_worth(net, added_as, snap, start, target, rest, flagged, handed, cond, set())
                 kinetic.update(key=key, kept=kept, rest=out)
-                told = extra["scan"].setdefault("kinetic_test", {"evaluations": 0, "wall_s": 0.0}) if "scan" in extra else {}
-                told.update(evaluations=told.get("evaluations", 0) + 1, last_s=round(time.perf_counter() - t, 1),
-                            wall_s=round(told.get("wall_s", 0.0) + time.perf_counter() - t, 1), last_t_s=since(),
-                            last_tested=len([w for w in worth if w[1] != "target"]),
-                            last_worth_a_scan=len(kept))
+                with lock:
+                    told = extra["scan"].setdefault("kinetic_test", {"evaluations": 0, "wall_s": 0.0}) \
+                        if "scan" in extra else {}
+                    told.update(evaluations=told.get("evaluations", 0) + 1, last_s=round(time.perf_counter() - t, 1),
+                                wall_s=round(told.get("wall_s", 0.0) + time.perf_counter() - t, 1), last_t_s=since(),
+                                last_tested=len([w for w in worth if w[1] != "target"]),
+                                last_worth_a_scan=len(kept))
             kept = [w for w in kinetic["kept"] if w[0]["key"] not in taken]
             gone = {w[0]["key"] for w in kept} | {w[0]["key"] for w in first}
             return peak, first + kept, [rx for rx in rest if rx["key"] not in gone], flagged
@@ -1400,32 +1479,33 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     from mepd.cpus import available_cpus
 
     cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
-    cpus = cpus[:available_cpus()]
+    # Where the CPU mask holds more CPUs than this command may use (a container's CPU quota on a shared node), the
+    # lanes cannot be given CPUs of their own: they are not pinned, and each gets its share of the count.
+    n_cpus = min(len(cpus), available_cpus())
+    pinned = n_cpus == len(cpus)
     scanning = bool(opt["scan"] and reactions)
-    if scanning and len(cpus) >= 8:
-        width = len(cpus) // 4
+    if scanning and n_cpus >= 8:
+        width = n_cpus // 4
         masks = [cpus[:width], cpus[width:2 * width], cpus[2 * width:3 * width]]
         pool_cpus = cpus[3 * width:]
     elif scanning:
-        width = max(1, len(cpus) // 2)
+        width = max(1, n_cpus // 2)
         masks, pool_cpus = [cpus[:width]], cpus[width:] or cpus
     else:
-        masks, pool_cpus = [], cpus
-    n_pool = max(1, min(opt["workers"], len(pool_cpus)))
-    n_all = max(1, min(opt["workers"], len(cpus)))
+        width, masks, pool_cpus = 0, [], cpus
+    if not pinned:
+        masks, pool_cpus = [None] * len(masks), None
+    n_pool = max(1, min(opt["workers"], n_cpus - width * len(masks) if masks else n_cpus))
+    n_all = max(1, min(opt["workers"], n_cpus))
     active = [0]                       # scans running
     active_i = [0]                     # of them, scans of reactions that could lower the target's route
     spread_out = [False]
 
     def all_cores():
         """The scans have ended: this process and the estimate and verification workers on every core."""
-        if not hasattr(os, "sched_setaffinity"):
-            return
-        for pid in [0] + [x.pid for x in mp.active_children()]:
-            try:
-                os.sched_setaffinity(pid, set(cpus))
-            except OSError:
-                pass
+        if pinned:
+            for pid in [os.getpid()] + [x.pid for x in mp.active_children()]:
+                _set_affinity(pid, cpus)
 
     def settled(peak):
         """(with the lock held) No reaction is left that could lower the target's route: said in the file, once."""
@@ -1443,11 +1523,10 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                             "still move the peak (route_peak keeps its history)"}
             timing["target_route_settled_s"] = extra["target_route_settled"]["t_s"]
             write("running")
-    if scanning and hasattr(os, "sched_setaffinity"):
-        try:        # this process (the kinetics, the rows' free energies) on the estimates' cores; the scans on theirs
-            os.sched_setaffinity(0, set(pool_cpus))
-        except OSError:
-            pass
+    if scanning and pinned:
+        # this process (the kinetics, the rows' free energies: every thread of it) on the estimates' cores; the scans
+        # on theirs
+        _set_affinity(os.getpid(), pool_cpus)
     threads: list = []
     t_rel = time.perf_counter()
 
@@ -1515,13 +1594,15 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     with compute:
                         ends = _scan_ends(q, rx, molecule, engine_k)
                 except Exception as exc:
-                    rec.update(status="failed", why_failed=f"{type(exc).__name__}: {exc}")
+                    with lock:
+                        rec.update(status="failed", why_failed=f"{type(exc).__name__}: {exc}")
                     continue
                 last_write = [time.perf_counter()]
 
                 def on_row(entry, took, rec=rec, rx=rx, last_write=last_write):
-                    if rec.get("run") and os.path.isabs(str(rec["run"])):
-                        rec["run"] = os.path.relpath(rec["run"], output)
+                    with lock:
+                        if rec.get("run") and os.path.isabs(str(rec["run"])):
+                            rec["run"] = os.path.relpath(rec["run"], output)
                     changed = entry is not None and take(entry, took, rec, replaces_estimate=False, shared=rx["steps"])
                     if changed:
                         with lock:
@@ -1535,9 +1616,14 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                             write("running")
                         last_write[0] = time.perf_counter()
 
-                _relay_scan(q, rx["lowest"], molecule, ends, engine_k, Path(opt["scan_profile"]),
-                            output / (fp.stem + "_relay") / f"{number:02d}_{_file_name(rx['lowest'])[:-5]}", rec, on_row,
-                            t0, cores=masks[k], compute=compute, steer=opt["steer"])
+                try:
+                    _relay_scan(q, rx["lowest"], molecule, ends, engine_k, Path(opt["scan_profile"]),
+                                output / (fp.stem + "_relay") / f"{number:02d}_{_file_name(rx['lowest'])[:-5]}", rec,
+                                on_row, t0, cores=masks[k], compute=compute, steer=opt["steer"], lock=lock,
+                                n_cores=width)
+                except Exception as exc:          # (the lane goes on with the next reaction; the line says why)
+                    with lock:
+                        rec.update(status="failed", why_failed=f"{type(exc).__name__}: {exc}")
             finally:
                 with lock:
                     active[0] -= 1
@@ -1562,7 +1648,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                        else "not scanned unless asked for"),
             "change_worth_a_scan": SCAN_CHANGE,
             "steps": scans, "derivations": [], "reactions": len(reactions),
-            "cores": {"lanes": masks, "estimates_and_verification": pool_cpus}}
+            "cores": {"lanes": masks, "estimates_and_verification": pool_cpus, "pinned": pinned, "lane_width": width}}
         threads = [threading.Thread(target=lane, args=(k,), daemon=True) for k in range(len(masks))]
         for th in threads:
             th.start()
@@ -1692,36 +1778,66 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             left_ends.append(sid)
         return changed
 
-    with ProcessPoolExecutor(max_workers=n_all, mp_context=mp.get_context("spawn"), initializer=_pin,
-                             initargs=(pool_cpus if scanning else None,)) as pool:
+    from concurrent.futures.process import BrokenProcessPool
+
+    def new_pool():
+        return ProcessPoolExecutor(max_workers=n_all, mp_context=mp.get_context("spawn"), initializer=_pin,
+                                   initargs=(pool_cpus if scanning else None,))
+
+    tries: dict = {}           # (kind, step) -> times its process died under it
+
+    def lost(kind, sid, why):
+        """A task whose pool died: queued again once; the second time, its failure (as a result)."""
+        tries[kind, sid] = tries.get((kind, sid), 0) + 1
+        if tries[kind, sid] < 2:
+            (pending_ver if kind == "verify" else pending_est).appendleft(sid)
+            return None
+        why = f"its process died twice ({why})"
+        return (("steps", sid, {"status": "failed", "why": why}) if kind == "estimate"
+                else {"step": sid, "rows": [], "elsewhere": [], "notes": [why]})
+
+    pool = new_pool()
+    try:
         while pending_est or pending_ver or running:
             if threads and not spread_out[0] and not any(th.is_alive() for th in threads):
                 spread_out[0] = True
                 closer.start()         # the scans have ended: what is left of them is written beside the pool's work
             if spread_out[0] or not scanning:
                 all_cores()
+            broken = False
             while len(running) < (n_all if spread_out[0] or not scanning else n_pool) and (pending_ver or pending_est):
                 if pending_ver:
-                    sid = pending_ver.popleft()
+                    sid, kind = pending_ver.popleft(), "verify"
                     t_b = t_b or time.perf_counter()
-                    fut = pool.submit(_verify_task, (profile, opt["query"], sid, frames_of(sid), molecule, complexes[sid],
-                                                     str(vdir / _file_name(sid)[:-5]), q["temperature"], opt["steer"]))
-                    running[fut] = ("verify", sid)
+                    task = (_verify_task, (profile, opt["query"], sid, frames_of(sid), molecule, complexes[sid],
+                                           str(vdir / _file_name(sid)[:-5]), q["temperature"], opt["steer"]))
                 else:
-                    sid = pending_est.popleft()
-                    fut = pool.submit(_task, (profile, "steps", sid, frames_of(sid), molecule, q["temperature"],
-                                              ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
-                                               if pose.get("step") == sid else ()), 0,
-                                              {**opt["setting"], "standard_state": _standard(q)},
-                                              *((opt["steer"],) if _steered_step(q, sid) else ())))
-                    running[fut] = ("estimate", sid)
-            done, _ = wait_for(list(running), timeout=10.0, return_when=FIRST_COMPLETED)
+                    sid, kind = pending_est.popleft(), "estimate"
+                    task = (_task, (profile, "steps", sid, frames_of(sid), molecule, q["temperature"],
+                                    ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
+                                     if pose.get("step") == sid else ()), 0,
+                                    {**opt["setting"], "standard_state": _standard(q)},
+                                    *((opt["steer"],) if _steered_step(q, sid) else ())))
+                try:
+                    running[pool.submit(*task)] = (kind, sid)
+                except BrokenProcessPool:
+                    (pending_ver if kind == "verify" else pending_est).appendleft(sid)
+                    broken = True
+                    break
+            done, _ = wait_for(list(running), timeout=10.0, return_when=FIRST_COMPLETED) if running else (set(), set())
             changed = False
             with lock:
                 for fut in done:
                     kind, sid = running.pop(fut)
                     try:
                         res = fut.result()
+                    except BrokenProcessPool as exc:
+                        # A worker process died (the OS, a crash in an engine): every task of this pool is lost
+                        # with it. Each goes again once in a new pool; a second death is that task's failure.
+                        broken = True
+                        res = lost(kind, sid, exc)
+                        if res is None:
+                            continue
                     except Exception as exc:
                         res = (("steps", sid, {"status": "failed", "why": f"{type(exc).__name__}: {exc}"}) if kind == "estimate"
                                else {"step": sid, "rows": [], "elsewhere": [], "notes": [f"{type(exc).__name__}: {exc}"]})
@@ -1733,6 +1849,17 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     counts()
                     write("running")
                     last = time.perf_counter()
+            if broken:
+                with lock:
+                    for fut, (kind, sid) in list(running.items()):      # (lost with the pool: again, in the new one)
+                        res = lost(kind, sid, "a worker process died")
+                        if res is not None:
+                            on_estimate(res[1], res[2]) if kind == "estimate" else on_verified(res)
+                running.clear()
+                pool.shutdown(wait=False, cancel_futures=True)
+                pool = new_pool()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     with lock:
         lay["status"] = "done"
         timing.setdefault("bystander_s", lay["wall_s"])
@@ -1754,11 +1881,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     if rlay["status"] == "queued":
         rlay["status"] = "skipped"
     counts()
-    if hasattr(os, "sched_setaffinity"):
-        try:        # (this process was held to the estimates' cores: the next candidate gets every core again)
-            os.sched_setaffinity(0, set(cpus))
-        except OSError:
-            pass
+    if pinned:          # (this process was held to the estimates' cores: the next candidate gets every core again)
+        _set_affinity(os.getpid(), cpus)
     return _line(write("done"), fp)
 
 
@@ -1766,9 +1890,23 @@ def _pin(cpus) -> None:
     """A worker process held to these CPUs (the scan lanes have the others)."""
     import os
 
-    if cpus and hasattr(os, "sched_setaffinity"):
+    if cpus:
+        _set_affinity(os.getpid(), cpus)
+
+
+def _set_affinity(pid: int, cpus) -> None:
+    """Every thread of process `pid` on these CPUs (os.sched_setaffinity moves one thread only)."""
+    import os
+
+    if not cpus or not hasattr(os, "sched_setaffinity"):
+        return
+    try:
+        tasks = [int(t) for t in os.listdir(f"/proc/{pid}/task")]
+    except OSError:
+        tasks = [pid]
+    for t in tasks:
         try:
-            os.sched_setaffinity(0, set(cpus))
+            os.sched_setaffinity(t, set(cpus))
         except OSError:
             pass
 
