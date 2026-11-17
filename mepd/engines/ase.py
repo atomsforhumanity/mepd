@@ -1,4 +1,5 @@
 import copy
+import logging
 import threading
 import weakref
 from contextlib import contextmanager
@@ -127,6 +128,64 @@ AVAIL_OPTS = {
 }
 
 
+log = logging.getLogger(__name__)
+
+# One optimizer step that needs more calculations than this is stuck (ASE's line search has no limit of
+# its own); a run restarts at most this many times before it counts as not converged.
+_MAX_EVALS_PER_STEP = 50
+_MAX_OPTIMIZER_RESTARTS = 3
+
+
+class _RestartOptimizer(Exception):
+    """Raised from the calculator to end an ASE optimizer's run so that it starts again afresh."""
+
+
+class _EvaluationGuard:
+    """Watches an ASE optimization's calculations (by wrapping `calc.get_property` while the run lasts):
+    raises _RestartOptimizer when the engine's surface changed since the optimizer started (an xtb engine
+    raised its electronic temperature: `gfnff.scc_epoch`), or when one step has asked for more than
+    _MAX_EVALS_PER_STEP calculations."""
+
+    def __init__(self, calc, engine):
+        self.calc, self.engine = calc, engine
+        self.wrapped = "get_property" in getattr(calc, "__dict__", {})
+        self.since_step = 0
+        self.epoch = 0
+        inner = calc.get_property
+
+        def get_property(name, atoms=None, allow_calculation=True):
+            if allow_calculation and atoms is not None and calc.calculation_required(atoms, [name]):
+                if self._epoch() != self.epoch:
+                    raise _RestartOptimizer("the engine's surface changed: its electronic temperature was raised")
+                self.since_step += 1
+                if self.since_step > _MAX_EVALS_PER_STEP:
+                    raise _RestartOptimizer(f"one step took over {_MAX_EVALS_PER_STEP} calculations")
+            return inner(name, atoms, allow_calculation)
+
+        if not self.wrapped:
+            try:
+                calc.get_property = get_property
+            except AttributeError:   # (a calculator that refuses new attributes is used unguarded)
+                self.wrapped = True
+
+    def _epoch(self) -> int:
+        if self.engine is None:
+            return 0
+        from mepd.engines.gfnff import scc_epoch
+
+        return scc_epoch(self.engine)
+
+    def start(self) -> None:
+        self.since_step, self.epoch = 0, self._epoch()
+
+    def step_done(self) -> None:
+        self.since_step = 0
+
+    def release(self) -> None:
+        if not self.wrapped:
+            self.calc.__dict__.pop("get_property", None)
+
+
 # Per-thread calculator copies (see `ASEEngine._calculator_in_use`), keyed by
 # id(engine) with a weak reference to guard against id reuse.
 _THREAD_CALCULATORS = threading.local()
@@ -246,36 +305,58 @@ class ASEEngine(Engine):
         tmp = tempfile.NamedTemporaryFile(suffix=".traj", mode="w+", delete=False)
         with self._calculator_in_use() as calc:
             atoms.calc = calc
-            optimizer = optimizer_cls(
-                atoms=atoms,
-                logfile=None,
-                trajectory=tmp.name,
-                **optimizer_kwds,
-            )  # ASE does geometry updates in-place.
             from mepd import progress as _progress
 
             sink = _progress.minimization_sink()
-            if sink is not None:
-                live_energies: list[float] = []
-                live_frames: list[str] = []
+            live_energies: list[float] = []
+            live_frames: list[str] = []
 
-                def _report_step() -> None:
-                    try:
-                        live_energies.append(atoms.get_potential_energy() / Hartree)
-                        live_frames.append(ase_atoms_to_structure(
-                            atoms=atoms, charge=node.structure.charge,
-                            multiplicity=node.structure.multiplicity).to_xyz())
-                        sink(live_energies, live_frames)
-                    except Exception:
-                        pass  # the live view must never break the optimization
+            def _report_step() -> None:
+                try:
+                    live_energies.append(atoms.get_potential_energy() / Hartree)
+                    live_frames.append(ase_atoms_to_structure(
+                        atoms=atoms, charge=node.structure.charge,
+                        multiplicity=node.structure.multiplicity).to_xyz())
+                    sink(live_energies, live_frames)
+                except Exception:
+                    pass  # the live view must never break the optimization
 
-                optimizer.attach(_report_step, interval=1)
+            # A restart begins a fresh optimizer from where the last one stood, with the steps it has left:
+            # when the engine's surface changed under it (xtb raised its electronic temperature after an SCC
+            # failed), or when one step kept evaluating without end (ASE's line search loops forever on
+            # energies that disagree with its start, e.g. points from two surfaces, or SCF noise).
+            steps_left, restarts, converged = int(run_kwds["steps"]), 0, False
+            guard = _EvaluationGuard(calc, getattr(calc, "engine", None))
             try:
-                converged = optimizer.run(**run_kwds)
-            except Exception as exc:
-                # Keep the cause: "Electronic structure failed." alone hid why
-                # (e.g. an xtb solvent run that stopped).
-                raise ElectronicStructureError(msg=f"Electronic structure failed: {exc}", obj=exc)
+                while True:
+                    optimizer = optimizer_cls(
+                        atoms=atoms,
+                        logfile=None,
+                        trajectory=tmp.name,
+                        append_trajectory=restarts > 0,
+                        **optimizer_kwds,
+                    )  # ASE does geometry updates in-place.
+                    optimizer.attach(guard.step_done, interval=1)
+                    if sink is not None:
+                        optimizer.attach(_report_step, interval=1)
+                    guard.start()
+                    try:
+                        converged = optimizer.run(**{**run_kwds, "steps": steps_left})
+                        break
+                    except _RestartOptimizer as why:
+                        steps_left -= int(getattr(optimizer, "nsteps", 0) or 0)
+                        restarts += 1
+                        if restarts > _MAX_OPTIMIZER_RESTARTS or steps_left <= 0:
+                            converged = False
+                            break
+                        log.warning("%s: restarting the optimization from its current geometry (%s; %d step(s) "
+                                    "left)", optimizer_cls.__name__, why, steps_left)
+                    except Exception as exc:
+                        # Keep the cause: "Electronic structure failed." alone hid why
+                        # (e.g. an xtb solvent run that stopped).
+                        raise ElectronicStructureError(msg=f"Electronic structure failed: {exc}", obj=exc)
+            finally:
+                guard.release()
             # ASE returns the last frame whether or not it converged; a run that
             # used up its steps is not a minimum (or a TS) and must not pass as one.
             if not converged:
