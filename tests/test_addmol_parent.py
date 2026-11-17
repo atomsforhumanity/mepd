@@ -565,3 +565,24 @@ def test_every_free_energy_the_tool_adds_is_at_the_parents_standard_state(monkey
     assert "standard_state" in inspect.signature(B.bystander).parameters
     src = inspect.getsource(c)
     assert src.count("standard_state=_standard(q)") >= 4      # TS rows (twice), lowest form, the second pose
+
+
+def test_a_given_ts_holds_the_candidate_before_a_parent_species_of_its_kind(monkeypatch):
+    """Water added to a network that makes water: in a TS given with its ends, the water molecule is the added
+    one (was: the parent's own water species, whose amount is the network's)."""
+    import mepd.cli_addmol as c
+    from mepd.discovery import parent as P
+
+    monkeypatch.setattr(P, "lowest_form", lambda *a, **k: {"g_hartree": 0.0, "index": 0, "structure": None})
+    monkeypatch.setattr(P, "on_parent_scale", lambda *a, **k: {"free": 1.0, "reference": "test"})
+    q = {"temperature": 700.0, "level": {"key": "explorer"},
+         "species": [{"id": "O", "name": "O", "smiles": "O"}, {"id": "O=CO", "name": "O=CO", "smiles": "O=CO"},
+                     {"id": "O=C=O", "name": "O=C=O", "smiles": "O=C=O"}, {"id": "[H][H]", "name": "[H][H]", "smiles": "[H][H]"}]}
+    water = {"symbols": ["O", "H", "H"], "charge": 0, "multiplicity": 1,
+             "conformers": [[[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]]]}
+    got = {"reactants": [{"smiles": "O=CO", "atoms": [0, 1, 2, 3, 4]}, {"smiles": "O", "atoms": [5, 6, 7]}],
+           "products": [{"smiles": "O=C=O", "atoms": [0, 1, 2]}, {"smiles": "[H][H]", "atoms": [3, 6]},
+                        {"smiles": "O", "atoms": [4, 5, 7]}],
+           "spectators": [], "ts_parts": None, "barrier": {"electronic": 1.0, "free": 1.0}, "counted": [8], "method": "m"}
+    fields, _ = c._placed(q, got, water, None)
+    assert fields["reactants"] == ["O=CO", "added"] and fields["products"] == ["O=C=O", "[H][H]", "added"]

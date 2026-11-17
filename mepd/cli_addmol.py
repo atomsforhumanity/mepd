@@ -275,8 +275,14 @@ def _placed(q: dict, got: dict, molecule: dict, engine, added: Optional[tuple] =
     from mepd.web.variants import _structure
 
     c_key = _c_key(molecule)
-    # (`added`: the added molecule's atoms at the reactant and at the product end, where the TS's frames say which)
+    # (`added`: the added molecule's atoms at the reactant and at the product end, where the TS's frames say which;
+    # without them, a molecule of the candidate's kind at each end is the candidate, before any parent species of
+    # that kind: a given TS of water added to a network that makes water holds the added water)
     a_r, a_p = added or (None, None)
+    if a_r is None:
+        a_r = next((set(m["atoms"]) for m in got["reactants"] + got["spectators"] if _flat(m["smiles"]) == c_key), None)
+    if a_p is None:
+        a_p = next((set(m["atoms"]) for m in got["products"] if _flat(m["smiles"]) == c_key), None)
     r, p, beside = (_species_ids(q, got[k], c_key, a) for k, a in (("reactants", a_r), ("products", a_p), ("spectators", a_r)))
     mine = [m for m, i in zip(got["reactants"] + got["spectators"], r + beside) if i == addmol.ADDED_ID]
     forms = [_structure(molecule["symbols"], c, molecule["charge"], molecule["multiplicity"])
