@@ -111,7 +111,20 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
 
     use = [m for m, st in enumerate(steps) if st.files.get("verified") is True and st.files.get("ts")
            and st.files.get("ts_kind") != "path_peak"]
-    boxes = sorted({0} | {k for m in use for k in (steps[m].a, steps[m].b)})
+    # The boxes whose energies the molecule fit sees: the ends of the steps used, and with them the boxes the run
+    # found that are their mirror images (mirror images share one energy: Mirrors.extend) and the found ends of
+    # those steps' mirror twins. Every one of them goes in on its free energy: a box left on its electronic
+    # energy lies a thermal correction (tens of kcal/mol) low and takes its molecules with it.
+    rec = summary.get("mirror_images") if isinstance(summary.get("mirror_images"), dict) else {}
+    partner = list(rec.get("species_mirror") or [])
+    with_ = {}                                    # a used step -> the other boxes its energies rest on
+    for t in rec.get("added_twins", []):
+        with_.setdefault(int(t["step"]), set()).update(k for k in (int(t["a"]), int(t["b"])) if k < n)
+    for m in use:
+        for k in (steps[m].a, steps[m].b):
+            if k < len(partner) and partner[k] is not None and int(partner[k]) < n:
+                with_.setdefault(m, set()).add(int(partner[k]))
+    boxes = sorted({0} | {k for m in use for k in (steps[m].a, steps[m].b)} | {k for m in use for k in with_.get(m, ())})
     # thermal corrections: the run's where it recorded one (at its temperature), else computed now
     recorded = T == T_run
     c_box = {k: (sp[k].get("energy_terms") or {}).get("thermal_correction_kcal") if recorded else None for k in boxes}
@@ -143,7 +156,8 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
             "steer_shift_kcal") is not None else 0.0
 
     # a step with a correction missing is not used: put above its ends like every step that is not
-    missing = [m for m in use if c_box[steps[m].a] is None or c_box[steps[m].b] is None or c_ts[m] is None]
+    missing = [m for m in use if c_box[steps[m].a] is None or c_box[steps[m].b] is None or c_ts[m] is None
+               or any(c_box[k] is None for k in with_.get(m, ()))]
     use = [m for m in use if m not in set(missing)] if c_box.get(0) is not None else []
     g_box = [float(sp[k]["energy"]) for k in range(n)]
     for k in boxes:
@@ -158,7 +172,6 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
             g_ts = max(g_box[st.a], g_box[st.b]) + CLOSED
         view.append(Step(st.a, st.b, g_ts, st.label, st.files))
     # mirror images, as the run decided them
-    rec = summary.get("mirror_images") if isinstance(summary.get("mirror_images"), dict) else {}
     mirrors = Mirrors(n, [v["mirror_of"] for v in rec.get("virtual_species", [])], list(rec.get("species_mirror") or []),
                       {int(k): v for k, v in (rec.get("chiral_conformers") or {}).items()},
                       [(t["step"], t["a"], t["b"]) for t in rec.get("added_twins", [])],
@@ -243,11 +256,35 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
             if resid > M.FIT_SLACK_KCAL:
                 above.append({"species": k, "molecules": sorted(keys), "above_kcal": resid})
     above.sort(key=lambda x: -x["above_kcal"])
+    # molecules the boxes fix only together (never seen apart in the boxes of the fit): the fit shares their sum
+    # between them, so each one's own free energy is not known here, only the reactions' between such boxes
+    fit_boxes = sorted({0} | {k for m in used for k in (steps[m].a, steps[m].b)})
+    col = {key: i for i, key in enumerate(net.names)}
+    rows = [[key for _a, key in parts(k) or []] for k in fit_boxes]
+    rows = [r for r in rows if r and all(key in col for key in r)]
+    together: list = []
+    if rows:
+        from scipy.linalg import null_space
+
+        A = np.zeros((len(rows), len(col)))
+        for i, r in enumerate(rows):
+            for key in r:
+                A[i, col[key]] += 1
+        free_dir = null_space(A)
+        loose = [key for key, i in col.items() if free_dir.size and np.abs(free_dir[i]).max() > 1e-8]
+        for s in species:
+            if s["id"] in loose:
+                s["g_fixed_only_together"] = True
+        together = sorted(loose)
     notes = [f"free energies: the run's own (electronic energy + its thermal correction and steering shift, "
              f"{standard}), molecules fitted over boxes (mepd.discovery.molecules)"]
     if any(computed.values()):
         notes.append(f"thermal corrections the run had not recorded, computed now: {computed['species']} boxes, "
                      f"{computed['ts']} TSs; {computed['failed']} failed")
+    if together:
+        notes.append(f"{len(together)} species are never seen apart in the boxes of the fit, so only sums of their free "
+                     "energies are fixed and the fit shares them (g_fixed_only_together on each); a step that "
+                     "releases one of them alone is not reliable: " + ", ".join(together))
     if missing:
         notes.append(f"{len(missing)} IRC-verified steps left out: a thermal correction of theirs is not recorded "
                      "and was not computed (give the run's profile)")

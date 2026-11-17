@@ -186,6 +186,24 @@ def _twin_run(tmp_path):
     return run
 
 
+def test_a_mirror_image_box_on_no_step_of_its_own_enters_on_its_free_energy(tmp_path):
+    """A box the run found that is the mirror image of a step's end, and is itself on no verified step, is in the
+    molecule fit through its twin step and through the shared energy of mirror images: on its free energy like
+    every other box, not on its electronic energy (which lies a thermal correction lower and moved the molecule)."""
+    run = _run(tmp_path)
+    (run / "species" / "species_2.xyz").write_text(_xyz("hnc", E_HNC))
+    fp = run / "summary.json"
+    s = json.loads(fp.read_text())
+    s["species"].append({"index": 2, "smiles": "[C-]#[NH+]", "energy": E_HNC,
+                         "energy_terms": {"thermal_correction_kcal": C_HNC, "steer": "not_asked", "steer_shift_kcal": None}})
+    s["mirror_images"] = {"virtual_species": [], "species_mirror": [0, 2, 1], "chiral_conformers": {},
+                          "added_twins": [{"step": 0, "a": 0, "b": 2}], "found_twins": [], "undecided": []}
+    fp.write_text(json.dumps(s))
+    net = parent.network(run)
+    hnc = next(x for x in net["species"] if "H+" in x["id"])
+    assert hnc["g"] == pytest.approx((E_HNC - E_HCN) * KCAL + C_HNC - C_HCN)
+
+
 def test_a_mirror_twin_has_its_originals_frames_reflected(tmp_path):
     net = parent.network(_twin_run(tmp_path))
     one, twin = net["steps"]
