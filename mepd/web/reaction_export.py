@@ -398,6 +398,9 @@ def reaction_bundle(ws, jobs: dict, rid: str, *, job_dir: Callable[[str], Path],
                    else f"{source['title']}" if source else origin.get("kind") or ""),
         "seen": {"count": r.get("count"), "reverse": r.get("reverse_count")} if origin.get("nanoreactor") else None,
         "profiles": profiles,
+        # The searches' charge and spin (for the minima's SMILES): the first search's.
+        "charge": next((j.get("charge") for j in searches if j.get("charge") is not None), None),
+        "multiplicity": next((j.get("multiplicity") for j in searches if j.get("multiplicity") is not None), None),
         "exported": time.strftime("%Y-%m-%d %H:%M %Z"), "mepd_version": _mepd_version(),
     }
 
@@ -579,6 +582,201 @@ def _placed_note(c: dict) -> str:
             "placed from its search's own reference (another level of theory, or no reactant energies)")
 
 
+def _bond_key(parts: list) -> Optional[str]:
+    """One bonding pattern's name, the same for any conformer and atom
+    numbering: a WL hash of the bond graph (atoms by element). `parts`:
+    (symbols, coordinates) of molecules taken together (bonds only within each)."""
+    import networkx as nx
+
+    from mepd.web.channels_pes import _bonds
+
+    g, n = nx.Graph(), 0
+    for symbols, X in parts:
+        g.add_nodes_from((n + i, {"el": s}) for i, s in enumerate(symbols))
+        g.add_edges_from((n + i, n + j) for i, j in _bonds(symbols, X))
+        n += len(symbols)
+    return nx.weisfeiler_lehman_graph_hash(g, node_attr="el", iterations=4) if n else None
+
+
+def _xyz_key(*xyzs: str, counts: Optional[list] = None) -> Optional[str]:
+    from mepd.web.channels_pes import _frame
+
+    try:
+        parts = [_frame(x) for x in xyzs]
+    except Exception:
+        return None
+    return _bond_key([p for p, k in zip(parts, counts or [1] * len(parts)) for _ in range(k)])
+
+
+def _side_key(b: dict, side: str) -> Optional[str]:
+    """The bonding pattern of the reaction's reactant (product) side: its complex, else its molecules."""
+    cx = next((c for c in b["complexes"] if c["role"] == f"{side} complex" and c.get("xyz")), None)
+    if cx is not None:
+        return _xyz_key(cx["xyz"])
+    sps = b["reactants" if side == "reactant" else "products"]
+    if sps and all(s.get("xyz") for s in sps):
+        return _xyz_key(*[s["xyz"] for s in sps], counts=[s.get("count") or 1 for s in sps])
+    return None
+
+
+def _step_points(c: dict) -> Optional[list]:
+    """Each step's (first IRC end, TS, last IRC end) in kcal/mol on the
+    diagram's scale (the channel's highest TS sits at its `ts_kcal`), or None."""
+    steps = c["steps"]
+    if not all(s.get("irc") for s in steps):
+        return None
+    base = c.get("ts_kcal") if c.get("ts_kcal") is not None else c.get("barrier_search_kcal")
+    if base is None:
+        return None
+    for field, scale in (("energy_hartree", KCAL), ("energy_kcal", 1.0)):
+        if field == "energy_kcal" and len(steps) > 1:
+            return None            # each step's IRC on its own reference: not comparable
+        rows = []
+        for s in steps:
+            e, k = s["irc"].get(field) or [], s["irc"].get("ts_index")
+            if not e or k is None or None in (e[0], e[k], e[-1]):
+                break
+            rows.append((e[0] * scale, e[k] * scale, e[-1] * scale))
+        else:
+            top = max(r[1] for r in rows)
+            return [tuple(v - top + base for v in r) for r in rows]
+    return None
+
+
+def _letters():
+    k = 0
+    while True:
+        yield chr(65 + k) if k < 26 else f"M{k + 1}"
+        k += 1
+
+
+def mechanisms(b: dict) -> dict:
+    """The reaction's IRC-verified channels read as mechanisms, as the Path map
+    shows them: each channel a chain of elementary steps whose minima are named
+    by bonding pattern (R, I1, I2, ..., P: one name per pattern across every
+    channel), and channels through the same minima in the same order grouped as
+    one mechanism (A, B, ...; A has the lowest highest TS). Several channels in
+    one mechanism are the same chemistry through other conformers or TSs.
+
+    Returns {"species": [{name, key, smiles, xyz, kcal}], "mechanisms": [{letter,
+    sequence, n_steps, top_kcal, channels: [{id, name, top_kcal, steps: [{n,
+    from, to, from_kcal, ts_kcal, to_kcal, barrier_kcal, reverse_kcal, ts_file,
+    irc_file}]}]}], "unassigned": [ids of verified channels with no IRC ends]}.
+    Sets each grouped channel's "mechanism" letter."""
+    r_key, p_key = _side_key(b, "reactant"), _side_key(b, "product")
+    chains, unassigned = [], []
+    for c in b["channels"]:
+        if not c.get("verified"):
+            continue
+        ends = []
+        for s in c["steps"]:
+            fr = (s.get("irc") or {}).get("frames") or []
+            ka, kb = (_xyz_key(fr[0]), _xyz_key(fr[-1])) if len(fr) > 1 else (None, None)
+            if ka is None or kb is None:
+                ends = []
+                break
+            ends.append(((ka, fr[0]), (kb, fr[-1])))
+        if not ends:
+            unassigned.append(c["id"])
+            continue
+        # Each step runs from the minimum the step before it ended on; the first from the reactant side.
+        if len(ends) > 1:
+            nxt = {ends[1][0][0], ends[1][1][0]}
+            cur = ends[0][1][0] if ends[0][0][0] in nxt and ends[0][1][0] not in nxt else ends[0][0][0]
+        else:
+            cur = ends[0][1][0] if ends[0][1][0] == r_key and ends[0][0][0] != r_key else ends[0][0][0]
+        pts = _step_points(c)
+        seq, steps = [], []
+        many = len(ends) > 1
+        for k, (a, z) in enumerate(ends):
+            flip = z[0] == cur and a[0] != cur
+            if flip:
+                a, z = z, a
+            p = pts[k] if pts else None
+            if p is not None and flip:
+                p = (p[2], p[1], p[0])
+            if not seq:
+                seq.append(a)
+            seq.append(z)
+            tag = f"_step{k + 1}" if many else ""
+            kind = c["steps"][k]["irc"].get("kind") or "irc"
+            steps.append({"n": k + 1, "points": p, "ts_file": f"structures/ts_{c['id']}{tag}.xyz",
+                          "irc_file": f"{kind}_{c['id']}{tag}.xyz"})
+            cur = z[0]
+        top = max(p[1] for p in pts) if pts else c.get("ts_kcal")
+        chains.append({"c": c, "seq": seq, "steps": steps, "top": top})
+    chains.sort(key=lambda x: (x["top"] is None, x["top"] if x["top"] is not None else 0.0))
+    # The minima: the reaction's ends R and P (else the lowest channel's), the others I1, I2, ... as met.
+    r_key = r_key or (chains[0]["seq"][0][0] if chains else None)
+    p_key = p_key or (chains[0]["seq"][-1][0] if chains else None)
+    names: dict = {}
+    if r_key:
+        names[r_key] = "R"
+    if p_key and p_key not in names:
+        names[p_key] = "P"
+    n_int = 0
+    species: dict = {}
+    for ch in chains:
+        known = all(s["points"] is not None for s in ch["steps"])
+        for i, (key, xyz) in enumerate(ch["seq"]):
+            if key not in names:
+                n_int += 1
+                names[key] = f"I{n_int}"
+            e = (ch["steps"][0]["points"][0] if i == 0 else ch["steps"][i - 1]["points"][2]) if known else None
+            sp = species.setdefault(names[key], {"name": names[key], "key": key, "xyz": xyz, "kcal": e})
+            if e is not None and (sp["kcal"] is None or e < sp["kcal"]):
+                sp.update(xyz=xyz, kcal=e)                # the lowest geometry any channel reached
+    groups: dict = {}
+    for ch in chains:
+        seq = [names[k] for k, _ in ch["seq"]]
+        g = groups.setdefault(tuple(seq), {"sequence": seq, "n_steps": len(ch["steps"]), "top_kcal": ch["top"],
+                                           "channels": []})
+        rows = []
+        for s in ch["steps"]:
+            p = s["points"]
+            fa, ft, fb = p if p is not None else (None, None, None)
+            rows.append({"n": s["n"], "from": seq[s["n"] - 1], "to": seq[s["n"]], "from_kcal": fa, "ts_kcal": ft,
+                         "to_kcal": fb, "barrier_kcal": None if p is None else ft - fa,
+                         "reverse_kcal": None if p is None else ft - fb,
+                         "ts_file": s["ts_file"], "irc_file": s["irc_file"]})
+        g["channels"].append({"id": ch["c"]["id"], "name": ch["c"]["name"], "top_kcal": ch["top"], "steps": rows})
+    out = []
+    by_id = {c["id"]: c for c in b["channels"]}
+    for letter, g in zip(_letters(), groups.values()):
+        out.append({"letter": letter, **g})
+        for c in g["channels"]:
+            by_id[c["id"]]["mechanism"] = letter
+    charge = b.get("charge")
+    if charge is None and b["reactants"]:
+        charge = sum((s.get("charge") or 0) * (s.get("count") or 1) for s in b["reactants"])
+    mult = b.get("multiplicity")
+    for sp in species.values():
+        sp["smiles"] = _smiles_of(sp["xyz"], charge, mult)
+    order = sorted(species.values(), key=lambda s: (s["name"] == "P", s["name"] != "R",
+                                                    int(s["name"][1:]) if s["name"][1:].isdigit() else 0))
+    return {"species": order, "mechanisms": out, "unassigned": unassigned}
+
+
+def _smiles_of(xyz: str, charge: Optional[int], multiplicity: Optional[int]) -> Optional[str]:
+    try:
+        from mepd.web.chem import perceive_smiles, structures_from_xyz_text
+
+        st = structures_from_xyz_text(xyz, charge, multiplicity)[0]
+        smiles = perceive_smiles(st)
+    except Exception:
+        return None
+    if smiles:
+        return smiles
+    try:   # metals and other bonding RDKit will not take: the bond-graph SMILES the search's path.txt names it by
+        from mepd.channel_search import _species_label
+        from mepd.nodes.node import StructureNode
+
+        label = _species_label(StructureNode(structure=st))
+        return None if label == "?" else label
+    except Exception:
+        return None
+
+
 def _energies_csv(b: dict) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -587,13 +785,31 @@ def _energies_csv(b: dict) -> str:
         w.writerow([r["label"], "" if r["kcal"] is None else f"{r['kcal']:.3f}"])
     w.writerow([])
     w.writerow(["channel", "kind", "TS kcal/mol from separated reactants", "barrier kcal/mol from reactant complex",
-                "barrier kcal/mol as its search reports it", "IRC-verified", "steps", "level of theory", "found by", "note"])
+                "barrier kcal/mol as its search reports it", "IRC-verified", "steps", "level of theory", "found by", "note",
+                "mechanism"])
+    m = _mech(b)
     for c in b["channels"]:
         w.writerow([c["name"], c["kind"], "" if c["ts_kcal"] is None else f"{c['ts_kcal']:.3f}",
                     "" if c["barrier_kcal"] is None else f"{c['barrier_kcal']:.3f}",
                     "" if c.get("barrier_search_kcal") is None else f"{c['barrier_search_kcal']:.3f}",
                     "yes" if c["verified"] else "no",
-                    len(c["steps"]), c.get("level") or "", c.get("job_title") or "", _placed_note(c)])
+                    len(c["steps"]), c.get("level") or "", c.get("job_title") or "", _placed_note(c),
+                    c.get("mechanism") or ""])
+    if m["mechanisms"]:
+        f3 = lambda v: "" if v is None else f"{round(v, 3) + 0.0:.3f}"
+        w.writerow([])
+        w.writerow(["mechanism", "minima", "channel", "step", "from", "to", "from kcal/mol", "TS kcal/mol",
+                    "to kcal/mol", "barrier kcal/mol", "reverse barrier kcal/mol", "TS file", "IRC file"])
+        for g in m["mechanisms"]:
+            for c in g["channels"]:
+                for s in c["steps"]:
+                    w.writerow([g["letter"], " > ".join(g["sequence"]), c["name"], s["n"], s["from"], s["to"],
+                                f3(s["from_kcal"]), f3(s["ts_kcal"]), f3(s["to_kcal"]), f3(s["barrier_kcal"]),
+                                f3(s["reverse_kcal"]), s["ts_file"], s["irc_file"]])
+        w.writerow([])
+        w.writerow(["minimum", "SMILES", "lowest kcal/mol from separated reactants"])
+        for sp in m["species"]:
+            w.writerow([sp["name"], sp.get("smiles") or "", f3(sp["kcal"])])
     w.writerow([])
     w.writerow(["species", "role", "SMILES", "charge", "multiplicity", "energy (Hartree)", "level of theory"])
     for sp in b["reactants"] + b["products"] + b["complexes"]:
@@ -602,32 +818,113 @@ def _energies_csv(b: dict) -> str:
     return buf.getvalue()
 
 
+def _mech(b: dict) -> dict:
+    """`mechanisms(b)`, computed once per bundle."""
+    if "mechanisms" not in b:
+        b["mechanisms"] = mechanisms(b)
+    return b["mechanisms"]
+
+
+def _minima_files(b: dict) -> list[tuple[str, str, str]]:
+    """(file name, title, xyz) of the mechanisms' minima the export has no
+    file for otherwise: every intermediate, and R and P when the reaction's
+    own structures are missing (each the lowest geometry a channel reached)."""
+    have = {"R": bool(b["reactants"] or b["complexes"]), "P": bool(b["products"] or b["complexes"])}
+    return [(f"minimum_{sp['name']}.xyz", f"minimum {sp['name']}" + (f" ({sp['smiles']})" if sp.get("smiles") else ""),
+             sp["xyz"]) for sp in _mech(b)["species"] if sp.get("xyz") and not have.get(sp["name"])]
+
+
+def _md(v: Optional[float], sign: bool = True) -> str:
+    if v is None:
+        return "—"
+    v = round(v, 1) + 0.0                  # no "-0.0"
+    return f"{v:+.1f}" if sign and v else f"{v:.1f}"
+
+
+def _md_cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
 def _readme(b: dict) -> str:
     lines = [f"# {b['label']}", "", f"Exported from mepd {b['mepd_version']} on {b['exported']}.", ""]
-    if b["channels"]:
-        lines.append(f"{len(b['channels'])} channel{'s' if len(b['channels']) > 1 else ''} found for this reaction"
-                     + (f" ({b['offtarget']} more searches led to other products, not included)" if b["offtarget"] else "")
-                     + ":")
-        lines.append("")
-        for c in b["channels"]:
-            bar = f"{c['barrier_kcal']:.1f} kcal/mol from the reactant complex" if c["barrier_kcal"] is not None else "barrier unknown"
-            lines.append(f"- {c['name']} ({c['kind']}{', lowest' if c['id'] == b.get('lowest') else ''}): {bar}, "
-                         f"{'IRC-verified' if c['verified'] else 'no TS found, the path top (not IRC-verified)'}"
-                         + (f", {c['level']}" if c.get("level") else "") + (f"; {_placed_note(c)}" if _placed_note(c) else ""))
-        lines.append("")
-    else:
+    m = _mech(b)
+    mechs, chans = m["mechanisms"], b["channels"]
+    unverified = [c for c in chans if not c["verified"]]
+    if not chans:
         lines += ["No TS search on this reaction yet.", ""]
+    else:
+        n = len(chans) - len(unverified)
+        head = (f"{n} IRC-verified channel{'s' if n != 1 else ''} in {len(mechs)} mechanism{'s' if len(mechs) != 1 else ''}"
+                if mechs else f"{n} IRC-verified channel{'s' if n != 1 else ''}")
+        if unverified:
+            head += f", {len(unverified)} path top{'s' if len(unverified) != 1 else ''} without a TS"
+        if b["offtarget"]:
+            head += f"; {b['offtarget']} more searches led to other products (not included)"
+        lines += [head + ".", ""]
+        if mechs and mechs[0]["top_kcal"] is not None:
+            a = mechs[0]
+            lines += [f"Lowest: mechanism {a['letter']} ({' → '.join(a['sequence'])}), highest TS "
+                      f"{_md(a['top_kcal'])} kcal/mol ({a['channels'][0]['name']}).", ""]
     if b.get("delta_e_kcal") is not None:
         lines += [f"Reaction energy: {b['delta_e_kcal']:+.1f} kcal/mol (separated products minus separated reactants).", ""]
-    lines += ["Energies are electronic energies (no ZPE or thermal corrections), kcal/mol relative to the separated "
-              "reactants, all over the same atoms." + (f" {_from_search_note(b)}" if _from_search_note(b) else ""), "",
-              "## Files", "",
+    if m["species"]:
+        lines += ["## Minima", "", "| | SMILES | Lowest (kcal/mol) |", "|---|---|---:|"]
+        role = {"R": "reactant", "P": "product"}
+        for sp in m["species"]:
+            what = f" ({role[sp['name']]})" if sp["name"] in role else ""
+            lines.append(f"| {sp['name']}{what} | {_md_cell(sp.get('smiles') or '?')} | {_md(sp['kcal'])} |")
+        lines.append("")
+    if mechs:
+        lines += ["## Mechanisms", "",
+                  "A mechanism is one sequence of minima; its channels are the same chemistry through other conformers "
+                  "or TSs. Start, TS, End: kcal/mol. Barrier: TS − Start; Reverse: TS − End. Bold: each channel's highest TS.",
+                  ""]
+        for g in mechs:
+            nc = len(g["channels"])
+            lines += [f"### Mechanism {g['letter']}: {' → '.join(g['sequence'])}", "",
+                      f"{g['n_steps']} step{'s' if g['n_steps'] != 1 else ''}; {nc} channel{'s' if nc != 1 else ''}; "
+                      f"highest TS {_md(g['top_kcal'])} kcal/mol.", "",
+                      "| Channel | Step | | Start | TS | End | Barrier | Reverse | TS | IRC |",
+                      "|---|---:|---|---:|---:|---:|---:|---:|---|---|"]
+            for c in g["channels"]:
+                top = max((s["ts_kcal"] for s in c["steps"] if s["ts_kcal"] is not None), default=None)
+                for k, s in enumerate(c["steps"]):
+                    ts = _md(s["ts_kcal"])
+                    if top is not None and s["ts_kcal"] == top and len(c["steps"]) > 1:
+                        ts = f"**{ts}**"
+                    name = (c["name"] + (" (lowest)" if c["id"] == b.get("lowest") else "")) if k == 0 else ""
+                    lines.append(f"| {name} | {s['n']} | {s['from']} → {s['to']} | {_md(s['from_kcal'])} | {ts} | "
+                                 f"{_md(s['to_kcal'])} | {_md(s['barrier_kcal'], False)} | {_md(s['reverse_kcal'], False)} | "
+                                 f"`{s['ts_file']}` | `{s['irc_file']}` |")
+            lines.append("")
+    loose = [c for c in chans if c["verified"] and c["id"] in m["unassigned"]]
+    if loose or unverified:
+        lines += ["## Not in a mechanism", ""]
+        for c in loose:
+            lines.append(f"- {c['name']}: {len(c['steps'])} TS{'s' if len(c['steps']) > 1 else ''} without an IRC "
+                         f"(the minima it joins are unknown); highest TS {_md(c['ts_kcal'])} kcal/mol")
+        for c in unverified:
+            lines.append(f"- {c['name']}: no TS found; the path top, {_md(c['ts_kcal'])} kcal/mol, is not IRC-verified "
+                         f"(`structures/path_top_{c['id']}.xyz`)")
+        lines.append("")
+    placed = sorted({c["name"] for c in chans if _placed_note(c)}, key=lambda s: int(s.split()[-1]) if s.split()[-1].isdigit() else 0)
+    levels = sorted({c["level"] for c in chans if c.get("level")})
+    lines += ["## Energies", "",
+              "Electronic energies (no ZPE or thermal corrections), kcal/mol relative to the separated reactants, all "
+              "over the same atoms." + (f" {_from_search_note(b)}" if _from_search_note(b) else "")
+              + (f" Level of theory: {', '.join(levels)}." if levels else "")
+              + (f" {', '.join(placed)}: placed from its search's own reference (another level of theory, or no reactant "
+                 "energies)." if placed else ""), ""]
+    lines += ["## Files", "",
               "- `report.html`: the interactive page (opens offline; embed it with an <iframe>)",
-              "- `reaction.json`: everything below as data",
-              "- `energies.csv`: the diagram's points, each channel, and every species' energy",
-              "- `energy_diagram.svg`: the diagram as a vector figure"]
-    lines += [f"- `structures/{name}`: {title}" for name, title, _ in _structures(b)]
-    lines += [f"- `{name}`: {title}, one frame per point (energy in each comment line)" for name, title, _ in _ircs(b)]
+              "- `reaction.json`: everything here as data, the mechanisms included",
+              "- `energies.csv`: the diagram's points, each channel (with its mechanism), every step, every species' energy",
+              "- `energy_diagram.svg`: the diagram as a vector figure",
+              "- each step's TS (`structures/ts_*.xyz`) and IRC (`irc_*.xyz`, one frame per point, the energy in each "
+              "comment line): in the mechanism tables"]
+    lines += [f"- `structures/{name}`: {title}" for name, title, _ in _structures(b) if not name.startswith("ts_")]
+    lines += [f"- `structures/{name}`: {title}" for name, title, _ in _minima_files(b)]
+    lines += [f"- `{name}`: {title}" for name, title, _ in _ircs(b) if name.startswith("path_")]
     for k, p in enumerate(b["profiles"]):
         lines.append(f"- `{_profile_name(k)}`: the mepd profile (level of theory and settings) of {p['job_title']}")
     return "\n".join(lines) + "\n"
@@ -640,6 +937,7 @@ def _profile_name(k: int) -> str:
 def _json_data(b: dict) -> dict:
     """The bundle without the depictions (images, not data)."""
     strip = lambda sp: {k: v for k, v in sp.items() if k != "svg"}
+    _mech(b)
     return {**b, "reactants": [strip(s) for s in b["reactants"]], "products": [strip(s) for s in b["products"]],
             "complexes": [strip(s) for s in b["complexes"]], "energy_levels": _levels(b)}
 
@@ -653,7 +951,7 @@ def export_zip(b: dict) -> bytes:
         z.writestr(f"{root}/reaction.json", json.dumps(_json_data(b), indent=2, default=str))
         z.writestr(f"{root}/energies.csv", _energies_csv(b))
         z.writestr(f"{root}/energy_diagram.svg", energy_diagram_svg(b))
-        for name, _, xyz in _structures(b):
+        for name, _, xyz in _structures(b) + _minima_files(b):
             z.writestr(f"{root}/structures/{name}", xyz)
         for name, _, irc in _ircs(b):
             z.writestr(f"{root}/{name}", _irc_xyz(irc))

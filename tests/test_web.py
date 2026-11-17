@@ -1781,6 +1781,69 @@ def test_a_reaction_exports_every_channel_as_a_self_contained_page_and_a_data_zi
     assert "1 more searches led to other products" in z.read(f"{root}/README.md").decode()
 
 
+def _hcno(h) -> str:
+    """H-N-C-O in a line, the H at `h` (on N, on C, on O, or between)."""
+    return f"4\n\nN 0 0 0\nC 1.3 0 0\nO 2.5 0 0\nH {h[0]} {h[1]} 0\n"
+
+
+def test_the_readme_reads_multistep_channels_as_mechanisms():
+    """An H that moves N -> O: directly, or N -> C -> O in two steps (twice, through other TSs, one IRC
+    stored product-first), or no TS at all. The README groups the two two-step channels as one mechanism
+    through one intermediate, steps oriented and with their own barriers, as the Path map does."""
+    import io
+    import zipfile
+
+    from mepd.web.reaction_export import export_zip, mechanisms
+
+    R, I, P = _hcno((-1.0, 0)), _hcno((1.3, 1.1)), _hcno((3.5, 0))
+    TS1, TS2, TS3 = _hcno((0.4, 0.9)), _hcno((1.9, 0.9)), _hcno((1.2, 1.6))
+    H = 1 / 627.509474
+
+    def step(frames, eh, k=1, kind="irc"):
+        return {"label": "s", "ts_xyz": frames[k], "ts_hartree": eh[k], "barrier_search_kcal": None,
+                "irc": {"kind": kind, "ts_index": k, "frames": frames, "energy_kcal": [None] * len(frames),
+                        "energy_hartree": eh}}
+
+    def chan(i, kind, steps, top, verified=True):
+        return {"kind": kind, "label": kind, "verified": verified, "steps": steps, "ts_kcal": top, "barrier_kcal": top,
+                "barrier_search_kcal": top, "level": "GFN2-xTB", "level_key": "k", "job": "j", "job_title": "s",
+                "placed": "absolute", "n": i, "id": f"ch{i}", "name": f"Channel {i}"}
+
+    sp = lambda sid, role, xyz: {"id": sid, "role": role, "name": role, "smiles": None, "charge": 0, "multiplicity": 1,
+                                 "energy_hartree": None, "level": None, "xyz": xyz, "svg": None, "count": 1, "shuttle": False}
+    b = {"id": "r", "label": "H shift", "reactants": [sp("a", "reactant", R)], "products": [sp("b", "product", P)],
+         "complexes": [], "ladder": {"reactants": 0.0, "products": -5.0}, "offtarget": 0, "lowest": "ch1",
+         "delta_e_kcal": -5.0, "complex_delta_e_kcal": None, "relaxed_from": None, "source": "", "seen": None,
+         "profiles": [], "exported": "today", "mepd_version": "test", "charge": 0, "multiplicity": 1,
+         "channels": [
+             chan(1, "multi-step", [step([R, TS2, I], [0.0, 20 * H, 8 * H]), step([P, TS3, I], [-5 * H, 15 * H, 8 * H])], 20.0),
+             chan(2, "direct", [step([R, TS1, P], [0.0, 30 * H, -5 * H])], 30.0),
+             chan(3, "multi-step", [step([R, TS2, I], [0.0, 25 * H, 9 * H]), step([I, TS3, P], [9 * H, 12 * H, -5 * H])], 25.0),
+             chan(4, "path top", [step([R, TS1, P], [0.0, 40 * H, -5 * H], kind="path")], 40.0, verified=False)]}
+    m = mechanisms(b)
+    assert [(g["letter"], g["sequence"], [c["id"] for c in g["channels"]]) for g in m["mechanisms"]] == [
+        ("A", ["R", "I1", "P"], ["ch1", "ch3"]), ("B", ["R", "P"], ["ch2"])]
+    a1 = m["mechanisms"][0]["channels"][0]["steps"]
+    # The second step's IRC was stored product-first: it runs I1 -> P, its barrier from I1.
+    assert [(s["from"], s["to"]) for s in a1] == [("R", "I1"), ("I1", "P")]
+    assert [round(s["barrier_kcal"], 6) for s in a1] == [20.0, 7.0] and round(a1[1]["reverse_kcal"], 6) == 20.0
+    assert [s["name"] for s in m["species"]] == ["R", "I1", "P"] and round(m["species"][1]["kcal"], 6) == 8.0
+    assert b["channels"][2]["mechanism"] == "A" and "mechanism" not in b["channels"][3]
+
+    z = zipfile.ZipFile(io.BytesIO(export_zip(b)))
+    root = z.namelist()[0].split("/")[0]
+    md = z.read(f"{root}/README.md").decode()
+    assert "### Mechanism A: R → I1 → P" in md and "### Mechanism B: R → P" in md
+    assert "| Channel 1 (lowest) | 1 | R → I1 | 0.0 | **+20.0** | +8.0 | 20.0 | 12.0 |" in md
+    assert "|  | 2 | I1 → P | +8.0 | +15.0 | -5.0 | 7.0 | 20.0 |" in md
+    assert "Channel 4: no TS found" in md and "`structures/minimum_I1.xyz`" in md
+    assert f"{root}/structures/minimum_I1.xyz" in z.namelist()
+    csv_text = z.read(f"{root}/energies.csv").decode()
+    assert "A,R > I1 > P,Channel 3,2,I1,P,9.000,12.000,-5.000,3.000,17.000" in csv_text
+    data = json.loads(z.read(f"{root}/reaction.json"))
+    assert [g["letter"] for g in data["mechanisms"]["mechanisms"]] == ["A", "B"]
+
+
 def test_channels_are_read_from_a_channels_result_and_a_ts_search():
     from mepd.web.reaction_export import _result_channels
 
