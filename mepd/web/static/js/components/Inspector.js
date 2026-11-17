@@ -262,7 +262,7 @@ function EdgeDetail({ edge }) {
       </div>
       <${Editable} value=${edge.label || ''} onSave=${(label) => patch({ label })} className="label-input" placeholder="Add a label…" />`}
       <div class="stat-row">
-        <div class=${`stat ${st.barrierJob ? 'linked' : ''}`} onClick=${() => st.barrierJob && openJob(st.barrierJob)}
+        <div class=${`stat ${st.barrierJob ? 'linked' : ''}`} onClick=${() => st.barrierJob && openJob(st.barrierJob, null, st.barrierEntry)}
           title=${(st.routeSteps ? `No single step joins these two structures: the highest step of a ${st.routeSteps}-step route through intermediates`
             : st.barrier == null && st.barrierUnverified != null ? `No transition state found so far: ${noTsHint(st.barrierUnverified)}` : 'Lowest barrier whose IRCs connect these two structures')
             + (st.barrierJob ? '. Click for its TS, IRC and follow-ups' : '')}>
