@@ -228,6 +228,7 @@ export function formatHash(v, analyze = state.analyze) {
   }
   const q = [];
   if (v.tab === 'job' && v.run) q.push(`run=${encodeURIComponent(v.run)}`);
+  if (v.tab === 'job' && v.entry) q.push(`entry=${encodeURIComponent(v.entry)}`);
   if (v.tab === 'reaction' && v.from && v.from !== '/explore') q.push(`from=${encodeURIComponent(v.from)}`);
   if (v.drawer) q.push(`d=${v.drawer}`);
   return `#${path}${q.length ? `?${q.join('&')}` : ''}`;
@@ -248,7 +249,7 @@ export function parseHash(hash) {
     case 'kinetics': return { ...base, tab: 'analyze', analyze: 'kinetics' };
     case 'landscape': return { ...base, tab: 'analyze', analyze: 'landscape' };
     case 'calculations': return { ...base, tab: 'jobs' };
-    case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null } : { ...base, tab: 'jobs' };
+    case 'calc': return parts[1] ? { ...base, tab: 'job', jobId: parts[1], jobTab: parts[2] || null, run: q.run || null, entry: q.entry || null } : { ...base, tab: 'jobs' };
     case 'reaction': return parts[1] ? { ...base, tab: 'reaction', edgeId: parts[1], from: q.from || null } : { ...base, tab: 'graph' };
     case 'network': return parts[1] === 'example' && parts[2] ? { ...base, tab: 'network', example: parts[2] }
       : parts[1] ? { ...base, tab: 'network', jobId: parts[1] } : { ...base, tab: 'graph' };
@@ -342,11 +343,13 @@ export function goToPage(from) {
   set({ view: v || { tab: 'graph', jobId: null } });
 }
 
-export function openJob(jobId, tab = null) {
+// `entry`: open its results on that entry (a step of the result), e.g. from a
+// reaction added to Explore from it.
+export function openJob(jobId, tab = null, entry = null) {
   // A network expansion lands on its live network; the calculation's own tabs are a click away.
-  if (!tab && ['graph-enumeration', 'network-mixture'].includes(state.jobs[jobId]?.op)) { set({ view: { tab: 'network', jobId } }); return; }
+  if (!tab && !entry && ['graph-enumeration', 'network-mixture'].includes(state.jobs[jobId]?.op)) { set({ view: { tab: 'network', jobId } }); return; }
   const page = pageJobId(jobId);
-  set({ view: { tab: 'job', jobId: page, run: page !== jobId ? jobId : null, jobTab: tab } });
+  set({ view: { tab: 'job', jobId: page, run: page !== jobId ? jobId : null, jobTab: entry ? 'result' : tab, entry: entry || null } });
 }
 // Leaving the Profiles tab with unsaved edits would silently drop them
 // (jobs copy the profile *file*), so ask first.

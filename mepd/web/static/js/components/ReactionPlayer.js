@@ -47,9 +47,17 @@ function bestEntry(result) {
   return [...all].sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1]; })[0] || null;
 }
 
+// One entry of a result, when it is a path to play.
+function ownEntry(result, id) {
+  const e = (result?.groups || []).flatMap((g) => g.entries).find((x) => x.id === id);
+  return e && e.frames?.length > 1 ? e : null;
+}
+
 // `stepEdge`: play the very step a network expansion put on that edge (its own
 // IRC, from `start`, energies from that node's energy), not the run's lowest path.
-export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start = null }) {
+// `entryId`: play that entry of the calculation's result (the step an edge was
+// added from), not its lowest path.
+export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start = null, entryId = null }) {
   const job = useStore((s) => s.jobs[jobId]);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -64,7 +72,7 @@ export function ReactionPlayer({ jobId, compact = false, stepEdge = null, start 
     return () => { alive = false; };
   }, [jobId, stepEdge, start]);
   const entry = useMemo(() => (stepEdge ? (result?.frames?.length > 1 ? { frames: result.frames.map((f, k) => ({ ...f, path_length: k })), ts_index: result.ts_index } : null)
-    : bestEntry(result)), [result, stepEdge]);
+    : (entryId && ownEntry(result, entryId)) || bestEntry(result)), [result, stepEdge, entryId]);
   // A network expansion's step: the molecules its path search ran on (its subsystem; a step's own path
   // comes cut already), with their charge. The orbitals of each frame, from this calculation's own run
   // (Viewer3D's Orbitals bar).
@@ -156,6 +164,8 @@ export function ReactionFocus({ edgeId }) {
   // An expansion's step: play that very step (its own IRC), not its run's lowest path.
   const o = edge.origin || {};
   const ownStep = o.label && !o.proposed && jobs[o.job]?.op === 'graph-enumeration';
+  // An edge added from one step of a result (Add ends + edge, a channel, a route's step): that step.
+  const ownEntry = st.barrierEntry && st.barrierJob === o.job ? st.barrierEntry : null;
   const band = (v) => `band-${v < 10 ? 'low' : v < 20 ? 'mid' : 'high'}`;
   return html`<div class="focus reaction-focus">
     <nav class="crumbs">${back}<span>›</span><b>${name(start)} → ${name(end)}</b></nav>
@@ -167,12 +177,13 @@ export function ReactionFocus({ edgeId }) {
       ${o.barrier_verified === false && html`<span class="chip-k muted" title=${o.headline || ''}>IRC not checked yet</span>`}
       ${o.ts_kind === 'path_peak' && html`<span class="chip-k muted" title=${o.headline || ''}>upper bound: no TS found</span>`}
       ${st.barrier == null && st.barrierUnverified != null && html`<span class="chip-k muted">no TS</span>`}
-      ${st.barrierJob && html`<a class="chip-k link" href=${`#/calc/${st.barrierJob}`} onClick=${(ev) => { ev.preventDefault(); openJob(st.barrierJob); }}>Calculation ›</a>`}
+      ${st.barrierJob && html`<a class="chip-k link" href=${`#/calc/${st.barrierJob}${ownEntry ? `?entry=${encodeURIComponent(ownEntry)}` : ''}`} onClick=${(ev) => { ev.preventDefault(); openJob(st.barrierJob, null, ownEntry); }}
+        title=${ownEntry ? 'The calculation this step comes from, open on its IRC' : 'The calculation that found this barrier'}>Calculation ›</a>`}
     </div>
     ${o.rejected_step ? html`<p class="small muted">${o.headline}</p>` : ''}
     ${ownStep ? html`<${ReactionPlayer} jobId=${o.job} stepEdge=${edgeId} start=${start} key=${`${edgeId}:${start}`} />`
       : st.barrierJob
-      ? html`<${ReactionPlayer} jobId=${st.barrierJob} />`
+      ? html`<${ReactionPlayer} jobId=${st.barrierJob} entryId=${ownEntry} key=${`${st.barrierJob}:${ownEntry}`} />`
       : html`<div class="focus-empty"><p>No path computed for this reaction yet.</p><p class="small muted">Pick Transition state in the panel on the right.</p></div>`}
     <${EdgeOrbitalsLauncher} edge=${edge} />
   </div>`;

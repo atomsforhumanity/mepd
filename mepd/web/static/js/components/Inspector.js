@@ -262,7 +262,7 @@ function EdgeDetail({ edge }) {
       </div>
       <${Editable} value=${edge.label || ''} onSave=${(label) => patch({ label })} className="label-input" placeholder="Add a label…" />`}
       <div class="stat-row">
-        <div class=${`stat ${st.barrierJob ? 'linked' : ''}`} onClick=${() => st.barrierJob && openJob(st.barrierJob)}
+        <div class=${`stat ${st.barrierJob ? 'linked' : ''}`} onClick=${() => st.barrierJob && openJob(st.barrierJob, null, st.barrierEntry)}
           title=${(st.routeSteps ? `No single step joins these two structures: the highest step of a ${st.routeSteps}-step route through intermediates`
             : st.barrier == null && st.barrierUnverified != null ? `No transition state found so far: ${noTsHint(st.barrierUnverified)}` : 'Lowest barrier whose IRCs connect these two structures')
             + (st.barrierJob ? '. Click for its TS, IRC and follow-ups' : '')}>
@@ -327,6 +327,7 @@ function ComplexSandbox({ rec }) {
     <button class="btn" disabled=${busy || rec.natoms > 120} onClick=${start}
       title="Live GFN2-xTB dynamics from this geometry: drag atoms, scroll to squeeze the wall">${busy ? 'Starting…' : 'Interactive reactor'}</button>
     at <input type="number" class="tiny" min="0" max="3000" step="100" value=${temperature} onInput=${(e) => setTemperature(+e.target.value || 0)} /> K
+    <a class="stage-help" href="/manual/settings#reactor" target="_blank" rel="noopener" title="The interactive reactor's MD settings (manual)">?</a>
   </div>`;
 }
 
@@ -356,7 +357,8 @@ function SandboxLauncher({ sids, embedded = false, onClose = null }) {
       × ${structures[id]?.name}</label>`)}
     <label class="combine-row small">Temperature <input type="number" class="tiny" min="0" max="3000" step="100" value=${temperature}
       onInput=${(e) => setTemperature(+e.target.value || 0)} /> K</label>
-    <p class="small muted combine-help">Live GFN2-xTB dynamics you steer: drag atoms, scroll to squeeze the wall. ${atoms} atoms${atoms > 80 ? ' (slow beyond ~80)' : ''}.</p>
+    <p class="small muted combine-help">Live GFN2-xTB dynamics you steer: drag atoms, scroll to squeeze the wall. ${atoms} atoms${atoms > 80 ? ' (slow beyond ~80)' : ''}.
+      <a href="/manual/settings#reactor" target="_blank" rel="noopener" title="Time step, thermostat, wall, piston and the rest">Its MD settings ›</a></p>
     <div class="row-actions"><button class="btn primary" disabled=${busy || atoms === 0 || atoms > 120} onClick=${start}>${busy ? 'Starting…' : 'Start'}</button></div>
   </div>`;
 }

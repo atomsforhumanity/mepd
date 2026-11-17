@@ -249,11 +249,18 @@ export function isStaged(schema) {
   return Object.values(schema?.properties || {}).some((p) => p.stage);
 }
 
+// Every setting of this calculation, with its default and mepd's own defaults behind the form (the manual's
+// settings reference, written from the code).
+function SettingsLink({ op }) {
+  return op ? html`<a class="settings-ref small" href=${`/manual/settings#${op}`} target="_blank" rel="noopener"
+    title="Every setting of this calculation, its default, and the options mepd keeps at its own defaults">All settings and defaults ›</a>` : null;
+}
+
 export function ParamForm({ schema, values, onChange, op = '', context = null }) {
   if (!schema?.properties || !Object.keys(schema.properties).length) {
-    return html`<p class="muted small">No parameters.</p>`;
+    return html`<p class="muted small">No parameters.</p><${SettingsLink} op=${op} />`;
   }
-  if (isStaged(schema)) return html`<${StagedForm} schema=${schema} values=${values} onChange=${onChange} op=${op} context=${context} />`;
+  if (isStaged(schema)) return html`<${StagedForm} schema=${schema} values=${values} onChange=${onChange} op=${op} context=${context} /><${SettingsLink} op=${op} />`;
   // group "Hidden": set by the page itself (e.g. Sandbox › Stop & analyze), never a form field.
   const entries = Object.entries(schema.properties).filter(([, p]) => p.group !== 'Hidden' && requirementMet(values, p.requires));
   const basic = entries.filter(([, p]) => !p.advanced);
@@ -276,5 +283,6 @@ export function ParamForm({ schema, values, onChange, op = '', context = null })
             </fieldset>`)}
           <button type="button" class="btn-link small" onClick=${() => onChange(defaultsFor(schema))}>Reset all to defaults</button>
         </details>`}
+      <${SettingsLink} op=${op} />
     </div>`;
 }

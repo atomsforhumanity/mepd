@@ -107,5 +107,13 @@ function App() {
     <${Toasts} />`;
 }
 
-connect();
-render(html`<${App} />`, document.getElementById('app'));
+// The app never runs inside a frame of itself (a link in the manual, shown in the Learn drawer, once
+// opened mepd inside mepd, again and again): a framed copy takes over its tab instead.
+let framed = false;
+try { framed = window.top !== window.self && window.top.location.origin === location.origin; } catch { framed = false; }
+if (framed) {
+  window.top.location.replace(location.href);
+} else {
+  connect();
+  render(html`<${App} />`, document.getElementById('app'));
+}
