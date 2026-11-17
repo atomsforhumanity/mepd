@@ -388,7 +388,11 @@ class FreeEnergies:
             import json
             from pathlib import Path
 
-            blob = repr((list(symbols), (np.round(np.asarray(xyz_A, dtype=float), 5) + 0.0).tolist(), int(charge), int(mult)))
+            from mepd.discovery.energy_refine import _level
+
+            # (the engine's level is in the key: frequencies kept at one level are never read at another)
+            blob = repr((_level(self.engine), list(symbols), (np.round(np.asarray(xyz_A, dtype=float), 5) + 0.0).tolist(),
+                         int(charge), int(mult)))
             kept = Path(self.frequency_cache) / f"{hashlib.sha1(blob.encode()).hexdigest()}.json"
             try:
                 hit = json.loads(kept.read_text())

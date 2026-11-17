@@ -383,6 +383,15 @@ def test_frequencies_are_kept_so_another_temperature_needs_no_hessian(tmp_path, 
     again = parent.network(run, engine, temperature=400.0, cache=cache)
     assert again["steps"][0]["g_ts"] == pytest.approx(plain["steps"][0]["g_ts"], abs=1e-6)
     assert again["steps"][0]["g_ts"] != pytest.approx(first["steps"][0]["g_ts"], abs=1e-3)
+    # another level (here: the same engine with other settings) does not read what this one kept
+    other = GXTBCalculator(backend="axtb", hessian_acc=0.01)
+    import mepd.discovery.energy_refine as er
+
+    assert er._level(other) != er._level(engine)
+    asked = []
+    monkeypatch.setattr(mepd, "frequencies", lambda *a, **k: asked.append(1) or (_ for _ in ()).throw(RuntimeError("asked")))
+    parent.network(run, other, temperature=400.0, cache=cache)      # (its corrections fail here: none is kept)
+    assert asked
 
 
 def test_a_step_given_with_its_ts_is_mirrored_for_an_achiral_candidate():
