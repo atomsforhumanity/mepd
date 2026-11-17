@@ -78,10 +78,12 @@ def channels(
     ),
     method: str = typer.Option(
         "conformers", "--method",
-        help="Seed-generation strategy for perturbing the search to surface "
-        "alternate TS channels between --start and --end. Currently only "
-        "'conformers' (conformer sampling of each endpoint, see --backend) is "
-        "implemented; more methods may be added later.",
+        help="How the search is seeded. 'conformers' (default): sample both endpoints' conformers (see --backend) "
+        "and search pairs of them per mechanism. 'minmax': one path search per elementary step -- every "
+        "conformer of either end builds its partner once per mechanism (atom mapping, plus --minmax-explore "
+        "explored mechanisms), all those pairs are scored by the GFN2-xTB peak of their geodesic interpolation, "
+        "and only the lowest is searched; a split path's pieces are each re-sampled, rebuilt and rescored the "
+        "same way before they are searched. Then TS optimization, IRC and classification as usual.",
     ),
     inputs: Optional[Path] = typer.Option(
         None, "--inputs", "-i", exists=True,
@@ -399,6 +401,11 @@ def channels(
     ),
     qmmm_md_ps: float = typer.Option(
         1.0, "--qmmm-md-ps", help="QM/MM profiles: length of that MD (ps; one QM/MM gradient per 0.5 fs).",
+    ),
+    minmax_explore: int = typer.Option(
+        5, "--minmax-explore",
+        help="--method minmax: mechanisms explored beyond SLAPMapper's for every pair of minima (as "
+        "--explore-mechanisms; 0 = SLAPMapper's only).",
     ),
     output: Path = typer.Option(
         Path("mepd_channels_output"), "--output", "-o",

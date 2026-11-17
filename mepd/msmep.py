@@ -760,6 +760,7 @@ class MSMEP:
         for i, chain_frag in enumerate(sequence_of_chains, start=1):
             self._say(f"On chain {i} of {len(sequence_of_chains)}...")
             try:
+                chain_frag = self._piece_chain(chain_frag, tree_depth + 1, new_tree_node_index)
                 out_history = self.run_recursive_minimize(
                     chain_frag,
                     tree_node_index=new_tree_node_index,
@@ -773,6 +774,12 @@ class MSMEP:
             history.children.append(out_history)
             new_tree_node_index = out_history.max_index + 1
         return history
+
+    def _piece_chain(self, chain_frag: Chain, tree_depth: int, tree_node_index: int) -> Chain:
+        """The chain a split piece is searched from (serial recursion): the
+        piece itself. A subclass may search the same two minima from other
+        geometries instead (mepd.minmax: the best-scoring built pair)."""
+        return chain_frag
 
     def _guarded_step(
         self, input_chain: Chain, tree_node_index: int, tree_depth: int = 0,

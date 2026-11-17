@@ -200,16 +200,24 @@ class TsParams(Params):
 
 
 class ChannelsParams(Params):
+    # Set by the method switch ("MINMAX" sets "minmax"): how the paths are sampled.
+    search: Literal["all", "minmax"] = P(
+        "all", "Search", "all: search conformer pairs of every mechanism. minmax: one path search per elementary "
+        "step, on the built pair with the lowest GI + xtb peak (--method minmax).", kind="custom")
+    minmax_explore: int = P(
+        5, "Explore mechanisms", "MINMAX: mechanisms explored beyond SLAPMapper's minimal-edit ones for every pair "
+        "of minima (relays and exchanges through other molecules; 0 = SLAPMapper's only). Each adds a built pair "
+        "per conformer to score.", cli="--minmax-explore", group="Pairs", ge=0, requires="search=minmax")
     backend: Literal["rdkit", "crest"] = P("rdkit", "Conformer backend",
                                            "Where the reactant/product conformer pools come from.",
                                            cli="--backend")
     pairs_per_mechanism: int = P(3, "Searches per mechanism",
                                  "Best-scoring conformer pairs kept per bond-change mechanism (0 = all).",
-                                 cli="--pairs-per-mechanism", ge=0)
+                                 cli="--pairs-per-mechanism", ge=0, requires="search=all")
     built_cap_per_mechanism: bool = P(False, "Built searches per mechanism", "Built endpoints: the path-search "
                                       "cap (Built path searches) applies to each mechanism, not to all built "
                                       "pairs together.", cli="--built-cap-per-mechanism", kind="switch",
-                                      advanced=True)
+                                      advanced=True, requires="search=all")
     workers: int = P(4, "Workers", "Processes for atom mapping, path searches and TS/IRC.",
                      cli="--workers", ge=1)
     conformers_only: bool = P(False, "Conformers only", "Stop after conformer pools and pair selection.",
@@ -241,7 +249,7 @@ class ChannelsParams(Params):
     reuse_conformers: bool = P(True, "Reuse conformer pools",
                                "Take an endpoint's conformers from an earlier Reaction channels run on the same "
                                "molecule with the same sampler settings and level of theory, instead of "
-                               "sampling and minimizing them again.", kind="custom", group="Conformers")
+                               "sampling and minimizing them again.", kind="custom", group="Conformers", requires="search=all")
     pair_from: Literal["both", "start", "end", "start+end"] = P(
         "both", "Pairs from", "Every reactant conformer with every product conformer, or sample one side only "
         "and build each conformer's partner in its frame (each atom where it is, the new bonds pulled to "
@@ -249,44 +257,44 @@ class ChannelsParams(Params):
         "conformer's.", cli="--pair-from", group="Pairs", advanced=True,
         labels={"both": "Both sides sampled", "start": "Reactant conformers, products built",
                 "end": "Product conformers, reactants built",
-                "start+end": "Each side's conformers, partners built"})
+                "start+end": "Each side's conformers, partners built"}, requires="search=all")
     rebuild_splits_from: Literal["none", "start", "end"] = P(
         "none", "Rebuild at splits", "Experimental: at every split, rebuild each new leg's product from its "
         "start (or its start from its product), kept only if bonds and stereochemistry survive.",
         cli="--rebuild-splits-from", group="Pairs", advanced=True,
-        labels={"none": "Off", "start": "Product from start", "end": "Start from product"})
-    max_pairs: int = P(0, "Max pairs", "0 = no cap.", cli="--max-pairs", group="Pairs", advanced=True, ge=0)
+        labels={"none": "Off", "start": "Product from start", "end": "Start from product"}, requires="search=all")
+    max_pairs: int = P(0, "Max pairs", "0 = no cap.", cli="--max-pairs", group="Pairs", advanced=True, ge=0, requires="search=all")
     atom_mapping: bool = P(True, "Atom mapping per pair", cli="--atom-mapping", kind="toggle",
-                           group="Pairs", advanced=True)
+                           group="Pairs", advanced=True, requires="search=all")
     atom_mapping_metric: AtomMappingMetric = P(
         "snap-gi-xtb", "Mapping metric", _MAPPING_METRIC_HELP,
         cli="--atom-mapping-metric", group="Pairs", advanced=True,
-        requires="atom_mapping", labels=_MAPPING_LABELS)
+        requires="atom_mapping;search=all", labels=_MAPPING_LABELS)
     explore_mechanisms: int = P(
         0, "Explore mechanisms", ("Also consider up to this many mechanisms beyond SLAPMapper's minimal-edit ones: relays and exchanges "
         "through other molecules (a catalyst, solvent), found by swapping same-element atoms or groups at most "
         "+2 bond edits per swap, with no rule about which atoms may move. Each is scored like SLAPMapper's "
         "(snap + GI + xtb); ones in which a molecule takes part and is regenerated are labelled "
         "[catalytic: ...]. 0 = off; 20 is a reasonable start."),
-        cli="--explore-mechanisms", group="Pairs", advanced=True, ge=0, requires="atom_mapping")
+        cli="--explore-mechanisms", group="Pairs", advanced=True, ge=0, requires="atom_mapping;search=all")
     relax_mechanisms: int = P(
         4, "Rank mappings by relaxed path energy (top N)", ("Candidate atom mappings are compared by the energy "
         "along their interpolated path. With N > 0, the N best by raw xtb peak (plus SLAPMapper's own minimal "
         "mapping, always) are first relaxed -- everything except the bonds that break or form -- and compared by "
         "that relaxed barrier. Only this way can a mapping with more bond changes (e.g. from Explore mechanisms) "
         "win, and only by more than the margin below. 0 = raw interpolation peaks only."),
-        cli="--relax-mechanisms", group="Pairs", advanced=True, ge=0, requires="atom_mapping")
+        cli="--relax-mechanisms", group="Pairs", advanced=True, ge=0, requires="atom_mapping;search=all")
     relax_margin: float = P(
         5.0, "Margin for extra bond changes (kcal/mol)", ("A mapping with more bond changes than SLAPMapper's minimal "
         "one must beat its relaxed barrier by more than this, or SLAPMapper's mapping is kept. The log lists every "
         "compared mechanism and says which rule decided."),
-        cli="--relax-margin", group="Pairs", advanced=True, ge=0, requires="atom_mapping")
+        cli="--relax-margin", group="Pairs", advanced=True, ge=0, requires="atom_mapping;search=all")
     atom_mapping_rmsd_window: float = P(
         1.0, "RMSD window (σ)", "Filtered GI path: GI paths for the conformer pairs within this many standard "
         "deviations of each mechanism's lowest endpoint RMSD. On the KAIST set 1σ kept 6% of the pairs and 56% of "
         "what GI paths over every pair would pick; 2σ 21% / 82%; 3σ 51% / 96%.",
         cli="--atom-mapping-rmsd-window", group="Pairs", advanced=True, ge=0,
-        requires="atom_mapping_metric=rmsd-geodesic")
+        requires="atom_mapping_metric=rmsd-geodesic;search=all")
     validate_minima_with_hessian: bool = P(
         True, "Validate minima with Hessian", "Every intermediate minimum a recursive split proposes must "
         "have no imaginary frequency beyond the cutoff; a failing one is pushed along its unstable mode and re-optimized.",
@@ -994,9 +1002,17 @@ def _reusable_pool(ctx: JobContext, p: ChannelsParams, rec: dict) -> Optional[tu
     return best
 
 
+def is_minmax(job: dict) -> bool:
+    """A channels job run with --method minmax (the MINMAX button)."""
+    argv = list(job.get("argv") or [])
+    return any(a == "--method" and b == "minmax" for a, b in zip(argv, argv[1:]))
+
+
 def _build_channels(ctx: JobContext, p: ChannelsParams) -> list[str]:
     argv = ["channels", *ctx.endpoint_flags(p.endpoints), *ctx.common_flags(), *generic_flags(p)]
-    if p.reuse_conformers:
+    if p.search == "minmax":
+        argv += ["--method", "minmax"]
+    elif p.reuse_conformers:
         for side, rec in zip(("start", "end"), ctx.structures):
             found = _reusable_pool(ctx, p, rec)
             if found is None:
@@ -1056,6 +1072,9 @@ def _build_channels_more(ctx: JobContext, p: ChannelsMoreParams) -> list[str]:
     src = ctx.source
     if src is None:
         raise WorkspaceError("Sample more paths follows up on a finished Reaction channels run")
+    if is_minmax(src):
+        raise WorkspaceError("that run is a MINMAX search (one path per step, on the best-scoring pair): Sample "
+                             "more paths does not extend it yet; run Reaction channels for more pairs")
     built = _channels_more_built(src, p)
     if built is not None:
         return built
@@ -2220,12 +2239,18 @@ OPERATIONS: dict[str, Operation] = {op.key: op for op in [
         "channels. (`mepd channels`)",
         "pair", PAIR, ChannelsParams, _build_channels, min_structures=2, stoppable=True,
         produces=["transition states per channel", "conformers", "off-target products"],
-        cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--start-pool", "--end-pool"),
+        cli_extra_flags=("--charge", "--multiplicity", "--inputs", "--output", "--start-pool", "--end-pool",
+                         "--method"),
         family=TS_FAMILY, methods=({
-            "label": "Sample conformers and mappings", "rank": 1,
+            "label": "Sample conformers and mappings", "rank": 1, "fixed": {"search": "all"},
             "summary": "Reaction channels: sample both ends' conformers and the atom mappings, search every "
                        "distinct mechanism, and sort the TSs into direct, multi-step and off-target channels. "
-                       "Slower; finds the lowest channel rather than the nearest one."},)),
+                       "Slower; finds the lowest channel rather than the nearest one."}, {
+            "label": "MINMAX", "rank": 2, "fixed": {"search": "minmax"},
+            "summary": "One path search per elementary step: every conformer of either end builds its partner "
+                       "once per mechanism, all those pairs are scored by the xtb peak of their interpolation, and "
+                       "only the lowest is searched. A path that splits has each piece re-sampled, rebuilt and "
+                       "rescored the same way. Then TS, IRC and channels as for Reaction channels. Experimental."})),
     Operation(
         "optimize", "Optimize geometry", "Minimize the selected structures at the chosen profile's level of "
         "theory, replacing their geometry and energy in place. (`mepd optimize`)",

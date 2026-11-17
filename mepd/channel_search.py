@@ -1021,6 +1021,8 @@ class ChannelsOptions:
     # (mepd.qmmm_conformers) at this temperature (K), for this long (ps).
     qmmm_temperature: float = 400.0
     qmmm_md_ps: float = 1.0
+    # --method minmax (mepd.minmax): explored mechanisms per pair of minima, in place of explore_mechanisms.
+    minmax_explore: int = 5
 
     @property
     def sampled_sides(self) -> tuple[str, ...]:
@@ -1029,8 +1031,16 @@ class ChannelsOptions:
 
     def validate(self) -> None:
         """Raise InputsError (saying what to change) for settings that cannot work."""
-        if self.method != "conformers":
-            raise InputsError(f"Unknown --method '{self.method}'. Known: 'conformers'.")
+        if self.method not in ("conformers", "minmax"):
+            raise InputsError(f"Unknown --method '{self.method}'. Known: 'conformers', 'minmax'.")
+        if self.method == "minmax":
+            if not self.atom_mapping:
+                raise InputsError("--method minmax builds a partner per atom-mapping mechanism: it needs "
+                                  "--atom-mapping.")
+            if self.minmax_explore < 0:
+                raise InputsError("--minmax-explore must be 0 or more.")
+            if self.built_pairs is not None or self.search_built:
+                raise InputsError("--built-pairs/--search-built are not used by --method minmax.")
         if self.backend not in ("rdkit", "crest"):
             raise InputsError(f"Unknown --backend '{self.backend}'. Known: 'rdkit', 'crest'.")
         if self.n_conformers < 0:
@@ -1212,7 +1222,7 @@ def run_channels(
     # can otherwise dominate the energy delta the veto decision is based on.
     # With an endpoint built from the other (--pair-from), the mapping is
     # chosen per conformer by the built pairs (_built_pairs_by_mechanism).
-    if region is None and not (atom_mapping and pair_from != "both"):
+    if region is None and method != "minmax" and not (atom_mapping and pair_from != "both"):
         realigned_end_structure = _check_endpoint_atom_mapping(
             start_node.structure, end_node.structure, atom_mapping, run_inputs,
             debug_dump=debug_dump, output=output,
@@ -1248,6 +1258,17 @@ def run_channels(
     def _write_stats() -> None:
         stats["total_seconds"] = round(time.perf_counter() - run_started, 3)
         (output / "stats.json").write_text(json.dumps(stats, indent=2) + "\n")
+
+    if method == "minmax":
+        # One search per elementary step, on the best-scoring built pair (mepd.minmax).
+        if region is not None:
+            raise InputsError("--method minmax builds molecules; it does not run on QM/MM systems.")
+        from mepd.minmax import run_minmax
+
+        run_inputs.atom_mapping_inputs.metric = "snap-gi-xtb"      # pairs ranked by their GI + xtb peak
+        run_inputs.atom_mapping_inputs.explore_mechanisms = max(0, int(options.minmax_explore))
+        return run_minmax(start_node, end_node, run_inputs, options, output, conformer_inputs, stats,
+                          _write_stats)
 
     # Saved final pools of an earlier run (same sampler settings and level of
     # theory; the caller decides): used as is, not re-sampled or re-minimized.
