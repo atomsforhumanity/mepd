@@ -869,6 +869,9 @@ def test(
                              "per step on all the cores this command may use: pin it with taskset): the steps "
                              "that limit the target first, then those whose estimate or verification showed the "
                              "molecule reacting. 0: none."),
+    side: bool = typer.Option(False, "--scan-side-reactions", help="Also scan the reactions that could divert "
+                              "material if the molecule opened them (they are listed in the result either way). "
+                              "Default: the scans end when no reaction is left that could lower the target's route."),
     scan_inputs: Optional[Path] = typer.Option(None, "--scan-inputs", help="Profile of the relay layer's path "
                                                "searches (same engine as the level; its path method). Default: "
                                                "the bystander layer's profile."),
@@ -907,7 +910,7 @@ def test(
         raise typer.BadParameter("the bystander layer, the relay layer and a step given with a TS need a profile: "
                                  "give --inputs (the query keeps none)")
     opt = {"query": str(query_file), "profile": str(profile) if profile else None, "steps": steps, "scan": scan,
-           "verify": verify, "setting": {} if spread else dict(QUICK),
+           "side": side, "verify": verify, "setting": {} if spread else dict(QUICK),
            "scan_profile": str(scan_inputs or profile) if (scan_inputs or profile) else None,
            "steer": str(steer) if steer else None, "workers": workers, "output": str(output)}
     if jobs > 1 and len(cands) > 1:
@@ -1082,6 +1085,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         for item in layers:
             if item.get("status") in ("running", "queued"):
                 item["status"] = "cut"
+        unfinished = [rec for rec in scans if rec.get("status") not in ("done", "failed")]
         for pid in list(_SCANS):
             try:
                 os.killpg(pid, _signal.SIGTERM)
@@ -1089,6 +1093,9 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 pass
         try:
             if lock.acquire(timeout=20):
+                for rec in unfinished:           # (a scan stopped here did not end by itself)
+                    rec["status"] = "cut"
+                    rec.pop("answer", None)
                 counts()
                 plain_write("cut")
         finally:
@@ -1182,7 +1189,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             key = (scan_rows[0], pool_done[0])
         peak, worth, unworthy = _scan_worth(net, added_as, snap, start, target, rest, flagged, handed)
         first = [w for w in worth if w[1] == "target"]
-        if first and not final:
+        if not final and (first or not opt.get("side")):
+            # (the reactions that could divert material are scanned only when asked for; listed at the end)
             return peak, first, unworthy + [w[0] for w in worth if w[1] != "target"], flagged
         with kinetic_lock:
             if kinetic["key"] != key or final:
@@ -1203,23 +1211,51 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     order_of = {sid: k for k, sid in enumerate(todo)}
     todo.sort(key=lambda sid: (bool(by_id[sid].get("mirror_of")), rank.get(sid, len(rank)), order_of[sid]))
 
-    # The cores: two scan lanes from the start, the estimates and the verification on the rest, a third lane on
-    # those when the verification ends (a scan keeps about ten cores of a 32-thread pod busy).
+    # The cores: while a reaction is left that could lower the target's route, three scan lanes of a quarter of
+    # the cores each and the estimates and the verification on the last quarter (32 threads: 8, 8, 8 and 8); when
+    # the scans end, all the cores go to the estimates and the verification. On 4 to 7 cores: one lane on half of
+    # them; on fewer: one lane on one core.
     from mepd.cpus import available_cpus
 
     cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
     cpus = cpus[:available_cpus()]
     scanning = bool(opt["scan"] and reactions)
-    if scanning and len(cpus) >= 6:
-        width = max(2, round(len(cpus) * 10 / 32))
-        masks = [cpus[:width], cpus[width:2 * width], cpus[2 * width:3 * width] or cpus[2 * width:]]
-        pool_cpus = cpus[2 * width:]
+    if scanning and len(cpus) >= 8:
+        width = len(cpus) // 4
+        masks = [cpus[:width], cpus[width:2 * width], cpus[2 * width:3 * width]]
+        pool_cpus = cpus[3 * width:]
     elif scanning:
-        masks, pool_cpus = [cpus[:max(1, len(cpus) // 2)]], cpus[max(1, len(cpus) // 2):] or cpus
+        width = max(1, len(cpus) // 2)
+        masks, pool_cpus = [cpus[:width]], cpus[width:] or cpus
     else:
         masks, pool_cpus = [], cpus
     n_pool = max(1, min(opt["workers"], len(pool_cpus)))
+    n_all = max(1, min(opt["workers"], len(cpus)))
     active = [0]                       # scans running
+    active_i = [0]                     # of them, scans of reactions that could lower the target's route
+    spread_out = [False]
+
+    def all_cores():
+        """The scans have ended: this process and the estimate and verification workers on every core."""
+        if not hasattr(os, "sched_setaffinity"):
+            return
+        for pid in [0] + [x.pid for x in mp.active_children()]:
+            try:
+                os.sched_setaffinity(pid, set(cpus))
+            except OSError:
+                pass
+
+    def settled(peak):
+        """(with the lock held) No reaction is left that could lower the target's route: said in the file, once."""
+        if "target_route_settled" not in extra:
+            extra["target_route_settled"] = {
+                "t_s": since(), "route_peak": peak,
+                "in_words": "no reaction is left that could lower the target's route (every reaction that, with no "
+                            "barrier above its ends, would lower the target's route peak has been scanned); the "
+                            "estimates and the verification may still be running, and a later verified row can "
+                            "still move the peak (route_peak keeps its history)"}
+            timing["target_route_settled_s"] = extra["target_route_settled"]["t_s"]
+            write("running")
     if scanning and hasattr(os, "sched_setaffinity"):
         try:        # this process (the kinetics, the rows' free energies) on the estimates' cores; the scans on theirs
             os.sched_setaffinity(0, set(pool_cpus))
@@ -1247,13 +1283,14 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                 worth = [w for w in worth if w[0]["key"] not in taken]
                 if len(taken) >= opt["scan"]:
                     continue
+                if active_i[0] == 0 and not any(w[1] == "target" for w in worth):
+                    settled(peak)
                 if not worth:
-                    if active[0] == 0 and pool_done[0]:
+                    if active[0] == 0:
                         extra["scan"].setdefault("ended", {
-                            "t_s": since(), "why": "no reaction is left that, with no barrier, would lower the target's "
-                                                   "route peak, or change the amount of any species at the end of "
-                                                   f"the run by more than {SCAN_CHANGE:.0%} of the limiting starting "
-                                                   "material"})
+                            "t_s": since(), "why": "no reaction is left that could lower the target's route"
+                            + (", and none that could divert material (those were asked for)"
+                               if opt.get("side") else "")})
                         return
                     wait = True
                 else:
@@ -1261,6 +1298,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     rx, kind, value, species = worth[0]
                     taken.add(rx["key"])
                     active[0] += 1
+                    active_i[0] += kind == "target"
                     why = (f"with no barrier it would lower the target's route peak to {value:.1f} kcal/mol (now {peak:.1f})"
                            if kind == "target" else
                            f"with no barrier the amount of {name_of.get(species, species)} at the end of the run would "
@@ -1273,6 +1311,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                            "why": why + ("; the estimate or the verification saw the molecule react or take part"
                                          if rx["key"] in flags else "")}
                     scans.append(rec)
+                    number = len(scans)
                     rlay["total"] = len(scans)
                     extra["scan"]["derivations"].append({
                         "t_s": since(), "lane": k, "route_peak_now": peak, "chosen": rx["label"],
@@ -1310,34 +1349,88 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                         last_write[0] = time.perf_counter()
 
                 _relay_scan(q, rx["lowest"], molecule, ends, engine_k, Path(opt["scan_profile"]),
-                            output / (fp.stem + "_relay") / f"{len(scans):02d}_{_file_name(rx['lowest'])[:-5]}", rec, on_row,
+                            output / (fp.stem + "_relay") / f"{number:02d}_{_file_name(rx['lowest'])[:-5]}", rec, on_row,
                             t0, cores=masks[k], compute=compute)
             finally:
                 with lock:
                     active[0] -= 1
+                    active_i[0] -= kind == "target"
                     rlay["done"] += 1
 
     if scanning:
         rlay.update(status="running", lanes=len(masks), what=rlay["what"] + f"; up to {len(masks)} scans side by side")
         extra["scan"] = {
             "rule": "one scan per net reaction of the parent (molecules the same on both sides dropped). A reaction is "
-                    "worth a scan if, with no barrier above its ends, (i) it would lower the target's route peak; those "
-                    "go first, by the resulting peak, derived again each time a lane frees. When none is left: (ii) a "
-                    "reaction that would bring another species to a route peak below the target's present one and "
-                    "below what that species has now is put through the kinetics with its barrier removed (same "
-                    "conditions, same time, the molecule's rows in), and is worth a scan only if the amount of some "
-                    f"species at the end of the run then differs from what it is now by more than {SCAN_CHANGE:.0%} of "
-                    "the limiting starting material (the target's own amount counts, up or down); largest change "
-                    "first; tested again when a scan's rows change the kinetics. Ties: reactions where the estimate "
-                    "or the verification saw the molecule react or take part, then fewer atoms; for a chiral molecule "
-                    "mirror twins after everything else. The stage ends when no such reaction is left, or after "
-                    f"{opt['scan']} reactions",
+                    "scanned if, with no barrier above its ends, it would lower the target's route peak; by the "
+                    "resulting peak, derived again each time a lane frees. Ties: reactions where the estimate or the "
+                    "verification saw the molecule react or take part, then fewer atoms; for a chiral molecule mirror "
+                    "twins after everything else. The scans end when no such reaction is left (the target's route is "
+                    f"then settled: target_route_settled), or after {opt['scan']} reactions. Reactions that could "
+                    "divert material if the molecule opened them are listed under side_reactions with the change "
+                    "they could cause: those that would bring another species to a route peak below the target's "
+                    "and, put through the kinetics with the barrier removed (same conditions and time), change the "
+                    f"amount of some species at the end of the run by more than {SCAN_CHANGE:.0%} of the limiting "
+                    "starting material. They are "
+                    + ("scanned too, largest change first (asked for)" if opt.get("side")
+                       else "not scanned unless asked for"),
             "change_worth_a_scan": SCAN_CHANGE,
             "steps": scans, "derivations": [], "reactions": len(reactions),
             "cores": {"lanes": masks, "estimates_and_verification": pool_cpus}}
         threads = [threading.Thread(target=lane, args=(k,), daemon=True) for k in range(len(masks))]
-        for th in threads[:2]:
-            th.start()                 # two lanes from the start; the third when the verification ends
+        for th in threads:
+            th.start()
+
+    def close_scans():
+        """The scans have ended: said in the file at once; then, once, the reactions that could divert material
+        (the kinetic test, on the estimates' cores) and why each reaction not scanned was not."""
+        with lock:
+            rlay["status"] = "done"
+            rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
+            timing["relay_s"] = rlay["wall_s"]
+            extra["scan"].setdefault("ended", {"t_s": since(), "why": f"the limit of {opt['scan']} reactions"})
+            counts()
+            write("running")
+        t = time.perf_counter()
+        try:
+            _peak, worth, unworthy, _flags = derive(final=True)
+        except Exception as exc:
+            with lock:
+                failed.append({"layer": "relay", "status": "failed", "t_s": since(),
+                               "why": f"the reactions not scanned could not be listed: {type(exc).__name__}: {exc}"})
+            return
+        with lock:
+            first = [w for w in worth if w[1] == "target"]
+            aside = [w for w in worth if w[1] != "target"]
+            if not first:                 # (the limit was used up by the last reaction that could lower the route)
+                settled(_peak)
+            words = lambda sp, v: (f"could divert material if the molecule opened it: with no barrier the amount of "   # noqa: E731
+                                   f"{name_of.get(sp, sp)} at the end of the run would change by {v:+.2g} M; not scanned")
+            extra["scan"]["side_reactions"] = {
+                "asked_for": bool(opt.get("side")), "ask_with": "--scan-side-reactions",
+                "change_worth_listing": SCAN_CHANGE, "evaluated_t_s": since(), "wall_s": round(time.perf_counter() - t, 1),
+                "what": "reactions that, put through the kinetics with their barrier removed, would change the amount "
+                        f"of some species at the end of the run by more than {SCAN_CHANGE:.0%} of the limiting starting "
+                        "material; " + ("scanned (they are under scan.steps with worth \"other\"); listed here: those "
+                                        "not reached" if opt.get("side") else "listed, not scanned"),
+                "listed": [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"], "species": sp,
+                            "change": v, "twin": rx["twin"], "in_words": words(sp, v)} for rx, _k, v, sp in aside]}
+            extra["scan"]["left"] = (
+                [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
+                  "why": f"could lower the target's route, not reached: the limit of {opt['scan']} reactions was used up"}
+                 for rx, _k, _v, _s in first]
+                + [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"], "why": words(sp, v)}
+                   for rx, _k, v, sp in aside]
+                + [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
+                    "why": "not scanned: with no barrier it would neither lower the target's route peak nor change the "
+                           f"amount of any species at the end of the run by more than {SCAN_CHANGE:.0%} of the limiting "
+                           "starting material"} for rx in unworthy])
+            extra["scan"]["not_scanned"] = (
+                f"{len(extra['scan']['left'])} of {len(reactions)} reactions were not scanned: {len(first)} that could "
+                f"lower the target's route (beyond the limit), {len(aside)} that could divert material (listed), "
+                f"{len(unworthy)} that could do neither")
+            write("running")
+
+    closer = threading.Thread(target=close_scans, daemon=True)
 
     # a + b. Each step's quick estimate, then its verification with the molecule beside it, in the derived order,
     # on the cores the lanes leave: a verification that is ready goes before the next estimate.
@@ -1407,10 +1500,15 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             left_ends.append(sid)
         return changed
 
-    with ProcessPoolExecutor(max_workers=n_pool, mp_context=mp.get_context("spawn"), initializer=_pin,
+    with ProcessPoolExecutor(max_workers=n_all, mp_context=mp.get_context("spawn"), initializer=_pin,
                              initargs=(pool_cpus if scanning else None,)) as pool:
         while pending_est or pending_ver or running:
-            while len(running) < n_pool and (pending_ver or pending_est):
+            if threads and not spread_out[0] and not any(th.is_alive() for th in threads):
+                spread_out[0] = True
+                closer.start()         # the scans have ended: what is left of them is written beside the pool's work
+            if spread_out[0] or not scanning:
+                all_cores()
+            while len(running) < (n_all if spread_out[0] or not scanning else n_pool) and (pending_ver or pending_est):
                 if pending_ver:
                     sid = pending_ver.popleft()
                     t_b = t_b or time.perf_counter()
@@ -1423,7 +1521,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                                               ([{"frame": pose.get("frame", "ts"), "coords": pose["coordinates"]}]
                                                if pose.get("step") == sid else ()), 0, opt["setting"]))
                     running[fut] = ("estimate", sid)
-            done, _ = wait_for(list(running), return_when=FIRST_COMPLETED)
+            done, _ = wait_for(list(running), timeout=10.0, return_when=FIRST_COMPLETED)
             changed = False
             with lock:
                 for fut in done:
@@ -1454,25 +1552,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         doc = write("running")
 
     if threads:
-        for th in threads[2:]:
-            th.start()
         for th in threads:
             th.join()
-        with lock:
-            rlay["status"] = "done"
-            rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
-            timing["relay_s"] = rlay["wall_s"]
-            extra["scan"].setdefault("ended", {"t_s": since(), "why": f"the limit of {opt['scan']} reactions"})
-            _peak, worth, unworthy, _flags = derive(final=True)
-            extra["scan"]["left"] = (
-                [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
-                  "why": f"worth a scan, not reached: the limit of {opt['scan']} reactions was used up"} for rx, _k, _v, _s in worth]
-                + [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
-                    "why": "not worth a scan: with no barrier it would neither lower the target's route peak nor "
-                           f"change the amount of any species at the end of the run by more than {SCAN_CHANGE:.0%} of the "
-                           "limiting starting material"} for rx in unworthy])
-            extra["scan"]["not_scanned"] = (f"{len(extra['scan']['left'])} of {len(reactions)} reactions were not scanned: "
-                                            f"{len(unworthy)} not worth a scan, {len(worth)} beyond the limit")
+        if not spread_out[0]:
+            closer.start()
+        closer.join()
     if rlay["status"] == "queued":
         rlay["status"] = "skipped"
     counts()

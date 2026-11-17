@@ -292,26 +292,32 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
 - **What is scanned: a net reaction.** The parent's steps with the molecules that are the same on both sides
   dropped (its own shuttles too: the added molecule is tried in their place); steps with the same net change,
   either way round, are one reaction and share the scan's rows (`parent_steps`).
-- **Which reactions, in what order, and when it ends.** Judged on the kinetics as they stand with the
-  molecule's rows in, *with no barrier above the reaction's ends*:
-  (i) a reaction that would lower the target's route peak is worth a scan; these go first, by the resulting
-  peak, derived again each time a lane frees (`mepd.addmol.reach_peaks`).
-  (ii) When none is left under (i): a reaction that would bring some other species to a route peak below the
-  target's present one, and below what that species has now, is put through the kinetics with its barrier
-  removed (same conditions and time). It is worth a scan only if the amount of some species at the end of the
-  run then differs from what it is now by more than 1 % of the limiting starting material (the target's own
-  amount counts, up or down; `scan.change_worth_a_scan`); largest change first; tested again when a scan's rows
-  change the kinetics (`scan.kinetic_test`: how often, how long).
-  Ties: reactions where the estimate or the verification saw the molecule react or take part, then fewer atoms.
-  For a chiral molecule the mirror twin of a reaction goes after every reaction that is not a twin. The list is
-  derived at the start from the parent alone (`scan.derivations`). **The stage ends when no reaction is left
-  under (i) or (ii)** (`scan.ended`), or after N reactions; the reactions not scanned are in `scan.left`, each
-  with its reason. A reaction whose two sides do not hold the same atoms is never scanned.
+- **Which reactions, in what order, and when it ends.** A reaction is scanned if, *with no barrier above its
+  ends*, it would lower the target's route peak, judged on the kinetics as they stand with the molecule's rows
+  in (`mepd.addmol.reach_peaks`); by the resulting peak, derived at the start from the parent alone and again
+  each time a lane frees (`scan.derivations`). Ties (to 0.1 kcal/mol): reactions where the estimate or the
+  verification saw the molecule react or take part, then fewer atoms. For a chiral molecule the mirror twin of
+  a reaction goes after every reaction that is not a twin. A reaction whose two sides do not hold the same
+  atoms is never scanned.
+- **The target's route is settled** when no such reaction is left and none is being scanned: the file then
+  has `target_route_settled` {`t_s`, `route_peak`, `in_words`} at its top level, and the scans end
+  (`scan.ended`). The estimates and the verification may still be running; a later verified row can still move
+  the peak, and `route_peak` keeps its history. `--scan N` is an upper bound on the reactions scanned.
+- **Side reactions are listed, and scanned only when asked for.** When the scans end, the reactions that would
+  bring some *other* species to a route peak below the target's are put through the kinetics once with their
+  barrier removed (same conditions and time). Those that would change the amount of some species at the end of
+  the run by more than 1 % of the limiting starting material are listed under `scan.side_reactions.listed`
+  with that change ("could divert material if the molecule opened it; not scanned"). With no barrier the
+  kinetics reach equilibrium, so for a reaction straight out of the starting mixture this is its free energy of
+  reaction: the list says what *could* happen, not what the molecule does. `--scan-side-reactions` scans them
+  too, largest change first, after the reactions that could lower the target's route
+  (`scan.side_reactions.asked_for`). Every reaction not scanned is in `scan.left` with its reason.
 - **Everything follows that order.** The steps are estimated, and then verified, in the order of the first
   derivation; a verification that is ready goes before the next estimate.
-- **Side by side.** On 32 threads: two scans from the start, each `mepd channels` run held to its own ten cores
-  with `taskset` (`--workers` does not bound a channels run); the estimates and the verification on the other
-  twelve; a third scan lane on those when the verification ends (`scan.cores`). Fewer lanes on fewer cores.
+- **Side by side.** While the scans run: three scans, each `mepd channels` run held to its own quarter of the
+  cores with `taskset` (`--workers` does not bound a channels run), and the estimates and the verification on
+  the last quarter (32 threads: 8, 8, 8 and 8; `scan.cores`). When the scans end, every core goes to the
+  estimates and the verification. On 4 to 7 cores: one scan on half of them; on fewer, one scan on one core.
   **Pin the command itself** on a shared machine: the lanes divide the cores it may use.
 - **What a scan is.** `mepd channels` between the reaction's two ends with the molecule beside each: the ends of
   the reaction's lowest parent step (its TS's IRC ends), the unchanged molecules removed, the molecule placed by

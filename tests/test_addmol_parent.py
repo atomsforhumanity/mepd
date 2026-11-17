@@ -303,6 +303,13 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     assert line["step"] == "fast_0_1" and line["steps"] == ["fast_0_1"]
     assert doc["scan"]["cores"]["lanes"] and line["status"] in ("done", "failed")
     assert isinstance(line["arrivals"], list) and "does_not_hold" in doc["scope"] and doc["scope"]["level"]
+    # the scans' end: the target's route settled (or the limit used up), the side reactions listed, not scanned
+    side = doc["scan"]["side_reactions"]
+    assert side["asked_for"] is False and isinstance(side["listed"], list) and side["ask_with"] == "--scan-side-reactions"
+    assert all("not scanned" in x["in_words"] for x in side["listed"]) and "left" in doc["scan"]
+    if doc["scan"]["ended"]["why"].startswith("no reaction is left"):
+        assert doc["target_route_settled"]["t_s"] <= doc["scan"]["ended"]["t_s"] + 1e-6
+        assert "no reaction is left that could lower the target's route" in doc["target_route_settled"]["in_words"]
     event = doc["route_peak"]["with"][-1]
     assert event["rests_on"] in ("verified", "estimate") and "final" in event["readout"]["target"]
     assert doc["readout"]["peak_routes"]["with"][0]["rests_on"] == event["rests_on"]
