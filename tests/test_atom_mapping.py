@@ -582,12 +582,31 @@ def test_explore_lists_a_mechanism_once_not_again_through_symmetry_equivalent_at
     am._EXPLORED.clear()
     explored = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10)]
     assert len(explored) == 10
-    assert not any(ec.relabels(a, b) for k, b in enumerate(explored) for a in explored[:k])
+    assert not any(ec.same_mechanism(a, b) for k, b in enumerate(explored) for a in [base.as_order(), *explored[:k]])
+    assert all(ec.same_mechanism(a, a) for a in explored)
     # every route found, ranked: the kept ones are its first 10 that repeat no earlier kept one
     everything = [tuple(m.as_order()) for m in am.explore_mechanisms(start, end, [base], max_new=10_000)]
     assert explored == everything[:10]
     costs = [(int(ec.cost(o)), ec.carbon_h_changes(o)) for o in everything]
     assert costs == sorted(costs)                                   # still in the ranking's order
+
+
+def test_same_mechanism_sees_equivalent_atoms_of_the_end_too():
+    """HO-CH=CH-OH -> HO-CH2-CH=O: the H of either OH to the far carbon is one mechanism, also when the two H
+    of the new CH2 are numbered the other way round (a symmetry of the end, not of the start)."""
+    from mepd.atom_mapping import _EditCount
+
+    sym = ["C", "C", "O", "O", "H", "H", "H", "H"]
+    xyz = [[0, 0, 0], [2.5, 0, 0], [-1.3, 2.2, 0], [3.8, 2.2, 0], [5.5, 1.9, 0], [-1.0, -1.8, 0], [3.5, -1.8, 0], [-3.0, 1.9, 0]]
+    end = [[0, 0, 0], [2.6, 0.9, 0], [-1.3, 2.4, 0], [3.9, 2.9, 0], [-1.0, -1.2, 1.7], [-1.0, -1.2, -1.7], [3.5, -0.9, 0], [-3.0, 2.1, 0]]
+    start = Structure(symbols=sym, geometry=np.array(xyz, dtype=float), charge=0, multiplicity=1)
+    ec = _EditCount(start, Structure(symbols=sym, geometry=np.array(end, dtype=float), charge=0, multiplicity=1))
+    base, mirror, twisted = (0, 1, 2, 3, 4, 5, 6, 7), (1, 0, 3, 2, 7, 6, 5, 4), (1, 0, 3, 2, 7, 6, 4, 5)
+    if ec.cost(base) != 2:
+        pytest.skip("bond perception did not give the two graphs this test is about")
+    assert ec.relabels(base, mirror) and not ec.relabels(base, twisted)
+    assert ec.same_mechanism(base, mirror) and ec.same_mechanism(base, twisted)
+    assert not ec.same_mechanism(base, (0, 1, 2, 3, 7, 5, 6, 4))    # 4 bond changes: another mechanism
 
 
 def test_explore_finds_the_methyl_relay_through_ch3i():

@@ -632,6 +632,7 @@ class _EditCount:
         self.adj0 = {i: {int(k) for k in g0.neighbors(i)} for i in range(self.n)}
         self.adj1 = {j: {int(k) for k in g1.neighbors(j)} for j in range(self.n)}
         # terminal neighbours by element: what a group swap carries along
+        self._layers: dict = {}
         self.terminal = {i: {} for i in range(self.n)}
         for i in range(self.n):
             for k in sorted(self.adj0[i]):
@@ -712,6 +713,30 @@ class _EditCount:
         inv = {int(v): a for a, v in enumerate(base)}
         sigma = [inv[int(v)] for v in order]
         return all(sigma[k] in self.adj0[sigma[i]] for i in range(self.n) for k in self.adj0[i])
+
+    def same_mechanism(self, a, b) -> bool:
+        """Whether mappings `a` and `b` are one mechanism through symmetry-equivalent atoms: some renaming of
+        the start's atoms that keeps its elements and bonds turns the bonds `a` gives the end into those `b`
+        gives it. Covers `relabels` (a symmetry of the start alone) and equivalent atoms of the end as well
+        (which of a new CH2's two H came from where)."""
+        import networkx as nx
+
+        def layers(order):
+            if order not in self._layers:
+                g = nx.Graph()
+                g.add_nodes_from((i, {"el": self.sym[i]}) for i in range(self.n))
+                inv = {int(v): i for i, v in enumerate(order)}
+                after = {(min(inv[j], inv[k]), max(inv[j], inv[k])) for j in range(self.n) for k in self.adj1[j]}
+                before = {(i, k) for i in range(self.n) for k in self.adj0[i] if i < k}
+                g.add_edges_from((i, k, {"kind": (pair in before, pair in after)})
+                                 for pair in before | after for i, k in [pair])
+                self._layers[order] = (g, nx.weisfeiler_lehman_graph_hash(g, node_attr="el", edge_attr="kind"))
+            return self._layers[order]
+
+        a, b = tuple(int(v) for v in a), tuple(int(v) for v in b)
+        (ga, ha), (gb, hb) = layers(a), layers(b)
+        return ha == hb and nx.is_isomorphic(ga, gb, node_match=lambda x, y: x["el"] == y["el"],
+                                             edge_match=lambda x, y: x["kind"] == y["kind"])
 
     def group_swaps(self, order):
         """Two same-element atoms swapped together with their same-element
@@ -835,7 +860,7 @@ def _explore_routes(ec: "_EditCount", bases: list, max_new: int, rounds: int, st
     for c, order in sorted(best.values(), key=lambda t: (t[0], ec.carbon_h_changes(t[1]), t[1])):
         if len(ranked) == max_new:
             break
-        if not any(ec.relabels(kept, order) for _, kept in ranked):
+        if not any(ec.same_mechanism(kept, order) for kept in [*base_orders, *(o for _, o in ranked)]):
             ranked.append((c, order))
     return ranked, len(best)
 
