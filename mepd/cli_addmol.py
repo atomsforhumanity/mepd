@@ -1150,7 +1150,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     of_step = {x: rx["key"] for rx in reactions for x in rx["steps"]}
 
     cond = {"time_s": q["conditions"]["time_s"], "held": q["conditions"].get("held") or ()}
-    kinetic: dict = {"key": None, "kept": [], "rest": [], "evaluations": 0, "wall_s": 0.0}
+    kinetic: dict = {"key": None, "kept": [], "rest": []}
     scan_rows = [0]                    # rows from scans so far (the kinetic test is made again when they change)
 
     def derive(final=False):
@@ -1170,9 +1170,12 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             if kinetic["key"] != key or final:
                 t = time.perf_counter()
                 _p, kept, out = _scan_worth(net, added_as, snap, start, target, rest, flagged, handed, cond, set())
-                kinetic.update(key=key, kept=kept, rest=out, evaluations=kinetic["evaluations"] + 1,
-                               wall_s=round(kinetic["wall_s"] + time.perf_counter() - t, 1),
-                               last_s=round(time.perf_counter() - t, 1))
+                kinetic.update(key=key, kept=kept, rest=out)
+                told = extra["scan"].setdefault("kinetic_test", {"evaluations": 0, "wall_s": 0.0}) if "scan" in extra else {}
+                told.update(evaluations=told.get("evaluations", 0) + 1, last_s=round(time.perf_counter() - t, 1),
+                            wall_s=round(told.get("wall_s", 0.0) + time.perf_counter() - t, 1), last_t_s=since(),
+                            last_tested=len([w for w in worth if w[1] != "target"]),
+                            last_worth_a_scan=len(kept))
             kept = [w for w in kinetic["kept"] if w[0]["key"] not in taken]
             gone = {w[0]["key"] for w in kept} | {w[0]["key"] for w in first}
             return peak, first + kept, [rx for rx in rest if rx["key"] not in gone], flagged
@@ -1215,7 +1218,13 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             with lock:
                 if len(taken) >= opt["scan"]:
                     return
-            peak, worth, unworthy, flags = derive()
+            try:
+                peak, worth, unworthy, flags = derive()
+            except Exception as exc:         # (said in the file, not lost with the lane)
+                with lock:
+                    failed.append({"layer": "relay", "status": "failed", "t_s": since(),
+                                   "why": f"lane {k}: the scan order could not be derived: {type(exc).__name__}: {exc}"})
+                return
             with lock:
                 worth = [w for w in worth if w[0]["key"] not in taken]
                 if len(taken) >= opt["scan"]:
@@ -1305,7 +1314,7 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     "or the verification saw the molecule react or take part, then fewer atoms; for a chiral molecule "
                     "mirror twins after everything else. The stage ends when no such reaction is left, or after "
                     f"{opt['scan']} reactions",
-            "change_worth_a_scan": SCAN_CHANGE, "kinetic_test": kinetic,
+            "change_worth_a_scan": SCAN_CHANGE,
             "steps": scans, "derivations": [], "reactions": len(reactions),
             "cores": {"lanes": masks, "estimates_and_verification": pool_cpus}}
         threads = [threading.Thread(target=lane, args=(k,), daemon=True) for k in range(len(masks))]
