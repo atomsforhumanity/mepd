@@ -1093,6 +1093,9 @@ def test(
                                          "the parent's starting box), the steps that carry the target's material "
                                          "first. Without it such steps stay at the parent's low level."),
     workers: int = typer.Option(1, "--workers", help="Processes for the bystander layer."),
+    cores: Optional[int] = typer.Option(None, "--cores", min=1, help="At most this many CPUs for everything "
+                                        "(the scan lanes and the estimate and verification pool together), taken "
+                                        "from the CPUs this command may run on. Default: all of them."),
     jobs: int = typer.Option(1, "--jobs", help="Candidates worked on at once, each with --workers processes (a "
                              "screen; with --scan each scan takes every core, so keep 1)."),
     output: Path = typer.Option(..., "--output", "-o", help="Folder: one result file per candidate, rewritten as "
@@ -1130,7 +1133,7 @@ def test(
     opt = {"query": str(query_file), "profile": str(profile) if profile else None, "steps": steps, "scan": scan,
            "side": side, "verify": verify, "setting": {} if spread else dict(QUICK),
            "scan_profile": str(scan_inputs or profile) if (scan_inputs or profile) else None,
-           "steer": str(steer) if steer else None, "workers": workers, "output": str(output)}
+           "steer": str(steer) if steer else None, "workers": workers, "cores": cores, "output": str(output)}
     import atexit
     import signal
     import threading
@@ -1478,10 +1481,12 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     # them; on fewer: one lane on one core.
     from mepd.cpus import available_cpus
 
-    cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
+    cpus = _cpu_set(opt.get("cores"))
     # Where the CPU mask holds more CPUs than this command may use (a container's CPU quota on a shared node), the
     # lanes cannot be given CPUs of their own: they are not pinned, and each gets its share of the count.
     n_cpus = min(len(cpus), available_cpus())
+    if opt.get("cores"):
+        _set_affinity(os.getpid(), cpus)             # (the bound: this process, its lanes and its pool on these)
     pinned = n_cpus == len(cpus)
     scanning = bool(opt["scan"] and reactions)
     if scanning and n_cpus >= 8:
@@ -1892,6 +1897,14 @@ def _pin(cpus) -> None:
 
     if cpus:
         _set_affinity(os.getpid(), cpus)
+
+
+def _cpu_set(cores=None) -> list:
+    """The CPUs this command may run on (its affinity), at most `cores` of them (--cores), lowest first."""
+    import os
+
+    cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
+    return cpus[:max(1, int(cores))] if cores else cpus
 
 
 def _set_affinity(pid: int, cpus) -> None:
