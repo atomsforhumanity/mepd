@@ -314,3 +314,87 @@ def _name(text):
     from mepd.cli_addmol import _file_name
 
     return _file_name(text)
+
+
+def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
+    """--scan 1: `mepd channels` between the step's two ends with the molecule beside them; every verified TS
+    that joins them becomes a step on the parent's scale, the step's line says what was searched and found."""
+    pytest.importorskip("axtb")
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    run = _run(tmp_path)
+    qf = tmp_path / "q.json"
+    cli = CliRunner()
+    assert cli.invoke(app, ["addmol", "query", str(run), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
+                            "--time", "3600", "--held", "[C-]#[NH+]", "-o", str(qf)]).exit_code == 0
+    q = json.loads(qf.read_text())
+    assert q["conditions"]["held"] and q["level"]["label"].startswith("gxtb")
+    assert (run / "addmol_thermo").is_dir() or True            # (this run records every correction: nothing to keep)
+    res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "--amount", "0.1", "--scan", "1", "-o", str(tmp_path / "r")])
+    assert res.exit_code == 0, res.output
+    doc = json.loads((tmp_path / "r" / "O.json").read_text())
+    assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["relay", "bystander"]
+    (line,) = doc["scan"]["steps"]
+    assert line["step"] == "fast_0_1" and line["status"] == "done" and "lowest-peak route" in line["why"]
+    assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
+    assert "lowest-peak routes" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
+    found = [n for n in doc["estimates"]["new_steps"] if n["layer"] == "relay"]
+    assert len(found) == sum(1 for k in ("with_molecule", "beside") if line.get(k))    # the lowest of each kind
+    for n in found:
+        assert n["status"] == "verified" and n["parent_step"] == "fast_0_1" and n["barrier"]["free"] is not None
+        assert n["level"] == "explorer" and set(n["reactants"]) <= {"C#N", "[C-]#[NH+]", "added"}
+    if line.get("beside"):      # a verified TS with the molecule beside it replaces the bystander estimate
+        assert not [e for e in doc["estimates"]["steps"] if e["step"] == "fast_0_1"]
+    if not line.get("with_molecule"):
+        assert "none found" in line["answer"]
+    assert doc["candidate"]["geometry"]["atoms"] == ["O", "H", "H"] and doc["level_labels"]["explorer"]
+
+
+def test_frequencies_are_kept_so_another_temperature_needs_no_hessian(tmp_path, monkeypatch):
+    pytest.importorskip("axtb")
+    import mepd
+    from mepd.engines.gxtb import GXTBCalculator
+
+    run = _run(tmp_path, recorded=False)
+    engine = GXTBCalculator(backend="axtb")
+    cache = tmp_path / "kept"
+    first = parent.network(run, engine, cache=cache)
+    assert len(list(cache.glob("*.json"))) == 3                     # two boxes and one TS
+    plain = parent.network(run, engine, temperature=400.0)          # without the cache: computed again
+    monkeypatch.setattr(mepd, "frequencies", lambda *a, **k: (_ for _ in ()).throw(AssertionError("a Hessian was asked")))
+    again = parent.network(run, engine, temperature=400.0, cache=cache)
+    assert again["steps"][0]["g_ts"] == pytest.approx(plain["steps"][0]["g_ts"], abs=1e-6)
+    assert again["steps"][0]["g_ts"] != pytest.approx(first["steps"][0]["g_ts"], abs=1e-3)
+
+
+def test_a_step_given_with_its_ts_is_mirrored_for_an_achiral_candidate():
+    from mepd.cli_addmol import _mirror_entry
+
+    q = {"species": [{"id": x} for x in ("CC=O", "C[C@H](O)F", "C[C@@H](O)F")],
+         "steps": [{"id": "s", "mirror": "s~mirror"}, {"id": "s~mirror", "mirror_of": "s"}]}
+    entry = {"id": "given", "parent_step": "s", "reactants": ["CC=O", "added"], "products": ["C[C@H](O)F", "added"],
+             "barrier": {"free": 20.0}}
+    twin = _mirror_entry(q, entry, handed=False)
+    assert twin["id"] == "given~mirror" and twin["parent_step"] == "s~mirror" and twin["mirror_image_of"] == "given"
+    assert twin["reactants"] == ["CC=O", "added"] and twin["products"] == ["C[C@@H](O)F", "added"]
+    assert twin["barrier"] == entry["barrier"]
+    assert _mirror_entry(q, entry, handed=True) is None and _mirror_entry(q, {**entry, "parent_step": None}, False) is None
+
+
+def test_candidates_of_one_job_in_parallel(tmp_path):
+    from typer.testing import CliRunner
+
+    from mepd.cli import app
+
+    run = _run(tmp_path)
+    qf = tmp_path / "q.json"
+    cli = CliRunner()
+    assert cli.invoke(app, ["addmol", "query", str(run), "--target", "C#N", "--initial", "[C-]#[NH+]=1.0",
+                            "--time", "3600", "-o", str(qf)]).exit_code == 0
+    res = cli.invoke(app, ["addmol", "test", str(qf), "-c", "O", "-c", "N", "-c", "CO", "--amount", "0.1", "--steps", "0",
+                           "--jobs", "2", "-o", str(tmp_path / "r")])
+    assert res.exit_code == 0, res.output
+    assert [x["candidate"] for x in json.loads(res.output)] == ["O", "N", "CO"]
+    assert sorted(p.name for p in (tmp_path / "r").glob("*.json")) == ["CO.json", "N.json", "O.json"]

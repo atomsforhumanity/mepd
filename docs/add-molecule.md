@@ -12,6 +12,7 @@ mepd addmol query  RUN/ --target 'CC(=O)CC(C)O' --initial 'CC(C)=O=1.0' --initia
                    --temperature 298.15 --time 86400 -o query.json    # RUN/: a finished `mepd discovery expand` run,
                                                                       # or a workspace folder
 mepd addmol test   query.json -c 'OC(=O)[C@@H]1CCCN1' --amount 0.1 --workers 4 -o results/
+taskset -c 0-7 mepd addmol test query.json -c 'OC(=O)[C@@H]1CCCN1' --amount 0.1 --scan 6 --workers 8 -o results/
 mepd addmol test   query.json --candidates candidates.json -o results/     # many, with poses or estimates
 ```
 
@@ -19,10 +20,10 @@ In Python: `mepd.discovery.parent` (an explorer run as the parent: `network`, `q
 `mepd.web.added` (a workspace as the parent: `network`, `query`, `put`, `adopt_run`) and `mepd.addmol` (the
 kinetics, on plain dicts: `added`, `readout`, `limits`, `first_order`, `bystander`, `query`, `result`).
 
-What exists today is the format, the kinetics and one layer of estimates (the bystander layer, with a stand-in
-placer whose numbers move by kcal/mol between repeats). Layers that verify a step with the molecule present, find
-steps in which it takes part, or find new species it forms, write their numbers into the same result file as they
-are built; until then such numbers can be given with a candidate (`estimates`, below).
+Two layers make estimates today: the bystander layer (the molecule beside every step; a stand-in placer whose
+numbers move by kcal/mol between repeats) and the relay layer (`--scan`: transition states with the molecule, found
+by `mepd channels` on the steps that limit the target). A layer that follows new species the molecule forms is not
+built; such numbers can be given with a candidate (`estimates`, below).
 
 ## The parent network
 
@@ -33,7 +34,8 @@ are built; until then such numbers can be given with a candidate (`estimates`, b
   its recorded thermal correction and steering shift, relative to the starting box's molecules. Every
   IRC-verified step is in it, also those the run's own kinetics had closed (at 298 K an uncatalysed parent may
   have no open step at all). A thermal correction the run did not record (it records none for most closed steps)
-  is computed now with the run's own code and profile (`--inputs`, default the `.toml` beside the run); a step
+  is computed now with the run's own code and profile (`--inputs`, default the `.toml` beside the run) and its
+  frequencies kept in `<run>/addmol_thermo/`, so the next query, at any temperature, computes no Hessian; a step
   for which that is not possible is left out (`notes` says how many): the molecules' free energies are fitted
   over the boxes, and one box on an electronic energy would move them all. Each step's
   `geometry` holds the reacting molecules only (`atom_indices_in_run`: their indices in the run's files). A
@@ -144,6 +146,9 @@ Parent and variant are run from the same mixture, the variant with C at its amou
   on the only route reads `regenerated` with few turnovers, and one held up on its product reads `regenerated`
   with the product complex as resting state: read the numbers with the word.
 - **`mixed_levels`**, **`levels`**: whether the steps compared are at one level of theory (above).
+- **`target.spread`**: the target's amount with every estimate that carries a spread moved up, and down, by it,
+  all together (`with_low`, `with_high`, the factors): an interval from the estimates' own spreads, not a
+  confidence interval. `null` when no estimate has a spread.
 - **`first_order`**: the estimate below, beside the kinetics' own `factor`.
 - **`new_species`**: the complexes and new species with their amounts.
 
@@ -230,7 +235,45 @@ One per candidate, `<output>/<name>.json`, written whole each time (a reader nev
 | `estimates` | every number used, in the form `added` takes, each with `status` (`est` / `verified`), `layer`, `level`, `spread` and where given `source` |
 | `failed[]` | what gave no usable number, and `why` |
 | `readout` | the section "What you read"; `null` with an entry in `failed` if the kinetics could not be built |
-| `timings` | seconds per part |
+| `scan` | the relay layer's record: `rule`, `steps[]`, `not_scanned` (above) |
+| `level_labels` | what each `level` stands for, in words |
+| `timings` | seconds per part, and since the start `first_bystander_s`, `first_verified_s`, `first_relay_s` |
+
+`candidate.geometry` (`atoms`, `coordinates`: the lowest conformer as tested) and `candidate.chiral` are added once
+the molecule is built. `--jobs N` works on N candidates at once (a screen without `--scan`).
+
+## The relay layer (`--scan N`)
+
+For the parent steps that limit the target, the tool looks for transition states with the molecule in them.
+
+- **Which steps, in what order.** Where the parent makes the target: the steps with a degree of rate control of at
+  least 0.05, largest first. Where it makes none: the steps of its lowest-peak routes, highest first. At most N;
+  then, once, the parent steps that are on the lowest-peak route *with* the molecule and were not scanned yet.
+  Every other step stays on the bystander layer. The result file says which steps were scanned, why, and how many
+  were not (`scan`).
+- **What a scan is.** `mepd channels` between the step's two ends with the molecule beside each: the bystander
+  layer's lowest complexes of the reactant end and the product end (nothing is placed by hand), with
+  `--explore-mechanisms 8 --explore-molecule <the molecule> --search-budget 300` ([channels_candidates.md](channels_candidates.md)):
+  mechanisms in which the molecule's bonds change and it is found again at the end are searched beside the
+  step's own. A scan still running after 1200 s is stopped; what it verified by then counts. One scan at a time,
+  on every core the command may use: **pin the command** (`taskset -c ...`), `--workers` does not bound a channels
+  run. `--scan-inputs` gives the path searches' profile (the level's engine with a path method).
+- **What comes out.** Its `searches.json` is read as it grows. Every verified TS whose IRC joins the step's two
+  ends becomes a step on the parent's scale ("A step given with its TS", above), `layer: "relay"`,
+  `status: "verified"`: with the molecule taking part (`takes_part: true`, `returned`), or beside it
+  (`takes_part: false`; the TS then counts the whole complex, and it **replaces the step's bystander estimate**).
+  The kinetics keep the lowest of each kind per step, and are recomputed, and the file rewritten, each time that
+  changes. A verified TS that leads elsewhere is counted (`elsewhere`); one in which the molecule changes and does
+  not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the molecule
+  taking part: `answer: "none found ..."`, with what was searched.
+- **`scan.steps[]`** in the result file: `step`, `why`, `status` (`queued`, `mapping`, `searching`, `done`,
+  `failed`), `searches` {`queued`, `running`, `searched`, `total`}, `with_molecule` and `beside` (verified TSs of
+  each kind), `lowest` (their lowest free barriers), `first_with_molecule_s`, `t_started_s`, `wall_s`, `command`,
+  `run` (its folder, with `channels.log`), `stopped`, `elsewhere`, `consumed`, `failed_rows`.
+- For a candidate that is its own mirror image a step's mirror twin is not scanned: its rows are the original's,
+  between the mirror-image species (`mirror_image_of`). The same holds for a step given with its TS.
+
+Its barriers are g-xTB in the gas phase with the level's quasi-RRHO: the level of the parent, not a judgement.
 
 ## The bystander layer and its contract
 

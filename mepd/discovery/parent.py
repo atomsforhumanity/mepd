@@ -78,7 +78,8 @@ def _load(run_dir: Path):
     return summary, nodes, steps, q
 
 
-def network(run_dir, engine=None, *, temperature: Optional[float] = None, workers: int = 1) -> dict:
+def network(run_dir, engine=None, *, temperature: Optional[float] = None, workers: int = 1,
+            cache: Optional[Path] = None) -> dict:
     """The run's molecule-level network as mepd.addmol takes it, with each species' coordinates and each
     step's frames (the reacting molecules' atoms, in the TS's order).
 
@@ -120,6 +121,7 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
     ends = {m: step_ends(steps[m].files, (nodes[steps[m].a].structure, nodes[steps[m].b].structure)) for m in use}
     if engine is not None:
         free = FreeEnergies(engine, T, standard, workers)
+        free.frequency_cache = cache          # (frequencies by geometry: another temperature needs no Hessian)
         need_b = [k for k in boxes if c_box[k] is None]
         need_t = [m for m in use if c_ts[m] is None]
         got = free.corrections([nodes[k].structure for k in need_b] + [ts_cache[m] for m in need_t],
@@ -307,18 +309,22 @@ def _frames(M, x, st, ts, ends, parts, bonds, q) -> Optional[dict]:
 
 
 def query(run_dir, engine=None, *, target: str, initial: dict, time_s: float, temperature: Optional[float] = None,
-          held=(), fraction: float = 0.5, workers: int = 1) -> dict:
-    """The query file of an explorer run (mepd.addmol.query on `network`)."""
+          held=(), fraction: float = 0.5, workers: int = 1, cache: Optional[Path] = None) -> dict:
+    """The query file of an explorer run (mepd.addmol.query on `network`). `cache`: a folder for the frequencies
+    computed on the way (default <run>/addmol_thermo), so the next query, at any temperature, computes none."""
     from mepd import addmol
+    from mepd.web.workspace import level_label
 
-    net = network(run_dir, engine, temperature=temperature, workers=workers)
+    cache = Path(cache) if cache is not None else Path(run_dir) / "addmol_thermo"
+    net = network(run_dir, engine, temperature=temperature, workers=workers, cache=cache)
     fp = profile_of(Path(run_dir))
+    text = fp.read_text() if fp else None
     return addmol.query(net, target=target, initial=initial, time_s=time_s, held=held, fraction=fraction,
-                        level={"key": "explorer", "profile": fp.read_text() if fp else None})
+                        level={"key": LEVEL, "label": f"{level_label(text)} (the run's own level)", "profile": text})
 
 
 def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: float = 298.15,
-            standard_state: str = "1M") -> dict:
+            standard_state: str = "1M", whole: bool = False) -> dict:
     """A step whose TS is a stationary point (verified, or a channel search's) on the parent's scale as a
     whole: G(TS) minus G of the separated molecules of its reactant end, quasi-RRHO, by the explorer's own
     free-energy code (mepd.discovery.free_energy.FreeEnergies; the TS counted as its file says it was optimized
@@ -327,6 +333,8 @@ def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: flo
 
     ts: {"atoms", "coordinates" (Angstrom), "charge", "multiplicity", "comment" (the TS file's comment line,
     if any)}; reactant, product: the two ends' coordinates in the TS's atom order.
+    `whole`: every molecule of the complex counts as part of the TS (for a verified TS with the added molecule
+    beside it: its binding to the TS is then in the number, and the molecule is among the reactants).
     Returns {"barrier": {"electronic", "free"} above the separated, minimized molecules of the reactant end,
     "reactants", "products": the molecules that take part ([{"smiles", "atoms": indices}]), "spectators",
     "counted": the atom counts the TS's correction counted, "method"}."""
@@ -346,10 +354,11 @@ def ts_step(ts: dict, reactant: list, product: list, engine, *, temperature: flo
     s_ts, s_r, s_p = structure(ts["coordinates"], ts.get("comment")), structure(reactant), structure(product)
     free = FreeEnergies(engine, float(temperature), standard_state)
     e_ts = float(engine.compute_energies([StructureNode(structure=s_ts)])[0])
-    (c_ts,) = free.corrections([s_ts], [True], [(s_r, s_p)], [e_ts])
+    ts_ends = None if whole else (s_r, s_p)
+    (c_ts,) = free.corrections([s_ts], [True], [ts_ends], [e_ts])
     if c_ts is None:
         raise RuntimeError("the TS's thermal correction failed: " + (free.notes[-1] if free.notes else "unknown"))
-    counted = free.parts(s_ts, True, (s_r, s_p))
+    counted = free.parts(s_ts, True, ts_ends)
     taking_part = set(counted[0][0]) if len(counted) > 1 else set(range(len(sym)))
     # the separated molecules of the reactant end, each minimized alone
     g_apart = e_apart = 0.0

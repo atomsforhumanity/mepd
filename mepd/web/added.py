@@ -238,7 +238,8 @@ def put(ws, molecule: dict, amount: float, estimates: dict, *, name: str = "", o
     rec = {"id": vid or new_id("v_"), "kind": KIND, "name": name or (old or {}).get("name") or
            f"+ {molecule.get('name') or molecule.get('smiles') or molecule['id']}",
            "on": on if old is None else old.get("on"), "added": {**molecule, "amount": float(amount)},
-           "base": None, "edit": f"added {molecule.get('name') or molecule.get('smiles') or molecule['id']}",
+           # (a list, as a substituent variant's edit is described)
+           "base": None, "edit": [f"added {molecule.get('name') or molecule.get('smiles') or molecule['id']}"],
            "estimates": estimates, "replaced": [], "replaced_reactions": [], "labels": {}, "species_parent": {},
            "reactions": {}, "created": (old or {}).get("created") or time.time(), "updated": time.time()}
     return ws.put_variant(rec)
@@ -282,6 +283,8 @@ def query(ws, jobs: dict, *, target: str, initial: dict, temperature: float, tim
     """The query file (docs/add-molecule.md) of a workspace's network: the network at these conditions, with
     the geometries and the kinetics a model needs to propose a molecule for `target`, and that
     `mepd addmol test` needs to test one. `target` and the keys of `initial`: species ids, names or SMILES."""
+    from mepd.web.workspace import level_label
+
     key, profile = level_of(ws, jobs)
     net = network(ws, jobs, key, temperature, free_energy=free_energy)
     snap = ws.snapshot()
@@ -297,6 +300,6 @@ def query(ws, jobs: dict, *, target: str, initial: dict, temperature: float, tim
             **{f"bonds_{a}": b for a, b in bond_changes(fr["symbols"], fr["r"], fr["p"]).items()}}
     try:
         return addmol.query(net, target=target, initial=initial, time_s=time_s, held=held, fraction=fraction,
-                            level={"key": key, "profile": profile})
+                            level={"key": key, "label": level_label(profile), "profile": profile})
     except ValueError as exc:
         raise WorkspaceError(str(exc)) from None

@@ -78,6 +78,7 @@ sizes; where GFN2-xTB's SCF fails at that geometry, from a GFN-FF run's.
 from __future__ import annotations
 
 import hashlib
+import os
 from typing import Optional
 
 import numpy as np
@@ -315,6 +316,9 @@ class FreeEnergies:
         self.workers = max(1, int(workers))
         self._cache: dict[str, float] = {}
         self.notes: list[str] = []
+        # A folder to keep each molecule's frequencies in, by geometry (None: nothing kept): the same structures at
+        # another temperature then need no Hessian (mepd.discovery.parent). Not used for a TS converged here (_saddle).
+        self.frequency_cache = None
 
     def _groups(self, structure, ts: bool, ends) -> Optional[list[list[int]]]:
         """A TS's groups (counted_as: its file's record, else its step's two ends), else None."""
@@ -379,6 +383,19 @@ class FreeEnergies:
 
         if len(symbols) == 1:
             return qrrho([], symbols, xyz_A, self.T, multiplicity=mult, standard_state=self.standard_state)["g_corr"]
+        kept = None
+        if self.frequency_cache is not None and not (ts and saddle):
+            import json
+            from pathlib import Path
+
+            blob = repr((list(symbols), (np.round(np.asarray(xyz_A, dtype=float), 5) + 0.0).tolist(), int(charge), int(mult)))
+            kept = Path(self.frequency_cache) / f"{hashlib.sha1(blob.encode()).hexdigest()}.json"
+            try:
+                hit = json.loads(kept.read_text())
+                return qrrho(hit["w"], symbols, xyz_A, self.T, rotational_number=hit["rotational_number"],
+                             linear=hit["linear"], multiplicity=mult, ts=ts, standard_state=self.standard_state)["g_corr"]
+            except (OSError, ValueError, KeyError):
+                pass
         try:
             shape = xtb_analysis(symbols, xyz_A, charge=charge, multiplicity=mult)
         except RuntimeError:
@@ -397,6 +414,12 @@ class FreeEnergies:
         w = sorted(freqs.wavenumbers_cm.tolist(), key=abs)
         if len(w) == 3 * len(symbols):          # with the translations and rotations: drop them
             w = w[(5 if shape["linear"] else 6):]
+        if kept is not None:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            tmp = kept.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"w": sorted(w), "rotational_number": shape["rotational_number"],
+                                       "linear": bool(shape["linear"])}))
+            os.replace(tmp, kept)
         return moved + qrrho(sorted(w), symbols, xyz_A, self.T, rotational_number=shape["rotational_number"],
                              linear=shape["linear"], multiplicity=mult, ts=ts,
                              standard_state=self.standard_state)["g_corr"]

@@ -814,6 +814,58 @@ def query(net: dict, *, target: str, initial: dict, time_s: float, held=(), frac
             "notes": net.get("notes") or [], "left_out": len(net.get("excluded") or [])}
 
 
+def _target_spread(net: dict, molecule: dict, estimates: dict, cond: dict, target, amount: float, tgt: dict
+                   ) -> Optional[dict]:
+    """How far the target's amount with the molecule moves when every estimate that carries a spread is moved by
+    it, all the same way: {"with_low", "with_high"} (every such energy up by its spread, down by it) and the
+    factors where the parent's amount is resolved. None when no estimate has a spread. An interval from the
+    estimates' own spreads moved together, not a confidence interval."""
+    def moved(sign):
+        est = copy.deepcopy(estimates)
+        n = 0
+
+        def shift(e):
+            nonlocal n
+            if isinstance(e, dict) and e.get("spread"):
+                n += 1
+                for k in ("electronic", "free"):
+                    if e.get(k) is not None:
+                        e[k] = float(e[k]) + sign * float(e["spread"])
+
+        for x in est.get("species") or []:
+            shift(x.get("binding"))
+        for x in est.get("steps") or []:
+            for e in (x.get("binding") or {}).values():
+                shift(e)
+        for x in est.get("new_species") or []:
+            shift(x.get("energy"))
+        for x in est.get("new_steps") or []:
+            shift(x.get("barrier"))
+        if not n:
+            return None
+        variant = added(net, molecule, est)
+        k = run(variant, {**cond["initial"], molecule["id"]: amount}, cond["time_s"], cond.get("held") or ())
+        return float(_series(k, target)[-1])
+
+    low = moved(+1.0)
+    if low is None:
+        return None
+    high = moved(-1.0)
+    base = (tgt.get("parent") or {}).get("final") if (tgt.get("parent") or {}).get("resolved") else None
+    return {"with_low": low, "with_high": high, "factor_low": low / base if base else None,
+            "factor_high": high / base if base else None,
+            "what": "every estimate with a spread moved up, and down, by its spread, all together"}
+
+
+def _level_labels(query: dict) -> dict:
+    level = query.get("level") or {}
+    key, label = level.get("key"), level.get("label") or level.get("key")
+    if key is None:
+        return {}
+    return {key: label, f"{key}+steer": f"{label} + the run's steering single point",
+            f"{key}+steer (lent)": f"{label} + a steering shift lent from its neighbours"}
+
+
 def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done", layers: Sequence[dict] = (),
            failed: Sequence[dict] = (), fraction: Optional[float] = None) -> dict:
     """The result file of one candidate: what was asked, every estimate with its layer, level and
@@ -828,6 +880,8 @@ def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done
     doc = {"schema": RESULT, "version": VERSION, "units": UNITS, "status": status,
            "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "query": {"target": query["target"], "conditions": cond},
+           # what each `level` of a step stands for, in words
+           "level_labels": _level_labels(query),
            "candidate": candidate, "layers": list(layers), "estimates": estimates, "failed": list(failed)}
     try:
         # (the kinetics need no geometry: leave the coordinates and time series behind)
@@ -844,6 +898,8 @@ def result(query: dict, candidate: dict, estimates: dict, *, status: str = "done
         out["first_order"] = fo if fo is not None else {"factor": None, "why": lim.get("why")}
         if fo is not None:
             out["first_order"]["kinetics_factor"] = out["target"]["factor"]
+        out["target"]["spread"] = _target_spread(net, molecule, estimates, cond, target, float(candidate["amount"]),
+                                                 out["target"])
         doc["readout"] = out
     except Exception as exc:
         doc["readout"] = None

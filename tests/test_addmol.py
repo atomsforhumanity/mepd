@@ -295,6 +295,10 @@ def test_the_result_file_of_a_candidate(tmp_path):
     assert fo["factor"] == pytest.approx(want, rel=0.05) and fo["kinetics_factor"] == doc["readout"]["target"]["factor"]
     assert doc["readout"]["added"]["fate"] == "regenerated" and len(doc["failed"]) == 1
     assert doc["estimates"]["steps"][0]["status"] == "est"
+    # the estimates' spread (0.5 on every binding), moved together: the target's amount between two bounds
+    sp = doc["readout"]["target"]["spread"]
+    assert sp["with_low"] < doc["readout"]["target"]["with"]["final"] < sp["with_high"]
+    assert sp["factor_high"] / sp["factor_low"] == pytest.approx(math.exp(1.0 / RT), rel=0.15)
     A.write_json(tmp_path / "r.json", doc)
     import json
 
