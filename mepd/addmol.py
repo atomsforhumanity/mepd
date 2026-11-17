@@ -163,7 +163,7 @@ def added(network: dict, molecule: dict, estimates: dict) -> dict:
         out["steps"].append({"id": n["id"], "label": n.get("label") or n["id"], "reactants": list(n["reactants"]),
                              "products": list(n["products"]), "kind": "new",
                              "g_ts": sum(sp[x]["g"] for x in n["reactants"]) + _value(n.get("barrier"), mode),
-                             **{k: n[k] for k in ("parent_step", "status", "spread", "level", "source")
+                             **{k: n[k] for k in ("parent_step", "parent_steps", "status", "spread", "level", "source")
                                 if n.get(k) is not None}})
     out["species"] = list(sp.values())
     out["added"] = c
@@ -559,7 +559,9 @@ def readout(parent: dict, variant: dict, initial: dict, amount: float, target, t
         tgt["time_to_parent_amount_s"] = time_to(kv["times"], _series(kv, target), fraction * tp["final"])
     versions: dict = {}
     for j, st in enumerate(variant["steps"]):
-        versions.setdefault(st.get("parent_step") or st["id"], []).append(j)
+        # (a row found for a net reaction stands for every parent step of that reaction: "parent_steps")
+        for sid in st.get("parent_steps") or [st.get("parent_step") or st["id"]]:
+            versions.setdefault(sid, []).append(j)
     cargo = _cargo(variant)
 
     def way(st, version) -> int:

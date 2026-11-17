@@ -295,16 +295,25 @@ def test_the_relay_layer_scans_a_limiting_step_and_writes_as_it_goes(tmp_path):
     assert doc["status"] == "done" and [x["name"] for x in doc["layers"]] == ["bystander", "verify", "relay"]
     assert all(x["status"] == "done" for x in doc["layers"]) and "quick setting" in doc["layers"][0]["what"]
     (line,) = doc["scan"]["steps"]
-    assert line["step"] == "fast_0_1" and line["status"] == "done" and "lowest-peak route" in line["why"]
+    # one scan per net reaction, chosen by what the target would gain; it stands for the reaction's steps
+    assert line["step"] == "fast_0_1" and line["status"] == "done" and line["steps"] == ["fast_0_1"]
+    assert line["reaction"] == "C#N -> [C-]#[NH+]" and "if this reaction had no barrier" in line["why"]
+    assert line["route_peak_if_no_barrier"] < line["route_peak_now"] and line["lane"] == 0
     assert line["searches"]["total"] >= 1 and "channels" in line["command"] and "--explore-molecule" in line["command"]
-    assert "lowest-peak routes" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
+    assert "net reaction" in doc["scan"]["rule"] and doc["timings"]["first_bystander_s"] > 0
+    (derived,) = doc["scan"]["derivations"]
+    assert derived["chosen"] == line["reaction"] and derived["top"][0]["reaction"] == line["reaction"]
+    assert doc["scan"]["left"] == [] and all("t_s" in a and "free" in a for a in line.get("arrivals", []))
+    assert doc["route_peak"]["parent"] is not None and doc["route_peak"]["with"][0]["t_s"] >= 0
+    assert all("t_s" in e for e in doc["estimates"]["steps"] + [n for n in doc["estimates"]["new_steps"]])
     rows = [n for n in doc["estimates"]["new_steps"] if n["layer"] in ("verify", "relay")]
-    kinds = [n["takes_part"] for n in rows]
+    kinds = [(n["layer"], n["takes_part"]) for n in rows]
     assert len(kinds) == len(set(kinds))                       # the kinetics keep the lowest row of each kind
+    assert all(n["parent_steps"] == ["fast_0_1"] for n in rows if n["layer"] == "relay")
     for n in rows:
         assert n["status"] == "verified" and n["parent_step"] == "fast_0_1" and n["barrier"]["free"] is not None
         assert n["level"] == "explorer" and set(n["reactants"]) <= {"C#N", "[C-]#[NH+]", "added"}
-    if False in kinds:          # a verified TS with the molecule beside it replaces the bystander estimate
+    if ("verify", False) in kinds:          # verified with the molecule beside it: replaces the bystander estimate
         assert not [e for e in doc["estimates"]["steps"] if e["step"] == "fast_0_1"]
     if not line.get("with_molecule"):
         assert "none found" in line["answer"]
@@ -360,3 +369,38 @@ def test_candidates_of_one_job_in_parallel(tmp_path):
     assert res.exit_code == 0, res.output
     assert [x["candidate"] for x in json.loads(res.output)] == ["O", "N", "CO"]
     assert sorted(p.name for p in (tmp_path / "r").glob("*.json")) == ["CO.json", "N.json", "O.json"]
+
+
+def test_reactions_and_the_order_they_are_scanned_in():
+    """Steps with the same net change are one reaction (a molecule on both sides dropped). Next is the reaction
+    whose barrier, if it were gone, would lower the route peak to the target most; ties: flagged, then fewer
+    atoms; what lowers nothing last; with a chiral molecule the mirror twins after everything else."""
+    from mepd.cli_addmol import _reactions, _scan_ranking
+
+    def sp(i, g, n=3):
+        return {"id": i, "name": i, "g": g, "atoms": ["C"] * n}
+
+    def st(i, r, p, ts, **kw):
+        return {"id": i, "reactants": r, "products": p, "g_ts": ts, "geometry": {"atoms": []}, **kw}
+
+    q = {"temperature": 298.15, "energies": "free",
+         "species": [sp("A", 0.0), sp("S", 0.0, 9), sp("I", 5.0), sp("B", -5.0), sp("X", 1.0), sp("W", 1.0, 2), sp("Bm", -5.0)],
+         "steps": [st("a_i", ["A"], ["I"], 50.0), st("a_i_shuttle", ["A", "S"], ["I", "S"], 45.0),   # one reaction
+                   st("i_b", ["I"], ["B"], 30.0), st("a_x", ["A"], ["X"], 20.0), st("a_w", ["A"], ["W"], 20.0),
+                   st("i_bm", ["I"], ["Bm"], 30.0, mirror_of="i_b")]}
+    rx = {r["label"]: r for r in _reactions(q)}
+    assert rx["A -> I"]["steps"] == ["a_i", "a_i_shuttle"] and rx["A -> I"]["lowest"] == "a_i_shuttle"
+    assert rx["I -> Bm"]["twin"] and not rx["I -> B"]["twin"] and rx["A -> I"]["atoms"] == 3
+    net = {k: q[k] for k in ("temperature", "energies", "species", "steps")}
+    peak, order = _scan_ranking(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"], list(rx.values()),
+                                {rx["A -> X"]["key"]}, True)
+    assert peak == pytest.approx(45.0)
+    labels = [r["label"] for r, _p in order]
+    # A -> I without a barrier: peak 30 (I -> B is next). The others lower nothing alone (I -> B: the peak stays
+    # A -> I's 45): among them the flagged one first; the twin after everything
+    assert labels == ["A -> I", "A -> X", "I -> B", "A -> W", "I -> Bm"]
+    assert order[0][1] == pytest.approx(30.0) and order[1][1] == pytest.approx(45.0)
+    # for a molecule that is its own mirror image the twin has no place of its own in the order
+    _peak, flat = _scan_ranking(net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"],
+                                [r for r in rx.values() if not r["twin"]], set(), False)
+    assert [r["label"] for r, _p in flat][0] == "A -> I" and len(flat) == 4
