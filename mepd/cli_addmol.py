@@ -563,8 +563,11 @@ def _reactions(q: dict) -> list:
     return out
 
 
+SCAN_CHANGE = 0.01     # (ii): a change of amount worth a scan, as a fraction of the limiting starting material
+
+
 def _scan_worth(net: dict, molecule: dict, est: dict, initial: dict, target, reactions: list, flagged: set,
-                handed: bool) -> tuple:
+                handed: bool, conditions: Optional[dict] = None, among: Optional[set] = None) -> tuple:  # noqa: C901
     """Which of `reactions` are worth a scan, in order, on the kinetics as they stand (`est`: the molecule's rows
     so far). A reaction is worth one if, with no barrier above its ends, it would (i) lower the target's route
     peak, or (ii) bring some other species to a route peak below the target's present one and below what that
@@ -573,7 +576,14 @@ def _scan_worth(net: dict, molecule: dict, est: dict, initial: dict, target, rea
     verification saw the molecule react or take part (`flagged`), then fewer atoms; for a chiral molecule mirror
     twins after everything else. Returns (the target's route peak now, [(reaction, "target" | "other", the
     resulting peak, the species it is of)], [the reactions not worth a scan]). Route peaks: mepd.addmol.reach_peaks
-    (at most two lots of molecules in hand)."""
+    (at most two lots of molecules in hand).
+
+    With `conditions` ({"time_s", "held"}; the run's own): (i) orders the scans while any reaction is left under it
+    (`among`: the keys still to be scanned; the others only count as taken). When none is left, each reaction that
+    passes (ii) by the route peak is put through the kinetics with its barrier above its ends removed: it is worth
+    a scan only if the amount of some species at the end of the run then differs from what it is now by more than
+    SCAN_CHANGE of the limiting starting material (the target's own amount counts, up or down). Those come as
+    (reaction, "other", the change in M, the species), the largest change first."""
     import math
 
     from mepd import addmol
@@ -604,9 +614,33 @@ def _scan_worth(net: dict, molecule: dict, est: dict, initial: dict, target, rea
             worth.append((rx, "other", v, x))
         else:
             rest.append(rx)
-    worth.sort(key=lambda w: (bool(handed and w[0]["twin"]), w[1] != "target", round(w[2], 1),
-                              w[0]["key"] not in flagged, w[0]["atoms"]))
-    return peak_now, worth, rest
+    order = lambda w: (bool(handed and w[0]["twin"]), w[1] != "target", round(w[2], 1),   # noqa: E731
+                       w[0]["key"] not in flagged, w[0]["atoms"])
+    if conditions is None:
+        worth.sort(key=order)
+        return peak_now, worth, rest
+    first = [w for w in worth if w[1] == "target"]
+    if any(among is None or w[0]["key"] in among for w in first):
+        first.sort(key=order)
+        return peak_now, first, rest + [w[0] for w in worth if w[1] != "target"]
+    # nothing left under (i): (ii) in the kinetics
+    limiting = min(float(v) for x, v in initial.items() if x != addmol.ADDED_ID and float(v) > 0)
+    held = conditions.get("held") or ()
+    k0 = addmol.run(variant, initial, conditions["time_s"], held)
+    kept = []
+    for rx, _kind, _v, _sp in (w for w in worth if w[1] != "target"):
+        free = {"id": "(no barrier)", "reactants": rx["reactants"], "products": rx["products"],
+                "g_ts": max(sum(g[x] for x in rx["reactants"]), sum(g[x] for x in rx["products"]))}
+        k1 = addmol.run({**variant, "steps": variant["steps"] + [free]}, initial, conditions["time_s"], held)
+        change = {x: float(k1["res"].c[-1, k1["pos"][x]] - k0["res"].c[-1, i]) for x, i in k0["pos"].items()}
+        x = max(change, key=lambda x: abs(change[x]))
+        if abs(change[x]) > SCAN_CHANGE * limiting:
+            kept.append((rx, "other", change[x], x))
+        else:
+            rest.append(rx)
+    kept.sort(key=lambda w: (bool(handed and w[0]["twin"]), -round(abs(w[2]) / limiting, 3),
+                             w[0]["key"] not in flagged, w[0]["atoms"]))
+    return peak_now, kept, rest
 
 
 def _scan_ends(q: dict, rx: dict, molecule: dict, engine) -> dict:
@@ -993,6 +1027,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     reacted: list = []
     best: dict = {}                                    # (step, takes part) -> its lowest verified row
     scans: list = []
+    kinetic_lock = threading.Lock()
+    pool_done = [False]
     lock = threading.RLock()                           # the estimates, the result file
     compute = threading.Lock()                         # this process's engine (scans side by side share it)
     since = lambda: round(time.perf_counter() - t0, 1)                 # noqa: E731
@@ -1113,13 +1149,33 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
     taken: set = set()
     of_step = {x: rx["key"] for rx in reactions for x in rx["steps"]}
 
-    def derive():
+    cond = {"time_s": q["conditions"]["time_s"], "held": q["conditions"].get("held") or ()}
+    kinetic: dict = {"key": None, "kept": [], "rest": [], "evaluations": 0, "wall_s": 0.0}
+    scan_rows = [0]                    # rows from scans so far (the kinetic test is made again when they change)
+
+    def derive(final=False):
+        """(the target's route peak now, the reactions worth a scan in order, those not worth one, the flagged).
+        While a reaction would lower the target's route peak, those only; then the others, tested in the kinetics
+        (made again only when a scan's rows changed the kinetics, or the estimates and verification ended)."""
         with lock:
             snap = json.loads(json.dumps(est, default=lambda x: x.tolist() if hasattr(x, "tolist") else str(x)))
             flagged = {of_step[x] for x in set(reacted) | set(left_ends) | took_part if x in of_step}
             rest = [rx for rx in reactions if rx["key"] not in taken]
+            key = (scan_rows[0], pool_done[0])
         peak, worth, unworthy = _scan_worth(net, added_as, snap, start, target, rest, flagged, handed)
-        return peak, worth, unworthy, flagged
+        first = [w for w in worth if w[1] == "target"]
+        if first and not final:
+            return peak, first, unworthy + [w[0] for w in worth if w[1] != "target"], flagged
+        with kinetic_lock:
+            if kinetic["key"] != key or final:
+                t = time.perf_counter()
+                _p, kept, out = _scan_worth(net, added_as, snap, start, target, rest, flagged, handed, cond, set())
+                kinetic.update(key=key, kept=kept, rest=out, evaluations=kinetic["evaluations"] + 1,
+                               wall_s=round(kinetic["wall_s"] + time.perf_counter() - t, 1),
+                               last_s=round(time.perf_counter() - t, 1))
+            kept = [w for w in kinetic["kept"] if w[0]["key"] not in taken]
+            gone = {w[0]["key"] for w in kept} | {w[0]["key"] for w in first}
+            return peak, first + kept, [rx for rx in rest if rx["key"] not in gone], flagged
 
     peak0, worth0, _unworthy0, _flags0 = derive() if reactions else (None, [], [], set())
     rank = {x: k for k, (rx, _kind, _v, _sp) in enumerate(worth0) for x in rx["steps"]}
@@ -1143,7 +1199,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         masks, pool_cpus = [], cpus
     n_pool = max(1, min(opt["workers"], len(pool_cpus)))
     active = [0]                       # scans running
-    pool_done = [False]
+    if scanning and hasattr(os, "sched_setaffinity"):
+        try:        # this process (the kinetics, the rows' free energies) on the estimates' cores; the scans on theirs
+            os.sched_setaffinity(0, set(pool_cpus))
+        except OSError:
+            pass
     threads: list = []
     t_rel = time.perf_counter()
 
@@ -1164,7 +1224,9 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     if active[0] == 0 and pool_done[0]:
                         extra["scan"].setdefault("ended", {
                             "t_s": since(), "why": "no reaction is left that, with no barrier, would lower the target's "
-                                                   "route peak or bring another species below it"})
+                                                   "route peak, or change the amount of any species at the end of "
+                                                   f"the run by more than {SCAN_CHANGE:.0%} of the limiting starting "
+                                                   "material"})
                         return
                     wait = True
                 else:
@@ -1174,13 +1236,13 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     active[0] += 1
                     why = (f"with no barrier it would lower the target's route peak to {value:.1f} kcal/mol (now {peak:.1f})"
                            if kind == "target" else
-                           f"with no barrier it would bring {name_of.get(species, species)} to a route peak of "
-                           f"{value:.1f} kcal/mol, below the target's {peak:.1f}")
+                           f"with no barrier the amount of {name_of.get(species, species)} at the end of the run would "
+                           f"change by {value:+.2g} M (more than {SCAN_CHANGE:.0%} of the limiting starting material)")
                     rec = {"step": rx["lowest"], "label": rx["label"], "reaction": rx["label"], "reactants": rx["reactants"],
                            "products": rx["products"], "steps": rx["steps"], "status": "queued", "lane": k,
                            "twin": rx["twin"], "flagged": rx["key"] in flags, "route_peak_now": peak, "arrivals": [],
                            "worth": kind, "route_peak_if_no_barrier": value if kind == "target" else peak,
-                           "other_species": species, "other_species_peak_if_no_barrier": value if kind == "other" else None,
+                           "other_species": species, "other_species_change_if_no_barrier": value if kind == "other" else None,
                            "why": why + ("; the estimate or the verification saw the molecule react or take part"
                                          if rx["key"] in flags else "")}
                     scans.append(rec)
@@ -1188,7 +1250,8 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     extra["scan"]["derivations"].append({
                         "t_s": since(), "lane": k, "route_peak_now": peak, "chosen": rx["label"],
                         "worth_a_scan": len(worth), "not_worth_a_scan": len(unworthy),
-                        "top": [{"reaction": r["label"], "worth": kd, "peak_if_no_barrier": v, "species": sp,
+                        "top": [{"reaction": r["label"], "worth": kd, "species": sp,
+                                 "peak_if_no_barrier" if kd == "target" else "change_if_no_barrier": v,
                                  "flagged": r["key"] in flags, "twin": r["twin"], "atoms": r["atoms"]}
                                 for r, kd, v, sp in worth[:8]]})
             if wait:
@@ -1207,9 +1270,11 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
                     if rec.get("run") and os.path.isabs(str(rec["run"])):
                         rec["run"] = os.path.relpath(rec["run"], output)
                     changed = entry is not None and take(entry, took, rec, replaces_estimate=False, shared=rx["steps"])
-                    if changed and took:
+                    if changed:
                         with lock:
-                            took_part.update(rx["steps"])
+                            scan_rows[0] += 1
+                            if took:
+                                took_part.update(rx["steps"])
                     if changed or time.perf_counter() - last_write[0] > 20.0:
                         with lock:
                             rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
@@ -1229,12 +1294,18 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
         rlay.update(status="running", lanes=len(masks), what=rlay["what"] + f"; up to {len(masks)} scans side by side")
         extra["scan"] = {
             "rule": "one scan per net reaction of the parent (molecules the same on both sides dropped). A reaction is "
-                    "worth a scan if, with no barrier above its ends, it would lower the target's route peak, or bring "
-                    "another species to a route peak below the target's present one and below what that species has "
-                    "now. Those that lower the target's peak first, by the resulting peak, then the others by theirs; "
-                    "ties: reactions where the estimate or the verification saw the molecule react or take part, then "
-                    "fewer atoms; for a chiral molecule mirror twins after everything else. Derived again each time a "
-                    f"lane frees; the stage ends when no such reaction is left, or after {opt['scan']} reactions",
+                    "worth a scan if, with no barrier above its ends, (i) it would lower the target's route peak; those "
+                    "go first, by the resulting peak, derived again each time a lane frees. When none is left: (ii) a "
+                    "reaction that would bring another species to a route peak below the target's present one and "
+                    "below what that species has now is put through the kinetics with its barrier removed (same "
+                    "conditions, same time, the molecule's rows in), and is worth a scan only if the amount of some "
+                    f"species at the end of the run then differs from what it is now by more than {SCAN_CHANGE:.0%} of "
+                    "the limiting starting material (the target's own amount counts, up or down); largest change "
+                    "first; tested again when a scan's rows change the kinetics. Ties: reactions where the estimate "
+                    "or the verification saw the molecule react or take part, then fewer atoms; for a chiral molecule "
+                    "mirror twins after everything else. The stage ends when no such reaction is left, or after "
+                    f"{opt['scan']} reactions",
+            "change_worth_a_scan": SCAN_CHANGE, "kinetic_test": kinetic,
             "steps": scans, "derivations": [], "reactions": len(reactions),
             "cores": {"lanes": masks, "estimates_and_verification": pool_cpus}}
         threads = [threading.Thread(target=lane, args=(k,), daemon=True) for k in range(len(masks))]
@@ -1365,13 +1436,14 @@ def _candidate(q: dict, cand: dict, opt: dict) -> dict:
             rlay["wall_s"] = round(time.perf_counter() - t_rel, 1)
             timing["relay_s"] = rlay["wall_s"]
             extra["scan"].setdefault("ended", {"t_s": since(), "why": f"the limit of {opt['scan']} reactions"})
-            _peak, worth, unworthy, _flags = derive()
+            _peak, worth, unworthy, _flags = derive(final=True)
             extra["scan"]["left"] = (
                 [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
                   "why": f"worth a scan, not reached: the limit of {opt['scan']} reactions was used up"} for rx, _k, _v, _s in worth]
                 + [{"step": rx["lowest"], "reaction": rx["label"], "steps": rx["steps"],
-                    "why": "not worth a scan: with no barrier it would neither lower the target's route peak nor bring "
-                           "another species below it"} for rx in unworthy])
+                    "why": "not worth a scan: with no barrier it would neither lower the target's route peak nor "
+                           f"change the amount of any species at the end of the run by more than {SCAN_CHANGE:.0%} of the "
+                           "limiting starting material"} for rx in unworthy])
             extra["scan"]["not_scanned"] = (f"{len(extra['scan']['left'])} of {len(reactions)} reactions were not scanned: "
                                             f"{len(unworthy)} not worth a scan, {len(worth)} beyond the limit")
     if rlay["status"] == "queued":

@@ -397,11 +397,12 @@ def test_reactions_and_which_are_worth_a_scan():
 
     q = {"temperature": 298.15, "energies": "free",
          "species": [sp("A", 0.0), sp("S", 0.0, 9), sp("I", 5.0), sp("B", -5.0), sp("X", 1.0), sp("Y", 60.0),
-                     sp("Bm", -5.0), sp("Lost", 0.0, 2), sp("W", 0.5), sp("Wm", 0.5)],
+                     sp("Bm", -5.0), sp("Lost", 0.0, 2), sp("W", 0.5), sp("Wm", 0.5), sp("Z", 12.0)],
          "steps": [st("a_i", ["A"], ["I"], 50.0), st("a_i_shuttle", ["A", "S"], ["I", "S"], 45.0),   # one reaction
                    st("i_b", ["I"], ["B"], 30.0), st("a_x", ["A"], ["X"], 55.0), st("a_y", ["A"], ["Y"], 70.0),
                    st("i_bm", ["I"], ["Bm"], 30.0, mirror_of="i_b"), st("a_lost", ["A"], ["Lost"], 20.0),
-                   st("a_w", ["A"], ["W"], 58.0), st("a_wm", ["A"], ["Wm"], 58.0, mirror_of="a_w")]}
+                   st("a_w", ["A"], ["W"], 58.0), st("a_wm", ["A"], ["Wm"], 58.0, mirror_of="a_w"),
+                   st("a_z", ["A"], ["Z"], 58.0)]}
     rx = {r["label"]: r for r in _reactions(q)}
     assert rx["A -> I"]["steps"] == ["a_i", "a_i_shuttle"] and rx["A -> I"]["lowest"] == "a_i_shuttle"
     assert rx["I -> Bm"]["twin"] and not rx["I -> B"]["twin"] and "A -> Lost" not in rx
@@ -414,9 +415,20 @@ def test_reactions_and_which_are_worth_a_scan():
     # I -> Bm starts from I, which cannot be had below the target's peak. A -> W and its twin A -> Wm would bring W
     # and Wm to 0.5: both worth a scan, the twin after everything else although its number is lower than X's.
     assert [(w[0]["label"], w[1]) for w in worth] == [("A -> I", "target"), ("A -> W", "other"), ("A -> X", "other"),
-                                                      ("A -> Wm", "other")]
+                                                      ("A -> Z", "other"), ("A -> Wm", "other")]
     assert worth[0][2] == pytest.approx(30.0) and worth[2][2] == pytest.approx(1.0) and worth[2][3] == "X"
     assert sorted(r["label"] for r in rest) == ["A -> Y", "I -> B", "I -> Bm"]
+    # With the run's conditions: while a reaction would lower the target's peak, those only.
+    args = (net, {"id": "added"}, {}, {"A": 1.0, "S": 1.0, "added": 0.1}, ["B"], list(rx.values()), set(), True)
+    cond = {"time_s": 100.0, "held": ()}
+    _peak, worth, rest = _scan_worth(*args, cond)
+    assert [w[0]["label"] for w in worth] == ["A -> I"] and len(rest) == 7
+    # None left under (i): the others through the kinetics with the barrier removed. A -> W and A -> X would
+    # each take a large part of A (W the larger: it lies lower); A -> Z would make 1e-9 M of Z: not worth a scan.
+    _peak, worth, rest = _scan_worth(*args, cond, set())
+    assert [(w[0]["label"], w[3]) for w in worth] == [("A -> W", "W"), ("A -> X", "X"), ("A -> Wm", "Wm")]
+    assert 0.1 < worth[0][2] < 0.31 and worth[1][2] < worth[0][2]      # (A is shared with "Lost" in this time)
+    assert "A -> Z" in [r["label"] for r in rest]
 
 
 def test_a_run_stopped_from_outside_says_so_in_its_file(tmp_path):

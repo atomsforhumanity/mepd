@@ -292,17 +292,21 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
 - **What is scanned: a net reaction.** The parent's steps with the molecules that are the same on both sides
   dropped (its own shuttles too: the added molecule is tried in their place); steps with the same net change,
   either way round, are one reaction and share the scan's rows (`parent_steps`).
-- **Which reactions, in what order, and when it ends.** A reaction is worth a scan if, *with no barrier above
-  its ends*, it would (i) lower the target's route peak, or (ii) bring some other species to a route peak below
-  the target's present one and below what that species has now (something that could outrun the target or eat
-  its material); judged on the kinetics as they stand with the molecule's rows in (`mepd.addmol.reach_peaks`).
-  Order: (i) by the resulting target peak, then (ii) by the resulting peak. Ties (to 0.1 kcal/mol): reactions
-  where the estimate or the verification saw the molecule react or take part, then fewer atoms. For a chiral
-  molecule the mirror twin of a reaction goes after every reaction that is not a twin. The list is derived at
-  the start from the parent alone, and again each time a lane frees (`scan.derivations`). **The stage ends when
-  no reaction is left under (i) or (ii)** (`scan.ended`), or after N reactions; the reactions not scanned are in
-  `scan.left`, each with its reason. A reaction whose two sides do not hold the same atoms (a species whose
-  identity lost atoms in the parent) is never scanned.
+- **Which reactions, in what order, and when it ends.** Judged on the kinetics as they stand with the
+  molecule's rows in, *with no barrier above the reaction's ends*:
+  (i) a reaction that would lower the target's route peak is worth a scan; these go first, by the resulting
+  peak, derived again each time a lane frees (`mepd.addmol.reach_peaks`).
+  (ii) When none is left under (i): a reaction that would bring some other species to a route peak below the
+  target's present one, and below what that species has now, is put through the kinetics with its barrier
+  removed (same conditions and time). It is worth a scan only if the amount of some species at the end of the
+  run then differs from what it is now by more than 1 % of the limiting starting material (the target's own
+  amount counts, up or down; `scan.change_worth_a_scan`); largest change first; tested again when a scan's rows
+  change the kinetics (`scan.kinetic_test`: how often, how long).
+  Ties: reactions where the estimate or the verification saw the molecule react or take part, then fewer atoms.
+  For a chiral molecule the mirror twin of a reaction goes after every reaction that is not a twin. The list is
+  derived at the start from the parent alone (`scan.derivations`). **The stage ends when no reaction is left
+  under (i) or (ii)** (`scan.ended`), or after N reactions; the reactions not scanned are in `scan.left`, each
+  with its reason. A reaction whose two sides do not hold the same atoms is never scanned.
 - **Everything follows that order.** The steps are estimated, and then verified, in the order of the first
   derivation; a verification that is ready goes before the next estimate.
 - **Side by side.** On 32 threads: two scans from the start, each `mepd channels` run held to its own ten cores
