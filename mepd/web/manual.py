@@ -48,8 +48,18 @@ class ManualError(LookupError):
     pass
 
 
+# Pages written from the code rather than a file: name -> markdown source.
+def _settings() -> str:
+    from mepd.web import settings_ref
+
+    return settings_ref.markdown()
+
+
+GENERATED = {"settings": _settings}
+
+
 def pages() -> list[str]:
-    return sorted(p.stem for p in PAGES.glob("*.md") if p.stem != "index")
+    return sorted({p.stem for p in PAGES.glob("*.md") if p.stem != "index"} | set(GENERATED))
 
 
 def _title(text: str, page: str) -> str:
@@ -57,14 +67,23 @@ def _title(text: str, page: str) -> str:
     return m.group(1).strip() if m else page
 
 
-@lru_cache(maxsize=64)
-def _render(path: str, mtime: float) -> tuple[str, str]:
+def _to_html(text: str) -> str:
     import markdown
 
-    text = Path(path).read_text()
-    body = markdown.markdown(text, extensions=["toc", "tables", "fenced_code", "sane_lists"],
+    return markdown.markdown(text, extensions=["toc", "tables", "fenced_code", "sane_lists", "attr_list", "md_in_html"],
                              extension_configs={"toc": {"permalink": "#"}})
-    return _title(text, Path(path).stem), body
+
+
+@lru_cache(maxsize=64)
+def _render(path: str, mtime: float) -> tuple[str, str]:
+    text = Path(path).read_text()
+    return _title(text, Path(path).stem), _to_html(text)
+
+
+@lru_cache(maxsize=8)
+def _render_generated(page: str) -> tuple[str, str]:
+    text = GENERATED[page]()
+    return _title(text, page), _to_html(text)
 
 
 def render(page: Optional[str] = None) -> str:
@@ -73,17 +92,21 @@ def render(page: Optional[str] = None) -> str:
     if not _NAME.fullmatch(page):
         raise ManualError(page)
     path = PAGES / f"{page}.md"
-    if not path.is_file():
+    if page in GENERATED:
+        title, body = _render_generated(page)
+    elif path.is_file():
+        title, body = _render(str(path), path.stat().st_mtime)
+    else:
         raise ManualError(page)
-    title, body = _render(str(path), path.stat().st_mtime)
-    suggest = SUGGEST_URL.format(page=page)
+    suggest = SUGGEST_URL.format(page=page) if page not in GENERATED else \
+        "https://github.com/atomsforhumanity/mepd/blob/main/mepd/web/settings_ref.py"
     crumbs = '<a href="/manual">Manual</a>' if page != "index" else ""
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)} · mepd manual</title>
 <link rel="stylesheet" href="/static/style.css"><style>{_STYLE}</style></head>
 <body><main class="manual">
-<nav class="top"><a href="/">mepd</a>{crumbs}</nav>
+<nav class="top"><a href="/" target="_top">mepd</a>{crumbs}</nav>
 {body}
 <footer>Wrong, unclear, or could this work better? <a href="{suggest}" target="_blank" rel="noopener">Suggest a change</a>
 to this page.</footer>
