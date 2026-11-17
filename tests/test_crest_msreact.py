@@ -114,11 +114,12 @@ def test_every_stage_combination_builds_real_flags_and_impossible_ones_settle():
 
 
 def test_ts_and_channels_are_one_card():
-    """A TS from these endpoints and a sampled reaction-channels search are
-    the two methods of one "Transition state" card."""
+    """A TS from these endpoints, a sampled reaction-channels search and a
+    MINMAX search are the methods of one "Transition state" card."""
     ts, ch = OPERATIONS["ts"], OPERATIONS["channels"]
     assert ts.family == ch.family and ts.family["title"] == "Transition state"
-    assert [m["label"] for m in ts.methods + ch.methods] == ["These endpoints", "Sample conformers and mappings"]
+    assert [m["label"] for m in ts.methods + ch.methods] == ["These endpoints", "Sample conformers and mappings",
+                                                              "MINMAX"]
 
 
 def test_follow_up_expansions_pass_earlier_runs_as_known_once_the_cli_has_it(tmp_path, monkeypatch):
