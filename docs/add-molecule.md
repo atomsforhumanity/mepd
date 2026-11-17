@@ -64,6 +64,12 @@ A layer that follows new species the molecule forms is not built; such numbers c
 
 The query file says which it is (`source`).
 
+Every box the molecule fit sees goes in on its free energy: the ends of the verified steps and, with them, the
+boxes the run found that are their mirror images and the found ends of their mirror twins. A species that the
+boxes never show apart from others (only sums of free energies are then fixed, and the fit shares them) has
+`g_fixed_only_together: true` and is named in the query's `notes`: a step that releases it alone is not
+reliable.
+
 ## The kinetics with a molecule added
 
 `mepd.addmol.added` puts C into the parent network from a list of estimates. It does not care where they come

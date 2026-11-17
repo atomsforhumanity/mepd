@@ -261,8 +261,10 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
     fit_boxes = sorted({0} | {k for m in used for k in (steps[m].a, steps[m].b)})
     col = {key: i for i, key in enumerate(net.names)}
     rows = [[key for _a, key in parts(k) or []] for k in fit_boxes]
+    rows += [[M.canonical(key, mirror=True) for key in r] for r in rows]       # (their mirror images are boxes too)
     rows = [r for r in rows if r and all(key in col for key in r)]
     together: list = []
+    anchors: list = []
     if rows:
         from scipy.linalg import null_space
 
@@ -270,12 +272,26 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
         for i, r in enumerate(rows):
             for key in r:
                 A[i, col[key]] += 1
-        free_dir = null_space(A)
-        loose = [key for key, i in col.items() if free_dir.size and np.abs(free_dir[i]).max() > 1e-8]
-        for s in species:
-            if s["id"] in loose:
-                s["g_fixed_only_together"] = True
-        together = sorted(loose)
+        # (a shift of every molecule by its atom counts that leaves the boxes alone is seen by no reaction: taken
+        # out by holding the starting molecules, and the smallest further molecules needed for the elements, fixed)
+        atoms_of = {sp_["id"]: sp_.get("atoms") or [] for sp_ in species}
+        elements = sorted({x for v in atoms_of.values() for x in v})
+        count = lambda key: [atoms_of[key].count(x) for x in elements]   # noqa: E731
+        anchors = [net.names[i] for i in net.seed]
+        for key in sorted((k for k in col if atoms_of[k]), key=lambda k: (len(atoms_of[k]), k)):
+            if np.linalg.matrix_rank(np.array([count(k) for k in anchors])) >= len(elements):
+                break
+            if key not in anchors and np.linalg.matrix_rank(np.array([count(k) for k in anchors + [key]])) > \
+                    np.linalg.matrix_rank(np.array([count(k) for k in anchors])):
+                anchors.append(key)
+        pin = np.zeros((len(anchors), len(col)))
+        for i, key in enumerate(anchors):
+            pin[i, col[key]] = 1.0
+        free_dir = null_space(np.vstack([A, pin]))
+        together = sorted(key for key, i in col.items() if free_dir.size and np.abs(free_dir[i]).max() > 1e-8)
+        for sp_ in species:
+            if sp_["id"] in together:
+                sp_["g_fixed_only_together"] = True
     notes = [f"free energies: the run's own (electronic energy + its thermal correction and steering shift, "
              f"{standard}), molecules fitted over boxes (mepd.discovery.molecules)"]
     if any(computed.values()):
@@ -283,8 +299,9 @@ def network(run_dir, engine=None, *, temperature: Optional[float] = None, worker
                      f"{computed['ts']} TSs; {computed['failed']} failed")
     if together:
         notes.append(f"{len(together)} species are never seen apart in the boxes of the fit, so only sums of their free "
-                     "energies are fixed and the fit shares them (g_fixed_only_together on each); a step that "
-                     "releases one of them alone is not reliable: " + ", ".join(together))
+                     "energies are fixed and the fit shares them (g_fixed_only_together on each; with "
+                     + ", ".join(anchors) + " held); a step that releases one of them alone is not reliable: "
+                     + ", ".join(together))
     if missing:
         notes.append(f"{len(missing)} IRC-verified steps left out: a thermal correction of theirs is not recorded "
                      "and was not computed (give the run's profile)")

@@ -202,6 +202,7 @@ def test_a_mirror_image_box_on_no_step_of_its_own_enters_on_its_free_energy(tmp_
     net = parent.network(run)
     hnc = next(x for x in net["species"] if "H+" in x["id"])
     assert hnc["g"] == pytest.approx((E_HNC - E_HCN) * KCAL + C_HNC - C_HCN)
+    assert "g_fixed_only_together" not in hnc and not any("together" in x for x in net["notes"])
 
 
 def test_a_mirror_twin_has_its_originals_frames_reflected(tmp_path):
