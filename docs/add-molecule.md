@@ -34,7 +34,9 @@ Each parent step's row in `readout.steps` compares the reaction, not the step: t
 reaction (a row found by a scan stands for all of them, `parent_steps`) are read from the reaction's own lowest
 parent TS (`before`; `before_this_step` and `reaction_steps` where there are several), so a shuttle step with a
 high TS is not counted as lowered by a row that is no lower than its reaction's best. The kinetics hold each row
-once, as its own step beside the parent's.
+once, as its own step beside the parent's. A TS that the verification and a scan both reach (the same molecules, the molecule taking
+part or not alike, electronic barriers within 0.01 kcal/mol) is one row; the scan's line lists the second under
+`found_again`.
 
 `target_route_settled` also says what the peak rested on then (`rests_on`) and, if a later verified row moved
 the peak, when (`changed_after_settled`). A query built from an explorer run carries `fixed_only_together`
