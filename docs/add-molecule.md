@@ -278,34 +278,49 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
 - its ends are other species: **leads elsewhere**, listed under `failed` with its ends, not used in the kinetics;
   the step keeps its estimate and becomes a candidate for the scan.
 
-**3. The relay scan** (`--scan N`).
+**3. The relay scan** (`--scan N`: at most N reactions).
 
-- **Which steps, in what order.** First the steps that limit the target: where the parent makes it, the steps
-  with a degree of rate control of at least 0.05, largest first; where it makes none, the steps of its lowest-peak
-  routes, highest first. Then the steps whose estimate came back `reacted` or whose verification led elsewhere,
-  most limiting first. At most N scans; `scan` in the result file says which steps were scanned and why, which
-  were left (`left`) and how many were never candidates.
-- **What a scan is.** `mepd channels` between the step's two ends with the molecule beside each: the bystander
-  layer's lowest complexes of the reactant end and the product end (nothing is placed by hand), with
+- **What is scanned: a net reaction.** The parent's steps with the molecules that are the same on both sides
+  dropped (its own shuttles too: the added molecule is tried in their place); steps with the same net change,
+  either way round, are one reaction and share the scan's rows (`parent_steps`).
+- **In what order: what the target would gain.** For each reaction not yet scanned, the peak of the lowest-peak
+  route to the target *if that reaction alone had no barrier above its ends*, on the kinetics as they stand with
+  the molecule's rows in. Lowest such peak first. Ties (to 0.1 kcal/mol): reactions where the estimate or the
+  verification saw the molecule react or take part, then fewer atoms. Reactions that lower nothing go last. For a
+  chiral molecule the mirror twin of a reaction goes after every reaction that is not a twin (in the estimate
+  and the verification too). The list is derived again each time a lane frees; the result file keeps every
+  derivation (`scan.derivations`: when, the route peak then, the first eight of the list, which was chosen).
+  The verification runs in the order of the first derivation.
+- **Side by side.** Three scans at once on 32 threads (fewer on fewer cores), each `mepd channels` run held to
+  its own cores with `taskset` (`--workers` does not bound a channels run). The first lane starts when the
+  estimates are done, beside the verification; the others when the verification's cores are free. **Pin the
+  command itself** on a shared machine: the lanes divide the cores it may use.
+- **What a scan is.** `mepd channels` between the reaction's two ends with the molecule beside each: the ends of
+  the reaction's lowest parent step (its TS's IRC ends), the unchanged molecules removed, the molecule placed by
+  the bystander layer's placer (nothing is placed by hand), with
   `--explore-mechanisms 8 --explore-molecule <the molecule> --search-budget 300` ([channels_candidates.md](channels_candidates.md)):
   mechanisms in which the molecule's bonds change and it is found again at the end are searched beside the
-  step's own. A scan still running after 1200 s is stopped; what it verified by then counts. One scan at a time,
-  on every core the command may use: **pin the command** (`taskset -c ...`), `--workers` does not bound a channels
-  run. `--scan-inputs` gives the path searches' profile (the level's engine with a path method).
-- **What comes out.** Its `searches.json` is read as it grows. Every verified TS whose IRC joins the step's two
-  ends becomes a step on the parent's scale ("A step given with its TS", above), `layer: "relay"`,
-  `status: "verified"`: with the molecule taking part (`takes_part: true`, `returned`), or beside it
-  (`takes_part: false`; the TS then counts the whole complex, and it **replaces the step's bystander estimate**).
-  The kinetics keep the lowest of each kind per step, and are recomputed, and the file rewritten, each time that
-  changes. A verified TS that leads elsewhere is counted (`elsewhere`); one in which the molecule changes and does
-  not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the molecule
-  taking part: `answer: "none found ..."`, with what was searched.
+  reaction's own. A scan still running after 1200 s is stopped; what it verified by then counts. `--scan-inputs`
+  gives the path searches' profile (the level's engine with a path method).
+- **What comes out.** Its `searches.json` is read as it grows. Every verified TS whose IRC joins the reaction's
+  two ends becomes a step on the parent's scale ("A step given with its TS", above), `layer: "relay"`,
+  `status: "verified"`: with the molecule taking part (`takes_part: true`), or beside it (`takes_part: false`).
+  The kinetics keep the lowest of each kind per reaction, and are recomputed, and the file rewritten, each time
+  that changes. A verified TS that leads elsewhere is counted (`elsewhere`); one in which the molecule changes
+  and does not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the
+  molecule taking part: `answer: "none found ..."`, with what was searched.
+- **When things arrived.** Every row (estimate, verified, relay) carries `t_s`, seconds after the command. A
+  scan's line keeps every verified row's arrival and height (`arrivals`) and when its lowest came
+  (`lowest_arrived_s`); `route_peak` at the top of the file is the history of the route peak with the molecule.
 - **`summary`** in the result file: how many of the parent's steps ended `est`, `verified_beside`, `takes_part`,
   `leads_elsewhere`, `failed` (of them `reacted_in_the_estimate`).
-- **`scan.steps[]`** in the result file: `step`, `why`, `status` (`queued`, `mapping`, `searching`, `done`,
-  `failed`), `searches` {`queued`, `running`, `searched`, `total`}, `with_molecule` and `beside` (verified TSs of
-  each kind), `lowest` (their lowest free barriers), `first_with_molecule_s`, `t_started_s`, `wall_s`, `command`,
-  `run` (its folder, with `channels.log`), `stopped`, `elsewhere`, `consumed`, `failed_rows`.
+- **`scan.steps[]`** in the result file, one per scanned reaction: `reaction`, `reactants`, `products`, `steps`
+  (the parent steps it stands for), `step` (the lowest of them, whose ends it starts from), `why`,
+  `route_peak_now`, `route_peak_if_no_barrier`, `flagged`, `twin`, `lane`, `status` (`queued`, `mapping`,
+  `searching`, `done`, `failed`), `searches` {`queued`, `running`, `searched`, `total`}, `with_molecule` and
+  `beside` (verified TSs of each kind), `lowest`, `lowest_arrived_s`, `first_with_molecule_s`, `arrivals`,
+  `t_started_s`, `wall_s`, `command`, `run`, `stopped`, `elsewhere`, `consumed`, `failed_rows`. `scan.left[]`: the
+  reactions not scanned.
 - For a candidate that is its own mirror image a step's mirror twin is neither estimated, verified nor scanned:
   its rows are the original's, between the mirror-image species (`mirror_image_of`). The same holds for a step
   given with its TS.
