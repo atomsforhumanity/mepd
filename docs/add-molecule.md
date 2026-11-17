@@ -328,8 +328,11 @@ difference between the two its `spread`. What the IRC says decides the row (`lay
   and does not come back is listed (`consumed`: a step to a new species, not followed). No verified TS with the
   molecule taking part: `answer: "none found ..."`, with what was searched. A scan whose path searches all failed
   at their first step (or that started none) is `status: "failed"` with `why_failed`, not "none found".
-  Whether the molecule takes part in a TS is read from the same bonds of the IRC's two ends that its free energy
-  is counted with.
+  Whether the molecule takes part in a TS is read in that TS's own IRC ends, with the bonds its free energy is
+  counted with: a whole molecule of the candidate's kind, the same atoms at both ends, none of them in a bond
+  that breaks or forms, is the added molecule beside the step; without one it takes part. A candidate that is
+  also a species of the parent (methane in a network that makes methane) is told from the parent's own molecule
+  the same way. `benchmarks/diagnostics/addmol/reread_rows.py` reads a finished run's rows again from its files.
 - **When things arrived.** Every row (estimate, verified, relay) carries `t_s`, seconds after the command. A
   scan's line keeps every verified row's arrival and height (`arrivals`) and when its lowest came
   (`lowest_arrived_s`); `route_peak` at the top of the file is the history of the route peak with the molecule.
