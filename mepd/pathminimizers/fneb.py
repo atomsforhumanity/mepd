@@ -74,13 +74,22 @@ class FreezingNEB(PathMinimizer):
         if self.parameters.distance_metric.upper() == "RMSD":
             return RMSD(node1.coords, node2.coords)[0]
         elif self.parameters.distance_metric.upper() == "GEODESIC":
-            return ch.calculate_geodesic_distance(
-                node1,
-                node2,
-                nudge=self.gi_inputs.nudge,
-                nimages=self.gi_inputs.nimages,
-                random_seed=self.gi_inputs.random_seed,
-            )
+            # The same pair is measured again right away (a pair minimization's start and first
+            # step, then the convergence check): the geodesic is deterministic (its own seeded RNG),
+            # so the last few distances are kept by the pair's coordinates.
+            key = (np.asarray(node1.coords).tobytes(), np.asarray(node2.coords).tobytes())
+            memo = self.__dict__.setdefault("_geodesic_distances", {})
+            if key not in memo:
+                memo[key] = ch.calculate_geodesic_distance(
+                    node1,
+                    node2,
+                    nudge=self.gi_inputs.nudge,
+                    nimages=self.gi_inputs.nimages,
+                    random_seed=self.gi_inputs.random_seed,
+                )
+                while len(memo) > 4:
+                    memo.pop(next(iter(memo)))
+            return memo[key]
         elif self.parameters.distance_metric.upper() == "LINEAR":
             return np.linalg.norm(node1.coords - node2.coords)
         elif self.parameters.distance_metric.upper() == "XTBGI":

@@ -70,3 +70,21 @@ def test_fneb_max_energy_growth_without_a_barrier_is_elementary():
 def test_fneb_uses_configured_engine_for_max_energy_growth_by_default():
     msmep = _msmep()
     assert msmep.inputs.path_min_inputs.use_xtb_grow is False
+
+
+def test_fneb_geodesic_distance_of_a_pair_is_computed_once(monkeypatch):
+    """A pair measured again (pair minimization start and first step, convergence check) reuses
+    the deterministic geodesic distance instead of running the interpolation again."""
+    import mepd.chainhelpers as ch
+
+    msmep = _msmep()
+    fneb = msmep._construct_path_minimizer(initial_chain=_chain(msmep))
+    fneb.parameters.distance_metric = "GEODESIC"
+    calls = []
+    real = ch.calculate_geodesic_distance
+    monkeypatch.setattr(ch, "calculate_geodesic_distance", lambda *a, **k: calls.append(1) or real(*a, **k))
+    a, b = START.copy(), END.copy()
+    d = fneb._distance_function(a, b)
+    assert fneb._distance_function(a.copy(), b.copy()) == d and len(calls) == 1
+    moved = b.update_coords(b.coords + 0.01)
+    assert fneb._distance_function(a, moved) != d and len(calls) == 2
