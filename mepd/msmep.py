@@ -791,8 +791,14 @@ class MSMEP:
             )
             obj = getattr(e, "obj", None)
             if hasattr(obj, "save"):
+                # a file of its own (a fixed /tmp/failed_output.qcio was overwritten by concurrent runs)
                 with contextlib.suppress(Exception):
-                    obj.save("/tmp/failed_output.qcio")
+                    import tempfile
+
+                    fd, failed = tempfile.mkstemp(prefix="mepd-failed-output-", suffix=".qcio")
+                    os.close(fd)
+                    obj.save(failed)
+                    self._say(f"The failed calculation's output is in {failed}")
             return _failed_leaf(
                 tree_node_index, status="electronic_structure_error", exc=e, chain=input_chain
             ), []

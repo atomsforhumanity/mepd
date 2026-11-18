@@ -189,6 +189,15 @@ def _resolve_nanoreactor_inputs(nanoreactor_inputs: dict[str, object] | None) ->
     return resolved
 
 
+def _hessian_text(hessian) -> str:
+    """A Hessian as np.savetxt writes it (geomeTRIC's `hessian = file:...` format), without a file."""
+    import io
+
+    buf = io.StringIO()
+    np.savetxt(buf, np.asarray(hessian, dtype=float))
+    return buf.getvalue()
+
+
 @dataclass
 class QCComputeEngine(Engine):
     program_args: ProgramArgs = ProgramArgs(
@@ -874,17 +883,17 @@ class QCComputeEngine(Engine):
     def _compute_ts_result(self, node: StructureNode, keywords=None, use_bigchem=False,
                            hessres: ProgramOutput = None):
         keywords = self._geometric_ts_keywords(keywords)
+        # The starting Hessian goes to geomeTRIC as the text of hessian.txt, built in memory (it went through a
+        # fixed /tmp/hess.txt, which concurrent TS searches overwrote for each other).
         if hessres is not None:
-            np.savetxt("/tmp/hess.txt", hessres.results.hessian)
             kwds = keywords.copy()
             kwds["hessian"] = "file:hessian.txt"
-            files = {'hessian.txt': open("/tmp/hess.txt").read()}
+            files = {'hessian.txt': _hessian_text(hessres.results.hessian)}
         elif hessres is None and use_bigchem:
             hess = self.compute_hessian(node=node)
-            np.savetxt("/tmp/hess.txt", hess)
             kwds = keywords.copy()
             kwds["hessian"] = "file:hessian.txt"
-            files = {'hessian.txt': open("/tmp/hess.txt").read()}
+            files = {'hessian.txt': _hessian_text(hess)}
 
         else:
             kwds = keywords.copy()

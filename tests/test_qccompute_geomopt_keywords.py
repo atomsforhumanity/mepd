@@ -341,3 +341,36 @@ def test_ts_keywords_defaults_and_pass_through():
     given = {"fmax": 0.05, "convergence_gmax": 1e-6}
     assert _captured_ts_keywords(given)["convergence_gmax"] == 1e-6      # an explicit geomeTRIC value wins
     assert given == {"fmax": 0.05, "convergence_gmax": 1e-6}             # the caller's dict is not changed
+
+
+def test_ts_search_sends_its_starting_hessian_without_a_shared_file(tmp_path, monkeypatch):
+    """The starting Hessian reaches geomeTRIC as hessian.txt's text, built in memory: a fixed /tmp/hess.txt was
+    overwritten by concurrent TS searches."""
+    import builtins
+
+    engine = QCComputeEngine(
+        program="xtb",
+        compute_program="qccompute",
+        program_args=ProgramArgs(model={"method": "gfn2"}, keywords={}),
+    )
+    captured = {}
+
+    def _fake_compute_func(inp_obj, **kwargs):
+        captured["input"] = inp_obj
+        return SimpleNamespace()
+
+    engine.compute_func = _fake_compute_func
+    real_open = builtins.open
+
+    def _no_tmp(path, *args, **kwargs):
+        assert "hess.txt" not in str(path), f"wrote a shared Hessian file: {path}"
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _no_tmp)
+    hessian = np.arange(36.0).reshape(6, 6) / 7.0
+    engine._compute_ts_result(_node_at_x(1.4), hessres=SimpleNamespace(results=SimpleNamespace(hessian=hessian)))
+    sent = captured["input"]
+    expected = tmp_path / "expected.txt"
+    np.savetxt(expected, hessian)
+    assert sent.files["hessian.txt"] == expected.read_text()
+    assert sent.keywords["hessian"] == "file:hessian.txt"

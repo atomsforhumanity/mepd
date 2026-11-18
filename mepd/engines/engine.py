@@ -84,55 +84,38 @@ def build_hessian_result_from_matrix(node: Node, hessian: np.ndarray) -> FiniteD
     refshape = np.asarray(node.coords).shape
     natoms = refshape[0]
 
-    # Mass-weighting is required before these eigenvalues mean anything as
-    # vibrational frequencies. Without it: (a) the 6 (5 for linear molecules)
-    # translation/rotation eigenvalues -- which should be exactly zero -- come
-    # out as small positive *or negative* numerical noise, indistinguishable
-    # from a genuine imaginary mode, so any minima-validation check comparing
-    # against a frequency_cutoff near zero rejects virtually every real
-    # minimum; (b) the remaining eigenvalues aren't in real cm^-1 units at
-    # all. Confirmed directly: an unweighted Hessian on a relaxed water
-    # molecule (an unambiguous minimum) reported min "frequency" -9.7e-6 and
-    # vibrational "frequencies" of 0.4/0.9/1.0 (real values: ~1600/3650/3750
-    # cm^-1). After mass-weighting, only the first 6 modes are near-zero
-    # (trans/rot) and are excluded from `freqs_wavenumber`, so a
-    # `frequency_cutoff` in cm^-1 is now comparing against a genuine
-    # vibrational spectrum, not translation/rotation noise.
-    try:
-        symbols = list(node.symbols)
-        masses_amu = np.array([get_mass(s) for s in symbols], dtype=float)
-        sqrt_mass = np.repeat(np.sqrt(masses_amu), 3)
-        mass_weighted = hessian_arr / np.outer(sqrt_mass, sqrt_mass)
-    except Exception:
-        # No atomic masses available (e.g. a non-molecular toy-potential
-        # node) -- fall back to the raw Hessian; frequencies won't be
-        # physically meaningful, but this keeps non-molecular engines working.
-        mass_weighted = hessian_arr
+    # A molecule: translations and rotations are projected out of the mass-weighted Hessian, and the 6 (5 for a
+    # linear molecule, 3 for an atom) projected directions are dropped by their overlap with rigid-body motion,
+    # never by the size of their eigenvalue (mepd.discovery.vri.projected_frequencies, which g-xTB on axtb
+    # already used). Before, the 6 smallest |eigenvalues| were dropped: away from a stationary point, or at a
+    # TS with a soft imaginary mode, those could include a real vibration, and "one imaginary mode" could be
+    # wrong. Modes are Cartesian displacements, normalized.
+    masses = None
+    if len(refshape) == 2 and refshape[1] == 3:
+        try:
+            masses = np.array([get_mass(s) for s in node.symbols], dtype=float)
+        except Exception:
+            masses = None
+    if masses is not None:
+        from mepd.discovery.vri import projected_frequencies
 
-    eigvals, eigvecs = np.linalg.eigh(mass_weighted)
-    order = np.argsort(eigvals)
-    eigvals = eigvals[order]
-    eigvecs = eigvecs[:, order]
-
-    modes = [eigvecs[:, i].reshape(refshape) for i in range(eigvecs.shape[1])]
-    freqs_cm = [
-        float(np.sign(v) * np.sqrt(abs(v) * _HESSIAN_EIGENVALUE_TO_CM2)) for v in eigvals
-    ]
-
-    # Drop the lowest-magnitude modes as translation/rotation rather than
-    # genuine vibrations -- they're the smallest in magnitude by construction
-    # (true zero modes plus noise), while real vibrational force constants
-    # are much larger. Diatomics (5 trans/rot dof) are special-cased; other
-    # linear molecules (also 5, not 6) aren't detected, so one genuine very
-    # low-frequency bending mode would be discarded alongside rotation for
-    # a linear polyatomic -- a known limitation, not exercised by anything
-    # this package currently targets.
-    n_trans_rot = 5 if natoms == 2 else 6
-    n_trans_rot = min(n_trans_rot, len(freqs_cm))
-    keep = sorted(range(len(freqs_cm)), key=lambda i: abs(eigvals[i]))[n_trans_rot:]
-    keep.sort()
-    freqs = [freqs_cm[i] for i in keep]
-    modes = [modes[i] for i in keep]
+        projected = projected_frequencies(hessian_arr, np.asarray(node.coords, dtype=float).reshape(natoms, 3),
+                                          masses)
+        freqs = [float(f) for f in projected.freqs]
+        modes = [np.asarray(m, dtype=float).reshape(refshape) for m in projected.modes_cart]
+    else:
+        # No atomic masses (a non-molecular toy-potential node): the raw Hessian's eigenvalues, as before;
+        # frequencies aren't physically meaningful there, but non-molecular engines keep working.
+        eigvals, eigvecs = np.linalg.eigh(hessian_arr)
+        order = np.argsort(eigvals)
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+        modes = [eigvecs[:, i].reshape(refshape) for i in range(eigvecs.shape[1])]
+        freqs_cm = [float(np.sign(v) * np.sqrt(abs(v) * _HESSIAN_EIGENVALUE_TO_CM2)) for v in eigvals]
+        n_trans_rot = min(5 if natoms == 2 else 6, len(freqs_cm))
+        keep = sorted(sorted(range(len(freqs_cm)), key=lambda i: abs(eigvals[i]))[n_trans_rot:])
+        freqs = [freqs_cm[i] for i in keep]
+        modes = [modes[i] for i in keep]
 
     return FiniteDifferenceHessianOutput(
         input_data=SimpleNamespace(structure=getattr(node, "structure", None)),
