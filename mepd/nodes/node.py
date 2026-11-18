@@ -99,6 +99,7 @@ class XYNode(Node):
     _cached_result: FakeQCIOOutput = None
     _cached_energy: float = None
     _cached_gradient: NDArray = None
+    _cached_level: str = None  # the engine level that computed the cache (mepd.engines.engine.cache_level)
 
     def update_coords(self, new_coords: np.array) -> XYNode:
         """
@@ -141,6 +142,9 @@ class StructureNode(Node):
     saddle_escapes: int | None = None
 
     _cached_result: Union[ProgramOutput, FakeQCIOOutput] = None
+    # The engine level that computed the cached energy/gradient (mepd.engines.engine.cache_level). An engine
+    # at another level recomputes instead of returning it; None (a cache set outside engines) is trusted.
+    _cached_level: str | None = None
     graph: Molecule = None
     _global_disable_molecular_graphs: ClassVar[bool] = False
     # QM/MM: (atom indices, total atom count). A structure of that system
@@ -255,6 +259,7 @@ class StructureNode(Node):
         copy_node._cached_result = None
         copy_node._cached_gradient = None
         copy_node._cached_energy = None
+        copy_node._cached_level = None
 
         # model_copy skips re-validating the whole Structure (charge/multiplicity/
         # symbols/etc. are unchanged) -- Structure(**dict) was redoing full pydantic

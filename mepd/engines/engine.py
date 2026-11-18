@@ -145,9 +145,146 @@ def build_hessian_result_from_matrix(node: Node, hessian: np.ndarray) -> FiniteD
     )
 
 
+# --- results cached on nodes carry the level that computed them -------------------------------------------
+# A node caches its energy and gradient. Before this, any engine returned whatever a node had cached, whichever
+# engine had computed it: a structure minimized in the gas phase came back from a solvated engine with its
+# gas-phase energy. Each engine now has a level (its type and scientific settings, not threads or paths), its
+# results are tagged with it, and an engine at another level recomputes. A cache set outside engines (read
+# from a file, say) has no tag and is trusted as before.
+
+_LEVEL_SKIP = frozenset({"n_parallel", "n_threads", "threads", "memory", "maxcore", "python", "executable",
+                         "timeout", "keep_workdirs", "disable_molecular_graphs"})
+
+
+def _level_value(value, depth: int) -> str:
+    import numbers
+
+    if depth > 6:
+        return type(value).__name__
+    if isinstance(value, Engine):
+        return _level_of(value, depth + 1)
+    if value is None or isinstance(value, (str, bool)):
+        return repr(value)
+    if isinstance(value, numbers.Integral):
+        return str(int(value))
+    if isinstance(value, numbers.Real):
+        return repr(float(value))
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_level_value(v, depth + 1) for v in value) + "]"
+    if isinstance(value, dict):
+        items = sorted(((repr(k), _level_value(v, depth + 1)) for k, v in value.items()))
+        return "{" + ",".join(f"{k}:{v}" for k, v in items) + "}"
+    if isinstance(value, np.ndarray):
+        import hashlib
+
+        return f"array{value.shape}:{hashlib.sha1(np.ascontiguousarray(value).tobytes()).hexdigest()[:16]}"
+    return type(value).__name__
+
+
+def _level_of(engine, depth: int = 0) -> str:
+    import dataclasses
+
+    fields = dataclasses.fields(engine) if dataclasses.is_dataclass(engine) else ()
+    if fields:
+        # declared settings only, read without running properties
+        items = {f.name: engine.__dict__.get(f.name) for f in fields}
+    else:  # (every Engine is a dataclass by inheritance; one without fields keeps its settings as attributes)
+        items = dict(vars(engine))
+    parts = sorted((k, _level_value(v, depth)) for k, v in items.items()
+                   if k not in _LEVEL_SKIP and not k.startswith("_"))
+    return f"{type(engine).__name__}{parts}"
+
+
+def cache_level(engine) -> str | None:
+    """What sets an engine's numbers: its type and scientific settings, through any engines it wraps (not
+    threads, pool widths, paths or private state). Computed once per engine object, at its first use, so
+    counters an engine updates as it runs don't change it; an engine made with other settings
+    (`dataclasses.replace`) is a new object with its own level. None if it can't be worked out (then caches
+    behave as before)."""
+    try:
+        level = engine.__dict__.get("_mepd_cache_level")
+        if level is None:
+            level = _level_of(engine)
+            engine.__dict__["_mepd_cache_level"] = level
+        return level
+    except Exception:  # an engine without a __dict__, or settings that can't be read
+        return None
+
+
+def _nodes_in(obj) -> list:
+    """The nodes in a call's argument or result: a node, a Chain, or a (nested) list of them."""
+    if obj is None or isinstance(obj, (str, bytes, np.ndarray)):
+        return []
+    if hasattr(obj, "_cached_energy") and hasattr(obj, "coords"):
+        return [obj]
+    nodes = getattr(obj, "nodes", None)
+    if isinstance(nodes, list):
+        return [n for n in nodes if hasattr(n, "_cached_energy")]
+    if isinstance(obj, (list, tuple)):
+        return [n for item in obj for n in _nodes_in(item)]
+    return []
+
+
+def _taggable(node) -> bool:
+    return "_cached_level" in getattr(type(node), "__dataclass_fields__", {})
+
+
+def _clear_cache(node) -> None:
+    for name in ("_cached_result", "_cached_energy", "_cached_gradient"):
+        if hasattr(node, name):
+            setattr(node, name, None)
+    if _taggable(node):
+        node._cached_level = None
+
+
+def _empty(node) -> bool:
+    return getattr(node, "_cached_energy", None) is None and getattr(node, "_cached_gradient", None) is None
+
+
+def _level_guard(method):
+    """Wrap an engine method that takes nodes: drop caches another level computed before it runs, and tag
+    the caches it fills (on the nodes passed in and on the nodes it returns)."""
+    import functools
+
+    @functools.wraps(method)
+    def guarded(self, *args, **kwargs):
+        level = cache_level(self)
+        if level is None:
+            return method(self, *args, **kwargs)
+        target = args[0] if args else next((kwargs[k] for k in ("chain", "node", "nodes") if k in kwargs), None)
+        nodes = _nodes_in(target)
+        fresh = []
+        for n in nodes:
+            tag = getattr(n, "_cached_level", None)
+            if tag is not None and tag != level:
+                _clear_cache(n)
+            if _empty(n):
+                fresh.append(n)
+        out = method(self, *args, **kwargs)
+        for n in fresh + [n for n in _nodes_in(out) if getattr(n, "_cached_level", None) is None]:
+            if _taggable(n) and not _empty(n) and n._cached_level is None:
+                n._cached_level = level
+        return out
+
+    guarded._mepd_level_guard = True
+    return guarded
+
+
+_GUARDED = ("compute_energies", "compute_gradients", "compute_geometry_optimization",
+            "compute_geometry_optimizations", "compute_transition_state", "compute_irc_chain")
+
+
 @dataclass
 class Engine(ABC):
     finite_difference_hessian_step_size: ClassVar[float] = 1e-3
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for name in _GUARDED:
+            method = cls.__dict__.get(name)
+            if callable(method) and not getattr(method, "_mepd_level_guard", False) \
+                    and not getattr(method, "__isabstractmethod__", False):
+                setattr(cls, name, _level_guard(method))
 
     @abstractmethod
     def compute_gradients(

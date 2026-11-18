@@ -327,7 +327,9 @@ def interpolate(start: StructureNode, end: StructureNode, *, nimages: int = 15, 
 def barrier_kcal(ts: StructureNode, reactants: StructureNode | Sequence[StructureNode], engine=None) -> float:
     """Barrier in kcal/mol: the TS energy minus the lowest energy among
     `reactants` (e.g. all reactant conformers found, so the barrier is measured
-    from the lowest one). Energies not yet computed are computed with `engine`.
+    from the lowest one). With `engine`, every energy is at that engine's level:
+    one cached at its level is reused, one cached at another level (or not at
+    all) is computed. Without it, the energies already cached are used.
     The TS and the reactants must hold the same atoms."""
     pool = [reactants] if isinstance(reactants, StructureNode) else list(reactants)
     if not pool:
@@ -335,9 +337,8 @@ def barrier_kcal(ts: StructureNode, reactants: StructureNode | Sequence[Structur
     nodes = [ts, *pool]
     if any(sorted(n.symbols) != sorted(ts.symbols) for n in pool):
         raise ValueError("The TS and the reactants must hold the same atoms.")
-    missing = [n for n in nodes if getattr(n, "_cached_energy", None) is None]
-    if missing:
-        if engine is None:
-            raise ValueError("Some energies are not computed yet; pass an engine.")
-        energies(missing, engine)
+    if engine is not None:
+        energies(nodes, engine)
+    elif any(getattr(n, "_cached_energy", None) is None for n in nodes):
+        raise ValueError("Some energies are not computed yet; pass an engine.")
     return float((ts.energy - min(n.energy for n in pool)) * HARTREE_TO_KCAL)
