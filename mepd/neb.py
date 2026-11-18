@@ -124,9 +124,15 @@ def _endpoint_energy_inversion_warning_text(
 def _drop_graphs(chain: Chain) -> None:
     """`chain`'s images without their bond graphs, as copies (an image can be shared with a later
     step's chain, which keeps its graph)."""
+    import inspect
+
+    from mepd.nodes.node import _LazyGraph
+
     nodes = []
     for node in chain.nodes:
-        if getattr(node, "graph", None) is not None:
+        # a deferred graph (never read, never built) is dropped too, without building it
+        deferred = "graph" not in vars(node) and isinstance(inspect.getattr_static(type(node), "graph", None), _LazyGraph)
+        if deferred or vars(node).get("graph") is not None:
             node = copy.copy(node)
             node.graph = None
         nodes.append(node)
