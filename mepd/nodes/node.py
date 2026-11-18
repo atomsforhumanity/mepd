@@ -197,6 +197,15 @@ class StructureNode(Node):
         return structure_to_molecule(Structure(symbols=[structure.symbols[i] for i in sub],
                                                geometry=np.asarray(structure.geometry)[sub]))
 
+    def _defer_graph(self) -> None:
+        """The whole structure's bond graph is built on first read (_LazyGraph): most nodes
+        (optimizer steps, interpolation scratch images, local-optimizer points) are never asked
+        for one. A QM/MM subset graph, whose bookkeeping fields _build_graph sets, is built now."""
+        if self._graph_subset() is None:
+            self.__dict__.pop("graph", None)
+        else:
+            self.graph = self._build_graph(self.structure)
+
     def __post_init__(self):
         if self._global_disable_molecular_graphs:
             self.has_molecular_graph = False
@@ -208,7 +217,7 @@ class StructureNode(Node):
         if self.graph_total_atom_count is not None:
             self.graph_total_atom_count = int(self.graph_total_atom_count)
         if self.has_molecular_graph and self.graph is None:
-            self.graph = self._build_graph(self.structure)
+            self._defer_graph()
         if not self.has_molecular_graph:
             self.graph = None
         if self._cached_result is not None:
@@ -235,6 +244,7 @@ class StructureNode(Node):
 
     def to_serializable(self):
         data = self.__dict__.copy()
+        data['graph'] = self.graph
         data['structure'] = data['structure'].model_dump()
         data["_cached_energy"] = _json_safe(data.get("_cached_energy"))
         data["_cached_gradient"] = _json_safe(data.get("_cached_gradient"))
@@ -269,7 +279,7 @@ class StructureNode(Node):
             update={"geometry": new_coords}
         )
         if copy_node.has_molecular_graph and not copy_node._global_disable_molecular_graphs:
-            copy_node.graph = copy_node._build_graph(copy_node.structure)
+            copy_node._defer_graph()
         else:
             copy_node.graph = None
         return copy_node
@@ -280,3 +290,20 @@ class StructureNode(Node):
 
     def copy(self) -> StructureNode:
         return StructureNode(**self.__dict__.copy())
+
+
+class _LazyGraph:
+    """`StructureNode.graph` when it was deferred (`_defer_graph`): the structure's bond graph,
+    built on first read and kept in the instance (later reads, copies and pickles see it as a
+    plain attribute). Same graph as building it at construction: the node's structure is
+    replaced only through update_coords / copy, which defer a new one."""
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return None
+        graph = structure_to_molecule(obj.structure)
+        obj.__dict__["graph"] = graph
+        return graph
+
+
+StructureNode.graph = _LazyGraph()
