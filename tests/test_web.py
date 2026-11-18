@@ -1039,6 +1039,38 @@ def test_bulk_add_to_graph(client, tmp_path):
     assert client.post(f"/api/jobs/{job['id']}/import-entries", json={"entries": ["nope"]}).status_code == 404
 
 
+def test_bulk_add_takes_reaction_steps_in_as_their_ends_and_an_edge(client, tmp_path):
+    """Ticked channels go into Explore as reaction steps: both IRC ends and the edge between them,
+    as "Add ends + edge" does for one (not the TS alone). Two channels between the same species
+    share one edge, which carries the lower barrier."""
+    start, end = _water("start"), _water("end", h1=(2.600, 0.000, 0.450))
+    ts_low, ts_high = _water("ts a", h1=(1.300, 0.000, 0.480)), _water("ts b", h1=(1.250, 0.300, 0.480))
+    out = tmp_path / "mepd_channels_output"
+    _write_chain_mk = lambda fp, frames, es: (fp.parent.mkdir(parents=True, exist_ok=True), _write_chain(fp, frames, es))
+    _write_chain_mk(out / "conformers" / "start.xyz", [start], [-76.40])
+    _write_chain_mk(out / "conformers" / "end.xyz", [end], [-76.33])
+    for k, (ts, e) in enumerate(((ts_high, -76.28), (ts_low, -76.30))):
+        ch = out / "channels" / f"channel_{k}"
+        _write_chain_mk(ch / "ts.xyz", [ts], [e])
+        _write_chain_mk(ch / "irc.xyz", [start, ts, end], [-76.40, e, -76.33])
+        (ch / "members.txt").write_text(f"connects: start -> end\nts_pair_0_0_leaf_{k}\n")
+    job = client.post("/api/jobs/import", json={"path": str(out), "op": "channels"}).json()
+    result = client.get(f"/api/jobs/{job['id']}/result").json()
+    chans = {g["kind"]: g for g in result["groups"]}["channel"]["entries"]
+    assert len(chans) == 2 and all(len(e["frames"]) == 3 for e in chans)
+
+    r = client.post(f"/api/jobs/{job['id']}/import-entries", json={"entries": [e["id"] for e in chans]}).json()
+    ws = client.get("/api/state").json()["workspace"]
+    assert len(r["edges"]) == 1 and r["edge"]["id"] == r["edges"][0]["id"]
+    assert list(ws["edges"]) == [r["edge"]["id"]]
+    assert len(r["added"]) == 2 and not [x for x in ws["structures"].values() if x.get("role") == "ts"]   # the ends, no TS
+    assert r["edge"]["origin"]["barrier_kcal"] == pytest.approx(0.10 * 627.509474, abs=1e-2)
+    assert r["edge"]["origin"]["job"] == job["id"] and r["edge"]["origin"]["entry"] in {e["id"] for e in chans}
+    # Again: nothing new.
+    again = client.post(f"/api/jobs/{job['id']}/import-entries", json={"entries": [e["id"] for e in chans]}).json()
+    assert again["added"] == [] and [e["id"] for e in again["edges"]] == [r["edge"]["id"]]
+
+
 def test_overflowing_client_gets_resync_instead_of_silent_loss():
     import asyncio
 

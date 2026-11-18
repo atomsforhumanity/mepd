@@ -78,7 +78,7 @@ export function TsCell({ r, why = 'not in Explore (deleted?)' }) {
     : html`<span class="mono">${levelBarrierText(l)}</span>`}`)}`;
   return html`<span class="ts-cell">
     ${perLevel || label && (st.barrierJob
-    ? html`<a href="#" class="mono" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}
+    ? html`<a href="#" class="mono" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob, null, st.barrierEntry); }}
         title=${`${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : `No transition state found: ${noTsHint(st.barrierUnverified)}`}. Open its TS search (TS, IRC, sample more paths)`}>${label}</a>`
     : html`<span class="mono" title=${st.barrier != null ? 'Barrier from the reactant side, TS + IRC verified' : `No transition state found: ${noTsHint(st.barrierUnverified)}`}>${label}</span>`)}
     ${label
@@ -356,7 +356,7 @@ export function ReactionCard({ r, event = null, compact = false }) {
             ${st.levels?.length > 1 ? html`<span class="rc-barrier">${st.levels.map((l, i) => html`${i ? ' · ' : ''}${l.job
               ? html`<a href="#" title="Its TS search at this level of theory" onClick=${(e) => { e.preventDefault(); openJob(l.job); }}>${levelBarrierText(l)}</a>`
               : levelBarrierText(l)}`)} kcal/mol</span>`
-            : st.barrierJob ? html`<a href="#" class="rc-barrier" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob); }}
+            : st.barrierJob ? html`<a href="#" class="rc-barrier" onClick=${(e) => { e.preventDefault(); openJob(st.barrierJob, null, st.barrierEntry); }}
                 title="Its TS search: TS, IRC, energy profile, sample more paths">
                 ${st.barrier != null ? `ΔE‡ ${fmtKcal(st.barrier)} kcal/mol from the reactant complex →` : 'No transition state found →'}</a>
                 ${st.barrier == null && st.barrierUnverified != null && html`<span class="small muted rc-nots">${noTsHint(st.barrierUnverified)}.</span>`}`

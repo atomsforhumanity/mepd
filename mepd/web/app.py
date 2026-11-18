@@ -2462,6 +2462,23 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                                       "edges": job["targets"]["edges"] + [edge["id"]]})
         return {"added": added, "reused": reused, "edge": edge}
 
+    def _import_step(job: dict, group: dict, entry: dict) -> dict:
+        """A reaction step of a result (a path or IRC) into the Graph: its two
+        ends and the edge between them, which carries the step's barrier."""
+        return _import_picks(job, group, entry, [0, len(entry["frames"]) - 1], connect=True)
+
+    def _own_step_job(job: dict, entry: dict, out: dict) -> None:
+        """One step of a multi-step route, added as an edge: the edge gets a job of its own holding
+        only that step (its result, barrier and follow-ups are the step's, not the whole route's).
+        On the event loop (the step job reads its result there)."""
+        from mepd.web.steps import step_of_entry
+
+        edge = out["edge"]
+        step = step_of_entry(job, entry["id"]) if edge is not None else None
+        if step is not None:
+            out["step_job"] = J().add_step_job(job, step, edge["id"], [edge["source"], edge["target"]])["id"]
+            out["edge"] = W().edge(edge["id"])
+
     @app.post("/api/jobs/{jid}/import-entry")
     async def import_entry(jid: str, body: EntryImportIn):
         """Pull structures out of a result into the Graph, optionally
@@ -2483,18 +2500,11 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             if body.frame is None or not 0 <= body.frame < len(frames):
                 raise HTTPException(400, "frame out of range")
             picks = [body.frame]
-        connect = body.connect and body.frames == "endpoints"
-        out = await run_in_threadpool(_import_picks, job, group, entry, picks, connect)
-        edge = out["edge"]
-        if edge is not None:
-            # One step of a multi-step route: the edge gets a job of its own holding only that step
-            # (its result, barrier and follow-ups are the step's, not the whole route's).
-            from mepd.web.steps import step_of_entry
-
-            step = step_of_entry(job, entry["id"])
-            if step is not None:
-                out["step_job"] = J().add_step_job(job, step, edge["id"], [edge["source"], edge["target"]])["id"]
-                out["edge"] = W().edge(edge["id"])
+        if body.connect and body.frames == "endpoints" and len(picks) == 2:
+            out = await run_in_threadpool(_import_step, job, group, entry)
+            _own_step_job(job, entry, out)
+        else:
+            out = await run_in_threadpool(_import_picks, job, group, entry, picks, False)
         publish_ws()
         return out
 
@@ -2515,8 +2525,10 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
 
     @app.post("/api/jobs/{jid}/import-entries")
     async def import_entries(jid: str, body: EntriesImportIn):
-        """Bulk "Add to Graph": the structure of each chosen entry -- its only
-        frame, or the TS of a path -- in one request and one update."""
+        """Bulk "Add to Graph" in one request and one update: each chosen
+        structure (an entry with one frame), and each chosen reaction step (a
+        path or IRC through a TS) as its two ends joined by an edge, as "Add
+        ends + edge" does for one."""
         job = J().get(jid)
         result = await page_result(J(), job)
         chosen = []
@@ -2525,21 +2537,50 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
                 chosen.append(find_entry(result, eid))
             except KeyError:
                 raise HTTPException(404, f"no entry {eid!r}") from None
+
+        def is_step(entry: dict) -> bool:
+            return len(entry["frames"]) > 1 and entry.get("ts_index") is not None
+
+        # Steps between the same two species share one edge, which keeps the barrier of the first one
+        # added: the lowest first.
+        chosen.sort(key=lambda ge: (not is_step(ge[1]), ge[1].get("barrier_kcal") is None,
+                                    ge[1].get("barrier_kcal") or 0.0))
         if demo is not None:
-            demo.check_structures(len(W().snapshot()["structures"]), [0] * len(chosen))
+            demo.check_structures(len(W().snapshot()["structures"]),
+                                  [0] * sum(2 if is_step(e) else 1 for _, e in chosen))
 
-        def run() -> dict:
-            total = {"added": [], "reused": [], "edge": None}
+        def run() -> list:
+            outs = []
             for group, entry in chosen:
-                k = 0 if len(entry["frames"]) == 1 else (entry["ts_index"] if entry["ts_index"] is not None else 0)
-                out = _import_picks(job, group, entry, [k], connect=False)
-                total["added"] += out["added"]
-                total["reused"] += out["reused"]
-            return total
+                if is_step(entry):
+                    out = _import_step(job, group, entry)
+                    if out["edge"] is None:
+                        # Both ends are one species (an exchange, a conformer change): no edge to draw,
+                        # so its TS goes in as well, as a structure of its own.
+                        ts = _import_picks(job, group, entry, [entry["ts_index"]], connect=False)
+                        out["added"] += ts["added"]
+                        out["reused"] += ts["reused"]
+                else:
+                    out = _import_picks(job, group, entry, [0], connect=False)
+                outs.append((entry, out))
+            return outs
 
-        out = await run_in_threadpool(run)
+        total = {"added": [], "reused": [], "edge": None, "edges": [], "step_jobs": []}
+        for entry, out in await run_in_threadpool(run):
+            _own_step_job(job, entry, out)
+            total["added"] += out["added"]
+            total["reused"] += out["reused"]
+            if out["edge"] is not None and out["edge"]["id"] not in {e["id"] for e in total["edges"]}:
+                total["edges"].append(out["edge"])
+            if out.get("step_job"):
+                total["step_jobs"].append(out["step_job"])
+        # A structure two steps share (their reactant) is listed once.
+        total["added"] = list({r["id"]: r for r in total["added"]}.values())
+        total["reused"] = list({r["id"]: r for r in total["reused"]}.values())
+        if len(total["edges"]) == 1:
+            total["edge"] = total["edges"][0]
         publish_ws()
-        return out
+        return total
 
     # ------------------------------------------------------- bulk / export
     @app.post("/api/kinetics")
