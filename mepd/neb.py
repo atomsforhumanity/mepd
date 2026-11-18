@@ -765,7 +765,7 @@ class NEB(PathMinimizer):
             grad_calls_made = len(new_chain) - n_nodes_frozen
             self.grad_calls_made += grad_calls_made
 
-            if self.parameters.use_geodesic_tangent:
+            if getattr(self.parameters, "use_geodesic_tangent", False):
                 grad_corr = ch._gradient_correlation(new_chain, chain_previous)
             else:   # the same numbers, from the projections update_chain makes anyway
                 v1 = np.array(self._neb_gradient(new_chain)).flatten()
@@ -878,7 +878,8 @@ class NEB(PathMinimizer):
         key = (id(chain), tuple(map(id, chain.nodes)), tuple(bool(n.do_climb) for n in chain.nodes))
         memo = self.__dict__.setdefault("_neb_gradient_memo", {})
         if key not in memo:
-            memo[key] = (chain, ch.compute_NEB_gradient(chain, geodesic_tangent=self.parameters.use_geodesic_tangent))
+            memo[key] = (chain, ch.compute_NEB_gradient(
+                chain, geodesic_tangent=getattr(self.parameters, "use_geodesic_tangent", False)))
             while len(memo) > 3:
                 memo.pop(next(iter(memo)))
         return memo[key][1]
