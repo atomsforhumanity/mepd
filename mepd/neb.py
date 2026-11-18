@@ -765,7 +765,14 @@ class NEB(PathMinimizer):
             grad_calls_made = len(new_chain) - n_nodes_frozen
             self.grad_calls_made += grad_calls_made
 
-            grad_corr = ch._gradient_correlation(new_chain, chain_previous)
+            if self.parameters.use_geodesic_tangent:
+                grad_corr = ch._gradient_correlation(new_chain, chain_previous)
+            else:   # the same numbers, from the projections update_chain makes anyway
+                v1 = np.array(self._neb_gradient(new_chain)).flatten()
+                v1 = v1 / np.linalg.norm(v1)
+                v2 = np.array(self._neb_gradient(chain_previous)).flatten()
+                v2 = v2 / np.linalg.norm(v2)
+                grad_corr = np.dot(v1, v2) / np.dot(v1, v1)
             timestep_update = getattr(self.optimizer, "update_timestep_from_correlation", None)
             if callable(timestep_update):
                 timestep_message = timestep_update(grad_corr)
@@ -863,6 +870,19 @@ class NEB(PathMinimizer):
                 node._cached_energy = ene
                 node._cached_gradient = grad
 
+    def _neb_gradient(self, chain: Chain) -> NDArray:
+        """ch.compute_NEB_gradient(chain) at this search's tangent, kept for the last few chains:
+        each step's gradient correlation asks again for the two chains update_chain projects.
+        Keyed by the chain, its node objects and their climbing flags (nodes are replaced, never
+        moved in place; do_climb is flipped in place)."""
+        key = (id(chain), tuple(map(id, chain.nodes)), tuple(bool(n.do_climb) for n in chain.nodes))
+        memo = self.__dict__.setdefault("_neb_gradient_memo", {})
+        if key not in memo:
+            memo[key] = (chain, ch.compute_NEB_gradient(chain, geodesic_tangent=self.parameters.use_geodesic_tangent))
+            while len(memo) > 3:
+                memo.pop(next(iter(memo)))
+        return memo[key][1]
+
     def update_chain(self, chain: Chain) -> Chain:
         import mepd.chainhelpers as ch
 
@@ -882,10 +902,7 @@ class NEB(PathMinimizer):
         self._update_cache(chain, grads, enes)
 
         try:
-            grad_step = ch.compute_NEB_gradient(
-                chain,
-                geodesic_tangent=self.parameters.use_geodesic_tangent,
-            )
+            grad_step = self._neb_gradient(chain)
             converged_mask = np.array([node.converged for node in chain.nodes], dtype=bool)
             if converged_mask.any():
                 grad_step = np.array(grad_step, dtype=float, copy=True)
