@@ -65,6 +65,28 @@ def iter_triplets(chain: Chain):
         yield chain.nodes[i - 1: i + 2]
 
 
+def _tangent_without_rigid_motion(node: Node, tangent: NDArray) -> NDArray:
+    """The path tangent at a molecular image without net translation and rotation (about the image's
+    centroid; Cartesian-orthogonal, unit masses).
+
+    Neighbouring images differ by a little rigid rotation as well as by the reaction. Left in the tangent, it
+    went into both the perpendicular gradient and the spring force, which then carried rigid parts that cancel
+    only in their sum (the NEB gradient, whose rigid motion is projected out). On a converged band the summed
+    gradient was ~1e-5 while g_perp and the TS spring force stayed above their thresholds, so the band ran to
+    its step cap (team42: 12,249 band gradients instead of 466 on bs09; ~14k instead of 280-510 on four
+    more). Only for molecular chains, the same ones whose NEB gradient is projected (compute_NEB_gradient);
+    a tangent that is all rigid motion is kept as it was."""
+    if not getattr(node, "has_molecular_graph", False):
+        return tangent
+    t = np.asarray(tangent, dtype=float)
+    if t.ndim != 2 or t.shape[1] != 3 or t.shape[0] < 2:
+        return tangent
+    projected = project_rigid_body_forces(np.asarray(node.coords, dtype=float), t, masses=None)
+    if np.linalg.norm(projected) <= 1e-12 * max(np.linalg.norm(t), 1e-300):
+        return tangent
+    return projected
+
+
 def neighs_grad_func(
     chain: Chain, prev_node: Node, current_node: Node, next_node: Node,
     geodesic_tangent: bool = False,
@@ -81,6 +103,7 @@ def neighs_grad_func(
         vec_tan_path = _create_tangent_path(
             prev_node=prev_node, current_node=current_node, next_node=next_node
         )
+    vec_tan_path = _tangent_without_rigid_motion(current_node, vec_tan_path)
     unit_tan_path = vec_tan_path / np.linalg.norm(vec_tan_path)
 
     pe_grad = np.array(current_node.gradient)

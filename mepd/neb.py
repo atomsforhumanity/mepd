@@ -9,7 +9,6 @@ import numpy as np
 from mepd.convergence_helpers import chain_converged
 from numpy.typing import NDArray
 from openbabel import pybel
-from mepd.errors import ExternalProgramError
 
 import mepd.chainhelpers as ch
 from mepd.chain import Chain
@@ -718,7 +717,7 @@ class NEB(PathMinimizer):
             try:
                 new_chain = self.update_chain(chain=chain_previous)
 
-            except ExternalProgramError:
+            except ElectronicStructureError:   # ExternalProgramError is one; axtb raises the base class
                 msg = "Electronic structure error during NEB step, rolling back 5 steps and trying again."
                 if self.parameters.v:
                     print(f"\n!!!{msg}")
@@ -953,7 +952,7 @@ class NEB(PathMinimizer):
                     continue
                 grads_success = True
 
-            except ExternalProgramError:
+            except ElectronicStructureError:   # ExternalProgramError is one; axtb raises the base class
                 print("SHRINKING")
                 exploded = None
                 self.optimizer.g_old = None

@@ -72,3 +72,25 @@ def test_an_ordinary_step_is_taken(monkeypatch):
     neb, start, opt = _neb(monkeypatch, [-1.0, -0.99, -1.0])
     new = neb.update_chain(start)
     assert new.energies[1] == pytest.approx(-0.99) and opt.timestep == 1.0
+
+
+def test_a_base_electronic_structure_error_on_a_trial_step_shrinks_the_step(monkeypatch):
+    """axtb raises the base ElectronicStructureError when an SCF fails (the xtb program raised
+    ExternalProgramError, a subclass); neb.py caught only the subclass, so the band crashed."""
+    from mepd.errors import ElectronicStructureError
+
+    neb, start, opt = _neb(monkeypatch, [-1.0, -0.99, -1.0])
+    engine = neb.engine
+    real = type(engine).compute_gradients
+    state = {"n": 0}
+
+    def flaky(self, chain):
+        state["n"] += 1
+        if state["n"] == 2:   # the first trial step lands where the SCF fails
+            raise ElectronicStructureError(msg="SCF did not converge", obj=None)
+        return real(self, chain)
+
+    monkeypatch.setattr(type(engine), "compute_gradients", flaky)
+    new = neb.update_chain(start)
+    assert new.energies[1] == pytest.approx(-0.99)
+    assert state["n"] >= 3
