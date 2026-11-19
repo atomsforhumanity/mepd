@@ -34,6 +34,9 @@ EPOCHS: dict[str, int] = {
     "neb": 2,
     "fneb": 1,
     "gsm": 1,
+    # MLP-GI's geodesic path (mepd.mlp_geodesic): on the profile's engine, or on an ML potential (numerics_epoch's
+    # mlp_model) whose model and package version are added to the string.
+    "mlpgi": 1,
     "fsm_ts": 1,
     "msmep": 1,
 }
@@ -46,6 +49,7 @@ DEPENDS: dict[str, tuple[str, ...]] = {
     "neb": ("energies", "interpolation", "minimize"),   # the elementary-step check minimizes
     "fneb": ("energies", "interpolation"),
     "gsm": ("energies", "interpolation"),
+    "mlpgi": ("energies", "interpolation", "minimize"), # the engine's surface or the final path on it; step check minimizes
     "fsm_ts": ("fneb", "ts_search", "minimize", "frequencies", "gsm", "neb"),   # GSM, then NEB, as fallbacks
     "msmep": ("neb", "fneb", "fsm_ts", "gsm", "minimize", "frequencies"),
 }
@@ -57,6 +61,16 @@ _PROGRAMS: dict[str, tuple[str, ...]] = {
     "minimize": ("qcopt",),
     "ts_search": ("qcopt",),
     "irc": ("qcopt",),
+    "mlpgi": ("ase",),                                  # ASE's FIRE drives the path's optimization stages
+}
+
+# ML potential family (mepd.engines.mlip) -> the distribution whose version sets its numbers.
+_MLP_PACKAGES: dict[str, str] = {
+    "aimnet2": "aimnet",
+    "ani": "torchani",
+    "fairchem": "fairchem-core",
+    "mace": "mace-torch",
+    "orb": "orb-models",
 }
 
 
@@ -84,11 +98,8 @@ def _version(package: str) -> str:
         return "none"
 
 
-def gsm_build(executable: Optional[str] = None) -> str:
-    """The molecularGSM binary's identity: sha256[:12] of the file `executable` (or $GSM_EXECUTABLE, or `gsm` on
-    PATH) resolves to; "none" when there is none."""
-    name = executable or os.getenv("GSM_EXECUTABLE") or "gsm"
-    path = name if os.path.sep in str(name) else shutil.which(str(name))
+def _file_hash(path) -> str:
+    """sha256[:12] of a file; "none" when there is none."""
     if not path or not Path(path).is_file():
         return "none"
     h = hashlib.sha256()
@@ -96,6 +107,26 @@ def gsm_build(executable: Optional[str] = None) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()[:12]
+
+
+def gsm_build(executable: Optional[str] = None) -> str:
+    """The molecularGSM binary's identity: sha256[:12] of the file `executable` (or $GSM_EXECUTABLE, or `gsm` on
+    PATH) resolves to; "none" when there is none."""
+    name = executable or os.getenv("GSM_EXECUTABLE") or "gsm"
+    return _file_hash(name if os.path.sep in str(name) else shutil.which(str(name)))
+
+
+def mlp_identity(model: str, checkpoint: Optional[str] = None) -> list[str]:
+    """The ML potential MLP-GI optimizes on: its name, its family's package version (mepd.engines.mlip.MODELS),
+    and sha256[:12] of a local checkpoint file when one is given."""
+    from mepd.engines.mlip import MODELS
+
+    spec = MODELS.get(str(model))
+    package = _MLP_PACKAGES.get(spec.family) if spec else None
+    parts = [f"mlp={model}", f"mlp.package={package}=={_version(package)}" if package else "mlp.package=none"]
+    if checkpoint:
+        parts.append(f"mlp.checkpoint={_file_hash(Path(checkpoint).expanduser())}")
+    return parts
 
 
 def dirty_suffix(code: Optional[dict] = None) -> str:
@@ -109,17 +140,21 @@ def dirty_suffix(code: Optional[dict] = None) -> str:
     return ""
 
 
-def numerics_epoch(*methods: str, gsm_executable: Optional[str] = None, code: Optional[dict] = None) -> str:
+def numerics_epoch(*methods: str, gsm_executable: Optional[str] = None, mlp_model: Optional[str] = None,
+                   mlp_checkpoint: Optional[str] = None, code: Optional[dict] = None) -> str:
     """The numerics a result of these methods was computed with: the epoch of each method used (with its
-    dependencies), the versions of the programs they call, the GSM build when GSM is among them, and the dirty
-    suffix. Equal strings mean reusable results; any bump, version or build change, or uncommitted edit makes
-    them differ."""
+    dependencies), the versions of the programs they call, the GSM build when GSM is among them, the ML potential
+    when MLP-GI runs on one (`mlp_model`, `mlp_checkpoint`: the profile's path_min_inputs), and the dirty suffix.
+    Equal strings mean reusable results; any bump, version or build change, or uncommitted edit makes them
+    differ."""
     used = methods_of(*methods)
     parts = [f"{m}={EPOCHS[m]}" for m in used]
     programs = sorted({p for m in used for p in _PROGRAMS.get(m, ())})
     parts += [f"{p}={_version(p)}" for p in programs]
     if "gsm" in used:
         parts.append(f"gsm.build={gsm_build(gsm_executable)}")
+    if "mlpgi" in used and mlp_model:
+        parts += mlp_identity(mlp_model, mlp_checkpoint)
     return ",".join(parts) + dirty_suffix(code)
 
 

@@ -89,3 +89,20 @@ def test_an_untracked_module_makes_the_checkout_dirty(tmp_path):
     state = _checkout_state(tmp_path)
     diff = subprocess.run(["git", "diff", "HEAD", "--", "mepd"], cwd=tmp_path, capture_output=True, text=True).stdout
     assert state["dirty"] is True and state["diff_sha256"] == hashlib.sha256(diff.strip().encode()).hexdigest()
+
+
+def test_mlpgi_has_an_epoch_and_names_its_potential(tmp_path):
+    used = N.methods_of("mlpgi")
+    assert used == ["energies", "frequencies", "interpolation", "minimize", "mlpgi"]
+    on_engine = N.numerics_epoch("mlpgi", code=CLEAN)
+    assert "mlpgi=1" in on_engine and "ase=" in on_engine and "mlp=" not in on_engine
+    assert "mlpgi" not in N.numerics_epoch("msmep", code=CLEAN)          # the ledger names the path method itself
+    on_mlp = N.numerics_epoch("mlpgi", mlp_model="aimnet2-2025", code=CLEAN)
+    assert on_mlp.startswith(on_engine + ",mlp=aimnet2-2025,mlp.package=aimnet==")
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"weights v1")
+    v1 = N.numerics_epoch("mlpgi", mlp_model="mace-off", mlp_checkpoint=str(ckpt), code=CLEAN)
+    ckpt.write_bytes(b"weights v2")
+    assert N.numerics_epoch("mlpgi", mlp_model="mace-off", mlp_checkpoint=str(ckpt), code=CLEAN) != v1
+    assert "mlp.package=none" in N.numerics_epoch("mlpgi", mlp_model="no-such-model", code=CLEAN)
+    assert "mlp=" not in N.numerics_epoch("neb", mlp_model="aimnet2-2025", code=CLEAN)
