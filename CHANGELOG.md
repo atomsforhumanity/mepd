@@ -89,6 +89,7 @@ Add each change under `Unreleased` as you make it, in the group it belongs to
 - **Explorer (async): a generator's proposal job reserves no more workers than it runs.** With `n_seeds` set, the reactor runs that many trajectories at a time, but its job held `parallel` (= `--workers`) slots: 4 MD runs with 10 workers showed 10/10 busy and kept the other 6 from anything else.
 
 ### Changed
+- **Image: linus is read from `atomsforhumanity/linus-develop`.** linus's private development repository was renamed from `atomsforhumanity/linus` (2026-11-19), and that name now goes to linus's public release repository, which holds only release cuts. The CI workflow's `git ls-remote` (deploy key and token paths), the Dockerfile's `LINUS_REPO` and token clone, and the deploy READMEs now name `linus-develop`, so builds keep following linus `main` (still pinned to e464f5d) and don't clone the public cut. The deploy key and token moved with the repository; no secret changes.
 
 - **Deploy: the beta runs on afh-c03.** afh-c04 was drained on 2026-11-16 for a hardware check, and the data (`/nvme1/mepd`) was copied to afh-c03 and checked file by file; `mepd-demo.yaml`'s `nodeSelector` now names afh-c03, so a deploy no longer puts the pod back on afh-c04, where it would wait unscheduled. `deploy/k8s/README.md` says how to move to another node.
 
