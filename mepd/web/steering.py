@@ -1,5 +1,5 @@
 """Built-in steering profiles: higher levels of theory a network expansion can steer with without a saved
-workspace profile. linus (AFH's in-process DFT, atomsforhumanity/linus) is the default where it is installed
+workspace profile. linus (AFH's in-process DFT, atomsforhumanity/linus-develop) is the default where it is installed
 (the web image); elsewhere there is none and the default stays the run's own level."""
 from __future__ import annotations
 

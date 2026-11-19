@@ -55,7 +55,7 @@ ARG FAIRCHEM_MODELS="uma-s-1p2p1"
 # `--build-arg AXTB_COMMIT=` builds without it (backend = "axtb" then says axtb
 # isn't installed).
 ARG AXTB_COMMIT=main
-# linus (github.com/atomsforhumanity/linus, private: AFH's in-process DFT), the
+# linus (github.com/atomsforhumanity/linus-develop, private: AFH's in-process DFT), the
 # web's default steering level. Followed at main like axtb: CI passes main's
 # commit and read access as a build secret: a read-only deploy key
 # (`linus_deploy_key`) or a token that can read the repository (`linus_token`).
@@ -190,7 +190,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 # presets are never found; the web's profile uses linus's own grid (linus:2).
 FROM axtb AS linus
 ARG LINUS_COMMIT
-ARG LINUS_REPO=ssh://git@ssh.github.com:443/atomsforhumanity/linus.git
+ARG LINUS_REPO=ssh://git@ssh.github.com:443/atomsforhumanity/linus-develop.git
 ARG MATURIN_VERSION=1.16.0
 ARG CARGO_BUILD_JOBS=
 # GitHub's published SSH host key (github.com and ssh.github.com:443 share it).
@@ -198,7 +198,7 @@ ARG GITHUB_HOST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLs
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-client patch cmake curl \
  && rm -rf /var/lib/apt/lists/*
-# Until linus builds against axtb main itself (atomsforhumanity/linus#1): the two
+# Until linus builds against axtb main itself (atomsforhumanity/linus-develop#1): the two
 # D4 calls on axtb main's API. Applied only to a linus that still has the old ones.
 COPY deploy/docker/linus-d4-axtb-main.patch /tmp/linus-d4-axtb-main.patch
 RUN --mount=type=secret,id=linus_deploy_key \
@@ -216,7 +216,7 @@ RUN --mount=type=secret,id=linus_deploy_key \
         git clone -q "$LINUS_REPO" /src/linus; \
     else \
       git -c "http.extraHeader=Authorization: Basic $(printf 'x-access-token:%s' "$(cat /run/secrets/linus_token)" | base64 -w0)" \
-        clone -q https://github.com/atomsforhumanity/linus.git /src/linus; \
+        clone -q https://github.com/atomsforhumanity/linus-develop.git /src/linus; \
     fi; \
     git -C /src/linus checkout -q "$LINUS_COMMIT"; \
     if grep -q with_parallel /src/linus/crates/linus-disp/src/d4.rs; then \
