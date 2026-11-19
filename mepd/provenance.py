@@ -55,13 +55,26 @@ def code_state() -> dict:
         out = {"version": version("mepd")}
     except PackageNotFoundError:
         out = {"version": "unknown"}
-    root = Path(__file__).resolve().parents[1]
+    out.update(_checkout_state(Path(__file__).resolve().parents[1]))
+    return out
+
+
+def _checkout_state(root: Path) -> dict:
+    """The git commit of the checkout at `root`, and whether its mepd/ differs from it: edits to tracked files
+    and new files git doesn't ignore (an uncommitted module changes numbers too). diff_sha256 hashes the diff,
+    plus each untracked file's path and content when there are any."""
     head = _git(["rev-parse", "HEAD"], root) if (root / ".git").exists() else None
-    if head:
-        diff = _git(["diff", "HEAD", "--", "mepd"], root) or ""
-        out.update(commit=head, dirty=bool(diff), source=str(root))
-        if diff:
-            out["diff_sha256"] = hashlib.sha256(diff.encode()).hexdigest()
+    if not head:
+        return {}
+    diff = _git(["diff", "HEAD", "--", "mepd"], root) or ""
+    untracked = sorted(f for f in (_git(["ls-files", "--others", "--exclude-standard", "--", "mepd"], root)
+                                   or "").splitlines() if f.strip())
+    out = {"commit": head, "dirty": bool(diff or untracked), "source": str(root)}
+    if diff or untracked:
+        payload = diff + "".join(f"\nuntracked {f} {_sha256(root / f)}" for f in untracked if (root / f).is_file())
+        out["diff_sha256"] = hashlib.sha256(payload.encode()).hexdigest()
+        if untracked:
+            out["untracked"] = untracked
     return out
 
 
