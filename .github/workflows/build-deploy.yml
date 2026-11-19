@@ -72,18 +72,18 @@ jobs:
             printf '%s\n' "$LINUS_DEPLOY_KEY" > "$key"; chmod 600 "$key"
             echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
             linus=$(GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o HostKeyAlias=github.com -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes" \
-              git ls-remote ssh://git@ssh.github.com:443/atomsforhumanity/linus.git refs/heads/main | cut -f1)
+              git ls-remote ssh://git@ssh.github.com:443/atomsforhumanity/linus-develop.git refs/heads/main | cut -f1)
             [ -n "$linus" ] || { echo "::error::LINUS_DEPLOY_KEY is set but linus main could not be read"; exit 1; }
             echo "linus_key=$key" >> "$GITHUB_OUTPUT"
           elif [ -n "$LINUS_TOKEN" ]; then
             auth="Authorization: Basic $(printf 'x-access-token:%s' "$LINUS_TOKEN" | base64 -w0)"
-            linus=$(git -c "http.extraHeader=$auth" ls-remote https://github.com/atomsforhumanity/linus.git refs/heads/main | cut -f1)
+            linus=$(git -c "http.extraHeader=$auth" ls-remote https://github.com/atomsforhumanity/linus-develop.git refs/heads/main | cut -f1)
             [ -n "$linus" ] || { echo "::error::LINUS_TOKEN is set but linus main could not be read"; exit 1; }
             echo "linus_token=1" >> "$GITHUB_OUTPUT"
           fi
           # A pinned linus commit instead of main, while main breaks the image's tests. Empty: follow main.
           # 2026-11-13: e464f5d (the last commit deployed, 2026-11-11); linus main's closed-shell stability
-          # check no longer finds H2's broken-symmetry solution (atomsforhumanity/linus issue). Unpin when fixed.
+          # check no longer finds H2's broken-symmetry solution (atomsforhumanity/linus-develop issue). Unpin when fixed.
           linus_pin=e464f5db0e1ec696713222f7cd5d5f2970e94fda
           if [ -n "$linus" ] && [ -n "$linus_pin" ]; then
             echo "linus main: $linus (not used: pinned)" >> "$GITHUB_STEP_SUMMARY"
