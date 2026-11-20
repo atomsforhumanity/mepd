@@ -51,12 +51,12 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Image: $IMAGE:$tag" >> "$GITHUB_STEP_SUMMARY"
 
-      # mepd follows axtb's and linus's main: each build resolves their current
-      # commits, so those stages rebuild exactly when main moves, and the image
-      # records what it holds (MEPD_AXTB_COMMIT, MEPD_LINUS_COMMIT). linus is
-      # private: read through the deploy key in LINUS_DEPLOY_KEY, else the image
-      # is built without it.
-      - name: Resolve axtb and linus main (or linus's pin)
+      # mepd follows axtb's and linus's main unless pinned (axtb_pin, linus_pin
+      # below): each build resolves their current commits, so those stages
+      # rebuild exactly when main moves, and the image records what it holds
+      # (MEPD_AXTB_COMMIT, MEPD_LINUS_COMMIT). linus is private: read through the
+      # deploy key in LINUS_DEPLOY_KEY, else the image is built without it.
+      - name: Resolve axtb and linus main (or their pins)
         id: deps
         env:
           LINUS_DEPLOY_KEY: ${{ secrets.LINUS_DEPLOY_KEY }}
@@ -64,6 +64,15 @@ jobs:
         run: |
           axtb=$(git ls-remote https://github.com/atomsforhumanity/axtb.git refs/heads/main | cut -f1)
           [ -n "$axtb" ] || { echo "::error::could not resolve axtb main"; exit 1; }
+          # A pinned axtb commit instead of main, while main needs a newer qc* stack than mepd's lock. Empty: follow main.
+          # 2026-11-19: 675f523 (v0.1.2, the last commit deployed, 2026-11-17). axtb main is 0.2.0 (65d0f64), built
+          # for the final qc* releases: on mepd's pre-port locks the image's check reports axtb missing (run
+          # 44644328039) and linus's axtb-d4 patch goes unused. Unpin when mepd takes the new qc* stack.
+          axtb_pin=675f523e4eb3baf49ad0d90d5ccddf4de6b8677f
+          if [ -n "$axtb_pin" ]; then
+            echo "axtb main: $axtb (not used: pinned)" >> "$GITHUB_STEP_SUMMARY"
+            axtb=$axtb_pin
+          fi
           echo "axtb=$axtb" >> "$GITHUB_OUTPUT"
           echo "axtb: $axtb" >> "$GITHUB_STEP_SUMMARY"
           linus=""
