@@ -82,14 +82,17 @@ this node with Docker access, which amounts to root, and root can read this file
 - **Repository → Settings → Secrets and variables → Actions → New repository secret → `HF_TOKEN`.** This is
   the fine-grained Hugging Face token of `huggingface@atomsforhumanity.org`, with read access to gated repos.
   The build needs it for the UMA weights.
-- **`LINUS_DEPLOY_KEY`** (optional): the private half of a read-only deploy key of `atomsforhumanity/linus`
-  (linus → Settings → Deploy keys, added by a linus admin; atomsforhumanity/linus#2). With it, each build
+- **`LINUS_DEPLOY_KEY`** (optional): the private half of a read-only deploy key of `atomsforhumanity/linus-develop`
+  (linus → Settings → Deploy keys, added by a linus admin; atomsforhumanity/linus-develop#2). With it, each build
   resolves linus's `main` and builds it into the image, and network expansions default to steering with it;
   without it the image has no linus. The key pair was made on Jan's laptop as `~/.ssh/mepd_ci_linus_deploy`:
   `gh secret set LINUS_DEPLOY_KEY -R atomsforhumanity/mepd < ~/.ssh/mepd_ci_linus_deploy`.
 - **`LINUS_TOKEN`** (optional, instead of the deploy key): a GitHub token that can read
-  `atomsforhumanity/linus` (a fine-grained token with *Contents: read* on that repository only). The deploy
+  `atomsforhumanity/linus-develop` (a fine-grained token with *Contents: read* on that repository only). The deploy
   key is used when both are set.
+- linus's development repository was `atomsforhumanity/linus` until 2026-11-19; it is now
+  `atomsforhumanity/linus-develop` (the deploy key and token moved with it), and `atomsforhumanity/linus` is
+  linus's public release repository, which the build does not read.
 - Nothing is needed for axtb: it is public, and each build resolves its `main` the same way.
 - **The GHCR package** (https://github.com/orgs/atomsforhumanity/packages/container/package/mepd → **Package
   settings → Manage Actions access → Add repository → `mepd`, role *Write***). The first images were pushed by
