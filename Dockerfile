@@ -49,12 +49,13 @@ ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.5
 # `--build-arg FAIRCHEM_MODELS=` builds without them.
 ARG FAIRCHEM_MODELS="uma-s-1p2p1"
 # axtb (github.com/atomsforhumanity/axtb, AFH's Rust g-xTB 2.0.1) for
-# [gxtb_engine_kwds] backend = "axtb", built from source. mepd follows axtb's main:
-# CI passes main's current commit (git ls-remote), so this stage rebuilds exactly
-# when main moves and the image records the commit it holds (MEPD_AXTB_COMMIT).
-# `--build-arg AXTB_COMMIT=` builds without it (backend = "axtb" then says axtb
-# isn't installed).
-ARG AXTB_COMMIT=main
+# [gxtb_engine_kwds] backend = "axtb", built from source at AXTB_COMMIT, and the
+# image records the commit it holds (MEPD_AXTB_COMMIT). Pinned to v0.1.2 (675f523)
+# here and in CI until mepd takes the new qc* stack: axtb main (0.2.0) is built for
+# the final qc* releases, which mepd's lock doesn't have yet. With the pin empty,
+# CI follows axtb's main. `--build-arg AXTB_COMMIT=` builds without it
+# (backend = "axtb" then says axtb isn't installed).
+ARG AXTB_COMMIT=675f523e4eb3baf49ad0d90d5ccddf4de6b8677f
 # linus (github.com/atomsforhumanity/linus-develop, private: AFH's in-process DFT), the
 # web's default steering level. Followed at main like axtb: CI passes main's
 # commit and read access as a build secret: a read-only deploy key

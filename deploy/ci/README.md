@@ -93,7 +93,8 @@ this node with Docker access, which amounts to root, and root can read this file
 - linus's development repository was `atomsforhumanity/linus` until 2026-11-19; it is now
   `atomsforhumanity/linus-develop` (the deploy key and token moved with it), and `atomsforhumanity/linus` is
   linus's public release repository, which the build does not read.
-- Nothing is needed for axtb: it is public, and each build resolves its `main` the same way.
+- Nothing is needed for axtb: it is public. Each build uses the workflow's `axtb_pin` (v0.1.2 until mepd
+  takes the new qc* stack), or resolves axtb's `main` when the pin is empty.
 - **The GHCR package** (https://github.com/orgs/atomsforhumanity/packages/container/package/mepd → **Package
   settings → Manage Actions access → Add repository → `mepd`, role *Write***). The first images were pushed by
   hand, so the workflow's built-in token can't push to the package until the repository has access here.
