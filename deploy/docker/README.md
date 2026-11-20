@@ -56,9 +56,10 @@ docker build --build-arg LINUS_COMMIT=$(git ls-remote ssh://git@ssh.github.com:4
   --secret id=linus_deploy_key,src=$HOME/.ssh/<a key that can read linus> ...   # with linus
 ```
 
-- **axtb (`AXTB_COMMIT`, default `main`)** is cloned from GitHub and built with Rust in its own stage,
-  which keeps only the wheel. mepd follows axtb's main: CI passes main's current commit, so the stage
-  rebuilds when main moves and `MEPD_AXTB_COMMIT` records it. `AXTB_COMMIT=` leaves it out.
+- **axtb (`AXTB_COMMIT`, default v0.1.2, `675f523`)** is cloned from GitHub and built with Rust in its own
+  stage, which keeps only the wheel; `MEPD_AXTB_COMMIT` records the commit. CI pins the same commit
+  (`axtb_pin` in the workflow) until mepd takes the new qc* stack, since axtb main (0.2.0) is built for the
+  final qc* releases; with the pin empty CI follows axtb's main. `AXTB_COMMIT=` leaves it out.
 - **linus (`LINUS_COMMIT`, empty by default)** is private: it is cloned with the build secret
   `linus_deploy_key` and built on the axtb stage, its DFT-D4 crate patched to that axtb tree (and its two D4
   calls ported, `deploy/docker/linus-d4-axtb-main.patch`, until atomsforhumanity/linus-develop#1 is merged). Built with
