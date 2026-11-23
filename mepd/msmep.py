@@ -421,6 +421,8 @@ class MSMEP:
     ) -> None:
         if attempt_payload is None:
             return
+        # "converged" here is "optimize_chain returned" (run_minimize_chain sets it), kept under this
+        # key in the persisted payload; it is not the minimizer's `search_converged` (tree.json).
         converged = self._chain_result_converged(neb_obj)
         is_elem_step = bool(getattr(elem_step_results, "is_elem_step", False))
         attempt_payload.update(
@@ -1511,6 +1513,9 @@ class MSMEP:
             n = self._construct_path_minimizer(initial_chain=interpolation)
             with search_control.interruptible():
                 elem_step_results = n.optimize_chain()
+            # This `converged` means "optimize_chain returned": it drives only the attempted-pairs skip
+            # rule (_mark_attempted_pair_result; "already searched with these inputs"). Whether the search
+            # reached its own stopping criterion is the minimizer's `search_converged`, tree.json's key.
             setattr(n, "converged", True)
             out_chain = n.optimized
             from mepd.engines.mean_force import apply_free_energy_profile

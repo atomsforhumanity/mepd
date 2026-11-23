@@ -61,13 +61,12 @@ _SPLIT = {
 
 
 def _converged(data) -> bool | None:
-    explicit = getattr(data, "converged", None)
-    if explicit is not None:
-        return bool(explicit)
-    trajectory = getattr(data, "chain_trajectory", None) or []
-    chain = getattr(data, "optimized", None) or (trajectory[-1] if trajectory else None)
-    nodes = list(getattr(chain, "nodes", []) or [])
-    return all(bool(getattr(n, "converged", False)) for n in nodes) if nodes else None
+    """Whether this node's path search reached its own stopping criterion: what
+    the path minimizer itself reports (`PathMinimizer.search_converged`),
+    never inferred here. None when the method cannot tell (DL-Find NEB) or
+    the record predates the flag."""
+    value = getattr(data, "search_converged", None)
+    return None if value is None else bool(value)
 
 
 def node_record(node, n_children: int | None = None) -> dict:

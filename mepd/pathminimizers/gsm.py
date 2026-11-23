@@ -475,6 +475,7 @@ class GSM(PathMinimizer):
 
         # Cost of evaluating the two endpoints, mirrors FreezingNEB.optimize_chain.
         self.gsm_attempts = []
+        self.search_converged = False
         self.engine.compute_energies([reactant, product])
         self.grad_calls_made += 2
         e_reactant = float(reactant.energy)
@@ -499,6 +500,7 @@ class GSM(PathMinimizer):
         # Every other PathMinimizer sets this after a successful optimize_chain()
         # -- msmep.run_minimize_chain reads it unconditionally right afterward.
         self.optimized = final_chain
+        self.search_converged = self.gsm_converged   # GSM's own -TS-/-XTS- end, not its iteration limit
 
         elem_step_results = (
             self._check_elem_step(final_chain) if do_elem_step_checks else IS_ELEM_STEP
@@ -525,6 +527,7 @@ class GSM(PathMinimizer):
             self.chain_trajectory.extend(resume_history)
             self.chain_trajectory.append(final_chain)
             self.optimized = final_chain
+            self.search_converged = self.gsm_converged
             elem_step_results = (
                 self._check_elem_step(final_chain)
                 if do_elem_step_checks

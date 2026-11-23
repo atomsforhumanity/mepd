@@ -126,6 +126,7 @@ class FreezingNEB(PathMinimizer):
         dr = d0 / (self.parameters.min_images+1)
 
         converged = False
+        self.search_converged = False   # True when the string is complete, False at max_grow_iter
         nsteps = 0
         last_grown_ind = 0
 
@@ -224,6 +225,7 @@ class FreezingNEB(PathMinimizer):
             self.optimized = self.chain_trajectory[-1]
             self._log(f"Converged? {converged}")
 
+        self.search_converged = bool(converged)
         # With no interior node there is no barrier to split on: growth
         # found the path monotonic, or its barrier below barrier_thre.
         if self.parameters.do_elem_step_checks and len(chain) > 2:

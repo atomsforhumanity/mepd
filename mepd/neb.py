@@ -648,6 +648,7 @@ class NEB(PathMinimizer):
         """
         import mepd.chainhelpers as ch
 
+        self.search_converged = False   # True only where the band met its convergence criteria, below
         nsteps = 1
         nsteps_minima_present = 0
         already_forced_check = False
@@ -804,6 +805,7 @@ class NEB(PathMinimizer):
                 _drop_graphs(self.chain_trajectory[-HISTORY_GRAPH_STEPS - 1])
 
             if converged:
+                self.search_converged = True
                 if self.parameters.v:
                     print("\nChain converged!")
                 else:

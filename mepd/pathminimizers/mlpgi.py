@@ -194,8 +194,10 @@ class MLPGI(PathMinimizer):
         frames = np.stack([np.asarray(n.coords) * BOHR_TO_ANGSTROM for n in chain.nodes])
         opt = GeodesicOptimizer(frames, list(chain.nodes[0].structure.symbols), evaluate, self.config,
                                 on_step=on_step, on_status=self._status, align=not frozen)
+        self.search_converged = False
         try:
             final = opt.optimize()
+            self.search_converged = bool(opt.converged)
         finally:
             if on_engine:
                 self.grad_calls_made += opt.evaluations

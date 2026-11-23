@@ -374,6 +374,9 @@ class DLFindNEB(PathMinimizer):
     grad_calls_made: int = 0
     geom_grad_calls_made: int = 0
 
+    # DL-Find's output is not read for whether its optimization converged or ran out of `nstep`.
+    search_converged = None
+
     def __post_init__(self):
         if not isinstance(self.engine, QCComputeEngine):
             raise ValueError(

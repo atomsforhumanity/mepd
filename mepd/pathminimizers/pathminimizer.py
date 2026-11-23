@@ -7,6 +7,13 @@ import shutil
 
 @dataclass
 class PathMinimizer(ABC):
+    #: Whether the last `optimize_chain` reached this method's own stopping
+    #: criterion (True), ended any other way: its step limit, an early
+    #: elementary-step check, a stop request, an error (False), or the method
+    #: cannot tell (None). Each minimizer sets it itself; tree.json's
+    #: `converged` is this value.
+    search_converged = None
+
     @abstractmethod
     def optimize_chain(self) -> ElemStepResults: ...
 

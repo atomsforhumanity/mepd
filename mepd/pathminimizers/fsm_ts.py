@@ -127,6 +127,10 @@ class FSMTS(PathMinimizer):
     def optimize_chain(self) -> ElemStepResults:
         from mepd.pathminimizers.fneb import FreezingNEB
 
+        # FSM-TS's own stopping criterion: the string is complete and (with the TS check) its TS
+        # optimization converged to one imaginary mode and the pseudo-IRC decided the pair. After a
+        # fallback: what the GSM or NEB that made the path reports.
+        self.search_converged = False
         fsm = FreezingNEB(initial_chain=self.initial_chain, engine=self.engine, optimizer=self.optimizer,
                           parameters=SimpleNamespace(**{**vars(self.parameters), "do_elem_step_checks": False}),
                           gi_inputs=self.gi_inputs)
@@ -140,8 +144,10 @@ class FSMTS(PathMinimizer):
         self.grad_calls_made += fsm.grad_calls_made
         self.geom_grad_calls_made += fsm.geom_grad_calls_made
         chain = self.chain_trajectory[-1] if self.chain_trajectory else None
+        self._string_complete = getattr(fsm, "search_converged", None)
         # No interior image: FSM found no barrier to split on (as FNEB treats it).
         if not self._p("do_elem_step_checks") or chain is None or len(chain) <= 2:
+            self.search_converged = self._string_complete
             self._log("no TS check: " + ("do_elem_step_checks is off" if not self._p("do_elem_step_checks")
                                           else "FSM found no barrier between the ends") + "; kept as one step")
             return IS_ELEM_STEP
@@ -204,6 +210,8 @@ class FSMTS(PathMinimizer):
                   + {"elementary": "an elementary step (step 4 of 4: no split)",
                      "split": "not elementary: splitting at the new species (step 4 of 4)",
                      "not connected": "this TS does not join the pair"}[verdict])
+        if verdict in ("elementary", "split"):
+            self.search_converged = self._string_complete
         if verdict == "elementary":
             self.ts_node = ts
             self._end_on_ts(chain, ts)
@@ -363,6 +371,7 @@ class FSMTS(PathMinimizer):
         try:
             result = minimizer.optimize_chain()
         finally:   # MSMEP reads the trajectory, also when the fallback did not converge
+            self.search_converged = getattr(minimizer, "search_converged", None)
             self.chain_trajectory = list(getattr(minimizer, "chain_trajectory", None) or []) or self.chain_trajectory
             self.optimized = getattr(minimizer, "optimized", None) or (self.chain_trajectory[-1] if self.chain_trajectory else None)
             self.grad_calls_made += getattr(minimizer, "grad_calls_made", 0)

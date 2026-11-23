@@ -217,6 +217,7 @@ class GeometricNEB(PathMinimizer):
         symbols = list(work_chain[0].structure.symbols)
 
         self.chain_trajectory = [work_chain.copy()]
+        self.search_converged = None   # set below from geomeTRIC's own force test, once the band is back
         with contextlib.suppress(Exception):
             self.engine.compute_energies(work_chain)
             self.grad_calls_made += len(work_chain)
@@ -373,6 +374,18 @@ class GeometricNEB(PathMinimizer):
                     geometric.neb.Chain.ComputeEnergyGradient = _compute_energy_gradient_batched
                 try:
                     final_band, _cycles = geometric.neb.OptimizeChain(band, custom_engine, params)
+                    # geomeTRIC returns the same way at its cycle limit: its own force test says which.
+                    # (maxg and avgg are on geomeTRIC 1.1.1's chain and NEBParams;
+                    # tests/test_tree_converged.py checks the installed version has them.)
+                    try:
+                        self.search_converged = bool(final_band.maxg < params.maxg
+                                                     and final_band.avgg < params.avgg)
+                    except Exception as exc:
+                        import logging
+
+                        logging.getLogger(__name__).debug(
+                            "geomeTRIC NEB: could not read the band's force test (%s: %s); "
+                            "search_converged stays None.", type(exc).__name__, exc)
                 finally:
                     if use_batch:
                         geometric.neb.Chain.ComputeEnergyGradient = original_chain_compute

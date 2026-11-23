@@ -261,6 +261,7 @@ class GeodesicOptimizer:
         self.last: PathData | None = None
         self._lengths = np.empty(0)
         self.steps = 0
+        self.converged = False                 # the last stage ended on its own criterion, not its step limit
 
     def aligned(self, nodes: np.ndarray) -> np.ndarray:
         return align_path(nodes, self.product) if self.align else nodes.copy()
@@ -316,6 +317,7 @@ class GeodesicOptimizer:
 
         cfg = self.config
         opt = self
+        self.converged = False
         window = max(1, int(cfg.fire_conv_window))
         hist_len, hist_fwd, hist_back = deque(maxlen=window), deque(maxlen=window), deque(maxlen=window)
         done, calc, atoms = 0, None, None
@@ -371,7 +373,8 @@ class GeodesicOptimizer:
 
             fire.attach(observe, interval=1)
             try:
-                fire.run(fmax=cfg.fire_grad_tol, steps=max_iters - done)
+                # relies on ASE's Optimizer.run returning whether fmax was reached (ASE >= 3.23)
+                self.converged = bool(fire.run(fmax=cfg.fire_grad_tol, steps=max_iters - done))
                 done = calc.step
                 self._status(f"MLP-GI {name}: stopped (gradient below {cfg.fire_grad_tol:g} or step limit)")
                 break
@@ -380,6 +383,7 @@ class GeodesicOptimizer:
                 self._status(f"MLP-GI {name}: {len(self.nodes)} nodes after refinement, continuing")
                 continue
             except _StageConverged:
+                self.converged = True
                 done = calc.step
                 self._status(f"MLP-GI {name}: converged (path length and barriers steady)")
                 break
