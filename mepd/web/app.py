@@ -55,6 +55,12 @@ class StructureIn(BaseModel):
     optimize: bool = Field(True, description="Minimize at the workspace level of theory once added")
 
 
+class ExampleOpenIn(BaseModel):
+    # The landing's "Open it": open the copy made before (if it still has `job`) instead of another one.
+    reuse: bool = False
+    job: Optional[str] = None
+
+
 class IdsIn(BaseModel):
     structures: list[str]
 
@@ -3188,21 +3194,25 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         return showcase_tool.listing()
 
     @app.post("/api/examples/{slug}/open")
-    async def open_example(slug: str, request: Request):
+    async def open_example(slug: str, request: Request, body: Optional[ExampleOpenIn] = None):
+        """A copy of the study as a session of your own. With `reuse`, the copy opened before (one that
+        still has `job`, if given) opens again; otherwise, and when there is none, a new copy."""
         from mepd.web import showcase_tool
 
+        body = body or ExampleOpenIn()
         if slug not in {x["slug"] for x in showcase_tool.listing() if x["kind"] == "workspace"}:
             raise HTTPException(404, f"no example {slug!r}")
         visitor = visitor_of(request)
-        if demo is not None:
-            vdir = sessions.visitor_session_path(visitor, "main").parent
-            have = [d for d in vdir.glob("*") if (d / "workspace.json").exists()] if vdir.exists() else []
-            if len(have) >= demo.max_sessions:
-                raise WorkspaceError(f"the demo allows {demo.max_sessions} sessions per visitor; delete one first")
-            dest = showcase_tool.free_name(vdir, slug)
-        else:
-            dest = showcase_tool.free_name(sessions.default_root(), slug)
-        await asyncio.to_thread(showcase_tool.unpack, slug, dest)
+        parent = (sessions.visitor_session_path(visitor, "main").parent if demo is not None
+                  else sessions.default_root())
+        dest = showcase_tool.existing_copy(parent, slug, body.job) if body.reuse else None
+        if dest is None:
+            if demo is not None:
+                have = [d for d in parent.glob("*") if (d / "workspace.json").exists()] if parent.exists() else []
+                if len(have) >= demo.max_sessions:
+                    raise WorkspaceError(f"the demo allows {demo.max_sessions} sessions per visitor; delete one first")
+            dest = showcase_tool.free_name(parent, slug)
+            await asyncio.to_thread(showcase_tool.unpack, slug, dest)
         await sessions.open(dest, visitor=visitor)
         return sessions.listing(visitor)
 
