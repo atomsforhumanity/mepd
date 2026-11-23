@@ -193,32 +193,47 @@ def _expand_pairs_by_mechanism(
     # finished pair is found -- and skipped -- by its folder name, and a label
     # re-used for a different pair would attach its results to the wrong one.
     # Earlier rows keep their product slots; new rows go after them.
-    prior = {}
+    # A label is never given to another search: `taken` holds every label an earlier run used (also
+    # the retired ones, see below) with the search(es) it named (mechanisms whose numbering is the
+    # input's own share the pair's label).
+    prior, taken = {}, {}
     if output is not None and (output / "pair_mechanisms.json").exists():
         import json as _json
 
         try:
             for row in _json.loads((output / "pair_mechanisms.json").read_text()):
                 pj = int(str(row["pair"]).rsplit("_", 1)[1])
-                prior[(int(row["start_conformer"]), int(row["end_structure"]), row["mechanism"])] = pj
+                search = (int(row["start_conformer"]), int(row["end_structure"]), row["mechanism"])
+                taken.setdefault(str(row["pair"]), []).append(search)
+                if not row.get("retired"):
+                    prior[search] = pj
         except Exception as exc:
             _warn(f"--atom-mapping: could not read the earlier pair table ({exc}); numbering afresh.")
-            prior = {}
+            prior, taken = {}, {}
     new_structures = list(structures)
-    slots = sorted(pj for pj in prior.values() if pj >= len(structures))
+    slots = sorted(int(label.rsplit("_", 1)[1]) for label in taken
+                   if int(label.rsplit("_", 1)[1]) >= len(structures))
     if slots:
         # Hold the earlier product slots (a placeholder until filled below).
         new_structures += [structures[0]] * (slots[-1] - len(structures) + 1)
     new_candidates = []
     for r in rows:
-        earlier = prior.get((r["i"], r["j"], r["key"]))
-        if r["structure"] is None:
+        search = (r["i"], r["j"], r["key"])
+        earlier = prior.get(search)
+        if (r["structure"] is None and earlier in (None, r["j"])
+                and all(named[:2] == search[:2] for named in taken.get(f"pair_{r['i']}_{r['j']}", ()))):
             r["pair_j"] = r["j"]
         elif earlier is not None and earlier >= len(structures):
-            new_structures[earlier] = StructureNode(structure=r["structure"])
+            # its earlier slot (for a pair in the input's own numbering: one it got in the next branch)
+            new_structures[earlier] = (structures[r["j"]] if r["structure"] is None
+                                       else StructureNode(structure=r["structure"]))
             r["pair_j"] = earlier
         else:
-            new_structures.append(StructureNode(structure=r["structure"]))
+            # A new slot: a renumbered product; or a pair whose own label an earlier run gave to
+            # another search (the pools grew past an earlier product slot), or whose earlier slot
+            # now lies inside the pools. The earlier label is retired, never re-used.
+            new_structures.append(structures[r["j"]] if r["structure"] is None
+                                  else StructureNode(structure=r["structure"]))
             r["pair_j"] = len(new_structures) - 1
         if (r["i"], r["pair_j"]) not in new_candidates:
             # Mechanisms whose chosen numbering is the input's own share one search: run twice, the
@@ -255,6 +270,12 @@ def _expand_pairs_by_mechanism(
             if (i, j, key) not in kept_keys:
                 table.append({"pair": f"pair_{i}_{pj}", "start_conformer": i, "end_structure": j,
                               "mechanism": key, "score": None, "n_symmetry_variants": 0, "not_in_this_run": True})
+        # Labels whose search now runs under another label (retired): listed, so they are never given out again.
+        now = {row["pair"] for row in table}
+        for label, named in taken.items():
+            for i, j, key in ([] if label in now else named):
+                table.append({"pair": label, "start_conformer": i, "end_structure": j, "mechanism": key,
+                              "score": None, "n_symmetry_variants": 0, "not_in_this_run": True, "retired": True})
         (output / "pair_mechanisms.json").write_text(json.dumps(table, indent=2) + "\n")
 
     summary = {"n_mechanisms": len(keys), "path_searches_per_mechanism": counts}
@@ -761,6 +782,17 @@ def _ts_opt_failed(ts_dir: Path, label: str) -> bool:
     return _ts_opt_failed_path(ts_dir, label).exists()
 
 
+def _irc_owed(ts_dir: Path, label: str) -> bool:
+    """A TS on disk whose IRC is still to run: no IRC file and no failure
+    note that stands (`_irc_failure_is_current`: written under today's IRC
+    numerics)."""
+    from mepd.cli_common import _irc_failure_is_current
+
+    if not (ts_dir / f"{label}.xyz").exists() or (ts_dir / f"{label}_irc.xyz").exists():
+        return False
+    return not _irc_failure_is_current(ts_dir / f"{label}_irc_failed.txt")
+
+
 def _ts_and_irc_once(node, label: str, ts_dir: Path, run_inputs: RunInputs, charge: int, multiplicity: int):
     """A leaf's TS and IRC: from disk if done before, else computed (and
     written). A TS optimization that failed is recorded, so a rerun into the
@@ -768,6 +800,11 @@ def _ts_and_irc_once(node, label: str, ts_dir: Path, run_inputs: RunInputs, char
     again; None then."""
     result = _load_ts_and_irc_from_disk(ts_dir, label, charge, multiplicity)
     if result is not None:
+        if result.irc_chain is None and _irc_owed(ts_dir, label):
+            # The TS is on disk, its IRC is not: the run was stopped between the two, or the IRC failed
+            # under other numerics. Run the IRC on the stored TS.
+            return _optimize_ts_and_irc(result.ts_node, run_inputs, ts_dir, run_irc=True, label=label,
+                                        already_optimized=True) or result
         return result
     if _ts_opt_failed(ts_dir, label):
         return None
@@ -981,8 +1018,8 @@ def _discover_channels(
     # reads everything back from disk, so it is identical either way.
     pending = [
         (label, node) for label, node in tasks
-        if _load_ts_and_irc_from_disk(ts_dir, label, tree_charge, tree_multiplicity) is None
-        and not _ts_opt_failed(ts_dir, label)
+        if (_load_ts_and_irc_from_disk(ts_dir, label, tree_charge, tree_multiplicity) is None
+            and not _ts_opt_failed(ts_dir, label)) or _irc_owed(ts_dir, label)
     ]
     if workers > 1 and len(pending) > 1:
         _log(
@@ -1063,6 +1100,13 @@ def _discover_channels(
         on_route_edges.update(keys)
         if len(keys) > 1:
             multistep_routes.append((path, keys))
+
+    # The classification is written afresh: what an earlier run into this folder classified
+    # otherwise (a step that was an off-target exit and is now part of a route) must not stay beside it.
+    import shutil
+
+    for name in ("channels", "alternate-channels", "offtarget-exit-channels"):
+        shutil.rmtree(output / name, ignore_errors=True)
 
     direct_key = frozenset((start_cls, end_cls))
     channel_clusters = [] if degenerate_pair else edge_steps.get(direct_key, [])

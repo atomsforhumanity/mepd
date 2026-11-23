@@ -10,6 +10,7 @@ so those command modules don't have to import from each other.
 from __future__ import annotations
 
 import copy
+import functools
 import itertools
 import logging
 import sys
@@ -918,6 +919,94 @@ def _fork_map(fn, items: list, workers: int, on_result=None) -> list:
         _FORK_JOB.pop(key, None)
 
 
+PAIR_IDENTITY_FILE = "pair_identity.json"
+
+
+def _pair_identity(start, end) -> str:
+    """What a pair folder was searched for, as one sha256: both structures'
+    symbols, charge, multiplicity and geometry (bohr, rounded to 0.001) in
+    their atom order. The order carries the atom mapping: a product
+    renumbered for another mechanism is another search."""
+    import hashlib
+    import json
+
+    import numpy as np
+
+    h = hashlib.sha256()
+    for node in (start, end):
+        s = node.structure
+        geometry = np.round(np.asarray(s.geometry, dtype=float), 3) + 0.0   # + 0.0: no "-0.0"
+        h.update(json.dumps([[str(x) for x in s.symbols], int(s.charge), int(s.multiplicity),
+                             geometry.tolist()]).encode())
+    return h.hexdigest()
+
+
+def _stored_pair_is_this_pair(pair_dir: Path, start, end, check_root: bool = True) -> bool:
+    """Whether the finished search in `pair_dir` is of these two structures.
+    By its identity file (`_pair_identity`, written when the search starts).
+    A folder from before that file is judged by the ends of its stored root
+    path (tree/node_0.xyz): the same symbols and every interatomic distance
+    within 0.002 bohr (stored roots repeat the structures searched to 3e-6
+    bohr in 319 of 319 trees looked at; distinct conformers differ by 0.1
+    bohr or more; mirror images cannot be told apart this way). True when
+    such a folder has nothing to compare (no root path)."""
+    import json
+
+    import numpy as np
+
+    identity = pair_dir / PAIR_IDENTITY_FILE
+    if identity.exists():
+        try:
+            return json.loads(identity.read_text()).get("sha256") == _pair_identity(start, end)
+        except Exception:
+            return False
+    root = pair_dir / "tree" / "node_0.xyz"
+    if not check_root or not root.exists():
+        return True
+    try:
+        from mepd.inputs import ChainInputs
+
+        stored = Chain.from_xyz(root, ChainInputs(), charge=int(start.structure.charge),
+                                spinmult=int(start.structure.multiplicity))
+
+        def distances(node):
+            x = np.asarray(node.coords, dtype=float)
+            return np.linalg.norm(x[:, None, :] - x[None, :, :], axis=-1)
+
+        for old, new in ((stored[0], start), (stored[-1], end)):
+            if list(old.symbols) != list(new.symbols) or np.abs(distances(old) - distances(new)).max() > 0.002:
+                return False
+    except Exception:
+        return True   # unreadable: as before the check (the tree's own readers report it)
+    return True
+
+
+def _move_pair_aside(pair_dir: Path) -> Path:
+    """A pair folder that holds another pair's search is neither reused nor
+    deleted: it goes to <pairs>-replaced/<pair>.<date-time>/, with the
+    transition-state and IRC files written under its label (<pairs>/../ts/),
+    so the new search's leaves cannot pick them up."""
+    import shutil
+
+    aside_root = pair_dir.parent.with_name(pair_dir.parent.name + "-replaced")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    aside, k = aside_root / f"{pair_dir.name}.{stamp}", 0
+    while aside.exists():
+        k += 1
+        aside = aside_root / f"{pair_dir.name}.{stamp}.{k}"
+    aside_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(pair_dir), str(aside))
+    ts_dir = pair_dir.parent.parent / "ts"
+    if ts_dir.is_dir():
+        stale = [f for prefix in (f"ts_{pair_dir.name}_leaf_", f"{pair_dir.name}_leaf_")
+                 for f in sorted(ts_dir.iterdir()) if f.name.startswith(prefix)]
+        if stale:
+            (aside / "ts").mkdir(exist_ok=True)
+            for f in stale:
+                shutil.move(str(f), str(aside / "ts" / f.name))
+    return aside
+
+
 def _run_msmep_pairs(
     structures,
     candidates: list,
@@ -933,9 +1022,13 @@ def _run_msmep_pairs(
     pair in `candidates`, writing each result to <pairs_dir>/pair_<i>_<j>/tree/.
 
     Resumable with no separate manifest/state file: a pair is skipped if its
-    directory already holds a completed tree, so re-running against the same
+    directory already holds a completed tree of the same two structures
+    (`_stored_pair_is_this_pair`), so re-running against the same
     `pairs_dir` picks up wherever a prior run left off -- the directory tree
-    on disk IS the resume state. Shared by --network-completion (candidates
+    on disk IS the resume state. A folder holding the tree of other
+    structures (the indices are positions in pools a rerun may sample
+    differently) is moved aside (`_move_pair_aside`) and the pair searched.
+    Shared by --network-completion (candidates
     seeded from newly-discovered intermediates) and `network-splits`
     (candidates seeded from a user-supplied list of minima).
 
@@ -953,10 +1046,17 @@ def _run_msmep_pairs(
 
     todo = []
     for i, j in candidates:
-        if (pairs_dir / f"pair_{i}_{j}" / "tree" / "adj_matrix.txt").exists():
-            _say(f"Skipping pair ({i}, {j}): already completed.")
-        else:
-            todo.append((i, j))
+        pair_dir = pairs_dir / f"pair_{i}_{j}"
+        if (pair_dir / "tree" / "adj_matrix.txt").exists():
+            # (QM/MM: the stored path's environment is rebuilt along the path, so only the identity file is compared)
+            if _stored_pair_is_this_pair(pair_dir, structures[i], structures[j],
+                                         check_root=not getattr(run_inputs, "qmmm", None)):
+                _say(f"Skipping pair ({i}, {j}): already completed.")
+                continue
+            aside = _move_pair_aside(pair_dir)
+            _warn(f"pair_{i}_{j} holds a finished search of other structures than this run's pair ({i}, {j}); "
+                  f"moved to {aside.parent.name}/{aside.name} and searching this pair.")
+        todo.append((i, j))
 
     def _one(pair) -> None:
         i, j = pair
@@ -977,6 +1077,10 @@ def _run_msmep_pairs(
                  .get(over, "--search-budget reached before it started."))
             return
         pair_dir.mkdir(parents=True, exist_ok=True)
+        import json as _json
+
+        (pair_dir / PAIR_IDENTITY_FILE).write_text(_json.dumps(
+            {"version": 1, "sha256": _pair_identity(structures[i], structures[j])}) + "\n")
         _say(f"Starting pair_{i}_{j} ({run_inputs.path_min_method} path search)...")
         # MSMEP's "endpoints already attempted elsewhere" dedup (meant to stop
         # redundant re-splitting of the same species discovered mid-recursion
@@ -1292,7 +1396,7 @@ def _optimize_ts_and_irc(
     except Exception as exc:
         cause = exc.__cause__ or exc
         _warn(f"IRC computation failed ({label}; {type(cause).__name__}: {cause}); TS structure was still written.")
-        failed_fp.write_text(f"{type(cause).__name__}: {cause}\n")
+        failed_fp.write_text(f"{type(cause).__name__}: {cause}\n{IRC_FAILED_EPOCH_PREFIX}{_irc_epoch()}\n")
         return _report(TsIrcResult(ts_node=ts_node))
 
     failed_fp.unlink(missing_ok=True)
@@ -1304,6 +1408,31 @@ def _optimize_ts_and_irc(
         problems.append("both IRC ends are the same species, so this TS joins no two species: a saddle of "
                         "another motion (a conformer change, a side chain or the environment), not a reaction")
     return _report(TsIrcResult(ts_node=ts_node, irc_chain=irc_chain))
+
+
+#: Second line of <label>_irc_failed.txt: the numerics the IRC failed under (first line: why).
+IRC_FAILED_EPOCH_PREFIX = "irc numerics: "
+
+
+@functools.lru_cache(maxsize=1)
+def _irc_epoch() -> str:
+    from mepd.numerics import numerics_epoch
+
+    try:
+        return numerics_epoch("irc")
+    except Exception:
+        return "unknown"
+
+
+def _irc_failure_is_current(failed_fp: Path) -> bool:
+    """Whether an IRC failure note was written under today's IRC numerics
+    (`numerics_epoch("irc")`). A note from other numerics, or from before
+    notes carried them, does not stand: the IRC may no longer fail."""
+    try:
+        lines = failed_fp.read_text().splitlines()
+    except OSError:
+        return False
+    return any(line == IRC_FAILED_EPOCH_PREFIX + _irc_epoch() for line in lines[1:])
 
 
 def _irc_ends_same_species(irc_chain: Chain, engine) -> bool:

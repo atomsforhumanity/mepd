@@ -355,6 +355,22 @@ paths*) when a missed channel would matter.
 ## 8–9. Path search, TS optimization, classification
 
 - One MSMEP per selected (pair, mechanism), run `--workers` at a time.
+- **A rerun into the same folder** continues it, and checks what it reuses:
+  - A pair folder (`pairs/pair_<i>_<j>/`) is reused only for the two structures it was searched for.
+    `pair_identity.json` in it holds one sha256 of both structures (symbols, charge, multiplicity,
+    geometry rounded to 0.001 bohr, in their atom order, which carries the atom mapping). A folder
+    from before that file is compared by the ends of its stored root path. A folder that holds
+    another pair's search (the pools were sampled differently: another seed, cap or backend) is
+    moved to `pairs-replaced/pair_<i>_<j>.<date-time>/` together with its `ts/` files, a warning
+    says so, and the pair is searched.
+  - A label names one search for good: `pair_mechanisms.json` keeps every label an earlier run
+    gave out (`not_in_this_run`; `retired` when that search now runs under another label because
+    the pools grew past it).
+  - `channels/`, `alternate-channels/` and `offtarget-exit-channels/` are removed and written
+    again whenever a run classifies, so nothing an earlier run classified otherwise stays.
+  - A TS in `ts/` without its IRC gets it, unless `<label>_irc_failed.txt` says the IRC failed under
+    the same numerics (its second line, `irc numerics: ...`, is `mepd.numerics.numerics_epoch("irc")`);
+    a note from other numerics, or without that line, is retried once.
 - **Order.** With `--explore-molecule`, the searches are queued mechanism by mechanism in the order of
   step 6: SLAPMapper's own mechanisms, then the explored ones as ranked (without it, by mechanism name);
   within a mechanism, its best-scoring pairs first. The order decides what
