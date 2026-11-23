@@ -19,9 +19,10 @@ every heavy atom has one; otherwise SLAPMapper maps it, and hydrogens (and
 ties between mappings) go to the smallest endpoint RMSD. `--atom-mapping`
 still weighs the alternatives, as for any other input.
 
-The defaults are: `--atom-mapping` on, `--backend rdkit`, `--n-conformers 0`
-(no cap), `--n-embed 0` (automatic), `--max-pairs 0` (no cap),
-`--pairs-per-mechanism 3`, `--rmsd-cutoff 0.5` bohr. Every run writes
+The defaults are: `--atom-mapping` on, `--backend rdkit`, `--n-conformers 50`
+(at most 50 conformers per endpoint; 0 = no cap), `--n-embed 0` (automatic),
+`--max-pairs 0` (no cap), `--pairs-per-mechanism 3`, `--rmsd-cutoff 0.1` bohr.
+(The web form starts from `n_conformers` 0, no cap.) Every run writes
 `stats.json` (how many candidates survive each stage, and the time spent in
 each) and `pair_mechanisms.json` (what each path search is).
 
@@ -88,11 +89,19 @@ The input geometry is always the first conformer.
 1. **snap-RMSD** (`qcinf.snap_rmsd`): permutation-aware and rotationally
    aligned. A conformer is kept only if it is at least `--rmsd-cutoff`
    (0.1 bohr) from every conformer already kept, walking from lowest
-   energy up. A candidate that doesn't perceive as the same molecule is
+   energy up (the backend's energy: MMFF or CREST's; the input geometry
+   first). A candidate that doesn't perceive as the same molecule is
    rejected, and the count goes to `n_rejected_not_isomorphic` in
-   `stats.json`.
+   `stats.json`. If more than `--n-conformers` (50) are left, that many
+   are picked by farthest-point selection (each new pick the one furthest
+   from those already picked), before the engine minimization.
 2. **Engine minimization, then snap-RMSD again**, because distinct
-   starting geometries often relax into the same minimum.
+   starting geometries often relax into the same minimum. This second pass
+   walks the pool in the order of step 1 (it is not sorted again by the
+   engine's energies): of two conformers that relaxed into one minimum, the
+   one earlier in the pool is kept. The result depends on that order: with
+   three conformers in a row, each within the cutoff of the next, either
+   two or one survive.
 
 3. **Complexes only, compared molecule by molecule** (`--complex-energy-tol`,
    default 0.5 kcal/mol; 0 turns it off). Two conformers of a multi-molecule
@@ -114,7 +123,7 @@ The input geometry is always the first conformer.
   energy-degenerate. If two arrangements with the same energy lead to
   different chemistry, only one of them is searched.
 
-## 4. Mirror images: merged in one pool only
+## 4. Mirror images: merged in one pool, or added to one
 
 For an achiral molecule, mirror-image conformers (gauche+/gauche−) have
 equal energies and give mirror-image paths, but snap-RMSD (rotation only)
@@ -129,6 +138,22 @@ one of them.
 For a molecule with stereocentres, a conformer can't match another's mirror
 image unless it is the enantiomer, so this step can't merge a genuine
 conformer away.
+
+**When exactly one end is achiral** (isoprene + methyl acrylate → a chiral
+adduct), nothing is merged in that end's pool. Instead the mirror image of
+every one of its conformers that has no mirror twin in the pool is **added**
+(`n_mirror_images_added` in `stats.json`). (R\*, P) is the mirror of (R, P\*),
+a pair with the other enantiomer of the product, which no pool holds; without
+R\* one approach (the other face of the reactant) would never be searched.
+Step 7 then selects pairs in two halves: those with an added mirror image
+and those without.
+
+*Limitation:* a pool that keeps a conformer that is its own mirror image
+(anti butane) still gives mirror-image pairs with the other pool's
+gauche+/gauche−: (anti, gauche+) and (anti, gauche−) both stay.
+
+Not applied to QM/MM runs (the environment is not achiral), nor with
+`--pair-from` other than `both`.
 
 ## 5. Pairing
 
@@ -148,8 +173,10 @@ For each conformer pair (`select_per_mechanism`, parallel over `--workers`):
    therefore get the same key.
 3. Each mechanism is **fully expanded** into every relabeling of its
    symmetry-equivalent atoms: its relabelings by the reactant's symmetries
-   (`expand_mapping_fully`; snap's picks first), capped at
-   `--atom-mapping-candidates` (200) per mechanism.
+   (`expand_mapping_fully`; snap's picks first), capped at 200 per mechanism
+   (a fixed limit, `mepd.inputs.MAPPING_CANDIDATE_LIMIT`, not an option;
+   `--atom-mapping-candidates`, default 3, is something else: the most path
+   searches of a `--pair-from` run).
 4. Every variant is scored against **this pair's geometry** with
    `--atom-mapping-metric` (default: snap + GI + xtb, below). The best variant
    **within each mechanism** is kept. A bad hydrogen assignment can force a
@@ -237,9 +264,22 @@ again at the end adds `[catalytic: <formula>]`.
 
 For each mechanism, only the `--pairs-per-mechanism` pairs (default **3**)
 with the best step-6 scores get a path search. Every mechanism is tried,
-from the pairs whose geometry suits it best.
+from the pairs whose geometry suits it best. What the score is depends on
+`--atom-mapping-metric`: with the default (snap + GI + xtb, below) pairs are
+ranked by the **endpoint RMSD of snap's pick**, not by a geodesic path; the
+GI paths and xtb profiles only choose each kept pair's numbering.
 
-*Limitation:* geodesic length rewards least motion, and the shortest-path
+- **Twice K when one end got mirror images added** (step 4): per mechanism,
+  the K best pairs with an added mirror image and the K best of the others,
+  because the mirror half scores worse yet is a different approach.
+- **A start from the wrong face goes last.** When a mechanism has more than
+  K pairs, a pair whose start holds the partner of a forming bond on the
+  other side of an atom that the product makes a stereocentre
+  (`_wrong_face`) is ranked after every other pair, whatever its score: its
+  path would have to turn the partner over.
+
+*Limitation:* least motion (endpoint RMSD, or geodesic length with the GI
+metrics) is rewarded, and the closest
 pairs **aren't necessarily the ones leading to the lowest TS**. On the
 Claisen, the 3 best [3,3] pairs all found the boat TS (37.7 kcal/mol). The
 chair (32.8) was reached, but only by one of the [1,3]-mapped searches. The

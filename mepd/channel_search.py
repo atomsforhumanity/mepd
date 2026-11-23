@@ -1196,7 +1196,8 @@ class ChannelsOptions:
             raise InputsError("--rdkit-ewin must be positive.")
         if self.atom_mapping_metric not in _ATOM_MAPPING_METRICS:
             raise InputsError(
-                f"--atom-mapping-metric must be one of {', '.join(_OFFERED_METRICS)}."
+                f"--atom-mapping-metric must be one of {', '.join(_OFFERED_METRICS)} (also accepted, for older "
+                f"profiles: {', '.join(m for m in _ATOM_MAPPING_METRICS if m not in _OFFERED_METRICS)})."
             )
         if self.atom_mapping_rmsd_window is not None and self.atom_mapping_rmsd_window < 0:
             raise InputsError("--atom-mapping-rmsd-window must be 0 or more (standard deviations).")

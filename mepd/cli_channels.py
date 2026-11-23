@@ -340,8 +340,11 @@ def channels(
         3, "--pairs-per-mechanism",
         help="--atom-mapping: every conformer pair is mapped once per mechanism "
         "SLAPMapper allows (e.g. [3,3] and [1,3] shifts for a Claisen); for each "
-        "mechanism, only the K pairs its geodesic score (--atom-mapping-metric) "
-        "likes best get a path search. 0 = every pair x every mechanism (slow, "
+        "mechanism, only the K pairs that score best by --atom-mapping-metric get a "
+        "path search (with the default metric, snap-gi-xtb: the endpoint RMSD of "
+        "snap's pick). When one end is achiral and the other is not, mirror images "
+        "are added to the achiral end's pool and K pairs of each half are searched "
+        "(2K per mechanism). 0 = every pair x every mechanism (slow, "
         "mostly redundant). Sampled pairs only: --pair-from builds are capped by "
         "--atom-mapping-candidates. See docs/channels_candidates.md.",
     ),
