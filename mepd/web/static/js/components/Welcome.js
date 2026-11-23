@@ -1,12 +1,11 @@
-// The first screen (the landing): pick a molecule and grow its reaction network, beside a finished
-// network as mepd shows it. Also the steps a newcomer follows elsewhere (StepBar, the reactor helpers)
-// and the map of tools (QuestMap).
+// The first screen (the landing): the three scales mepd works at (a molecule, a path, a network), each a
+// finished run as mepd shows it and one way to start your own.
+// Also the steps a newcomer follows elsewhere (StepBar, the reactor helpers) and the map of tools (QuestMap).
 import { html, useEffect, useState } from '../lib.js';
-import { api, attempt } from '../api.js';
+import { api, attempt, refreshState } from '../api.js';
 import { openJob, openTab, prefs, set, state, update, useStore } from '../store.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
-import { depictUrl } from '../util.js';
 
 // Ready-made molecules, with enough copies and water to give the reactor
 // something to do (MMFF geometries; the reactor needs no minimum).
@@ -121,12 +120,18 @@ export function QuestMap() {
   </section>`;
 }
 
-// The landing (2026-11-10 design, canvas "mepd landing: grow a network"): pick a molecule and grow its
-// network, beside a finished network exactly as mepd shows it (a real run, replayed from Examples), and
-// the finished networks to open. The guided run is hot (1000 K, 1 min simulated): at room temperature
-// glycine's lowest barrier is ~46 kcal/mol and nothing forms, so the guide would end on "nothing".
+// The landing (2026-11-23): one row, small to large, so the scales read at a glance (Jan: "the main message
+// … the varying scales of information: molecules, paths, networks"). Each scale is a picture of a real run's
+// own page (never staged; a click opens that page), one line, and one action; method details are hover text.
+// Molecule and Path show the SN2 study shipped in web/showcase/sn2, its TS page: the 3D view's Fragments
+// orbitals at the TS (chloride's HOMO into CH3Br's LUMO), and the first search beside the paths a channels run
+// sampled after it. Network replays glycine. Image recipe:
+// data/runs/landing-demos/{shot2.py,crop.py}. The network run is hot (1000 K, 1 min simulated): at room
+// temperature glycine's lowest barrier is ~46 kcal/mol and nothing forms.
 const GUIDED = { temperature: 1000, time_s: 60 };
-const HERO = { slug: 'glycine-live', img: '/static/img/landing-glycine-network.png' };
+const HERO = { slug: 'glycine-live', img: '/static/img/landing-scale-network.webp' };
+const SN2 = { slug: 'sn2', ts: 'j_85e27dbc' };
+const EXAMPLE_REACTION = '[Cl-].CBr>>ClC.[Br-]';
 
 async function grow(text, label) {
   return attempt(async () => {
@@ -141,87 +146,133 @@ async function grow(text, label) {
   });
 }
 
-const possessive = (name) => `${name}${name.endsWith('s') ? "'" : "'s"}`;
+// A reaction SMILES into Explore (both ends and their edge), then a Reaction channels run on that edge,
+// opened. The run minimizes the two ends itself (--minimize-ends), so nothing else is queued.
+async function sample(text) {
+  return attempt(async () => {
+    if (!text.includes('>>')) throw new Error(`A reaction is written reactants>>products, e.g. ${EXAMPLE_REACTION}`);
+    const added = await api.post('/api/structures', { text, optimize: false });
+    const edge = (added || []).find((a) => a.edge)?.edge;
+    if (!edge) throw new Error('Both sides of the reaction are the same structure');
+    const jobs = await api.post('/api/jobs', { op: 'channels', edges: [edge], params: {} });
+    openJob(jobs[0].id);
+    return jobs;
+  });
+}
+
+// One scale: its name and size, a picture of a finished run (a click opens it), one line, what the picture
+// is (method in the hover), and one action.
+function Scale({ name, size, img, alt, href = '#', onOpen, line, caption, how, children }) {
+  const open = (e) => { e.preventDefault(); onOpen?.(); };
+  return html`<li class="land-scale">
+    <div class="land-scale-head"><span class="land-label">${name}</span><span class="land-scale-n">${size}</span></div>
+    <a class="land-shot" href=${href} onClick=${open} title=${how} aria-label=${`Open: ${line}`}><img src=${img} alt=${alt} /></a>
+    <h2>${line}</h2>
+    <p class="land-cap" title=${how}>${caption}${caption && onOpen ? ' ' : ''}${onOpen && html`<a href=${href} onClick=${open}>Open ›</a>`}</p>
+    <div class="land-act">${children}</div>
+  </li>`;
+}
+
+const Arrow = () => html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg>`;
+
+// The Molecule picture opened: the TS page with the 3D view's orbitals on, as Fragments (the viewer reads both
+// choices from prefs when it mounts), scrolled to that view once it is drawn.
+async function openFragments(sn2) {
+  prefs.set('orbitalsOn', true);
+  prefs.set('orbitalKind', 'fragments');
+  const out = await openExample(sn2, SN2.ts);
+  const reveal = (tries) => {
+    const el = document.querySelector('.mo-help');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else if (tries > 0) setTimeout(() => reveal(tries - 1), 200);
+  };
+  if (out) reveal(25);
+}
 
 export function WelcomeView() {
-  const [pick, setPick] = useState('glycine');
-  const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
   const map = useMap();
   const ex = useExamples();
-  const p = PRESETS.find((x) => x.key === pick);
-  const typed = text.trim();
-  const short = (x) => (x.key === 'hcn' ? 'HCN' : x.name);
-  const name = typed || (p.key === 'hcn' ? 'HCN' : p.name.toLowerCase());
-  const go = async (e) => {
-    e?.preventDefault();
-    setBusy(true);
-    await (typed ? grow(typed, typed) : grow(`${p.smiles} ${p.name.toLowerCase()}`, p.name.toLowerCase()));
-    setBusy(false);
-  };
-  const draw = async () => {
+  const hero = ex.find((x) => x.slug === HERO.slug);
+  const sn2 = ex.find((x) => x.slug === SN2.slug);
+  const [rx, setRx] = useState(EXAMPLE_REACTION);
+  const [mol, setMol] = useState('glycine');
+  const [busy, setBusy] = useState(null);
+  const run = (key, fn) => async (e) => { e?.preventDefault(); setBusy(key); await fn(); setBusy(null); };
+  const draw = run('draw', async () => {
     const out = await attempt(() => api.post('/api/design/new', { scratch: true }));
     if (out) openTab('design');
-  };
+  });
+  const sampleIt = run('path', () => sample(rx.trim()));
+  const growIt = run('network', () => {
+    const typed = mol.trim();
+    const p = PRESETS.find((x) => x.name.toLowerCase() === typed.toLowerCase() || x.key === typed.toLowerCase());
+    return p ? grow(`${p.smiles} ${p.name.toLowerCase()}`, p.name.toLowerCase()) : grow(typed, typed);
+  });
   const workbench = () => { setEverything(true); openTab('graph'); };
-  const hero = ex.find((x) => x.slug === HERO.slug);
-  const openHero = (e) => { e.preventDefault(); if (hero) openExample(hero); };
   return html`<div class="land">
-    <section class="land-start" aria-label="Start">
-      <h1>Predict what reactions will happen in real time</h1>
-      <p class="land-lede">Pick a molecule. mepd heats it until bonds break, finds every reaction it can take, checks the energies, and shows what it becomes, live.</p>
-      <form onSubmit=${go}>
-        <h2 class="land-label">Pick a molecule</h2>
-        <div class="land-picks" role="radiogroup" aria-label="Molecule">
-          ${PRESETS.map((x) => html`<button type="button" role="radio" aria-checked=${!typed && x.key === pick ? 'true' : 'false'}
-            class=${`land-pick ${!typed && x.key === pick ? 'on' : ''}`} onClick=${() => { setPick(x.key); setText(''); }}>
-            <img src=${depictUrl(x.smiles, 168, 124)} alt="" /><span>${short(x)}</span></button>`)}
-          <button type="button" class="land-pick land-draw" onClick=${draw}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z" /><path d="M14 6l3 3" /></svg>Draw one</button>
-        </div>
-        <label class="land-type" for="land-text"><span>or type one</span>
-          <input id="land-text" class="mono" placeholder="name or SMILES, e.g. aspirin" value=${text} onInput=${(e) => setText(e.target.value)} /></label>
-        <button class="btn primary land-go" type="submit" disabled=${busy}>
-          ${busy ? 'Starting…' : `Grow ${possessive(name)} network`}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" /></svg></button>
-      </form>
-      <p class="land-note">First reactions in about 2 minutes, in the view on the right. It runs hot (${GUIDED.temperature} K, ${GUIDED.time_s / 60} min simulated) so that something forms.</p>
-      <div class="land-foot">
-        <a href="#/explore" onClick=${(e) => { e.preventDefault(); workbench(); }}>Know what you want? Open the workbench</a>
+    <header class="land-top">
+      <h1>Minimum Energy Path Dynamics (MEPD)</h1>
+    </header>
+    <ol class="land-scales">
+      <${Scale} name="Molecule" size="1 structure" img="/static/img/landing-scale-molecule.webp"
+        onOpen=${sn2 && (() => openFragments(sn2))}
+        line="Structures, conformers, orbitals" caption="Cl⁻'s HOMO meets CH₃Br's LUMO at the TS"
+        how="Orbitals › Fragments: each molecule's own orbitals, computed alone where it sits. At the SN2 transition state chloride's HOMO (dark) overlaps bromomethane's empty σ* C–Br orbital (pale), overlap 0.16. Click to open it."
+        alt="Chloride's filled p orbital meeting the empty σ* orbital of bromomethane behind the carbon, at the SN2 transition state">
+        <button class="btn primary land-go" disabled=${busy === 'draw'} onClick=${draw}>Draw a molecule<${Arrow} /></button>
+      <//>
+      <${Scale} name="Path" size="1 reaction" img="/static/img/landing-scale-path.webp"
+        onOpen=${sn2 && (() => openExample(sn2, SN2.ts))}
+        line="Find alternate and competing transition states" caption=""
+        how="Cl⁻ + CH₃Br: the first path search crossed a frontside-attack TS (53.2 kcal/mol); sampling conformers and atom mappings found the backside attack (8.6). g-xTB, every TS followed by an IRC, electronic barriers from the lowest reactant geometry found."
+        alt="Energy diagram: the first search's route over 53.2 kcal/mol and the sampled route over 8.6">
+        <form class="land-row" onSubmit=${sampleIt}>
+          <input class="mono" spellcheck="false" aria-label="Reaction SMILES" placeholder="reactants>>products (SMILES)"
+            value=${rx} onInput=${(e) => setRx(e.target.value)} />
+          <button class="btn primary land-go" type="submit" disabled=${busy === 'path' || !rx.trim()}
+            title="Reaction channels: conformers and atom mappings of both ends, a path search per pair, every TS checked by an IRC">Find its TSs<${Arrow} /></button>
+        </form>
+      <//>
+      <${Scale} name="Network" size="1,556 reactions" img=${HERO.img} href=${`#/network/example/${HERO.slug}`}
+        onOpen=${hero && (() => openExample(hero))}
+        line="Unbiased prediction of reaction products" caption="Glycine at 1000 K, 400 species"
+        how="g-xTB structures, ωB97X-D3BJ/def2-TZVP single points on all 1084 structures, rates from free energies (1 M), gas phase. What forms per glycine: CO₂ + methylamine 0.99. 2.5 h on 16 workers."
+        alt="mepd's network view of glycine's finished run, from glycine on the left to what forms on the right">
+        <form class="land-row" onSubmit=${growIt}>
+          <input class="mono" spellcheck="false" aria-label="Molecule, name or SMILES" placeholder="molecule, name or SMILES"
+            value=${mol} onInput=${(e) => setMol(e.target.value)} />
+          <button class="btn primary land-go" type="submit" disabled=${busy === 'network' || !mol.trim()}
+            title=${`Runs hot (${GUIDED.temperature} K, ${GUIDED.time_s / 60} min simulated) so that something forms; first reactions in about 2 minutes`}>Grow it<${Arrow} /></button>
+        </form>
+      <//>
+    </ol>
+    <div class="land-foot">
+      ${ex.length > 0 && html`<span class="land-label">Examples</span>
+        ${ex.map((x) => html`<button class="land-example" onClick=${() => openExample(x)} title=${x.blurb || x.tag || ''}>${x.title}</button>`)}`}
+      <span class="land-foot-end">
+        <a href="#/explore" onClick=${(e) => { e.preventDefault(); workbench(); }}>Open the workbench</a>
         <label class="door-switch" title="Every tool now, without the step-by-step unlocking">
           <input type="checkbox" class="switch" checked=${map.all} onChange=${(e) => setEverything(e.target.checked)} /><span>All tools</span></label>
-      </div>
-    </section>
-    <section class="land-hero" aria-label="A finished network, as mepd shows it">
-      <div class="land-card">
-        <div class="land-card-head">
-          <h2 class="land-label">A finished network, as mepd shows it</h2>
-          ${hero && html`<a href=${`#/network/example/${HERO.slug}`} onClick=${openHero}>Open it ›</a>`}
-        </div>
-        <div class="land-card-title"><span class="land-serif">Glycine</span><span class="muted">1000 K · 1 min simulated</span>
-          <span class="land-count"><b>400</b> species <b>1556</b> reactions</span></div>
-        <a class="land-shot" href=${`#/network/example/${HERO.slug}`} onClick=${openHero} aria-label="Open glycine's finished network">
-          <img src=${HERO.img} alt="mepd's network view of glycine's finished run: glycine on the left, the species it reaches in columns by reactions from the start, routes drawn by how fast they go, and what forms per glycine on the right" /></a>
-        <p class="land-forms">What forms, per glycine: <b>CO₂ + methylamine 0.99</b> · the rest (CO + formaldehyde + ammonia, methyl isocyanate + water) under 0.01 · glycine all used up.</p>
-        <p class="land-method">How it was computed: <b>g-xTB</b> structures · energies <b>ωB97X-D3BJ/def2-TZVP</b> (DFT single points on all 1084 structures) · rates from <b>free energies</b> (1 M), gas phase.</p>
-        <p class="land-note">This is the view your own run opens in, starting from your molecule alone. The first reactions appear after about 2 minutes; the network then fills in over hours (this one: 2.5 h on 16 workers).</p>
-      </div>
-    </section>
-    ${ex.length > 0 && html`<section class="land-examples" aria-label="Finished networks">
-      <h2 class="land-label">Finished networks</h2>
-      <ul>${ex.map((x) => html`<li><button class="land-example" onClick=${() => openExample(x)} title=${x.blurb || ''}>
-        <b>${x.title}</b><span>${x.tag}</span></button></li>`)}</ul>
-    </section>`}
+      </span>
+    </div>
   </div>`;
 }
 
-// Examples: finished studies that open as your own copy (mepd/web/examples).
+// Examples: finished studies that open as your own copy (mepd/web/examples). A replay opens its live
+// network view. A study opens the copy you made before if it still has `job` (else a new copy), and lands
+// on that calculation's page when one is given.
 function useExamples() {
   const [list, setList] = useState([]);
   useEffect(() => { api.get('/api/examples').then((r) => setList(r || [])).catch(() => setList([])); }, []);
   return list;
 }
-function openExample(x) {
+async function openExample(x, job = null) {
   if (x.kind === 'replay') { set({ view: { tab: 'network', jobId: null, example: x.slug } }); return null; }
-  return attempt(() => api.post(`/api/examples/${encodeURIComponent(x.slug)}/open`), `Opened “${x.title}” as your own copy`);
+  const out = await attempt(() => api.post(`/api/examples/${encodeURIComponent(x.slug)}/open`, { reuse: true, job }),
+    `Opened “${x.title}”, your own copy`);
+  if (out && job) {
+    await refreshState().catch(() => {});
+    if (state.jobs[job]) openJob(job);
+  }
+  return out;
 }

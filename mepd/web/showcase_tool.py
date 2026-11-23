@@ -3,8 +3,8 @@
     python -m mepd.web.showcase_tool pack WORKSPACE SLUG --title ... --tag ... [--blurb ...]
 
 The archive keeps what the results pages read and drops what is rebuilt on
-demand or too big to ship: the orbital caches (rebuilt when a view needs
-them) and reactor MD trajectories. Paths inside are made relative to the
+demand or too big to ship: the orbital caches and an Orbitals run's orbital
+cubes (rebuilt when a view needs them) and reactor MD trajectories. Paths inside are made relative to the
 workspace so a copy can live anywhere (`unpack` puts them back).
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 SHOWCASE = Path(__file__).parent / "showcase"
-_SKIP_DIRS = {"orbitals", "reactor", "__pycache__"}
+_SKIP_DIRS = {"orbitals", "cubes", "reactor", "__pycache__"}
 _ROOT_TOKEN = "@WORKSPACE@"
 
 
@@ -89,12 +89,27 @@ def unpack(slug: str, dest: Path) -> Path:
     return dest
 
 
-def free_name(parent: Path, slug: str, exists=lambda p: p.exists()) -> Path:
+def _copy_names(parent: Path, slug: str):
     for i in range(1, 1000):
-        cand = parent / (f"example-{slug}" if i == 1 else f"example-{slug}-{i}")
+        yield parent / (f"example-{slug}" if i == 1 else f"example-{slug}-{i}")
+
+
+def free_name(parent: Path, slug: str, exists=lambda p: p.exists()) -> Path:
+    for cand in _copy_names(parent, slug):
         if not exists(cand):
             return cand
     raise RuntimeError("no free name")
+
+
+def existing_copy(parent: Path, slug: str, job: str | None = None) -> Path | None:
+    """A copy of the study opened before (free_name's names, in order) that is still a workspace and
+    still has `job`, if given: the landing opens that again instead of making one more copy."""
+    for cand in _copy_names(parent, slug):
+        if not cand.exists():
+            return None
+        if (cand / "workspace.json").exists() and (job is None or (cand / "jobs" / job / "job.json").exists()):
+            return cand
+    return None
 
 
 if __name__ == "__main__":
