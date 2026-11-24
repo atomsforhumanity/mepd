@@ -12,10 +12,10 @@
 // - steps coloured by speed at the run's temperature (half-life against the simulated time), routes in
 //   their product's colour; magenta is what runs now: searches marching between two species, arrivals,
 //   a step just found; the reactor's events as faint ghosts of their movies, caught by the species
-//   they verifiably made;
+//   they verifiably made, and on opening the page those since you last looked, all at once;
 // - nothing placed moves but to make room for a structure, so a replay grows in place. Hover, focus or tap
 //   for details (Popover.js); a table view lists every species.
-import { html, useEffect, useMemo, useRef, useState } from '../lib.js';
+import { Component, html, useEffect, useMemo, useRef, useState } from '../lib.js';
 import { depictUrl } from '../util.js';
 import { Popover, pointBox, useHoverCard } from './Popover.js';
 import { EventPlayer } from './ReactorLive.js';
@@ -363,6 +363,7 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   useEffect(() => { if (onEvents && rx.events.length) onEvents(rx.events); }, [rx.events.length]);
   const [dialog, setDialog] = useState(null);
   const [caught, setCaught] = useState({});
+  const [shower, setShower] = useState(null);   // the reactor's events at once: { id, events }
   const followLive = running && cur === m.frames.length - 1;
   const nowOf = eventClock || (() => (followLive && job?.started ? Date.now() / 1000 - job.started : f.t));
   const startSmiles = drawable(tl.smiles[m.seed]) ? tl.smiles[m.seed] : null;
@@ -476,6 +477,8 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   // the reactor's events are drawn at a size on screen, whatever the zoom: px per unit of the drawing
   const ppu = svgPx ? Math.min(svgPx[0] / vb[2], svgPx[1] / vb[3]) : 0.6;
   const ghostScale = Math.min(4, Math.max(0.8, GHOST_PX / (30 * ppu)));
+  // (a shower's are smaller, and smaller still on a narrow stage)
+  const showerScale = Math.min(4, Math.max(0.2, Math.min(SHOWER_PX, Math.max(14, (svgPx?.[0] || 1100) / 42)) / (30 * ppu)));
 
   // a line between two species leaves and enters each at the edge of what is drawn there, bowed a little
   const edgeAt = (id, p, q) => {
@@ -528,8 +531,46 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const openEvent = (ev) => { hc.close(); setDialog(ev); };
   const lastTen = rx.events.reduce((n, e) => n + (e.t <= tNow + 0.5 && e.t > tNow - WINDOW_S ? 1 : 0), 0);
   const avoid = cardIds.map((id) => { const [x, y] = P(id), w = cardW(id); return [x, y + 10, w + 16, w * 0.75 + 46]; });
-  const onCatch = (id) => setCaught((c) => ({ ...c, [id]: performance.now() }));
+  const onCatch = (ids) => setCaught((c) => { const o = { ...c }, t = performance.now(); for (const id of [].concat(ids)) o[id] = t; return o; });
   const isCaught = (id) => caught[id] && performance.now() - caught[id] < 1200;
+  // the reactor's events since you last looked, at once: on opening the page (once its events are in), and on
+  // coming back to it; what plays while you watch is seen. A replay sent back to the start ends a shower.
+  const showerFrom = (evs) => {
+    // (while it follows a running job, the last few seconds' events are the live ghosts')
+    const lo = followLive ? nowOf() - WINDOW_S : Infinity;
+    const list = evs.filter((e) => e.t <= lo);
+    if (list.length && !reduced()) setShower({ id: performance.now(), events: list });
+  };
+  const rxRef = useRef(rx);
+  rxRef.current = rx;
+  const showerRef = useRef(null);
+  showerRef.current = showerFrom;
+  const lastT = (evs) => evs.reduce((t, e) => Math.max(t, e.t), -Infinity);
+  const looked = useRef(false);
+  useEffect(() => {
+    if (!ready || !apiJob || rx.epoch == null || looked.current) return undefined;
+    looked.current = true;
+    const mark = seenMark(apiJob), evs = rx.events;
+    setSeenMark(apiJob, lastT(evs));
+    const id = setTimeout(() => showerRef.current(evs.filter((e) => e.t > mark)), 400);
+    return () => clearTimeout(id);
+  }, [ready, rx.epoch, apiJob]);
+  useEffect(() => {
+    if (looked.current && !document.hidden && rx.events.length) setSeenMark(apiJob, lastT(rx.events));
+  }, [rx.events.length]);
+  useEffect(() => {
+    if (!apiJob) return undefined;
+    const back = () => {
+      if (document.hidden || !looked.current) return;
+      const mark = seenMark(apiJob), evs = rxRef.current.events;
+      setSeenMark(apiJob, lastT(evs));
+      showerRef.current(evs.filter((e) => e.t > mark));
+    };
+    document.addEventListener('visibilitychange', back);
+    return () => document.removeEventListener('visibilitychange', back);
+  }, [apiJob]);
+  const prevCur = useRef(cur);
+  useEffect(() => { if (cur < prevCur.current) setShower(null); prevCur.current = cur; }, [cur]);
   const nodeAnchor = (el) => (el.querySelector('.ld-card-bg, circle') || el).getBoundingClientRect();
   const lineArrow = (e) => `url(#ld-arr-${e.hue != null ? `h${e.hue}` : e.speed || 'none'}-${e.w < 2.5 ? 's' : e.w < 6 ? 'm' : 'l'})`;
 
@@ -564,7 +605,8 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
   const stage = html`<div class="ld-stage ld-b">
     <div class="ld-net">
     <div class="ld-stage-tools"><button class=${`btn small ${panel === 'key' ? 'on' : ''}`} aria-expanded=${panel === 'key'} onClick=${() => togglePanel('key')}
-      title="How to read the network">Key</button></div>
+      title="How to read the network">Key</button>${rx.events.length > 0 && !reduced() && html`<button class="btn small"
+      onClick=${() => showerFrom(rx.events)} title=${`The reactor's ${rx.events.length} reaction events at once${rx.events.length > SHOWER_MAX ? ` (${SHOWER_MAX} of them: some from each species)` : ''}`}>All reactions</button>`}</div>
     <svg ref=${svgRef} viewBox=${vb.join(' ')} preserveAspectRatio="xMidYMid meet" role="group" style="--s:1"
       aria-label="The network grown from the start, in the middle: each species beside the one it was found from; species that hold material as structures, the rest as dots">
       <defs>${['fast', 'run', 'slow', 'none', 'h0', 'h1', 'h2'].flatMap((k) => [['s', 10], ['m', 15], ['l', 22]].map(([z, px]) => html`<marker id=${`ld-arr-${k}-${z}`} viewBox="0 0 10 10" refX="8" refY="5"
@@ -595,6 +637,9 @@ export function LiveScheme({ tl, cur, jobId, example, job, running, follow, cont
       ${ready && rx.events.length > 0 && html`<${ReactorOverlay} apiJob=${apiJob} events=${rx.events} now=${nowOf} live=${followLive || !!eventClock}
         posOf=${(id) => (known.has(id) ? P(id) : isMixture && id === '0' ? P(m.seed) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
         avoid=${avoid} settleOf=${() => null} scale=${ghostScale} bounds=${vb} onOpen=${openEvent} onCatch=${onCatch} />`}
+      ${ready && shower && html`<${GhostShower} key=${shower.id} apiJob=${apiJob} events=${shower.events}
+        posOf=${(id) => (known.has(id) ? P(id) : isMixture && id === '0' ? P(m.seed) : null)} seenAt=${(id, t) => (m.first.get(id) ?? Infinity) <= t + 0.5}
+        avoid=${avoid} scale=${showerScale} bounds=${vb} onOpen=${openEvent} onCatch=${onCatch} onDone=${() => setShower(null)} />`}
       <g class="ld-cards">${cardIds.map((id) => {
         const w = cardW(id), h = w * 0.75, hue = hueOf(id), img = imgOf(id), nm = nameOf(id) || short(tl.smiles[id], 16), fin = groupFin(id);
         return html`<g key=${`c${id}`} class=${`ld-card ${isCaught(id) ? 'caught' : ''} ${reref.has(id) ? 'reref' : ''} ${id === m.seed ? 'seed' : ''} ${past.has(id) ? 'past' : ''} ${hue != null ? `h${hue}` : ''} ${freshCard(id) ? 'fresh' : ''} ${busy.has(id) ? 'busy' : ''} ${dim(id) ? 'dim' : ''}`}
@@ -888,7 +933,7 @@ function EdgeCard({ e, nm, cond }) {
 function Key({ cond, noFlux, anyBelow, anyUnchecked, known, running, anyEvents }) {
   const T = cond.T ? `${Math.round(cond.T)} K` : 'the run temperature';
   return html`<div class="ld-key small" aria-label="How to read the network">
-    ${anyEvents && html`<span class="ld-k"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="ld-ghost-bg" /></svg>a reaction in the reactor's MD, as it happens (click: its movie)</span>`}
+    ${anyEvents && html`<span class="ld-k"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="ld-ghost-bg" /></svg>a reaction in the reactor's MD, as it happens, or all since you last looked at once (click: its movie)</span>`}
     <span class="ld-k"><svg width="78" height="12" aria-hidden="true"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl fast" /><line x1="28" y1="6" x2="50" y2="6" class="ld-kl run" /><line x1="54" y1="6" x2="76" y2="6" class="ld-kl slow" /></svg>
       half-life at ${T}: under ${fmtTime(cond.tau / 100)} · under ${fmtTime(cond.tau)} · longer</span>
     <span class="ld-k"><svg width="34" height="12" aria-hidden="true"><line x1="2" y1="6" x2="24" y2="6" class="ld-kl main h0" /><path d="M24,1 L32,6 L24,11 z" class="ld-arrhead h0" /></svg>
@@ -1077,7 +1122,7 @@ function useGhostFrames(apiJob, ev) {
       .then((x) => {
         const g = ghostFrames(x);
         EVENT_CACHE.set(key, g);
-        if (EVENT_CACHE.size > 60) EVENT_CACHE.delete(EVENT_CACHE.keys().next().value);
+        if (EVENT_CACHE.size > 400) EVENT_CACHE.delete(EVENT_CACHE.keys().next().value);
         if (alive) setD(g);
       }).catch(() => {});
     return () => { alive = false; };
@@ -1188,6 +1233,128 @@ export function ReactorOverlay({ apiJob, events, now, live, posOf, seenAt, avoid
     return html`<g class="ld-ghosts"><${Ghost} key=${e.i} apiJob=${apiJob} gh=${{ ev: e, at, phase: 'play' }} scale=${scale} still=${true} onOpen=${onOpen} /></g>`;
   }
   return html`<g class="ld-ghosts">${ghosts.map((gh) => html`<${Ghost} key=${gh.ev.i} apiJob=${apiJob} gh=${gh} scale=${scale} onOpen=${onOpen} />`)}</g>`;
+}
+
+// ---------------------------------------------------------------- the reactor's events, all at once
+// A shower: what the reactor found since you last looked (on opening the page, everything so far; on coming
+// back to it, what came meanwhile; the "All reactions" button, everything), at once. Each event bursts out of
+// the species it started from as a small ghost, plays its movie, and flies into what it became (which pulses)
+// or fades. At most SHOWER_MAX: one from each species in turn, those whose product is found first, released
+// in the order they happened over SPREAD_MS. One clock for all; each movie fetched once (6 at a time).
+const SHOWER_MAX = 150, SHOWER_PX = 26, SPREAD_MS = 2600, STEP_MS = 90, FLY_MS = 1500, GONE_MS = 2900;
+
+// When you last looked at a job's reactor events (the latest event's time then), in this browser.
+const markKey = (apiJob) => `mepd:reactor-seen:${apiJob}`;
+export function seenMark(apiJob) {
+  try { const v = parseFloat(localStorage.getItem(markKey(apiJob))); return Number.isFinite(v) ? v : -Infinity; } catch { return -Infinity; }
+}
+export function setSeenMark(apiJob, t) {
+  try { if (Number.isFinite(t)) localStorage.setItem(markKey(apiJob), String(t)); } catch { /* private window: every visit is the first */ }
+}
+
+export function pickShower(evs, max = SHOWER_MAX) {
+  const byTime = (a, b) => a.t - b.t || a.i - b.i;
+  if (evs.length <= max) return [...evs].sort(byTime);
+  const bySrc = new Map();
+  for (const e of [...evs].sort(byTime)) { const k = e.src ?? '0'; if (!bySrc.has(k)) bySrc.set(k, []); bySrc.get(k).push(e); }
+  const lists = [...bySrc.values()].map((l) => l.sort((a, b) => (b.prod != null) - (a.prod != null) || b.t - a.t));
+  const out = [], labels = new Set();
+  while (out.length < max && lists.some((l) => l.length)) {
+    for (const l of lists) {
+      if (out.length >= max || !l.length) continue;
+      const j = Math.max(0, l.findIndex((e) => !labels.has(e.label)));   // a reaction not shown yet, if it has one
+      const [e] = l.splice(j, 1);
+      labels.add(e.label);
+      out.push(e);
+    }
+  }
+  return out.sort(byTime);
+}
+
+// Where a shower ghost lands: a scatter round its species, inside the view, off the structures, overlapping
+// the other ghosts as little as it can (a shower may overlap; it never hides a structure if it can help it).
+function showerSpot(src, avoid, placed, scale, i, bounds) {
+  const r = 30 * scale * 1.25;
+  const rnd = (a, b) => { const h = Math.sin((i + 1) * a + b) * 43758.5453; return h - Math.floor(h); };
+  let best = [src[0], src[1] - 2 * r], bestS = Infinity;
+  for (let j = 0; j < 16; j += 1) {
+    const th = 2 * Math.PI * rnd(12.9898, j * 78.233), d = r * (1.3 + 3.4 * rnd(39.3468, j * 11.135));
+    const x = src[0] + d * Math.cos(th), y = src[1] + d * Math.sin(th);
+    let s = d / (r * 30);
+    if (bounds && (x - r < bounds[0] || x + r > bounds[0] + bounds[2] || y - r < bounds[1] || y + r > bounds[1] + bounds[3])) s += 100;
+    for (const [ax, ay, aw, ah] of avoid) if (!(x + r < ax - aw / 2 || x - r > ax + aw / 2 || y + r < ay - ah / 2 || y - r > ay + ah / 2)) s += 10;
+    for (const [px, py] of placed) { const dd = Math.hypot(x - px, y - py); if (dd < 2 * r) s += 1 - dd / (2 * r); }
+    if (s < bestS) { bestS = s; best = [x, y]; }
+  }
+  return best;
+}
+
+// A ghost's drawing, redrawn only when its frame changes (a shower has many at once).
+class StillDrawing extends Component {
+  shouldComponentUpdate(p) { return p.k !== this.props.k || p.g !== this.props.g || p.r !== this.props.r; }
+  render({ g, k, r }) { return html`<${GhostDrawing} g=${g} k=${k} r=${r} />`; }
+}
+
+export function GhostShower({ apiJob, events, posOf, seenAt, avoid, scale, bounds, onCatch, onOpen, onDone }) {
+  const props = useRef({});
+  props.current = { posOf, seenAt, onCatch, onDone, scale };
+  const plan = useMemo(() => {
+    const list = pickShower(events.filter((e) => posOf(e.src ?? '0')));
+    const placed = [];
+    return list.map((ev, n) => {
+      const src = posOf(ev.src ?? '0'), at = showerSpot(src, avoid, placed, scale, ev.i, bounds);
+      placed.push(at);
+      return { ev, src, at, delay: list.length > 1 ? (SPREAD_MS * n) / (list.length - 1) : 0, phase: 'wait', born: 0, g: null };
+    });
+  }, []);
+  const [now, setNow] = useState(0);
+  useEffect(() => {   // the movies, in the order they are released
+    let alive = true, next = 0;
+    const one = async () => {
+      while (alive && next < plan.length) {
+        const gh = plan[next++], ev = gh.ev, key = `${apiJob}|${ev.seed || ''}|${ev.run}|${ev.k}`;
+        if (EVENT_CACHE.has(key)) { gh.g = EVENT_CACHE.get(key); continue; }
+        try {
+          const x = await api.get(`/api/jobs/${encodeURIComponent(apiJob)}/reactor/events/${ev.k}?name=${encodeURIComponent(ev.run)}&frames=16${ev.seed ? `&seed=${encodeURIComponent(ev.seed)}` : ''}`);
+          gh.g = ghostFrames(x);
+          EVENT_CACHE.set(key, gh.g);
+        } catch { gh.g = false; }
+      }
+    };
+    for (let w = 0; w < 6; w += 1) one();
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    const t0 = performance.now();
+    const id = setInterval(() => {
+      const t = performance.now() - t0, { posOf: pos, seenAt: seen, onCatch: caught, onDone: done, scale: sc } = props.current;
+      const got = [];
+      let left = 0;
+      for (const gh of plan) {
+        if (gh.phase === 'wait') {
+          if (t >= gh.delay && gh.g) { gh.phase = 'out'; gh.born = t; } else if (gh.g === false || t > gh.delay + 3000) gh.phase = 'gone';
+        } else if (gh.phase === 'out') gh.phase = 'play';   // drawn once at its species: now it flies out
+        else if (gh.phase === 'play' && t - gh.born >= FLY_MS) {
+          const p = gh.ev.prod != null && seen(gh.ev.prod, Infinity) ? pos(gh.ev.prod) : null;
+          if (p) { got.push(gh.ev.prod); gh.phase = 'catch'; gh.to = p; } else { gh.phase = 'settle'; gh.to = [gh.at[0], gh.at[1] - 20 * sc]; }
+        } else if ((gh.phase === 'catch' || gh.phase === 'settle') && t - gh.born >= GONE_MS) gh.phase = 'gone';
+        if (gh.phase !== 'gone') left += 1;
+      }
+      if (got.length) caught([...new Set(got)]);
+      if (!left) { clearInterval(id); done(); return; }
+      setNow(t);
+    }, STEP_MS);
+    return () => clearInterval(id);
+  }, []);
+  const r = 30 * scale;
+  return html`<g class="ld-ghosts shower">${plan.filter((gh) => gh.phase !== 'wait' && gh.phase !== 'gone').map((gh) => {
+    const at = gh.phase === 'out' ? gh.src : gh.to || gh.at;
+    const k = Math.max(0, Math.min(13, Math.floor((now - gh.born) / STEP_MS)));
+    return html`<g key=${gh.ev.i} class=${`ld-ghost sh ${gh.phase}`} style=${`transform:translate(${at[0]}px,${at[1]}px)`}
+        onClick=${() => onOpen(gh.ev)} aria-hidden="true">
+      <g class="ld-ghost-in"><circle r=${r * 1.25} class="ld-ghost-bg" /><${StillDrawing} g=${gh.g} k=${k} r=${r} /></g>
+      <title>${gh.ev.label} (reactor event; click for its movie)</title></g>`;
+  })}</g>`;
 }
 
 // The full movie of one event: the Reactor view's event player, in a dialog over the page.

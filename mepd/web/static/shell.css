@@ -553,6 +553,13 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-ghost.catch .ld-ghost-in { transform: scale(.45); opacity: .0; transition: transform 1.1s var(--ease), opacity 1.6s ease 0.4s; }
 .ld-ghost.settle .ld-ghost-in { transform: scale(.35); opacity: 0; transition: transform 1.1s var(--ease), opacity 1.3s ease; }
 .ld-ghost-bg { fill: var(--panel); fill-opacity: .88; stroke: var(--ld-now); stroke-width: 1.5px; stroke-dasharray: 4 4; stroke-opacity: .7; vector-effect: non-scaling-stroke; }
+/* the reactor's events at once (LiveScheme.js GhostShower): smaller and quicker, out of their species and into what they became */
+.ld-ghost.sh { transition: transform .9s var(--ease), opacity .6s ease; }
+.ld-ghost.sh.out { transition: none; }
+.ld-ghost.sh .ld-ghost-in { animation-duration: .35s; }
+.ld-ghost.sh .ld-ghost-bg { fill-opacity: .7; }
+.ld-ghost.sh.catch .ld-ghost-in { transform: scale(.35); opacity: 0; transition: transform .9s var(--ease), opacity .8s ease .5s; }
+.ld-ghost.sh.settle .ld-ghost-in { transform: scale(.3); opacity: 0; transition: transform .9s var(--ease), opacity .9s ease; }
 .ld-gb { stroke: var(--muted); stroke-width: 2.2px; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .ld-gb.f { stroke: var(--ld-now); stroke-width: 3.4px; }
 .ld-gb.b { stroke: var(--ld-now); stroke-width: 2px; stroke-dasharray: 3 3.5; }
