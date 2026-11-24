@@ -507,19 +507,8 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-card.fresh .ld-card-bg { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--ld-now) 60%, transparent)); }
 @keyframes ld-arrive { from { transform: translate(var(--fx), var(--fy)) scale(.2); opacity: 0; } 60% { opacity: 1; } to { transform: none; opacity: 1; } }
 /* B: the outcome lane */
-.ld-lane-link { fill: none; stroke-width: 3px; opacity: .7; stroke: var(--edge-idle); }
-.ld-lane.h0 .ld-lane-link, .ld-lane.h0 .ld-bar { stroke: var(--ld-h0); fill: var(--ld-h0); } .ld-lane.h0 .ld-lane-link { fill: none; }
-.ld-lane.h1 .ld-lane-link, .ld-lane.h1 .ld-bar { stroke: var(--ld-h1); fill: var(--ld-h1); } .ld-lane.h1 .ld-lane-link { fill: none; }
-.ld-lane.h2 .ld-lane-link, .ld-lane.h2 .ld-bar { stroke: var(--ld-h2); fill: var(--ld-h2); } .ld-lane.h2 .ld-lane-link { fill: none; }
-.ld-lane .ld-card-bg { stroke-width: 1.2px; }
-.ld-bar-bg { fill: var(--panel-2); }
-.ld-bar { fill: var(--edge-idle); }
 .ld-lane-pct { font: 600 26px var(--font-serif); fill: var(--heading); }
 .ld-lane-sub { font: 13px var(--font-ui); fill: var(--muted); }
-.ld-lane-head { font: 600 18px var(--font-ui); fill: var(--heading); }
-.ld-lane-name { font: 600 16px var(--font-ui); fill: var(--heading); }
-.ld-lane-sub.end { text-anchor: end; }
-.ld-lane-link.dim { opacity: .15; }
 .ld-table-h { font: 600 15px var(--font-ui); margin: 14px 0 6px; color: var(--heading); }
 .ld-table-h .small { font-weight: 400; margin-left: 6px; }
 /* hover cards */
@@ -548,14 +537,10 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-s-steady { line-height: 1.2; } .ld-s-steady b { color: var(--heading); font-size: 13px; }
 .ld-b .ld-dot circle:first-child { stroke-width: 1px; }
 @media (prefers-reduced-motion: reduce) { .ld-dot, .ld-card { transition: none; } }
-.ld-colhead { font: 600 14px var(--font-ui); fill: var(--muted); }
-.ld-colhead.left { text-anchor: start; }
 .ld-step.new .ld-line { stroke: var(--ld-now); opacity: .9; animation: ld-fade 6s ease-out forwards; }
 @keyframes ld-fade { to { opacity: .15; } }
 @media (prefers-reduced-motion: reduce) { .ld-step.new .ld-line { animation: none; opacity: .5; } }
 .ld-co { font-family: var(--font-ui); font-weight: 600; fill: var(--text); text-anchor: middle; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
-.ld-lane-bg { fill: var(--panel); stroke: var(--border-strong); stroke-width: 1.2px; }
-.ld-lane .ld-card-bg { stroke: none; }
 /* prototype hover cards: placed by Popover.js */
 .popover.ld-pop { position: fixed; transform: none; pointer-events: auto; }
 .ld-made { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
@@ -599,9 +584,33 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-s-warn { padding: 3px 8px; border: 1px solid var(--warn); border-radius: 4px; background: var(--warn-soft); color: var(--warn);
   font: 700 12px var(--font-ui); cursor: pointer; }
 /* the scheme takes what the bar, the controls and the doors below leave of the screen */
-.ld-stage.ld-b { flex: 1 0 440px; height: auto; min-height: 440px; }
-.ld-stage.ld-b > svg { position: absolute; inset: 0; }
-.ld-stage-tools { position: absolute; top: 8px; right: 8px; z-index: 2; display: flex; align-items: center; gap: 6px; }
+.ld-stage.ld-b { flex: 1 0 440px; height: auto; min-height: 440px; display: flex; }
+.ld-net { position: relative; flex: 1 1 auto; min-width: 0; }
+.ld-net > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.ld-stage-tools { position: absolute; top: 8px; left: 8px; z-index: 2; display: flex; align-items: center; gap: 6px; }
+/* the threads of discovery: each species to the one it was found from */
+.ld-threads line { stroke: var(--border-strong); stroke-width: 1px; vector-effect: non-scaling-stroke; opacity: .35; transition: opacity var(--t-med); }
+/* a structure that held material before and no longer does */
+.ld-card.past { opacity: .55; } .ld-card.past.dim { opacity: .15; }
+.ld-threads line.dim { opacity: .12; }
+.ld-kthread { stroke: var(--border-strong); stroke-width: 1px; }
+/* what forms, beside the network, at a fixed size */
+.ld-out { flex: 0 0 268px; box-sizing: border-box; border-left: 1px solid var(--border); padding: 10px 12px; overflow: auto;
+  display: flex; flex-direction: column; gap: 6px; }
+.ld-out-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; color: var(--heading); font-size: 15px; }
+.ld-out-gauge { width: 100%; height: auto; display: block; }
+.ld-out-row { display: flex; gap: 10px; align-items: center; padding: 5px 8px 5px 5px; border: 1px solid var(--border); border-left-width: 4px;
+  border-radius: 6px; background: var(--panel); outline: none; }
+.ld-out-row:focus-visible { border-color: var(--accent); }
+.ld-out-row.h0 { border-left-color: var(--ld-h0); } .ld-out-row.h1 { border-left-color: var(--ld-h1); } .ld-out-row.h2 { border-left-color: var(--ld-h2); }
+.ld-out-row img, .ld-out-img { width: 76px; height: 57px; object-fit: contain; background: var(--node-bg); border-radius: 4px; flex: none; display: block; }
+.ld-out-txt { display: grid; gap: 1px; min-width: 0; flex: 1; }
+.ld-out-amt { font: 600 21px/1.1 var(--font-serif); color: var(--heading); }
+.ld-out-name { font-weight: 600; font-size: 13px; color: var(--heading); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ld-out-bar { display: block; height: 6px; margin-top: 3px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.ld-out-bar > i { display: block; height: 100%; background: var(--edge-idle); }
+.ld-out-row.h0 .ld-out-bar > i { background: var(--ld-h0); } .ld-out-row.h1 .ld-out-bar > i { background: var(--ld-h1); } .ld-out-row.h2 .ld-out-bar > i { background: var(--ld-h2); }
+.ld-out-left { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
 .ld-key-pop { position: absolute; left: 10px; bottom: 10px; z-index: 3; max-width: min(520px, calc(100% - 20px)); display: flex; gap: 6px;
   align-items: flex-start; padding: 8px 6px 8px 12px; border: 1px solid var(--border-strong); border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: var(--shadow); }
@@ -609,8 +618,8 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-step.moved .ld-line { animation: ld-moved 1.6s ease-out; }
 @keyframes ld-moved { 0% { stroke: var(--ld-now); stroke-width: 6px; } }
 .ld-card.reref .ld-card-bg { animation: ld-catch 1.4s ease-out; }
-.ld-card:focus-visible .ld-card-bg, .ld-step:focus-visible .ld-line, .ld-lane:focus-visible .ld-lane-bg { stroke: var(--accent); stroke-width: 3px; }
-.ld-card, .ld-step, .ld-lane, .ld-dot { outline: none; }
+.ld-card:focus-visible .ld-card-bg, .ld-step:focus-visible .ld-line { stroke: var(--accent); stroke-width: 3px; }
+.ld-card, .ld-step, .ld-dot { outline: none; }
 .ld-card { cursor: pointer; }
 .ld-gauge-b { fill: var(--ld-h1); opacity: .85; } .ld-gauge-a { fill: var(--ld-h0); }
 .ld-gauge-ref { fill: var(--heading); opacity: .85; }
@@ -629,26 +638,23 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 .ld-table img { width: 64px; height: 48px; object-fit: contain; background: var(--node-bg); border-radius: 4px; display: block; }
 .ld-table tr.h0 td:first-child { box-shadow: inset 4px 0 0 var(--ld-h0); } .ld-table tr.h1 td:first-child { box-shadow: inset 4px 0 0 var(--ld-h1); } .ld-table tr.h2 td:first-child { box-shadow: inset 4px 0 0 var(--ld-h2); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* dark: cards stay light (structures are drawn dark on light); their frames and the lane read on the panel */
+/* dark: cards stay light (structures are drawn dark on light); their frames read on the panel */
 :root[data-theme="dark"] .ld-card-bg { stroke: #6f8aa6; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ld-card-bg { stroke: #6f8aa6; } }
-:root[data-theme="dark"] .ld-lane-bg { fill: var(--panel-2); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .ld-lane-bg { fill: var(--panel-2); } }
-/* narrow screens: the strip wraps, the scheme scrolls sideways, the products read in the strip (and the table) */
+/* narrow screens: the strip wraps, what forms goes under the network */
 @media (max-width: 760px) {
   .ld-page { padding: 8px 10px 12px; gap: 8px; }
   .ld-strip { gap: 8px 14px; padding: 8px 10px; }
   .ld-title { max-width: 100%; font-size: 18px; }
   .ld-s-tools { margin-left: 0; }
   .ld-s-phase { min-width: 0; }
-  .ld-stage.ld-b { flex: none; height: 62vh; min-height: 320px; overflow: auto; }
-  .ld-stage.ld-b > svg { position: static; width: 900px; height: 100%; }
-  .ld-stage-tools { position: sticky; left: 0; top: 0; height: 0; padding: 6px; overflow: visible; align-items: flex-start; }
+  .ld-stage.ld-b { flex: none; flex-direction: column; }
+  .ld-net { flex: none; height: 62vh; min-height: 300px; }
+  .ld-out { flex: none; border-left: 0; border-top: 1px solid var(--border); }
   .ld-key { font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { .ld-step.moved .ld-line, .ld-card.reref .ld-card-bg { animation: none; } }
 .ld-mixture > .ln-head { padding: 12px 20px 0; }
-.ld-lane-link.h0 { stroke: var(--ld-h0); } .ld-lane-link.h1 { stroke: var(--ld-h1); } .ld-lane-link.h2 { stroke: var(--ld-h2); }
 
 /* Touch screens: a cover over each 3D view lets a swipe that starts on it scroll the page (Viewer3D.js);
    a tap turns rotating on, Done turns it off. */
