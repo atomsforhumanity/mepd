@@ -125,9 +125,9 @@ export function QuestMap() {
 // own page (never staged; a click opens that page), one line, and one action; method details are hover text.
 // Molecule and Path show the SN2 study shipped in web/showcase/sn2, its TS page: the 3D view's Fragments
 // orbitals at the TS (chloride's HOMO into CH3Br's LUMO), and the first search beside the paths a channels run
-// sampled after it. Network replays glycine. Image recipe:
-// data/runs/landing-demos/{shot2.py,crop.py}. The network run is hot (1000 K, 1 min simulated): at room
-// temperature glycine's lowest barrier is ~46 kcal/mol and nothing forms.
+// sampled after it. Network replays glycine. Image recipe: data/runs/landing-demos/{shot2.py,crop.py}; the
+// network's, shot_stage.py (the stage at a 1530 px window, 2x, cropped round glycine). The network run is hot
+// (1000 K, 1 min simulated): at room temperature glycine's lowest barrier is ~46 kcal/mol and nothing forms.
 const GUIDED = { temperature: 1000, time_s: 60 };
 const HERO = { slug: 'glycine-live', img: '/static/img/landing-scale-network.webp' };
 const SN2 = { slug: 'sn2', ts: 'j_85e27dbc' };
