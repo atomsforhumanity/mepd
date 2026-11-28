@@ -140,9 +140,9 @@ export function ReactorReactions() {
               <span class="nrl-conds">${Object.entries(x.byCond).map(([c, k]) => html`<span class="nrl-cond">${c} ×${k}</span>`)}
                 <span class=${`nrl-stage ${x.kind}`}>${x.kind === 'ts' ? 'TS' : x.stage === 'refined' ? 'refined' : 'seen in the MD'}</span></span></td>
             <td onClick=${(e) => e.stopPropagation()}>${x.r ? html`<${TsCell} r=${x.r} />` : html`<span class="small muted" title="Not refined yet: no TS search to run">—</span>`}</td>
-            <td class="mono">${x.delta_e != null ? `${x.delta_e >= 0 ? '+' : ''}${fmtKcal(x.delta_e)}` : '—'}</td>
-            <td class="mono">${x.n}${x.n_rev ? html`<span class="muted">/${x.n_rev}</span>` : ''}</td>
-            <td class="mono">${x.runs}</td>
+            <td class="mono" data-label="ΔE">${x.delta_e != null ? `${x.delta_e >= 0 ? '+' : ''}${fmtKcal(x.delta_e)}` : '—'}</td>
+            <td class="mono" data-label="seen">${x.n}${x.n_rev ? html`<span class="muted">/${x.n_rev}</span>` : ''}</td>
+            <td class="mono" data-label="runs">${x.runs}</td>
           </tr>`)}</tbody>
         </table>
         ${!shown.length && html`<p class="small muted nrl-empty">${rows.length ? 'None of this kind.' : going ? 'Nothing seen yet: the list fills in as the runs go (every simulated ps).' : 'These runs found no reactions.'}</p>`}

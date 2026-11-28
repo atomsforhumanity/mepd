@@ -1054,3 +1054,14 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 @media (max-width: 960px) {
   .analyze.nrl { grid-template-columns: minmax(0, 1fr); height: auto; overflow: visible; }
 }
+/* Phone: each reaction on its own line, its numbers labelled under it; the sort keys stay on top */
+@media (max-width: 720px) {
+  .nrl-table, .nrl-table tbody, .nrl-table thead { display: block; }
+  .nrl-table thead tr { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-bottom: 6px; }
+  .nrl-table thead th:first-child { display: none; }
+  .nrl-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px 12px; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .nrl-table td { padding: 0; border: 0; }
+  .nrl-table td.nrl-eq { grid-column: 1 / -1; }
+  .nrl-table td[data-label]::before { content: attr(data-label) " "; font: 12px var(--font-ui); color: var(--muted); }
+}
