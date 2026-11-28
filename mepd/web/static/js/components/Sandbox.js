@@ -279,7 +279,7 @@ export function SandboxView() {
       <div class="rx-main">
         <div class="rx-stage-wrap">
           <div class="rx-stage sandbox-stage" ref=${host}></div>
-          <div class="rx-hud" title=${hud ? `Simulated time ${(hud.t_fs / 1000).toFixed(2)} ps, running at ${hud.rate ?? 0} fs per second. Temperature ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K averaged (right now ${hud.T_inst ?? '–'} K: it swings around the setting, and Collide adds heat). Energy ${hud.e_rel ?? 0} kcal/mol above the start. Wall radius ${(radius.current ?? hud.radius).toFixed(1)} Å.` : ''}>${hud ? `${(hud.t_fs / 1000).toFixed(1)} ps · ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
+          <div class="rx-hud" title=${hud ? `Simulated time ${(hud.t_fs / 1000).toFixed(2)} ps, running at ${hud.rate ?? 0} fs per second. Temperature ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K averaged (right now ${hud.T_inst ?? '–'} K: it swings around the setting, and Collide adds heat). Energy ${hud.e_rel ?? 0} kcal/mol above the start. Wall radius ${(radius.current ?? hud.radius).toFixed(1)} Å.` : ''}>${hud?.relaxing ? `relaxing the packing ${hud.relaxing[0]}/${hud.relaxing[1]}` : hud ? `${(hud.t_fs / 1000).toFixed(1)} ps · ≈${tMean.current != null ? Math.round(tMean.current) : '–'} K${hud.paused ? ' · paused' : ''}` : 'starting…'}</div>
           ${reactions.length > 0 && html`<button class="rx-count" title="See the reactions"
             onClick=${(e) => e.currentTarget.closest('.rx-live').querySelector('.rx-events').scrollIntoView({ behavior: 'smooth', block: 'start' })}>
             ⚡ ${reactions.length} reaction${reactions.length > 1 ? 's' : ''}</button>`}

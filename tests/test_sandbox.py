@@ -241,3 +241,28 @@ def test_collide_pushes_whole_molecules_as_the_network_generator_does():
         assert not (f.get("collide") or {}).get("auto")
     finally:
         sandbox.stop("t_collide")
+
+
+def test_a_reactor_outlives_the_thread_that_started_it():
+    """The server starts reactors from request threads, which anyio retires after 10 idle seconds; the
+    reactor's die-with-the-server signal (PR_SET_PDEATHSIG) follows the thread that started it, so it was
+    killed then (2026-11-27: reactors stopped a few seconds in, with no message)."""
+    import threading
+
+    out = {}
+
+    def request():   # a worker thread that starts it, then idles a while (the reactor is up by then) and ends
+        out["box"] = sandbox.start("t_thread", [chem.structure_from_smiles("O")] * 3, temperature=300)
+        time.sleep(4.0)
+
+    t = threading.Thread(target=request)
+    t.start()
+    t.join()
+    box = out["box"]
+    try:
+        time.sleep(2.0)
+        assert box.proc.is_alive(), f"the reactor died with its starting thread (exit code {box.proc.exitcode})"
+        f = _wait(box, 0, 1.5)
+        assert f.get("t_fs") and not f.get("error")
+    finally:
+        sandbox.stop("t_thread")

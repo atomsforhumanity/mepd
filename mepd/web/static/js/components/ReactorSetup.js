@@ -11,7 +11,8 @@ import { depictUrl } from '../util.js';
 const SPINS = [[1, 'singlet'], [2, 'doublet'], [3, 'triplet'], [4, 'quartet'], [5, 'quintet']];
 const SPIN_OF_WORD = Object.fromEntries(SPINS.map(([m, w]) => [w, m]));
 const spinName = (m) => SPINS.find(([k]) => k === m)?.[1] || `multiplicity ${m}`;
-const STEER_MAX_ATOMS = 120;   // what the interactive reactor keeps up with (app.py sandbox_start)
+const STEER_MAX_ATOMS = 500;   // the most the interactive reactor takes (sandbox.MAX_ATOMS)
+const STEER_SLOW = 150;        // beyond this its live MD makes under a few steps a second (measured 2026-11-27)
 
 let lastKey = 0;
 const newRow = (smiles = '', n = 1, mult = null) => ({ key: ++lastKey, smiles, n, mult });
@@ -231,10 +232,11 @@ export function ReactorSetup() {
           title="Runs on its own: hot MD inside a squeezing wall, then each reaction is cut out and refined at your level of theory. Reactions join Explore as they are found."
           onClick=${launch}>${busy === 'launch' ? 'Launching…' : nRuns > 1 ? `Launch ${nRuns} runs ›` : 'Launch nanoreactor ›'}</button>
         <button class="btn" disabled=${!ready || !spinOk || rowSpinBad || busy || atoms > STEER_MAX_ATOMS || !nRuns}
-          title=${atoms > STEER_MAX_ATOMS ? `Steering by hand keeps up with ${STEER_MAX_ATOMS} atoms at most` : 'A live GFN2-xTB MD you drag and squeeze; Stop & analyze pulls out its reactions'}
+          title=${atoms > STEER_MAX_ATOMS ? `Steering by hand takes ${STEER_MAX_ATOMS} atoms at most` : 'A live GFN2-xTB MD you drag and squeeze; Stop & analyze pulls out its reactions'}
           onClick=${steer}>${busy === 'steer' ? 'Starting…' : 'Steer by hand'}</button>
       </div>
-      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand keeps up with ${STEER_MAX_ATOMS} atoms at most. ` : ''}With g-xTB, a few dozen atoms take about 4 min per simulated ps; an MLIP is much faster.${' '}
+      ${atoms > STEER_SLOW && atoms <= STEER_MAX_ATOMS && html`<p class="nrs-warn small">Steer by hand slows down with size: about 6 MD steps a second at 120 atoms, under one at 240, one every 10 s at 480 (GFN2-xTB, one thread).</p>`}
+      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand takes ${STEER_MAX_ATOMS} atoms at most. ` : ''}With g-xTB, a few dozen atoms take about 4 min per simulated ps; an MLIP is much faster.${' '}
         <a href="/manual/nanoreactor" target="_blank" rel="noopener">How it works ›</a></p>
     </aside>
   </div>`;

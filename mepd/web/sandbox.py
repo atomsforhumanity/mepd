@@ -23,6 +23,7 @@ import os
 import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import numpy as np
@@ -132,9 +133,21 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
         except queue.Full:
             pass
 
-    # Take the strain out of the packing before any dynamics (else it turns into heat).
+    # Take the strain out of the packing before any dynamics (else it turns into heat): one step at a time,
+    # each shown, so a big box is on screen at once and settles there instead of after minutes of nothing.
+    def relaxing(k):
+        send("frame", pos=np.round(md.pos * BOHR, 3).tolist(), t_fs=0.0, radius=state["radius"],
+             wall_now=round(state["r_now"], 2), piston=_piston_view(state["piston"]), T=md.T, e_rel=0.0,
+             paused=False, rate=0.0, pulls={}, collide=_col_view(col), relaxing=[k, RELAX_STEPS])
+
     try:
-        md.relax(60)
+        relaxing(0)
+        shown = time.time()
+        for k in range(RELAX_STEPS):
+            md.relax(1)
+            if time.time() - shown > 0.2 or k == RELAX_STEPS - 1:
+                relaxing(k + 1)
+                shown = time.time()
         md.start()
     except Exception as exc:
         send("error", message=f"GFN2-xTB failed on the packed reactor: {type(exc).__name__}: {exc}")
@@ -249,7 +262,7 @@ class Sandbox:
                                                    radius, temperature, self.cmd_q, self.out_q, self.traj_q,
                                                    os.getpid()),
                                 daemon=True)
-        self.proc.start()
+        _STARTER.submit(self.proc.start).result()
         self.latest: Optional[dict] = None
         self.seq = 0
         self.error: Optional[str] = None
@@ -400,6 +413,13 @@ class Sandbox:
 _SANDBOXES: dict[str, Sandbox] = {}
 _LOCK = threading.Lock()
 MAX_SANDBOXES = 2
+# Every reactor is started from this one thread, which lives as long as the server. The reactor's
+# die-with-the-server signal (procs.die_with_parent, PR_SET_PDEATHSIG) follows the thread that started it, and
+# the server starts reactors from request threads that anyio retires after 10 idle seconds: a reactor started
+# from one was killed then (SIGTERM, no message), a few seconds into its run (2026-11-27).
+_STARTER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reactor-start")
+RELAX_STEPS = 60          # steepest-descent steps on the packing before the MD (LangevinMD.relax)
+MAX_ATOMS = 500          # the most atoms one interactive reactor takes (Jan, 2026-11-27: was 120)
 
 
 def _make_room(owner: str, limits: Optional[dict]) -> dict:

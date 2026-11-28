@@ -2751,7 +2751,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         from mepd.web.compose import species_structures
 
         limits = demo.sandbox_limits() if demo is not None else None
-        max_atoms = min(120, demo.atom_limit() * 3) if demo is not None and demo.atom_limit() is not None else 120
+        cap = sandbox.MAX_ATOMS
+        max_atoms = min(cap, demo.atom_limit() * 3) if demo is not None and demo.atom_limit() is not None else cap
         if body.structure:
             from mepd.web.workspace import new_id
 

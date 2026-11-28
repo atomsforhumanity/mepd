@@ -52,8 +52,12 @@ take about 4 minutes per simulated picosecond; an MLIP is much faster.
 **Steer by hand** starts the interactive reactor on the same box: a live
 GFN2-xTB MD you can drag, squeeze, switch the piston on and off in, and
 push molecules together in (Collide). **Stop & analyze** reads its
-trajectory the same way. It keeps up with 120 atoms at most, and it stops
-15 minutes after nobody looks at it.
+trajectory the same way. It takes up to 500 atoms, but it slows down
+quickly with size, since each GFN2-xTB step costs about eight times more
+when the atoms double. Measured on one thread: about 200 MD steps a second
+at 30 atoms, 6 at 120, under one at 240 and one every 11 s at 480. A big
+box shows from the start, settling while its packing is relaxed (60 steps).
+The reactor stops 15 minutes after nobody looks at it.
 
 ## Many runs, one list
 
