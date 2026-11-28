@@ -1311,6 +1311,12 @@ def _build_retro(ctx: JobContext, p: RetroParams) -> list[str]:
 class NanoreactorParams(Params):
     copies: str = P("4", "Copies of each", "Molecules of each selected structure in the reactor: one number for all, "
                     "or by name, e.g. 'CC=O: 2, O: 6'.", kind="custom")
+    forces: list[Literal["piston", "collide"]] = P(
+        ["piston"], "Forces", "What drives the reactions besides the heat. Piston: the wall squeezes in and out once a "
+        "picosecond. Collide: every so often two molecules (or two atoms of one) are pulled together, as network "
+        "growth and the interactive reactor do it. With Collide the MD runs on GFN2-xTB or g-xTB through axtb "
+        "(`mepd reactor-run`), and its reactions are found and refined once the MD ends.", kind="custom",
+        min_length=1, labels={"piston": "Piston", "collide": "Collide"})
     multiplicity: Optional[int] = P(None, "Spin of the box", "Total spin multiplicity of the MD. Empty: from the "
                                     "molecules' own spins (a triplet O₂ makes the box a triplet, two make a "
                                     "quintet); 1 or 2 is the lowest. The reactions found are refined at their "
@@ -1427,6 +1433,19 @@ def _build_nanoreactor(ctx: JobContext, p: NanoreactorParams) -> list[str]:
     flags = flags[flags.index("--inputs"):] if "--inputs" in flags else []   # total charge and spin below
     charge = sum(int(r["charge"]) * n for r, n in zip(ctx.structures, counts))
     mult = _nanoreactor_multiplicity(ctx, counts, charge, p.multiplicity)
+    if "collide" in p.forces:
+        # The Reactor's forces: its own MD (mepd/web/reactor_run.py), then the nanoreactor's analysis of it.
+        md = {"auto": "gfn2", "gfn2": "gfn2", "gxtb": "gxtb"}.get(p.md_method)
+        if md is None:
+            raise WorkspaceError("with Collide the MD runs on GFN2-xTB or g-xTB (axtb): pick one of those for "
+                                 "'MD driven by'")
+        inputs = flags[:2] if flags[:1] == ["--inputs"] else []
+        return ["reactor-run", *mols, "--charge", str(charge), "--multiplicity", str(mult), *inputs,
+                "--temperature", str(p.temperature), "--time", str(p.time_ps), "--compress", str(p.compress),
+                "--period", str(p.period), "--duty", str(p.duty), "--forces", ",".join(p.forces),
+                "--md-method", md, "--seed", str(p.seed), *(["--radius", str(p.radius)] if p.radius else []),
+                "--instances", str(p.instances), "--min-lifetime", str(p.min_lifetime),
+                "--merge-window", str(p.merge_window), "--output", str(ctx.output_dir)]
     return ["discovery", "nanoreactor", *mols, "--charge", str(charge), "--multiplicity", str(mult), *flags,
             *generic_flags(p), "--output", str(ctx.output_dir)]
 
@@ -1601,6 +1620,9 @@ def _build_nanoreactor_more(ctx: JobContext, p: NanoreactorMoreParams) -> list[s
     argv = list(src["argv"])
     if "--trajectory" in argv:
         raise WorkspaceError("that run analyzed an existing trajectory: there is no MD to continue")
+    if argv[:1] == ["reactor-run"]:
+        raise WorkspaceError("a run with Collide cannot be continued yet: launch a new one (another seed packs "
+                             "the box anew)")
     out = Path(src["output_dir"])
     try:
         sched = json.loads((out / "md" / "schedule.json").read_text())

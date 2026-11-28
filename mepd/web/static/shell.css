@@ -209,6 +209,8 @@
 .nrs-fields .nrs-temps { grid-column: 1 / -1; }
 .nrs-fields .nrs-temps input { width: 200px; }
 .nrs-plan { margin: 0; color: var(--heading); }
+.nrs-forces { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.nrs-forces > .small { width: 100%; }
 .nrs-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 15px; }
 .nrs-go { display: flex; gap: 10px; }
 .nrs-go .btn { height: 46px; font-size: 16px; white-space: nowrap; }

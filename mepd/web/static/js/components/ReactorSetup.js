@@ -112,6 +112,7 @@ export function ReactorSetup() {
   const [timePs, setTimePs] = useState(5);
   const [compress, setCompress] = useState(0.6);
   const [connect, setConnect] = useState(false);
+  const [collide, setCollide] = useState(false);   // the Reactor's pulls as well as the piston (mepd reactor-run)
   const [profile, setProfile] = useState(() => defaultProfile());   // refines species, reactions, TSs
   // What drives the unattended run's MD. GFN2-xTB by default: measured 2026-11-28 on 56 atoms (one thread), ~1 min per
   // simulated ps against ~2 for the profile's g-xTB and ~4 for xtb's own g-xTB MD; the reactions it finds are refined
@@ -178,7 +179,9 @@ export function ReactorSetup() {
     const made = [];
     for (const { T, k } of plan) {
       const params = { copies: counts.join(', '), multiplicity: boxMult, temperature: T, time_ps: timePs, compress,
-        connect: plan.length === 1 && connect, refine_live: true, seed: seed + made.length, md_method: mdMethod };
+        connect: plan.length === 1 && connect, refine_live: true, seed: seed + made.length,
+        md_method: collide && !['gfn2', 'gxtb'].includes(mdMethod) ? 'gfn2' : mdMethod,
+        forces: collide ? ['piston', 'collide'] : ['piston'] };
       const label = `Nanoreactor ${T} K${repeats > 1 ? `, run ${k + 1}` : ''}: ${title}`;
       try {
         made.push(...await api.post('/api/jobs', { op: 'nanoreactor', structures: ids, params, label, profile }));
@@ -239,13 +242,13 @@ export function ReactorSetup() {
       <div class="nrs-level">
         <${ProfilePicker} value=${profile} onChange=${setProfile} />
         <label class="field"><span class="field-label">MD driven by</span>
-          <select value=${mdMethod} onChange=${(e) => setMdMethod(e.target.value)}
+          <select value=${collide && !['gfn2', 'gxtb'].includes(mdMethod) ? 'gfn2' : mdMethod} onChange=${(e) => setMdMethod(e.target.value)}
             title="What computes the forces of Launch nanoreactor's MD; its reactions, species and TSs are refined at the compute profile's level either way. On 56 atoms, one thread: GFN2-xTB ~1 min per simulated ps, the profile's g-xTB ~2, xtb's g-xTB ~4.">
-            <option value="level">the profile's level (${levels[profile ?? '']?.label || 'its engine'})</option>
+            ${!collide && html`<option value="level">the profile's level (${levels[profile ?? '']?.label || 'its engine'})</option>`}
             <option value="gfn2">GFN2-xTB (fastest)</option>
             <option value="gxtb">g-xTB (slower)</option>
-            <option value="gfn1">GFN1-xTB</option>
-            <option value="auto">Automatic (GFN2-xTB if xtb is installed)</option>
+            ${!collide && html`<option value="gfn1">GFN1-xTB</option>`}
+            ${!collide && html`<option value="auto">Automatic (GFN2-xTB if xtb is installed)</option>`}
           </select></label>
         <label class="field"><span class="field-label">Steer by hand runs</span>
           <select value=${steerMethod} onChange=${(e) => setSteerMethod(e.target.value)}
@@ -264,6 +267,12 @@ export function ReactorSetup() {
         <label title="Independent runs at each temperature, each with the molecules packed anew">Repeats<span><input type="number" min="1" step="1" value=${repeats} onInput=${(e) => setRepeats(Math.max(1, parseInt(e.target.value, 10) || 1))} /></span></label>
       </div>
       ${nRuns > 1 && html`<p class="small nrs-plan">${nRuns} runs: ${temperatures.map((T) => `${T} K`).join(', ')}${repeats > 1 ? `, ${repeats} of each` : ''}. Their reactions come together in one list.</p>`}
+      <div class="nrs-forces">
+        <span class="small muted">Forces</span>
+        <label class="nrs-toggle" title="The wall squeezes in and out once a picosecond (always on)"><input type="checkbox" class="switch" checked disabled /> <span>Piston</span></label>
+        <label class="nrs-toggle" title="Every so often two molecules (or two atoms of one) are pulled together, as network growth and Steer by hand do it"><input type="checkbox" class="switch" checked=${collide} onChange=${(e) => setCollide(e.target.checked)} /> <span>Collide</span></label>
+      </div>
+      ${collide && html`<p class="small muted nrs-note">With Collide the MD runs on GFN2-xTB or g-xTB, and its reactions are found and refined once the MD ends (not as it goes). Run longer cannot continue it.</p>`}
       ${nRuns === 1 ? html`<label class="nrs-toggle"><input type="checkbox" class="switch" checked=${connect} onChange=${(e) => setConnect(e.target.checked)} />
         <span>Find each reaction's TS<span class="small muted"> as it is found</span></span></label>`
         : html`<p class="small muted nrs-note">With several runs, find TSs from their list: one search per reaction, however many runs found it.</p>`}

@@ -1959,6 +1959,12 @@ def _tailscale_dns_name() -> Optional[str]:
         return None
 
 
+from mepd.web.reactor_run import reactor_run as _reactor_run  # noqa: E402
+
+# A nanoreactor with the Reactor's forces (Collide as well as the piston): what mepd web's Nanoreactor setup
+# page launches when Collide is on (mepd/web/reactor_run.py).
+app.command("reactor-run", hidden=True)(_reactor_run)
+
 from mepd.cli_retro import retro_app  # noqa: E402
 
 app.add_typer(retro_app, name="retro")

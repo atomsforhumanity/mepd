@@ -38,6 +38,13 @@ molecules are packed at random inside a spherical wall and heated, by
 default to 2000 K for 5 ps. Once a picosecond the wall squeezes in to the
 **piston squeeze** fraction of its radius for a quarter of the period.
 
+**Collide** (under Forces) adds the Reactor's pushes: every so often (about
+every 200 fs) two molecules, or two atoms of one, are pulled together for
+300 fs, as network growth and Steer by hand do it. A Collide run's MD is
+mepd's own (`mepd reactor-run`), on GFN2-xTB or g-xTB through axtb; its
+reactions are found and refined once the MD ends, and Run longer cannot
+continue it.
+
 The trajectory is then read as reaction events. Each one keeps only the
 molecules whose bonds change; those atoms are cut out and optimized, and
 each molecule is optimized alone. Reactions are refined while the MD runs
@@ -118,8 +125,8 @@ session you were in stays in the list as it was.
 - **UMA is not GFN2-xTB.** A big box steered by hand moves on UMA's
   forces; its reactions are refined at your session's level of theory
   either way. UMA's weights are Meta's (FAIR Chemistry licence).
-- **Collide is only in Steer by hand.** The unattended run has only the
-  piston wall.
+- **A Collide run finds its reactions only at the end.** Without Collide,
+  reactions are refined while the MD runs.
 - **The live network page does not show a Nanoreactor run.** That page
   plays a network expansion's kinetics; a Nanoreactor run shows its
   reactions in Explore instead.

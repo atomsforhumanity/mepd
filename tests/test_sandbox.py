@@ -306,3 +306,17 @@ def test_auto_leaves_uma_to_a_few_reactors_on_the_gpu(monkeypatch):
     assert (how, threads) == ("gfn2", sandbox.BIG_THREADS) and "already use the GPU" in note
     assert sandbox._choose(480, "uma")[0] == "uma"            # asked for: as asked
 
+
+
+def test_uma_is_picked_only_with_a_model_on_this_machine(tmp_path, monkeypatch):
+    monkeypatch.setattr(sandbox, "has_gpu", lambda: True)
+    monkeypatch.setenv("FAIRCHEM_CACHE_DIR", str(tmp_path))
+    assert sandbox.uma_model() is None and sandbox.pick_method(240) == ("gfn2", sandbox.BIG_THREADS)
+    ck = tmp_path / "models--facebook--UMA" / "snapshots" / "abc" / "checkpoints"
+    ck.mkdir(parents=True)
+    (ck / "uma-s-1p2p1.pt").write_text("")                       # the image's own model, baked in
+    monkeypatch.setenv("MEPD_FAIRCHEM_MODELS", "uma-s-1p2p1")
+    assert sandbox.uma_model() == "uma-s-1p2p1" and sandbox.pick_method(240) == ("uma", 1)
+    from mepd.discovery.langevin import UMA_MODEL
+    (ck / f"{UMA_MODEL}.pt").write_text("")                     # the MD's own, when there: first
+    assert sandbox.uma_model() == UMA_MODEL

@@ -118,3 +118,64 @@ def test_the_demo_takes_the_pages_run_and_start_fresh_up_to_its_session_cap(tmp_
             made += 1
         assert made == DemoPolicy().max_sessions
         assert r.status_code == 400 and "sessions per visitor" in r.json()["detail"]
+
+
+def test_collide_runs_the_reactors_md_then_the_nanoreactors_analysis(client):
+    (ald,) = client.post("/api/structures", json={"text": "CC=O", "optimize": False}).json()
+    (w,) = client.post("/api/structures", json={"text": "O", "optimize": False}).json()
+
+    def job(**params):
+        return client.post("/api/jobs", json={"op": "nanoreactor", "structures": [ald["id"], w["id"]],
+                                              "params": {"copies": "2, 4", **params}, "profile": "default",
+                                              "dry_run": True})
+
+    r = job(forces=["piston", "collide"], md_method="gfn2", time_ps=2)
+    assert r.status_code == 200, r.text
+    a = r.json()[0]["argv"]
+    assert a[0] == "reactor-run" and a[a.index("--forces") + 1] == "piston,collide"
+    assert a[a.index("--md-method") + 1] == "gfn2" and a[a.index("--multiplicity") + 1] == "1"
+    assert a[a.index("--time") + 1] == "2.0" and a[a.index("--inputs") + 1].endswith("profile.toml")
+    assert job(forces=["piston"]).json()[0]["argv"][:2] == ["discovery", "nanoreactor"]     # the piston alone: as before
+    r = job(forces=["piston", "collide"], md_method="level")
+    assert r.status_code == 400 and "GFN2-xTB or g-xTB" in r.json()["detail"]
+
+
+def test_the_explorer_pieces_reactor_run_calls_are_still_there():
+    """mepd/web/reactor_run.py calls the explorer's own functions (unchanged): this fails if one moves or changes."""
+    import inspect
+
+    from mepd.discovery.cli_nanoreactor import _parse_molecule
+    from mepd.discovery.langevin import LangevinMD, pull_pairs
+    from mepd.discovery.nanoreactor import pack_reactor
+    from mepd.discovery.nanoreactor_generator import write_live_events
+    from mepd.discovery.reactor_generator import OPTIONS, collision_pair
+
+    assert _parse_molecule("O*3") == ("O", 3)
+    assert {"pull_fs", "gap_fs", "k", "intra_hops"} <= set(OPTIONS)
+    assert {"method", "bias", "wall", "seed", "temperature"} <= set(inspect.signature(LangevinMD).parameters)
+    assert {"relax", "start", "step", "forces"} <= set(dir(LangevinMD))
+    assert list(inspect.signature(pull_pairs).parameters)[:4] == ["x", "pairs", "k", "masses"] or \
+        len(inspect.signature(pull_pairs).parameters) >= 4
+    assert len(inspect.signature(collision_pair).parameters) >= 4
+    assert {"total_charge", "dt_fs"} <= set(inspect.signature(write_live_events).parameters)
+    assert "seed" in inspect.signature(pack_reactor).parameters
+
+
+def test_a_small_collide_run_writes_the_nanoreactors_files(tmp_path):
+    pytest.importorskip("axtb")
+    import json
+    import subprocess
+    import sys
+
+    out = tmp_path / "run"
+    r = subprocess.run([sys.executable, "-m", "mepd.cli", "reactor-run", "O*3", "--time", "0.06", "--relax-steps", "2",
+                        "--temperature", "800", "--seed", "1", "--output", str(out)],
+                       capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+    assert "forces piston, collide" in r.stdout and "MD 0.06 / 0.06 ps" in r.stdout
+    md = out / "md"
+    for name in ("packed.xyz", "relax.xyz", "reactor.xyz", "segment_000.xyz", "trajectory.xyz", "start.xyz", "done"):
+        assert (md / name).exists(), name
+    assert json.loads((md / "schedule.json").read_text())["forces"] == ["piston", "collide"]
+    assert "qcdata_multiplicity=1" in (md / "start.xyz").read_text()
+    assert (out / "network.json").exists() and (out / "live_events.json").exists()
