@@ -270,6 +270,7 @@ def test_a_reactor_outlives_the_thread_that_started_it():
 
 def test_big_boxes_run_uma_on_a_gpu_and_gfn2_on_more_threads_without(monkeypatch):
     monkeypatch.setattr(sandbox, "has_gpu", lambda: True)
+    monkeypatch.setattr(sandbox, "uma_model", lambda: "uma-s-1p2p1")    # whatever this machine's cache holds
     assert sandbox.pick_method(30) == ("gfn2", 1)
     assert sandbox.pick_method(sandbox.UMA_FROM_ATOMS) == ("uma", 1)
     assert sandbox.pick_method(480, "gfn2") == ("gfn2", sandbox.BIG_THREADS)      # asked for
@@ -301,6 +302,7 @@ def test_auto_leaves_uma_to_a_few_reactors_on_the_gpu(monkeypatch):
                 return True
 
     monkeypatch.setattr(sandbox, "has_gpu", lambda: True)
+    monkeypatch.setattr(sandbox, "uma_model", lambda: "uma-s-1p2p1")
     monkeypatch.setattr(sandbox, "_SANDBOXES", {f"b{i}": Busy() for i in range(sandbox.MAX_UMA_AT_ONCE)})
     how, threads, note = sandbox._choose(480, "auto")
     assert (how, threads) == ("gfn2", sandbox.BIG_THREADS) and "already use the GPU" in note
