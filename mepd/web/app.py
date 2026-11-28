@@ -2800,7 +2800,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         """What the interactive reactor runs at which size here (the setup page's speed note)."""
         from mepd.web import sandbox
 
-        return {"gpu": sandbox.has_gpu(), "uma_from_atoms": sandbox.UMA_FROM_ATOMS,
+        return {"gpu": sandbox.has_gpu() and sandbox.uma_model() is not None, "uma_model": sandbox.uma_model(),
+                "uma_from_atoms": sandbox.UMA_FROM_ATOMS,
                 "threads_from_atoms": sandbox.THREADS_FROM_ATOMS, "big_threads": sandbox.BIG_THREADS,
                 "max_atoms": sandbox.MAX_ATOMS}
 

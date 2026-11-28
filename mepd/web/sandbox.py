@@ -21,6 +21,7 @@ import math
 import multiprocessing as mp
 import os
 import queue
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -135,8 +136,20 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
 
             if not torch.cuda.is_available():
                 raise RuntimeError("no GPU torch can use")
+            model = uma_model()
+            if model is None:
+                raise RuntimeError("no UMA model on this machine (its weights are gated on Hugging Face)")
+            # The weights this machine has, offline: the image bakes in its own UMA version (MEPD_FAIRCHEM_MODELS),
+            # not always the MD's (langevin.UMA_MODEL), and a download from the gated repository fails (401).
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            if "huggingface_hub.constants" in sys.modules:
+                sys.modules["huggingface_hub.constants"].HF_HUB_OFFLINE = True
+            from mepd.discovery import langevin as _langevin
+
+            _langevin.UMA_MODEL = model
             md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
                             temperature=temperature, wall=float(radius_A), bias=drags, method="uma")
+            md.forces(md.pos, biased=False)   # loads the model now: a failure falls back here, not mid-relax
         except Exception as exc:      # UMA on the CPU is slower than GFN2-xTB: fall back, and say why
             method = "gfn2"
             send_early("method", method="gfn2", note=f"UMA could not run here ({type(exc).__name__}: {exc}); "
@@ -485,11 +498,32 @@ def _choose(natoms: int, requested: str) -> tuple[str, int, Optional[str]]:
     return how, threads, None
 
 
+def uma_model() -> Optional[str]:
+    """A UMA model whose weights this machine has (fairchem's cache), so the reactor never downloads one (the
+    repository is gated): the MD's own (langevin.UMA_MODEL) if it is there, else the image's (MEPD_FAIRCHEM_MODELS),
+    else any. None: no UMA here."""
+    import glob
+
+    cache = os.environ.get("FAIRCHEM_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "fairchem"))
+    have = {os.path.basename(fp)[:-3] for fp in
+            glob.glob(os.path.join(cache, "models--facebook--UMA", "snapshots", "*", "checkpoints", "uma-*.pt"))}
+    if not have:
+        return None
+    try:
+        from mepd.discovery.langevin import UMA_MODEL as wanted
+    except Exception:
+        wanted = None
+    for name in [wanted, *os.environ.get("MEPD_FAIRCHEM_MODELS", "").split()]:
+        if name in have:
+            return name
+    return sorted(have)[0]
+
+
 def pick_method(natoms: int, requested: str = "auto") -> tuple[str, int]:
     """(method, axtb threads) for a reactor of `natoms`: "gfn2" or "uma" as asked; "auto" is UMA from
-    UMA_FROM_ATOMS on a GPU, else GFN2-xTB, on BIG_THREADS threads from THREADS_FROM_ATOMS."""
+    UMA_FROM_ATOMS on a GPU with a UMA model here, else GFN2-xTB, on BIG_THREADS threads from THREADS_FROM_ATOMS."""
     method = requested if requested in METHOD_LABELS else (
-        "uma" if natoms >= UMA_FROM_ATOMS and has_gpu() else "gfn2")
+        "uma" if natoms >= UMA_FROM_ATOMS and has_gpu() and uma_model() else "gfn2")
     return method, (BIG_THREADS if method == "gfn2" and natoms >= THREADS_FROM_ATOMS else 1)
 MAX_ATOMS = 500          # the most atoms one interactive reactor takes (Jan, 2026-11-27: was 120)
 
