@@ -105,7 +105,10 @@ export function ReactorSetup() {
   // A new address (the landing's Nanoreactor button again) fills the page anew.
   useEffect(() => { const r = parseMix(mix); if (r.length) setRows(r); }, [mix]);
 
-  const temperatures = [...new Set(temps.split(/[\s,;]+/).map(Number).filter((T) => T > 0))];
+  // '1800, 2200' or '1800 K; 2200K': numbers (a K after one is fine); anything else is flagged, never dropped.
+  const tempTokens = temps.replace(/(\d)\s*k\b/gi, '$1').split(/[\s,;]+/).filter(Boolean);
+  const badTemps = tempTokens.filter((x) => !(Number(x) > 0));
+  const temperatures = badTemps.length ? [] : [...new Set(tempTokens.map(Number))];
   const nRuns = temperatures.length * repeats;
   const infoOf = (r) => info[r.smiles.trim()];
   const multOf = (r) => r.mult ?? infoOf(r)?.multiplicity ?? 1;
@@ -211,7 +214,8 @@ export function ReactorSetup() {
     <aside class="nrs-run" aria-label="Conditions and run">
       <div class="nrs-fields">
         <label class="nrs-temps" title="Several, separated by commas, launch one run at each">Temperature<span><input class=${temperatures.length ? '' : 'bad'} inputmode="decimal" value=${temps}
-          onInput=${(e) => setTemps(e.target.value)} /> K</span></label>
+          onInput=${(e) => setTemps(e.target.value)} /> K</span>
+          ${badTemps.length > 0 && html`<span class="nrs-err small">Not a temperature: ${badTemps.join(', ')}</span>`}</label>
         <label>Simulated time<span><input type="number" min="0.1" step="1" value=${timePs} onInput=${(e) => setTimePs(+e.target.value || 0)} /> ps</span></label>
         <label title="The wall squeezes in to this fraction of its radius once a picosecond: smaller pushes the molecules harder together">Piston squeeze<span><input type="number" min="0.1" max="1" step="0.05" value=${compress} onInput=${(e) => setCompress(+e.target.value || 0)} /></span></label>
         <label title="Independent runs at each temperature, each with the molecules packed anew">Repeats<span><input type="number" min="1" step="1" value=${repeats} onInput=${(e) => setRepeats(Math.max(1, parseInt(e.target.value, 10) || 1))} /></span></label>
