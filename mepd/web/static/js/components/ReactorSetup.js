@@ -113,7 +113,10 @@ export function ReactorSetup() {
   const [compress, setCompress] = useState(0.6);
   const [connect, setConnect] = useState(false);
   const [profile, setProfile] = useState(() => defaultProfile());   // refines species, reactions, TSs
-  const [mdMethod, setMdMethod] = useState('level');                 // what drives the unattended run's MD
+  // What drives the unattended run's MD. GFN2-xTB by default: measured 2026-11-28 on 56 atoms (one thread), ~1 min per
+  // simulated ps against ~2 for the profile's g-xTB and ~4 for xtb's own g-xTB MD; the reactions it finds are refined
+  // at the compute profile's level whatever drives the MD.
+  const [mdMethod, setMdMethod] = useState('gfn2');
   const [steerMethod, setSteerMethod] = useState('auto');            // what Steer by hand runs
   const levels = useStore((s) => s.levels);
   const [spinMode, setSpinMode] = useState('species');
@@ -237,9 +240,9 @@ export function ReactorSetup() {
         <${ProfilePicker} value=${profile} onChange=${setProfile} />
         <label class="field"><span class="field-label">MD driven by</span>
           <select value=${mdMethod} onChange=${(e) => setMdMethod(e.target.value)}
-            title="What computes the forces of Launch nanoreactor's MD. Its reactions, species and TSs are refined at the compute profile's level either way.">
+            title="What computes the forces of Launch nanoreactor's MD; its reactions, species and TSs are refined at the compute profile's level either way. On 56 atoms, one thread: GFN2-xTB ~1 min per simulated ps, the profile's g-xTB ~2, xtb's g-xTB ~4.">
             <option value="level">the profile's level (${levels[profile ?? '']?.label || 'its engine'})</option>
-            <option value="gfn2">GFN2-xTB (xtb's own MD, fast)</option>
+            <option value="gfn2">GFN2-xTB (fastest)</option>
             <option value="gxtb">g-xTB (slower)</option>
             <option value="gfn1">GFN1-xTB</option>
             <option value="auto">Automatic (GFN2-xTB if xtb is installed)</option>
@@ -275,7 +278,7 @@ export function ReactorSetup() {
           onClick=${steer}>${busy === 'steer' ? 'Starting…' : 'Steer by hand'}</button>
       </div>
       ${steerNote && html`<p class=${`small ${steerNote.slow ? 'nrs-warn' : 'muted nrs-note'}`}>${steerNote.text}</p>`}
-      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand takes ${STEER_MAX_ATOMS} atoms at most. ` : ''}The MD's speed depends on what drives it: GFN2-xTB is fastest; g-xTB took about 1 min per simulated ps for 30 atoms on a laptop.${' '}
+      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand takes ${STEER_MAX_ATOMS} atoms at most. ` : ''}The MD's speed depends on what drives it: on 56 atoms, GFN2-xTB took about 1 min per simulated ps, g-xTB 2 to 4.${' '}
         <a href="/manual/nanoreactor" target="_blank" rel="noopener">How it works ›</a></p>
     </aside>
   </div>`;
