@@ -435,12 +435,12 @@ def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Opt
 
     symbols, coords, radius, _ = pack_reactor(structures, radius,
                                               seed=int(time.time()) % 1000 if seed is None else int(seed))
-    charge = sum(int(s.charge) for s in structures)
-    electrons = sum(_Z.get(x, 0) for x in symbols) - charge
-    mult = box_multiplicity(electrons, [int(s.multiplicity) for s in structures], multiplicity)
     missing = sorted({x for x in symbols if x not in _Z})
     if missing:
         raise ValueError(f"the interactive reactor does not know {', '.join(missing)}")
+    charge = sum(int(s.charge) for s in structures)
+    electrons = sum(_Z[x] for x in symbols) - charge
+    mult = box_multiplicity(electrons, [int(s.multiplicity) for s in structures], multiplicity)
     with _LOCK:
         timing = _make_room(owner, limits)
         box = Sandbox(sid, symbols, coords, charge, mult, float(radius) * 1.15, temperature, names, owner, sources,
