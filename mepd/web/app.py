@@ -245,6 +245,11 @@ class SandboxIn(BaseModel):
     structure: Optional[str] = None   # ...or one structure's geometry as it is (a complex)
     temperature: float = 800.0
     radius: Optional[float] = None
+    multiplicity: Optional[int] = None   # the box's spin; empty: from the species' own (unpaired electrons + 1)
+
+
+class SpeciesPreviewIn(BaseModel):
+    smiles: list[str]                 # the Nanoreactor setup's rows, read before anything is added
 
 
 class ComplexIn(BaseModel):
@@ -1556,6 +1561,13 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         publish_ws()
         return out
 
+    @app.post("/api/species/preview")
+    def species_preview(body: SpeciesPreviewIn):
+        """Each SMILES as the Nanoreactor setup shows it (name, atoms, charge, spin), nothing added."""
+        if demo is not None and (len(body.smiles) > 50 or any(len(s) > demo.max_smiles_length for s in body.smiles)):
+            raise HTTPException(400, "too many species, or a SMILES too long")
+        return [chem.species_info(s) for s in body.smiles]
+
     @app.get("/api/depict")
     def depict(smiles: str, w: int = 220, h: int = 160, start: Optional[str] = None, bond: Optional[float] = None):
         """`start`: a network expansion's start state; a species of several molecules is drawn by those
@@ -2767,7 +2779,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             from mepd.web.workspace import new_id
 
             box = sandbox.start(new_id("sb_"), mols, temperature=body.temperature, radius=body.radius, names=names,
-                                owner=str(W().root), sources=ids, limits=limits)
+                                owner=str(W().root), sources=ids, limits=limits, multiplicity=body.multiplicity)
         except (ValueError, RuntimeError) as exc:
             raise WorkspaceError(str(exc)) from None
         return box.describe()

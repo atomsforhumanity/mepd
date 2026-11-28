@@ -425,17 +425,19 @@ def _make_room(owner: str, limits: Optional[dict]) -> dict:
 
 def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Optional[float] = None,
           names: str = "", owner: str = "", sources: Optional[list] = None, limits: Optional[dict] = None,
-          seed: Optional[int] = None) -> Sandbox:
+          seed: Optional[int] = None, multiplicity: Optional[int] = None) -> Sandbox:
     """A new sandbox from one structure per molecule (repeated for copies),
     packed like the nanoreactor's (a different packing each time unless
-    `seed` is given). Room is made by _make_room."""
+    `seed` is given). Room is made by _make_room. Its spin is `multiplicity`,
+    else the molecules' own (chem.box_multiplicity: two triplet O2 make a quintet)."""
     from mepd.discovery.nanoreactor import pack_reactor
+    from mepd.web.chem import box_multiplicity
 
     symbols, coords, radius, _ = pack_reactor(structures, radius,
                                               seed=int(time.time()) % 1000 if seed is None else int(seed))
     charge = sum(int(s.charge) for s in structures)
     electrons = sum(_Z.get(x, 0) for x in symbols) - charge
-    mult = 1 if electrons % 2 == 0 else 2
+    mult = box_multiplicity(electrons, [int(s.multiplicity) for s in structures], multiplicity)
     missing = sorted({x for x in symbols if x not in _Z})
     if missing:
         raise ValueError(f"the interactive reactor does not know {', '.join(missing)}")

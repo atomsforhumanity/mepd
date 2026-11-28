@@ -1,7 +1,7 @@
 // Right panel: what is selected, what we know about it, what can be run on it.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, deleteSelection } from '../api.js';
-import { clearSelection, openJob, openReaction, openTab, prefs, select, set, state, useStore } from '../store.js';
+import { clearSelection, openJob, openReaction, openReactorSetup, openTab, prefs, select, set, state, useStore } from '../store.js';
 import { complexesGoingWith, complexNodes, complexOfStructure, conformerLabel, conformerRows, depictUrl, edgeStatus, fmtAgo, fmtKcal, isComplex, isSpecies, JobPill, jobHeadline, lastLine, levelBarrierText, levelStatus, PHONE_QUERY, reactionOfEdge, reactionsOfComplex, STATUS_LABEL } from '../util.js';
 
 export { conformerLabel, conformerRows };
@@ -359,9 +359,13 @@ function SandboxLauncher({ sids, embedded = false, onClose = null }) {
       onInput=${(e) => setTemperature(+e.target.value || 0)} /> K</label>
     <p class="small muted combine-help">Live GFN2-xTB dynamics you steer: drag atoms, scroll to squeeze the wall. ${atoms} atoms${atoms > 80 ? ' (slow beyond ~80)' : ''}.
       <a href="/manual/settings#reactor" target="_blank" rel="noopener" title="Time step, thermostat, wall, piston and the rest">Its MD settings ›</a></p>
-    <div class="row-actions"><button class="btn primary" disabled=${busy || atoms === 0 || atoms > 120} onClick=${start}>${busy ? 'Starting…' : 'Start'}</button></div>
+    <div class="row-actions"><button class="btn primary" disabled=${busy || atoms === 0 || atoms > 120} onClick=${start}>${busy ? 'Starting…' : 'Start'}</button>
+      ${sids.every((id) => structures[id]?.smiles) && html`<a href="#/reactor/new" class="small"
+        title="The Nanoreactor setup with these molecules: spins, the box's spin, and an unattended run"
+        onClick=${(e) => { e.preventDefault(); openReactorSetup(sids.map((id) => `${n(id)} ${structures[id].smiles}${SPIN_WORD[structures[id].multiplicity] ? ` ${SPIN_WORD[structures[id].multiplicity]}` : ''}`).join(', ')); }}>Nanoreactor setup ›</a>`}</div>
   </div>`;
 }
+const SPIN_WORD = { 2: 'doublet', 3: 'triplet', 4: 'quartet', 5: 'quintet' };
 
 function CombineComplex({ sids, embedded = false, onClose = null }) {
   const structures = useStore((s) => s.workspace.structures);

@@ -224,12 +224,14 @@ export function formatHash(v, analyze = state.analyze) {
     case 'network': path = v.example ? `/network/example/${encodeURIComponent(v.example)}` : `/network/${encodeURIComponent(v.jobId || '')}`; break;
     case 'design': path = '/design'; break;
     case 'sandbox': path = `/reactor/${encodeURIComponent(sandboxId(v))}`; break;
+    case 'reactor-setup': path = '/reactor/new'; break;   // (+ ?mix=, below)
     default: path = '/explore';
   }
   const q = [];
   if (v.tab === 'job' && v.run) q.push(`run=${encodeURIComponent(v.run)}`);
   if (v.tab === 'job' && v.entry) q.push(`entry=${encodeURIComponent(v.entry)}`);
   if (v.tab === 'reaction' && v.from && v.from !== '/explore') q.push(`from=${encodeURIComponent(v.from)}`);
+  if (v.tab === 'reactor-setup' && v.mix) q.push(`mix=${encodeURIComponent(v.mix)}`);
   if (v.drawer) q.push(`d=${v.drawer}`);
   return `#${path}${q.length ? `?${q.join('&')}` : ''}`;
 }
@@ -254,7 +256,8 @@ export function parseHash(hash) {
     case 'network': return parts[1] === 'example' && parts[2] ? { ...base, tab: 'network', example: parts[2] }
       : parts[1] ? { ...base, tab: 'network', jobId: parts[1] } : { ...base, tab: 'graph' };
     case 'design': return { ...base, tab: 'design' };
-    case 'reactor': return { ...base, tab: 'sandbox', sandbox: parts[1] ? { id: parts[1] } : null };
+    case 'reactor': return parts[1] === 'new' ? { ...base, tab: 'reactor-setup', mix: q.mix || '' }
+      : { ...base, tab: 'sandbox', sandbox: parts[1] ? { id: parts[1] } : null };
     default: return null;
   }
 }
@@ -363,6 +366,10 @@ export async function confirmProfileEdits() {
   return true;
 }
 
+// The Nanoreactor setup (#/reactor/new), filled in from `mix`: a list such as '2 CC=O, 4 O, O=O triplet'.
+export function openReactorSetup(mix = '') {
+  set({ view: { tab: 'reactor-setup', jobId: null, mix } });
+}
 export async function openTab(tab) {
   if (state.view.drawer === 'settings' && tab !== 'profiles' && !(await confirmProfileEdits())) return;
   set({ view: { tab, jobId: state.view.jobId } });

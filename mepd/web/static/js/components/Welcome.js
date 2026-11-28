@@ -3,7 +3,7 @@
 // Also the steps a newcomer follows elsewhere (StepBar, the reactor helpers) and the map of tools (QuestMap).
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt, refreshState } from '../api.js';
-import { openJob, openTab, prefs, set, state, update, useStore } from '../store.js';
+import { openJob, openReactorSetup, openTab, prefs, set, state, toast, update, useStore } from '../store.js';
 import { QUESTS, questById, setEverything, startQuest, useMap } from '../quests.js';
 import { QuestIcon } from '../icons.js';
 
@@ -203,11 +203,19 @@ export function WelcomeView() {
     if (out) openTab('design');
   });
   const sampleIt = run('path', () => sample(rx.trim()));
+  const presetOf = (typed) => PRESETS.find((x) => x.name.toLowerCase() === typed.toLowerCase() || x.key === typed.toLowerCase());
   const growIt = run('network', () => {
     const typed = mol.trim();
-    const p = PRESETS.find((x) => x.name.toLowerCase() === typed.toLowerCase() || x.key === typed.toLowerCase());
+    if (/[,;]/.test(typed)) { toast('Grow it starts from one molecule; a mixture goes in the Nanoreactor', 'error', 7000); return null; }
+    const p = presetOf(typed);
     return p ? grow(`${p.smiles} ${p.name.toLowerCase()}`, p.name.toLowerCase()) : grow(typed, typed);
   });
+  // The Nanoreactor setup, filled in with what is typed (a first-screen molecule with its usual water).
+  const nanoreactor = () => {
+    const typed = mol.trim();
+    const p = presetOf(typed);
+    openReactorSetup(p ? `${p.n} ${p.smiles}, ${p.water} O` : typed);
+  };
   const workbench = () => { setEverything(true); openTab('graph'); };
   return html`<div class="land">
     <header class="land-top">
@@ -244,6 +252,11 @@ export function WelcomeView() {
           <button class="btn primary land-go" type="submit" disabled=${busy === 'network' || !mol.trim()}
             title=${`Runs hot (${GUIDED.temperature} K, ${GUIDED.time_s / 60} min simulated) so that something forms; first reactions in about 2 minutes`}>Grow it<${Arrow} /></button>
         </form>
+        <div class="land-alt">
+          <button class="btn land-go-alt" type="button" onClick=${nanoreactor}
+            title="A box of the molecules you choose, so many of each, with their charges and spins: hot MD finds what they do together">Nanoreactor<${Arrow} /></button>
+          <span class="small muted">several molecules, so many of each</span>
+        </div>
       <//>
     </ol>
     <div class="land-foot">

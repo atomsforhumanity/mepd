@@ -5,7 +5,7 @@
 // components they always were; this file only places them.
 import { html, useEffect, useState } from '../lib.js';
 import { api } from '../api.js';
-import { closeDrawer, openTab, replaceView, set, state, upLevel, useStore } from '../store.js';
+import { closeDrawer, goBack, openTab, replaceView, set, state, upLevel, useStore } from '../store.js';
 import { cls } from '../util.js';
 import { useMap } from '../quests.js';
 import { ProfilesView } from './Profiles.js';
@@ -80,13 +80,16 @@ export function TopBar() {
     </header>`;
 }
 
-// Where you are (Explore › a calculation) and the views of what is open.
+// The views of the session (Explore · Reactions · Kinetics · Landscape), also over a calculation and the
+// list of them, so the network is one click from any result (none is marked there).
+const WITH_VIEWS = ['graph', 'analyze', 'job', 'jobs'];
 export function CanvasHeader() {
   const view = useStore((s) => s.view);
   const analyzeView = useStore((s) => s.analyze?.view || 'reactions');
   const map = useMap();
-  if (!['graph', 'analyze'].includes(view.tab)) return null;
-  const at = view.tab === 'graph' ? 'explore' : ['kinetics', 'landscape'].includes(analyzeView) ? analyzeView : 'reactions';
+  if (!WITH_VIEWS.includes(view.tab)) return null;
+  const at = view.tab === 'graph' ? 'explore' : view.tab !== 'analyze' ? null
+    : ['kinetics', 'landscape'].includes(analyzeView) ? analyzeView : 'reactions';
   const go = (k) => {
     if (k === 'explore') openTab('graph');
     else set({ analyze: { ...(state.analyze || {}), compose: false, view: k }, view: { tab: 'analyze', jobId: null } });
@@ -105,6 +108,13 @@ export function ModeBar() {
       <strong>Design</strong>
       <span class="spacer"></span>
       <button class="mode-done" onClick=${() => openTab('graph')} title="Back to Explore (the design is kept)">Done</button>
+    </div>`;
+  }
+  if (view.tab === 'reactor-setup') {
+    return html`<div class="mode-bar">
+      <strong>Nanoreactor</strong>
+      <span class="spacer"></span>
+      <button class="mode-done" onClick=${() => goBack({ tab: 'welcome', jobId: null })} title="Back to where you were (nothing is added until you launch)">Exit</button>
     </div>`;
   }
   if (view.tab === 'sandbox') {

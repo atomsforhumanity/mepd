@@ -183,13 +183,26 @@ function Sessions({ onClose, startWith = 'open' }) {
   const create = () => run(() => api.post('/api/sessions/new', !demo && name.includes('/') ? { path: name } : { name }),
     `Started ${name.split('/').pop()}`);
   const open = (p) => run(() => api.post('/api/sessions/open', { path: p }), `Opened ${p.split('/').pop()}`);
+  // One click to an empty session, named by the time (this one stays in Recent), on the first screen.
+  const fresh = async () => {
+    const d = new Date(), z = (n) => String(n).padStart(2, '0');
+    const n = `fresh-${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+    setBusy(true);
+    const out = await attempt(() => api.post('/api/sessions/new', { name: n }), `Started ${n}, an empty session`);
+    setBusy(false);
+    if (out) { set({ view: { tab: 'welcome', jobId: null } }); onClose(); }
+  };
 
   return html`
     <${Modal} title="Sessions" onClose=${onClose}>
       <p class="small muted">A session is a workspace directory: its structures, graph, profiles and calculations.
         Switching leaves the other session's running jobs running; they are there when you come back.</p>
+      <section class="session-fresh">
+        <button class="btn primary" disabled=${busy} onClick=${fresh}>Start fresh</button>
+        <span class="small muted">An empty session, on the first screen. This one stays below, as it is.</span>
+      </section>
       <section class="session-new">
-        <h3 class="section-title">Start a new session</h3>
+        <h3 class="section-title">Start a new session with a name</h3>
         <div class="add-row">
           <input type="text" value=${name} autofocus=${startWith === 'new'} placeholder=${demo ? 'session name' : 'name, or a full path to a new directory'}
             onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => e.key === 'Enter' && name.trim() && create()} />

@@ -151,6 +151,60 @@ def _protonation_name(smiles: str) -> Optional[str]:
     return {1: f"protonated {name}", -1: f"deprotonated {name}", 0: f"{name} zwitterion"}.get(charge)
 
 
+@lru_cache(maxsize=1)
+def _smiles_by_name() -> dict:
+    """Everyday name (lower case) -> SMILES, the first spelling of each in _COMMON_NAMES."""
+    out: dict = {"oxygen": "O=O", "dioxygen": "O=O"}
+    for smi, name in _COMMON_NAMES.items():
+        out.setdefault(name.lower(), smi)
+    return out
+
+
+# Molecules whose ground state has more unpaired electrons than their usual SMILES says.
+_GROUND_SPIN = {"O=O": (3, "O₂'s ground state is a triplet")}
+
+
+
+def species_info(smiles: str) -> dict:
+    """What the Nanoreactor setup shows for one SMILES before anything is added: its name, atoms
+    (hydrogens included), charge, electrons and the spin its SMILES implies (unpaired electrons + 1),
+    or `error` when RDKit cannot read it."""
+    from rdkit import Chem, rdBase
+
+    typed = smiles.strip()
+    with rdBase.BlockLogs():
+        mol = Chem.MolFromSmiles(typed) if typed else None
+    smiles = typed
+    if mol is None and typed.lower() in _smiles_by_name():   # an everyday name: "water", "hydroxide", "O2"
+        smiles = _smiles_by_name()[typed.lower()]
+        with rdBase.BlockLogs():
+            mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return {"input": typed, "smiles": typed,
+                "error": (smiles_problem(typed) if typed else None) or "not a valid SMILES"}
+    full = Chem.AddHs(mol)
+    charge = Chem.GetFormalCharge(mol)
+    unpaired = sum(a.GetNumRadicalElectrons() for a in full.GetAtoms())
+    canonical = Chem.MolToSmiles(mol)
+    mult, note = _GROUND_SPIN.get(canonical, (unpaired + 1, None))
+    return {"input": typed, "smiles": smiles, "canonical": canonical, "name": common_name(smiles),
+            "atoms": full.GetNumAtoms(), "charge": charge,
+            "electrons": sum(a.GetAtomicNum() for a in full.GetAtoms()) - charge, "multiplicity": mult,
+            **({"spin_note": note} if note else {})}
+
+
+def box_multiplicity(electrons: int, multiplicities: list[int], requested: Optional[int] = None) -> int:
+    """The spin of a box of molecules: `requested`, else the molecules' own unpaired electrons added up
+    (1 + sum(m - 1): O2 triplet + water is a triplet, two O2 a quintet). ValueError when it cannot be:
+    an even number of electrons takes an odd multiplicity, an odd number an even one."""
+    mult = int(requested) if requested else 1 + sum(max(0, int(m) - 1) for m in multiplicities)
+    if mult < 1 or (electrons + mult - 1) % 2:
+        parity = "even" if electrons % 2 == 0 else "odd"
+        raise ValueError(f"spin multiplicity {mult} cannot hold {electrons} electrons: an {parity} count takes "
+                         f"an {'odd' if parity == 'even' else 'even'} multiplicity")
+    return mult
+
+
 def smiles_problem(smiles: str) -> Optional[str]:
     """Why RDKit cannot read `smiles`, in one line (e.g. "syntax error
     around position 5", "unclosed ring"), or None when it can."""

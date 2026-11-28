@@ -11,6 +11,7 @@ import { Modals } from './components/Modals.js';
 import { DesignView } from './components/Design.js';
 import { AnalyzeView } from './components/Analyze.js';
 import { SandboxView } from './components/Sandbox.js';
+import { ReactorSetup } from './components/ReactorSetup.js';
 import { WelcomeView } from './components/Welcome.js';
 import { ReactionFocus } from './components/ReactionPlayer.js';
 import { LiveNetworkView } from './components/LiveNetwork.js';
@@ -64,7 +65,7 @@ function App() {
         if (state.connectMode || state.selection.structures.length || state.selection.edges.length) {
           set({ connectMode: false });
           clearSelection();
-        } else if (state.view.drawer || !['design', 'sandbox'].includes(state.view.tab)) upLevel();
+        } else if (state.view.drawer || !['design', 'sandbox', 'reactor-setup'].includes(state.view.tab)) upLevel();
       }
       if (e.key === 'c' && state.view.tab === 'graph') set({ connectMode: !state.connectMode });
       if ((e.key === 'Delete' || e.key === 'Backspace') && state.view.tab === 'graph') { e.preventDefault(); deleteSelection(); }
@@ -97,6 +98,7 @@ function App() {
           ${view.tab === 'analyze' && html`<${AnalyzeView} />`}
           ${view.tab === 'sandbox' && (view.sandbox?.symbols ? html`<${SandboxView} />` : html`<p class="boot">Finding the reactor…</p>`)}
           ${view.tab === 'welcome' && html`<${WelcomeView} />`}
+          ${view.tab === 'reactor-setup' && html`<${ReactorSetup} />`}
         </section>
         ${showInspector && html`<${Inspector} />`}
       </main>

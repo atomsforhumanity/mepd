@@ -1311,6 +1311,10 @@ def _build_retro(ctx: JobContext, p: RetroParams) -> list[str]:
 class NanoreactorParams(Params):
     copies: str = P("4", "Copies of each", "Molecules of each selected structure in the reactor: one number for all, "
                     "or by name, e.g. 'CC=O: 2, O: 6'.", kind="custom")
+    multiplicity: Optional[int] = P(None, "Spin of the box", "Total spin multiplicity of the MD. Empty: from the "
+                                    "molecules' own spins (a triplet O₂ makes the box a triplet, two make a "
+                                    "quintet); 1 or 2 is the lowest. The reactions found are refined at their "
+                                    "own lowest spin.", kind="custom", ge=1, advanced=True, group="Reactor")
     temperature: float = P(2000.0, "Temperature (K)", "Hot on purpose: reactions that take hours at room "
                            "temperature happen within picoseconds.", cli="--temperature", gt=0)
     time_ps: float = P(5.0, "Simulated time (ps)", "With g-xTB, a few dozen atoms take about 4 min per ps (5 ps: about "
@@ -1420,10 +1424,28 @@ def _build_nanoreactor(ctx: JobContext, p: NanoreactorParams) -> list[str]:
     counts = _parse_copies(p.copies, ctx.structures)
     mols = [f"{ctx.snapshot_structure(r, f'molecule_{i}')}*{n}" for i, (r, n) in enumerate(zip(ctx.structures, counts))]
     flags = ctx.common_flags()
-    flags = flags[flags.index("--inputs"):] if "--inputs" in flags else []   # total charge below, spin from electrons
+    flags = flags[flags.index("--inputs"):] if "--inputs" in flags else []   # total charge and spin below
     charge = sum(int(r["charge"]) * n for r, n in zip(ctx.structures, counts))
-    return ["discovery", "nanoreactor", *mols, "--charge", str(charge), *flags, *generic_flags(p),
-            "--output", str(ctx.output_dir)]
+    mult = _nanoreactor_multiplicity(ctx, counts, charge, p.multiplicity)
+    return ["discovery", "nanoreactor", *mols, "--charge", str(charge), "--multiplicity", str(mult), *flags,
+            *generic_flags(p), "--output", str(ctx.output_dir)]
+
+
+def _nanoreactor_multiplicity(ctx: JobContext, counts: list[int], charge: int, requested: Optional[int]) -> int:
+    """The box's spin: `requested`, else the molecules' own added up (chem.box_multiplicity)."""
+    from mepd.discovery.nanoreactor import _Z
+    from mepd.web.chem import box_multiplicity
+
+    electrons = -charge
+    mults = []
+    for r, n in zip(ctx.structures, counts):
+        s = ctx.ws.load_structure(r["id"])
+        electrons += n * sum(_Z.get(x, 0) for x in s.symbols)
+        mults += [int(r.get("multiplicity") or 1)] * n
+    try:
+        return box_multiplicity(electrons, mults, requested)
+    except ValueError as exc:
+        raise WorkspaceError(str(exc)) from None
 
 
 class MixtureParams(Params):
