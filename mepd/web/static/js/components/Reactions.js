@@ -4,7 +4,7 @@
 // its optimized reactant and product sides).
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, select, set, state, useStore } from '../store.js';
+import { openJob, openReactorList, select, set, state, useStore } from '../store.js';
 import { depictUrl, edgeStatus, fmtKcal, jobHeadline, levelBarrierText } from '../util.js';
 import { ProfilePicker, defaultProfile } from './Actions.js';
 import { ParamForm, clampToSchema, defaultsFor } from './ParamForm.js';
@@ -49,6 +49,22 @@ export async function findTs(r) {
   if (!r?.edge) return null;
   return attempt(() => api.post('/api/jobs', { op: 'ts', edges: [r.edge], params: {}, profile: defaultProfile() }),
     'TS search queued on the reaction’s subsystem');
+}
+
+// Where a reaction's barrier stands (Reactions' lists): {kind: none | busy | ts | unverified | todo, text, v, title}.
+export function tsState(r, edges, jobs) {
+  const edge = r.edge ? edges[r.edge] : null;
+  if (!edge) return { kind: 'none', text: NO_TS_SHORT[r.complex_reason] || 'no TS endpoints', title: noTsWhy(r) };
+  const st = edgeStatus(edge, jobs);
+  if (st.status === 'running' || st.status === 'queued') return { kind: 'busy', text: `${st.status}…` };
+  if (st.levels?.length > 1) {   // each level of theory its own lowest; sorted by the workspace level's
+    return { kind: st.barrier != null ? 'ts' : 'unverified', text: st.levels.map((l) => levelBarrierText(l)).join(' · '),
+      v: st.barrier, title: 'Lowest barrier at each level of theory (not comparable across levels)' };
+  }
+  if (st.barrier != null) return { kind: 'ts', text: `ΔE‡ ${fmtKcal(st.barrier)}`, v: st.barrier };
+  if (st.barrierUnverified != null) return { kind: 'unverified', text: 'no TS', v: null, title: `No transition state found: ${noTsHint(st.barrierUnverified)}` };
+  if (edge.origin?.qmmm_ts) return { kind: 'busy', text: 'TS, barrier pending', title: edge.origin.headline || '' };
+  return { kind: 'todo', text: 'no TS yet' };
 }
 
 export function showInExplore(r) {
@@ -115,7 +131,9 @@ export function ReactionTable({ job, reactions }) {
   if (!reactions.length) return null;
   const openRx = open == null ? null : reactionOf(ws, job.id, open);
   return html`<div class="rx-table-wrap">
-    <p class="small muted">Click a reaction to see its species, energies, reaction complex and MD event, and to find its TS.</p>
+    <p class="small muted">Click a reaction to see its species, energies, reaction complex and MD event, and to find its TS.
+      <a href="#/reactions/nanoreactor" onClick=${(e) => { e.preventDefault(); openReactorList(); }}
+        title="Every Nanoreactor run of this session, their reactions once each">All runs, one list ›</a></p>
     <table class="rx-table">
       <thead><tr><th>Reaction</th><th title="Products minus reactants, each optimized alone">ΔE</th><th>Seen</th><th>TS</th></tr></thead>
       <tbody>${reactions.map((rx) => {

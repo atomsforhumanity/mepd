@@ -87,6 +87,7 @@ export function CanvasHeader() {
   const view = useStore((s) => s.view);
   const analyzeView = useStore((s) => s.analyze?.view || 'reactions');
   const map = useMap();
+  const runs = useStore((s) => Object.values(s.jobs).some((j) => j.op === 'nanoreactor'));
   if (!WITH_VIEWS.includes(view.tab)) return null;
   const at = view.tab === 'graph' ? 'explore' : view.tab !== 'analyze' ? null
     : ['kinetics', 'landscape'].includes(analyzeView) ? analyzeView : 'reactions';
@@ -94,7 +95,9 @@ export function CanvasHeader() {
     if (k === 'explore') openTab('graph');
     else set({ analyze: { ...(state.analyze || {}), compose: false, view: k }, view: { tab: 'analyze', jobId: null } });
   };
-  const views = [['explore', 'Explore'], ...(map.tab('analyze') ? [['reactions', 'Reactions'], ['kinetics', 'Kinetics'], ['landscape', 'Landscape']] : [])];
+  // Reactions also for anyone with Nanoreactor runs: their one list of what the runs found lives there.
+  const views = [['explore', 'Explore'], ...(map.tab('analyze') ? [['reactions', 'Reactions'], ['kinetics', 'Kinetics'], ['landscape', 'Landscape']]
+    : runs ? [['reactions', 'Reactions']] : [])];
   return html`<nav class="canvas-tabs" aria-label="Views">
     ${views.map(([k, l]) => html`<button class=${cls(at === k && 'on')} onClick=${() => go(k)}>${l}</button>`)}
   </nav>`;

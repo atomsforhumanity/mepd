@@ -55,6 +55,37 @@ push molecules together in (Collide). **Stop & analyze** reads its
 trajectory the same way. It keeps up with 120 atoms at most, and it stops
 15 minutes after nobody looks at it.
 
+## Many runs, one list
+
+One run is one packing of the box at one temperature, and what it finds
+depends on both. To see what the box does more broadly, give the setup page
+several temperatures, separated by commas (`1800, 2200, 2600`), and a
+number of **repeats**: one run at each temperature for each repeat, each
+with the molecules packed anew (its own seed, kept with the run).
+
+Their reactions come together under **Reactions › Nanoreactor runs**:
+
+- **Each reaction once.** Two runs find the same reaction when its two
+  sides hold the same molecules (SMILES, charge and spin), whichever way
+  each run saw it. A reaction with a molecule whose bonding could not be
+  read stays with its own run.
+- **Where it was seen.** Each row says under which conditions it was seen
+  and how often (`1800 K ×3`), and **Seen** counts every time, this way
+  and back.
+- **How far it got.** *Seen in the MD* (not refined yet), *refined* (its
+  molecules and reaction complex optimized, with a ΔE), or *TS* (a TS
+  search found its barrier).
+- **Sorting.** Click a column to sort by barrier, ΔE, times seen or the
+  number of runs that found it.
+
+A row's barrier, card and TS search belong to one run's copy of the
+reaction, the one from the run that saw it most whose reaction complex has
+TS endpoints. The row reads in that copy's direction. **Find the TS of
+the … refined without one** queues one search per reaction, however many
+runs found it. A run still going is listed as far as it has got: its
+events after each simulated picosecond, and its reactions as they are
+refined.
+
 ## Starting over
 
 **Sessions › Start fresh** opens an empty session on the first screen. The
@@ -74,5 +105,11 @@ session you were in stays in the list as it was.
 - **The live network page does not show a Nanoreactor run.** That page
   plays a network expansion's kinetics; a Nanoreactor run shows its
   reactions in Explore instead.
+- **Each run keeps its own copy of a reaction it found.** The list shows
+  them as one, but Explore and Reactions › *By what they do* still show one
+  copy per run, and a TS search on one copy does not carry over to the
+  others.
+- **No rates yet.** The list counts how often the MD saw a reaction; it
+  does not turn counts or barriers into rates at each temperature.
 - **The demo** runs at most 10 ps, and one interactive reactor per visitor,
   which stops after 3 minutes unwatched.

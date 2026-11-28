@@ -5,7 +5,7 @@
 // is pressed; the rows are read by /api/species/preview as you type.
 import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
-import { openJob, set, useStore } from '../store.js';
+import { openJob, openReactorList, set, toast, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
 
 const SPINS = [[1, 'singlet'], [2, 'doublet'], [3, 'triplet'], [4, 'quartet'], [5, 'quintet']];
@@ -93,7 +93,8 @@ export function ReactorSetup() {
   const demo = useStore((s) => s.demo);
   const [rows, setRows] = useState(() => { const r = parseMix(mix); return r.length ? r : [newRow()]; });
   const [paste, setPaste] = useState('');
-  const [temperature, setTemperature] = useState(2000);
+  const [temps, setTemps] = useState('2000');          // one temperature, or several: one run each
+  const [repeats, setRepeats] = useState(1);            // independent runs per temperature (another packing each)
   const [timePs, setTimePs] = useState(5);
   const [compress, setCompress] = useState(0.6);
   const [connect, setConnect] = useState(false);
@@ -104,6 +105,8 @@ export function ReactorSetup() {
   // A new address (the landing's Nanoreactor button again) fills the page anew.
   useEffect(() => { const r = parseMix(mix); if (r.length) setRows(r); }, [mix]);
 
+  const temperatures = [...new Set(temps.split(/[\s,;]+/).map(Number).filter((T) => T > 0))];
+  const nRuns = temperatures.length * repeats;
   const infoOf = (r) => info[r.smiles.trim()];
   const multOf = (r) => r.mult ?? infoOf(r)?.multiplicity ?? 1;
   const live = rows.filter((r) => r.n > 0 && r.smiles.trim());
@@ -140,21 +143,36 @@ export function ReactorSetup() {
   };
   const title = live.map((r) => `${r.n > 1 ? `${r.n} ` : ''}${infoOf(r)?.name || infoOf(r)?.canonical || r.smiles.trim()}`).join(' + ');
   const go = (which, fn) => async () => { setBusy(which); await attempt(fn); setBusy(null); };
+  // One run per temperature and repeat, each packed anew (its own seed, kept with the run); several open
+  // the one list of what they find (Reactions › Nanoreactor runs).
   const launch = go('launch', async () => {
     const { ids, counts } = await addSpecies();
-    const params = { copies: counts.join(', '), multiplicity: boxMult, temperature, time_ps: timePs, compress,
-      connect, refine_live: true };
-    const jobs = await api.post('/api/jobs', { op: 'nanoreactor', structures: ids, params, label: `Nanoreactor: ${title}` });
-    openJob(jobs[0].id);
+    const seed = Math.floor(Math.random() * 100000);
+    const plan = temperatures.flatMap((T) => Array.from({ length: repeats }, (_, k) => ({ T, k })));
+    const made = [];
+    for (const { T, k } of plan) {
+      const params = { copies: counts.join(', '), multiplicity: boxMult, temperature: T, time_ps: timePs, compress,
+        connect: plan.length === 1 && connect, refine_live: true, seed: seed + made.length };
+      const label = `Nanoreactor ${T} K${repeats > 1 ? `, run ${k + 1}` : ''}: ${title}`;
+      try {
+        made.push(...await api.post('/api/jobs', { op: 'nanoreactor', structures: ids, params, label }));
+      } catch (err) {
+        if (!made.length) throw err;
+        toast(`Launched ${made.length} of ${plan.length} runs: ${err.message || err}`, 'error', 12000);
+        break;
+      }
+    }
+    if (plan.length === 1) openJob(made[0].id); else openReactorList();
   });
   const steer = go('steer', async () => {
     const { ids, counts } = await addSpecies();
     const box = await api.post('/api/sandbox', { counts: Object.fromEntries(ids.map((id, k) => [id, counts[k]])),
-      temperature, multiplicity: boxMult });
+      temperature: temperatures[0], multiplicity: boxMult });
     set({ view: { tab: 'sandbox', jobId: null, sandbox: box } });
   });
 
   const maxPs = demo?.limit_compute ? 10 : null;
+  const atOnce = demo?.limit_compute ? demo.max_active_jobs : null;
   return html`<div class="nrs">
     <section class="nrs-recipe" aria-labelledby="nrs-in">
       <h2 id="nrs-in">What goes in</h2>
@@ -192,18 +210,23 @@ export function ReactorSetup() {
     </section>
     <aside class="nrs-run" aria-label="Conditions and run">
       <div class="nrs-fields">
-        <label>Temperature<span><input type="number" min="1" step="100" value=${temperature} onInput=${(e) => setTemperature(+e.target.value || 0)} /> K</span></label>
+        <label class="nrs-temps" title="Several, separated by commas, launch one run at each">Temperature<span><input class=${temperatures.length ? '' : 'bad'} inputmode="decimal" value=${temps}
+          onInput=${(e) => setTemps(e.target.value)} /> K</span></label>
         <label>Simulated time<span><input type="number" min="0.1" step="1" value=${timePs} onInput=${(e) => setTimePs(+e.target.value || 0)} /> ps</span></label>
         <label title="The wall squeezes in to this fraction of its radius once a picosecond: smaller pushes the molecules harder together">Piston squeeze<span><input type="number" min="0.1" max="1" step="0.05" value=${compress} onInput=${(e) => setCompress(+e.target.value || 0)} /></span></label>
+        <label title="Independent runs at each temperature, each with the molecules packed anew">Repeats<span><input type="number" min="1" step="1" value=${repeats} onInput=${(e) => setRepeats(Math.max(1, parseInt(e.target.value, 10) || 1))} /></span></label>
       </div>
-      <label class="nrs-toggle"><input type="checkbox" class="switch" checked=${connect} onChange=${(e) => setConnect(e.target.checked)} />
-        <span>Find each reaction's TS<span class="small muted"> as it is found</span></span></label>
+      ${nRuns > 1 && html`<p class="small nrs-plan">${nRuns} runs: ${temperatures.map((T) => `${T} K`).join(', ')}${repeats > 1 ? `, ${repeats} of each` : ''}. Their reactions come together in one list.</p>`}
+      ${nRuns === 1 ? html`<label class="nrs-toggle"><input type="checkbox" class="switch" checked=${connect} onChange=${(e) => setConnect(e.target.checked)} />
+        <span>Find each reaction's TS<span class="small muted"> as it is found</span></span></label>`
+        : html`<p class="small muted nrs-note">With several runs, find TSs from their list: one search per reaction, however many runs found it.</p>`}
+      ${atOnce && nRuns > atOnce && html`<p class="nrs-warn small">The demo runs ${atOnce} calculations at a time: the first ${atOnce} start now.</p>`}
       ${maxPs && timePs > maxPs && html`<p class="nrs-warn small">The demo runs at most ${maxPs} ps.</p>`}
       <div class="nrs-go">
-        <button class="btn primary nrs-launch" disabled=${!ready || !spinOk || rowSpinBad || busy}
+        <button class="btn primary nrs-launch" disabled=${!ready || !spinOk || rowSpinBad || busy || !nRuns}
           title="Runs on its own: hot MD inside a squeezing wall, then each reaction is cut out and refined at your level of theory. Reactions join Explore as they are found."
-          onClick=${launch}>${busy === 'launch' ? 'Launching…' : 'Launch nanoreactor ›'}</button>
-        <button class="btn" disabled=${!ready || !spinOk || rowSpinBad || busy || atoms > STEER_MAX_ATOMS}
+          onClick=${launch}>${busy === 'launch' ? 'Launching…' : nRuns > 1 ? `Launch ${nRuns} runs ›` : 'Launch nanoreactor ›'}</button>
+        <button class="btn" disabled=${!ready || !spinOk || rowSpinBad || busy || atoms > STEER_MAX_ATOMS || !nRuns}
           title=${atoms > STEER_MAX_ATOMS ? `Steering by hand keeps up with ${STEER_MAX_ATOMS} atoms at most` : 'A live GFN2-xTB MD you drag and squeeze; Stop & analyze pulls out its reactions'}
           onClick=${steer}>${busy === 'steer' ? 'Starting…' : 'Steer by hand'}</button>
       </div>

@@ -203,6 +203,9 @@
 .nrs-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
 .nrs-fields label span { display: flex; align-items: center; gap: 6px; color: var(--text); }
 .nrs-fields input { width: 96px; height: 36px; font: 500 15px var(--font-mono); }
+.nrs-fields .nrs-temps { grid-column: 1 / -1; }
+.nrs-fields .nrs-temps input { width: 200px; }
+.nrs-plan { margin: 0; color: var(--heading); }
 .nrs-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 15px; }
 .nrs-go { display: flex; gap: 10px; }
 .nrs-go .btn { height: 46px; font-size: 16px; white-space: nowrap; }
@@ -1024,3 +1027,30 @@ circle.ld-hit { fill: transparent; stroke: none; pointer-events: all; }
 
 /* Sessions dialog: Start fresh first */
 .session-fresh { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* Reactions › Nanoreactor runs (ReactorReactions.js): the runs, then one table of what they found */
+.analyze.nrl { grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr); }
+.nrl-runs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.nrl-run { padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--panel);
+  color: var(--heading); font: 500 13px var(--font-ui); cursor: pointer; }
+.nrl-run:hover { border-color: var(--accent); }
+.nrl-run.busy { border-color: var(--accent); background: var(--accent-soft); }
+.nrl-run.failed { border-color: var(--danger); color: var(--danger); }
+.nrl-runs .btn { margin-left: auto; }
+.nrl-scroll { overflow: auto; min-height: 0; flex: 1; }
+.nrl-table { width: 100%; }
+.nrl-table th { white-space: nowrap; }
+.nrl-sort { border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-transform: inherit; letter-spacing: inherit; }
+.nrl-sort.on { color: var(--heading); }
+.nrl-eq { min-width: 0; }
+.nrl-eq > span:first-child { display: block; }
+.nrl-conds { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.nrl-cond, .nrl-stage { font-size: 12px; padding: 0 6px; border-radius: var(--radius); background: var(--panel-2); color: var(--muted); }
+.nrl-stage.seen { background: var(--warn-soft); color: var(--warn); }
+.nrl-stage.refined { background: var(--accent-soft); color: var(--accent); }
+.nrl-stage.ts { background: var(--ok-soft); color: var(--ok); }
+.nrl-empty { padding: 12px 4px; }
+.nrl-found ul { margin: 4px 0 12px; padding-left: 18px; }
+@media (max-width: 960px) {
+  .analyze.nrl { grid-template-columns: minmax(0, 1fr); height: auto; overflow: visible; }
+}

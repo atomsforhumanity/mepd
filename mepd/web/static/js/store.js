@@ -217,7 +217,8 @@ export function formatHash(v, analyze = state.analyze) {
   let path;
   switch (v.tab) {
     case 'welcome': path = '/home'; break;
-    case 'analyze': path = `/${['kinetics', 'landscape'].includes(analyze?.view) ? analyze.view : 'reactions'}`; break;
+    case 'analyze': path = ['kinetics', 'landscape'].includes(analyze?.view) ? `/${analyze.view}`
+      : analyze?.list === 'nanoreactor' ? '/reactions/nanoreactor' : '/reactions'; break;
     case 'jobs': path = '/calculations'; break;
     case 'job': path = `/calc/${encodeURIComponent(v.jobId || '')}${v.jobTab ? `/${v.jobTab}` : ''}`; break;
     case 'reaction': path = `/reaction/${encodeURIComponent(v.edgeId || '')}`; break;   // (+ ?from=, below)
@@ -247,7 +248,7 @@ export function parseHash(hash) {
   switch (parts[0]) {
     case 'home': return { ...base, tab: 'welcome' };
     case 'explore': return { ...base, tab: 'graph' };
-    case 'reactions': return { ...base, tab: 'analyze', analyze: 'reactions' };
+    case 'reactions': return { ...base, tab: 'analyze', analyze: 'reactions', list: parts[1] === 'nanoreactor' ? 'nanoreactor' : null };
     case 'kinetics': return { ...base, tab: 'analyze', analyze: 'kinetics' };
     case 'landscape': return { ...base, tab: 'analyze', analyze: 'landscape' };
     case 'calculations': return { ...base, tab: 'jobs' };
@@ -264,8 +265,8 @@ export function parseHash(hash) {
 function viewFromHash(hash) {
   const v = parseHash(hash);
   if (!v) return null;
-  const { analyze, ...view } = v;
-  if (analyze) state.analyze = { ...(state.analyze || {}), view: analyze };
+  const { analyze, list, ...view } = v;
+  if (analyze) state.analyze = { ...(state.analyze || {}), view: analyze, list: list || null };
   return view;
 }
 const viewKey = (v) => formatHash(v);
@@ -366,6 +367,10 @@ export async function confirmProfileEdits() {
   return true;
 }
 
+// Reactions › Nanoreactor runs (#/reactions/nanoreactor): every run's reactions as one list (ReactorReactions.js).
+export function openReactorList() {
+  set({ analyze: { ...(state.analyze || {}), compose: false, view: 'reactions', list: 'nanoreactor' }, view: { tab: 'analyze', jobId: null } });
+}
 // The Nanoreactor setup (#/reactor/new), filled in from `mix`: a list such as '2 CC=O, 4 O, O=O triplet'.
 export function openReactorSetup(mix = '') {
   set({ view: { tab: 'reactor-setup', jobId: null, mix } });

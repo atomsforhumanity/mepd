@@ -11,7 +11,8 @@ import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, select, set, state, toast, useStore } from '../store.js';
 import { edgeStatus, fmtKcal, isSpecies, levelBarrierText } from '../util.js';
-import { NO_TS_SHORT, ReactionCard, findTs, noTsHint, noTsWhy } from './Reactions.js';
+import { ReactionCard, findTs, tsState } from './Reactions.js';
+import { ReactorReactions } from './ReactorReactions.js';
 import { LandscapeView } from './Landscape.js';
 import { KineticsView } from './Kinetics.js';
 import { ReactionMaker } from './NewReaction.js';
@@ -42,21 +43,6 @@ function netLabel(r, structures) {
 function routeLabel(r, structures) {
   const sh = [...new Set(r.shuttles || [])].map((id) => structures[id]?.name || '?');
   return sh.length ? `via ${sh.join(', ')}` : 'direct';
-}
-
-function tsState(r, edges, jobs) {
-  const edge = r.edge ? edges[r.edge] : null;
-  if (!edge) return { kind: 'none', text: NO_TS_SHORT[r.complex_reason] || 'no TS endpoints', title: noTsWhy(r) };
-  const st = edgeStatus(edge, jobs);
-  if (st.status === 'running' || st.status === 'queued') return { kind: 'busy', text: `${st.status}…` };
-  if (st.levels?.length > 1) {   // each level of theory its own lowest; sorted by the workspace level's
-    return { kind: st.barrier != null ? 'ts' : 'unverified', text: st.levels.map((l) => levelBarrierText(l)).join(' · '),
-      v: st.barrier, title: 'Lowest barrier at each level of theory (not comparable across levels)' };
-  }
-  if (st.barrier != null) return { kind: 'ts', text: `ΔE‡ ${fmtKcal(st.barrier)}`, v: st.barrier };
-  if (st.barrierUnverified != null) return { kind: 'unverified', text: 'no TS', v: null, title: `No transition state found: ${noTsHint(st.barrierUnverified)}` };
-  if (edge.origin?.qmmm_ts) return { kind: 'busy', text: 'TS, barrier pending', title: edge.origin.headline || '' };
-  return { kind: 'todo', text: 'no TS yet' };
 }
 
 // Where a reaction came from, in a word (a nanoreactor's: how often the MD saw it).
@@ -102,9 +88,18 @@ export function AnalyzeView() {
   const mode = useStore((s) => (s.analyze || {}).view) || 'reactions';
   useEffect(() => { if (mode === 'kinetics') markQuest('kinetics'); }, [mode]);
   // (Reactions and Kinetics are the canvas's own view tabs: Shell.js CanvasHeader.)
+  const list = useStore((s) => (s.analyze || {}).list) || null;
+  const runs = useStore((s) => Object.values(s.jobs).filter((j) => j.op === 'nanoreactor').length);
   if (mode === 'kinetics') return html`<div class="analyze-wrap"><${KineticsView} /></div>`;
   if (mode === 'landscape') return html`<div class="analyze-wrap"><${LandscapeView} /></div>`;
-  return html`<div class="analyze-wrap"><${ReactionsAnalyze} /></div>`;
+  // With Nanoreactor runs in the session: their reactions as one list, or every reaction by what it does.
+  const pickList = (l) => set({ analyze: { ...(state.analyze || {}), list: l, reaction: null, compose: false } });
+  const toggle = runs > 0 && html`<div class="segmented an-mode" role="group" aria-label="Which list">
+    <button class=${list !== 'nanoreactor' ? 'on' : ''} onClick=${() => pickList(null)}>By what they do</button>
+    <button class=${list === 'nanoreactor' ? 'on' : ''} onClick=${() => pickList('nanoreactor')}>Nanoreactor runs · ${runs}</button>
+  </div>`;
+  if (list === 'nanoreactor' && runs > 0) return html`<div class="analyze-wrap">${toggle}<${ReactorReactions} /></div>`;
+  return html`<div class="analyze-wrap">${toggle}<${ReactionsAnalyze} /></div>`;
 }
 
 function ReactionsAnalyze() {

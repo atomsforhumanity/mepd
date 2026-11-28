@@ -2784,6 +2784,14 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             raise WorkspaceError(str(exc)) from None
         return box.describe()
 
+    @app.get("/api/nanoreactor/reactions")
+    def nanoreactor_reactions():
+        """Every Nanoreactor run of the session and their reactions as one list (mepd.web.reactor_list): each
+        reaction once, with how often each run saw it, whether it was refined, and its session reaction."""
+        from mepd.web import reactor_list
+
+        return reactor_list.collect(W(), J().list())
+
     @app.get("/api/sandboxes")
     def sandboxes_running():
         """The interactive reactors started from this workspace that still run."""
