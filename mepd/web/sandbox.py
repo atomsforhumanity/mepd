@@ -85,7 +85,7 @@ def _piston_view(piston: Optional[dict]) -> Optional[dict]:
 
 
 def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q, parent_pid,
-         method="gfn2", threads=1):
+         method="gfn2", threads=1, uma_auto=False):
     """The MD process: steps until told to stop, applying commands between steps.
     Exits with the server too (`parent_pid`): only the server's reader thread
     stops an idle reactor, so an orphan would step on forever. `method`: "gfn2"
@@ -141,15 +141,17 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
                 raise RuntimeError("no UMA model on this machine (its weights are gated on Hugging Face)")
             # The weights this machine has, offline: the image bakes in its own UMA version (MEPD_FAIRCHEM_MODELS),
             # not always the MD's (langevin.UMA_MODEL), and a download from the gated repository fails (401).
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            if "huggingface_hub.constants" in sys.modules:
-                sys.modules["huggingface_hub.constants"].HF_HUB_OFFLINE = True
-            from mepd.discovery import langevin as _langevin
-
-            _langevin.UMA_MODEL = model
+            load_uma_offline(model)
             md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
                             temperature=temperature, wall=float(radius_A), bias=drags, method="uma")
             md.forces(md.pos, biased=False)   # loads the model now: a failure falls back here, not mid-relax
+            # Chosen by "auto": only while it is faster than GFN2-xTB here (a GPU shared with a busy job is not).
+            slow = uma_too_slow(md, n) if uma_auto else None
+            if slow:
+                md = None
+                method = "gfn2"
+                threads = BIG_THREADS if n >= THREADS_FROM_ATOMS else 1
+                send_early("method", method="gfn2", note=f"{slow}: GFN2-xTB instead")
         except Exception as exc:      # UMA on the CPU is slower than GFN2-xTB: fall back, and say why
             method = "gfn2"
             send_early("method", method="gfn2", note=f"UMA could not run here ({type(exc).__name__}: {exc}); "
@@ -299,7 +301,7 @@ class Sandbox:
     def __init__(self, sid: str, symbols, coords_A, charge: int, multiplicity: int, radius: float,
                  temperature: float, names: str = "", owner: str = "", sources: Optional[list] = None,
                  idle_s: float = IDLE_STOP_S, max_s: Optional[float] = None, method: str = "gfn2",
-                 threads: int = 1):
+                 threads: int = 1, uma_auto: bool = False):
         ctx = mp.get_context("spawn")
         self.method, self.threads, self.method_note = method, int(threads), None
         self.id, self.symbols, self.charge, self.multiplicity, self.names = sid, list(symbols), int(charge), \
@@ -308,7 +310,8 @@ class Sandbox:
         self.proc = ctx.Process(target=_run, args=(self.symbols, np.asarray(coords_A).tolist(), charge, multiplicity,
                                                    radius, temperature, self.cmd_q, self.out_q, self.traj_q,
                                                    os.getpid()),
-                                kwargs={"method": method, "threads": int(threads)}, daemon=True)
+                                kwargs={"method": method, "threads": int(threads), "uma_auto": bool(uma_auto)},
+                                daemon=True)
         _STARTER.submit(self.proc.start).result()
         self.latest: Optional[dict] = None
         self.seq = 0
@@ -498,6 +501,73 @@ def _choose(natoms: int, requested: str) -> tuple[str, int, Optional[str]]:
     return how, threads, None
 
 
+GFN2_STEP_S_120 = 0.17      # GFN2-xTB per MD step at 120 atoms, one thread (laptop, 2026-11-27); grows ~N^3
+UMA_GPU_SLOTS = 2           # launched runs (mepd reactor-run) on UMA at once on this machine's GPU
+
+
+def gfn2_step_estimate(natoms: int, threads: int = 1) -> float:
+    """Seconds per GFN2-xTB MD step at this size (axtb; measured 0.17 s at 120 atoms, 1.4 at 240, 11.4 at 480 on
+    one thread; 4 threads 1.7x faster at 120, 2.6x at 480)."""
+    t = GFN2_STEP_S_120 * (natoms / 120.0) ** 3
+    if threads > 1:
+        t /= 1.7 + 0.9 * (min(max(natoms, 120), 480) - 120) / 360.0
+    return t
+
+
+def uma_step_seconds(md, n: int = 3) -> float:
+    """The median of `n` UMA force calls of `md` (its model already loaded): what a step costs right now. A GPU
+    another job is using makes it many times slower (mepd.afh.org, 2026-11-28: 1.5 s at 120 atoms, 0.024 alone)."""
+    times = []
+    for _ in range(n):
+        t0 = time.time()
+        md.forces(md.pos, biased=False)
+        times.append(time.time() - t0)
+    return sorted(times)[len(times) // 2]
+
+
+UMA_ALONE_S = 0.1           # UMA per step alone on a GPU: 0.024 s at 120 atoms, 0.089 at 480 (laptop RTX 5090)
+
+
+def uma_too_slow(md, natoms: int) -> Optional[str]:
+    """None when UMA steps faster than GFN2-xTB would at this size; else why not, for the note: a small box
+    (GFN2-xTB is faster there anyway) or a GPU that another job is using (UMA far slower than alone)."""
+    uma = uma_step_seconds(md)
+    gfn2 = gfn2_step_estimate(natoms, BIG_THREADS if natoms >= THREADS_FROM_ATOMS else 1)
+    if uma <= gfn2:
+        return None
+    busy = " (the GPU seems busy with another job)" if uma > UMA_ALONE_S else ""
+    return f"UMA took {uma:.3f} s per step{busy}, GFN2-xTB about {gfn2:.3f} at {natoms} atoms"
+
+
+def gpu_slot(slots: int = UMA_GPU_SLOTS):
+    """One of `slots` UMA places on this machine's GPU (a lock file held until the process ends), or None when
+    all are taken. Shared by every launched run on this machine (the folder is the machine's temp)."""
+    import fcntl
+    import tempfile
+
+    d = os.path.join(os.environ.get("MEPD_GPU_SLOTS_DIR") or tempfile.gettempdir(), "mepd-uma-gpu-slots")
+    os.makedirs(d, exist_ok=True)
+    for k in range(int(slots)):
+        fh = open(os.path.join(d, f"slot_{k}"), "w")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            fh.close()
+    return None
+
+
+def load_uma_offline(model: str) -> None:
+    """Make LangevinMD's UMA the model this machine has, read from its cache with Hugging Face offline (the
+    repository is gated: a download fails)."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    if "huggingface_hub.constants" in sys.modules:
+        sys.modules["huggingface_hub.constants"].HF_HUB_OFFLINE = True
+    from mepd.discovery import langevin as _langevin
+
+    _langevin.UMA_MODEL = model
+
+
 def uma_model() -> Optional[str]:
     """A UMA model whose weights this machine has (fairchem's cache), so the reactor never downloads one (the
     repository is gated): the MD's own (langevin.UMA_MODEL) if it is there, else the image's (MEPD_FAIRCHEM_MODELS),
@@ -571,7 +641,7 @@ def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Opt
         timing = _make_room(owner, limits)
         how, threads, note = _choose(len(symbols), method)
         box = Sandbox(sid, symbols, coords, charge, mult, float(radius) * 1.15, temperature, names, owner, sources,
-                      **timing, method=how, threads=threads)
+                      **timing, method=how, threads=threads, uma_auto=method == "auto")
         box.method_note = note
         _SANDBOXES[sid] = box
     return box
@@ -593,7 +663,7 @@ def start_from(sid: str, structure, *, temperature: float = 800.0, radius: Optio
         timing = _make_room(owner, limits)
         how, threads, note = _choose(len(symbols), method)
         box = Sandbox(sid, symbols, xyz, int(structure.charge), int(structure.multiplicity), radius, temperature, names,
-                      owner, sources, **timing, method=how, threads=threads)
+                      owner, sources, **timing, method=how, threads=threads, uma_auto=method == "auto")
         box.method_note = note
         _SANDBOXES[sid] = box
     return box

@@ -137,7 +137,9 @@ def test_collide_runs_the_reactors_md_then_the_nanoreactors_analysis(client):
     assert a[a.index("--time") + 1] == "2.0" and a[a.index("--inputs") + 1].endswith("profile.toml")
     assert job(forces=["piston"]).json()[0]["argv"][:2] == ["discovery", "nanoreactor"]     # the piston alone: as before
     r = job(forces=["piston", "collide"], md_method="level")
-    assert r.status_code == 400 and "GFN2-xTB or g-xTB" in r.json()["detail"]
+    assert r.status_code == 400 and "GFN2-xTB, g-xTB or UMA" in r.json()["detail"]
+    a = job(forces=["piston"], md_method="uma").json()[0]["argv"]          # UMA, with or without Collide
+    assert a[0] == "reactor-run" and a[a.index("--md-method") + 1] == "uma" and a[a.index("--forces") + 1] == "piston"
 
 
 def test_the_explorer_pieces_reactor_run_calls_are_still_there():

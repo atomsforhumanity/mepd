@@ -322,3 +322,36 @@ def test_uma_is_picked_only_with_a_model_on_this_machine(tmp_path, monkeypatch):
     from mepd.discovery.langevin import UMA_MODEL
     (ck / f"{UMA_MODEL}.pt").write_text("")                     # the MD's own, when there: first
     assert sandbox.uma_model() == UMA_MODEL
+
+
+def test_uma_steps_aside_for_gfn2_when_the_gpu_is_slow(monkeypatch):
+    """mepd.afh.org, 2026-11-28: a batch job had the node's GPU and UMA took 1.5 s a step at 120 atoms, 60x slower
+    than alone; GFN2-xTB takes ~0.17. 'auto' keeps UMA only while it is the faster."""
+    assert abs(sandbox.gfn2_step_estimate(120) - 0.17) < 1e-9
+    assert 10 < sandbox.gfn2_step_estimate(480) < 12                         # ~N^3 (measured 11.4)
+    assert sandbox.gfn2_step_estimate(480, 4) < sandbox.gfn2_step_estimate(480) / 2.5
+
+    class FakeMD:
+        pos = None
+
+        def __init__(self, seconds):
+            self.seconds = seconds
+
+        def forces(self, x, biased=True):
+            time.sleep(self.seconds)
+
+    assert sandbox.uma_too_slow(FakeMD(0.0), 120) is None                    # UMA alone on the GPU: kept
+    note = sandbox.uma_too_slow(FakeMD(0.25), 120)                              # a GPU another job is using
+    assert note and "0.25" in note and "busy" in note
+    small = sandbox.uma_too_slow(FakeMD(0.02), 28)                              # a small box: GFN2-xTB is faster
+    assert small and "busy" not in small and "28 atoms" in small
+
+
+def test_gpu_slots_admit_two_uma_runs_at_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEPD_GPU_SLOTS_DIR", str(tmp_path))
+    a, b = sandbox.gpu_slot(), sandbox.gpu_slot()
+    assert a is not None and b is not None and sandbox.gpu_slot() is None
+    a.close()                                   # a run ends: its place frees
+    c = sandbox.gpu_slot()
+    assert c is not None
+    b.close(); c.close()

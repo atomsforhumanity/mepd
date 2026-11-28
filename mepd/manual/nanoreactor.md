@@ -72,7 +72,12 @@ machine-learned potential, instead. Measured on a laptop:
 | 480 | one every 11 s (one every 4 s on 4 threads) | 11 |
 
 Without a GPU (or with three UMA reactors already on it), boxes from 150
-atoms run GFN2-xTB on 4 threads. The reactor's header names what it runs.
+atoms run GFN2-xTB on 4 threads. UMA is also given up when it turns out
+slower than GFN2-xTB would be: a GPU that another job is using can make
+it fifty times slower. The reactor's header names what it runs, and why.
+
+A launched run can drive its MD with UMA too (**MD driven by: UMA**), with
+the same checks; at most two such runs share the GPU.
 A big box shows from the start, settling while its packing is relaxed (up
 to 60 steps, cut short after 15 s once 10 are done). The reactor stops 15
 minutes after nobody looks at it.

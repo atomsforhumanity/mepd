@@ -28,7 +28,7 @@ import typer
 
 TRAJ_FS = 2.0          # frame spacing the event detection reads (the nanoreactor's --dump)
 LIVE_FRAMES = 125      # frames per segment file the live view reads (250 fs)
-METHODS = {"gfn2": "gfn2", "gxtb": "gxtb-v2.0.1"}   # what drives this MD (axtb)
+METHODS = {"gfn2": "gfn2", "gxtb": "gxtb-v2.0.1", "uma": "uma"}   # what drives this MD (axtb; UMA on the GPU)
 
 
 def _write_frames(fp: Path, symbols, frames, comment: str = "") -> None:
@@ -53,7 +53,8 @@ def reactor_run(
     period: float = typer.Option(1.0, "--period", help="Piston period (ps)."),
     duty: float = typer.Option(0.75, "--duty", help="Fraction of each period at the wide radius."),
     forces: str = typer.Option("piston,collide", "--forces", help="piston and/or collide, comma-separated."),
-    md_method: str = typer.Option("gfn2", "--md-method", help="What drives the MD: gfn2 or gxtb (axtb)."),
+    md_method: str = typer.Option("gfn2", "--md-method", help="What drives the MD: gfn2 or gxtb (axtb), or uma (on the "
+                                  "GPU, with a model this machine has; GFN2-xTB instead when the GPU is busy or full)."),
     radius: Optional[float] = typer.Option(None, "--radius", help="Wide wall radius (A). Default: from the atoms."),
     seed: int = typer.Option(0, "--seed", help="Random seed of the packing, the thermostat and the pulls."),
     relax_steps: int = typer.Option(60, "--relax-steps", help="Steepest-descent steps on the packing first."),
@@ -74,13 +75,14 @@ def reactor_run(
     from mepd.discovery.nanoreactor_generator import write_live_events
     from mepd.discovery.reactor_generator import OPTIONS as GEN, collision_pair
     from mepd.web.chem import box_multiplicity
-    from mepd.web.sandbox import _Z, piston_radius
+    from mepd.web.sandbox import (BIG_THREADS, THREADS_FROM_ATOMS, _Z, gpu_slot, load_uma_offline, piston_radius,
+                                  uma_model, uma_too_slow)
 
     active = [f.strip() for f in forces.split(",") if f.strip()]
     if not set(active) <= {"piston", "collide"} or not active:
         raise typer.BadParameter(f"--forces takes piston and/or collide, got {forces!r}")
     if md_method not in METHODS:
-        raise typer.BadParameter(f"--md-method takes {' or '.join(METHODS)} here (axtb), got {md_method!r}")
+        raise typer.BadParameter(f"--md-method takes {', '.join(METHODS)} here, got {md_method!r}")
     structures = []
     for item in molecules:
         what, n = _parse_molecule(item)
@@ -98,7 +100,7 @@ def reactor_run(
     md_dir = output / "md"
     md_dir.mkdir(exist_ok=True)
     typer.echo(f"Reactor: {len(symbols)} atoms, charge {q}, multiplicity {mult}, wall {wide:.1f} -> "
-               f"{wide * compress:.1f} A; forces {', '.join(active)}; MD {md_method} (axtb)")
+               f"{wide * compress:.1f} A; forces {', '.join(active)}")
 
     piston = ({"period_ps": float(period), "compress": float(compress), "duty": float(duty), "t0": 0.0}
               if "piston" in active and float(compress) < 1 else None)
@@ -118,9 +120,54 @@ def reactor_run(
     k_au = float(GEN["k"]) / KCAL * BOHR * BOHR
     pull_fs, gap_fs, hops = float(GEN["pull_fs"]), float(GEN["gap_fs"]), int(GEN["intra_hops"])
     pair, masses = [None], _masses(symbols)
-    md = LangevinMD(symbols, np.asarray(coords, dtype=float) / BOHR, q, mult, temperature=temperature, wall=wide,
-                    seed=seed, method=METHODS[md_method],
-                    bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
+
+    def make(method):
+        return LangevinMD(symbols, np.asarray(coords, dtype=float) / BOHR, q, mult, temperature=temperature,
+                          wall=wide, seed=seed, method=METHODS[method],
+                          bias=lambda x: pull_pairs(x, [pair[0]] if pair[0] is not None else [], k_au, masses))
+
+    md, slot, why = None, None, None
+    if md_method == "uma":
+        # UMA on the GPU, while it is worth it: a place among the UMA runs this GPU takes, a model this machine
+        # has (read offline: the repository is gated), and faster than GFN2-xTB would be (a GPU another job
+        # uses is not). Else GFN2-xTB, saying why.
+        try:
+            import torch
+
+            model = uma_model()
+            if not torch.cuda.is_available():
+                why = "no GPU here"
+            elif model is None:
+                why = "no UMA model on this machine"
+            else:
+                slot = gpu_slot()
+                if slot is None:
+                    why = "the GPU already has its UMA runs"
+                else:
+                    load_uma_offline(model)
+                    md = make("uma")
+                    md.forces(md.pos, biased=False)          # the model loads here
+                    why = uma_too_slow(md, len(symbols))
+                    if why:
+                        md = None
+                    else:
+                        typer.echo(f"MD: UMA ({model}) on the GPU")
+        except Exception as exc:
+            md, why = None, f"UMA could not run: {type(exc).__name__}: {exc}"
+        if md is None:
+            typer.echo(f"MD: GFN2-xTB instead of UMA ({why})")
+            md_method = "gfn2"
+            if slot is not None:
+                slot.close()
+                slot = None
+    if md is None:
+        md = make(md_method)
+        threads = BIG_THREADS if md_method != "uma" and len(symbols) >= THREADS_FROM_ATOMS else 1
+        if threads > 1:   # as the interactive reactor does (LangevinMD's axtb calculators read this when made)
+            md._calc_args[1]["threads"] = threads
+        typer.echo(f"MD: {'GFN2-xTB' if md_method == 'gfn2' else 'g-xTB'} (axtb, {threads} thread{'s' if threads > 1 else ''})")
+    schedule["engine"] = f"LangevinMD {md_method}"
+    save_schedule()
     rng = md.rng
 
     typer.echo(f"Relaxing the packed reactor ({len(symbols)} atoms)...")

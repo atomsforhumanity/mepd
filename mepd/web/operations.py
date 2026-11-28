@@ -1328,14 +1328,16 @@ class NanoreactorParams(Params):
                        "line shows the time left.", cli="--time", gt=0)
     compress: float = P(0.6, "Piston squeeze", "Narrow wall radius as a fraction of the wide one: smaller pushes "
                         "the molecules harder together.", cli="--compress", gt=0, le=1)
-    md_method: Literal["level", "auto", "gfn2", "gfn1", "gxtb"] = P(
+    md_method: Literal["level", "auto", "gfn2", "gfn1", "gxtb", "uma"] = P(
         "level", "MD level", "What drives the discovery MD. 'Your level of theory' (the default) runs it on the "
         "compute profile below, with any calculator (MLIPs, ASE, g-xTB...): as fast as that calculator, and the "
         "MD sees the same chemistry as the rest of your workspace. The xtb methods run xtb's own MD (fast), at a "
         "different level. Automatic: GFN2-xTB if xtb is installed, else g-xTB, else your level of theory. Every "
-        "species, reaction and TS is then refined at the profile's level.", cli="--md-method",
+        "species, reaction and TS is then refined at the profile's level. UMA: on the GPU, with a model the "
+        "machine has (`mepd reactor-run`; GFN2-xTB instead while the GPU is busy or has its UMA runs), its "
+        "reactions found once the MD ends.", cli="--md-method",
         labels={"level": "Your level of theory", "auto": "Automatic", "gfn2": "GFN2-xTB", "gfn1": "GFN1-xTB",
-                "gxtb": "g-xTB (slower)"})
+                "gxtb": "g-xTB (slower)", "uma": "UMA (GPU)"})
     # Not passed to the CLI: as each reaction is refined, the web app queues
     # an ordinary TS search for it (its own job, watchable live) instead.
     connect: bool = P(False, "Find each reaction's TS", "As each reaction is refined, start a TS search on its "
@@ -1433,11 +1435,11 @@ def _build_nanoreactor(ctx: JobContext, p: NanoreactorParams) -> list[str]:
     flags = flags[flags.index("--inputs"):] if "--inputs" in flags else []   # total charge and spin below
     charge = sum(int(r["charge"]) * n for r, n in zip(ctx.structures, counts))
     mult = _nanoreactor_multiplicity(ctx, counts, charge, p.multiplicity)
-    if "collide" in p.forces:
-        # The Reactor's forces: its own MD (mepd/web/reactor_run.py), then the nanoreactor's analysis of it.
-        md = {"auto": "gfn2", "gfn2": "gfn2", "gxtb": "gxtb"}.get(p.md_method)
+    if "collide" in p.forces or p.md_method == "uma":
+        # The Reactor's forces, or UMA: its own MD (mepd/web/reactor_run.py), then the nanoreactor's analysis.
+        md = {"auto": "gfn2", "gfn2": "gfn2", "gxtb": "gxtb", "uma": "uma"}.get(p.md_method)
         if md is None:
-            raise WorkspaceError("with Collide the MD runs on GFN2-xTB or g-xTB (axtb): pick one of those for "
+            raise WorkspaceError("with Collide the MD runs on GFN2-xTB, g-xTB or UMA: pick one of those for "
                                  "'MD driven by'")
         inputs = flags[:2] if flags[:1] == ["--inputs"] else []
         return ["reactor-run", *mols, "--charge", str(charge), "--multiplicity", str(mult), *inputs,
