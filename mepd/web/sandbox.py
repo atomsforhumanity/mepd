@@ -83,10 +83,13 @@ def _piston_view(piston: Optional[dict]) -> Optional[dict]:
     return {k: piston[k] for k in PISTON} if piston else None
 
 
-def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q, parent_pid):
+def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, out_q, traj_q, parent_pid,
+         method="gfn2", threads=1):
     """The MD process: steps until told to stop, applying commands between steps.
     Exits with the server too (`parent_pid`): only the server's reader thread
-    stops an idle reactor, so an orphan would step on forever."""
+    stops an idle reactor, so an orphan would step on forever. `method`: "gfn2"
+    (axtb on `threads` threads) or "uma" (on the GPU; without a usable one it
+    says so and runs GFN2-xTB instead)."""
     import os
 
     from mepd.web.procs import die_with_parent
@@ -119,8 +122,33 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
             g += pull_pairs(x, [col["pair"]], collide_k, masses[0])
         return g
 
-    md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
-                    temperature=temperature, wall=float(radius_A), bias=drags)
+    def send_early(kind, **payload):
+        try:
+            out_q.put_nowait({"kind": kind, **payload})
+        except queue.Full:
+            pass
+
+    md = None
+    if method == "uma":
+        try:
+            import torch
+
+            if not torch.cuda.is_available():
+                raise RuntimeError("no GPU torch can use")
+            md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
+                            temperature=temperature, wall=float(radius_A), bias=drags, method="uma")
+        except Exception as exc:      # UMA on the CPU is slower than GFN2-xTB: fall back, and say why
+            method = "gfn2"
+            send_early("method", method="gfn2", note=f"UMA could not run here ({type(exc).__name__}: {exc}); "
+                                                     "GFN2-xTB instead")
+    if md is None:
+        md = LangevinMD(symbols, np.asarray(coords_A, dtype=float) / BOHR, charge, multiplicity,
+                        temperature=temperature, wall=float(radius_A), bias=drags)
+        if threads > 1:
+            # LangevinMD gives axtb one thread (its `_calc_args`, read when its calculators are first made, so
+            # set before the first step). mepd/discovery is the explorer team's; a `threads=` argument there
+            # would be the clean way (asked for).
+            md._calc_args[1]["threads"] = int(threads)
     masses[0] = md.masses
 
     def start_collision(t_now):
@@ -142,15 +170,19 @@ def _run(symbols, coords_A, charge, multiplicity, radius_A, temperature, cmd_q, 
 
     try:
         relaxing(0)
-        shown = time.time()
+        shown = t_relax = time.time()
         for k in range(RELAX_STEPS):
             md.relax(1)
-            if time.time() - shown > 0.2 or k == RELAX_STEPS - 1:
+            done = k + 1 == RELAX_STEPS or (k + 1 >= RELAX_MIN_STEPS and time.time() - t_relax > RELAX_MAX_S)
+            if time.time() - shown > 0.2 or done:
                 relaxing(k + 1)
                 shown = time.time()
+            if done:
+                break
         md.start()
     except Exception as exc:
-        send("error", message=f"GFN2-xTB failed on the packed reactor: {type(exc).__name__}: {exc}")
+        send("error", message=f"{METHOD_LABELS.get(method, method)} failed on the packed reactor: "
+                              f"{type(exc).__name__}: {exc}")
         return
     e0 = md.energy
     t_fs, steps, last_frame = 0.0, 0, 0.0
@@ -253,15 +285,17 @@ class Sandbox:
 
     def __init__(self, sid: str, symbols, coords_A, charge: int, multiplicity: int, radius: float,
                  temperature: float, names: str = "", owner: str = "", sources: Optional[list] = None,
-                 idle_s: float = IDLE_STOP_S, max_s: Optional[float] = None):
+                 idle_s: float = IDLE_STOP_S, max_s: Optional[float] = None, method: str = "gfn2",
+                 threads: int = 1):
         ctx = mp.get_context("spawn")
+        self.method, self.threads, self.method_note = method, int(threads), None
         self.id, self.symbols, self.charge, self.multiplicity, self.names = sid, list(symbols), int(charge), \
             int(multiplicity), names
         self.cmd_q, self.out_q, self.traj_q = ctx.Queue(), ctx.Queue(maxsize=8), ctx.Queue()
         self.proc = ctx.Process(target=_run, args=(self.symbols, np.asarray(coords_A).tolist(), charge, multiplicity,
                                                    radius, temperature, self.cmd_q, self.out_q, self.traj_q,
                                                    os.getpid()),
-                                daemon=True)
+                                kwargs={"method": method, "threads": int(threads)}, daemon=True)
         _STARTER.submit(self.proc.start).result()
         self.latest: Optional[dict] = None
         self.seq = 0
@@ -298,6 +332,8 @@ class Sandbox:
             with self.cond:
                 if msg["kind"] == "error":
                     self.error = msg["message"]
+                elif msg["kind"] == "method":
+                    self.method, self.method_note = msg["method"], msg.get("note")
                 else:
                     self.seq += 1
                     self.latest = {**msg, "seq": self.seq}
@@ -386,7 +422,8 @@ class Sandbox:
             if self.seq <= since and self.error is None and self.proc.is_alive():
                 self.cond.wait(timeout=wait)
             out = dict(self.latest or {"seq": 0})
-        out.update(alive=self.proc.is_alive(), error=self.error, events_rev=self.events_rev)
+        out.update(alive=self.proc.is_alive(), error=self.error, events_rev=self.events_rev, method=self.method,
+                   method_note=self.method_note)
         return out
 
     def command(self, cmd: dict) -> None:
@@ -407,7 +444,8 @@ class Sandbox:
     def describe(self) -> dict:
         return {"id": self.id, "symbols": self.symbols, "charge": self.charge, "multiplicity": self.multiplicity,
                 "names": self.names, "alive": self.proc.is_alive(), "temperature": self.temperature,
-                "started": self.started}
+                "started": self.started, "method": self.method, "threads": self.threads,
+                "method_note": self.method_note}
 
 
 _SANDBOXES: dict[str, Sandbox] = {}
@@ -418,7 +456,41 @@ MAX_SANDBOXES = 2
 # the server starts reactors from request threads that anyio retires after 10 idle seconds: a reactor started
 # from one was killed then (SIGTERM, no message), a few seconds into its run (2026-11-27).
 _STARTER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reactor-start")
-RELAX_STEPS = 60          # steepest-descent steps on the packing before the MD (LangevinMD.relax)
+RELAX_STEPS = 60          # steepest-descent steps on the packing before the MD (LangevinMD.relax)...
+RELAX_MIN_STEPS = 10      # ...at least these, then no more once RELAX_MAX_S have passed: a big box under GFN2-xTB
+RELAX_MAX_S = 15.0        # took 2 min (240 atoms) to 18 min (480); 10 steps heat the first 100 fs about as 60 do
+UMA_FROM_ATOMS = 100      # "auto": UMA on the GPU from this size (faster than GFN2-xTB from ~50; ~10 s to load)
+THREADS_FROM_ATOMS = 150  # GFN2-xTB on BIG_THREADS threads from this size (2.6x at 480 atoms; 1.7x at 120)
+BIG_THREADS = 4
+MAX_UMA_AT_ONCE = 3      # UMA reactors sharing the GPU (2.8 GB each at 120 atoms, 5.3 at 480); more run GFN2-xTB
+METHOD_LABELS = {"gfn2": "GFN2-xTB", "uma": "UMA"}
+
+
+def has_gpu() -> bool:
+    """Whether this machine shows an NVIDIA GPU (without importing torch; the reactor checks CUDA itself)."""
+    if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
+        return False
+    return os.path.exists("/dev/nvidiactl") or os.path.exists("/dev/nvidia0")
+
+
+def _choose(natoms: int, requested: str) -> tuple[str, int, Optional[str]]:
+    """Under _LOCK: pick_method, but "auto" leaves UMA to the first MAX_UMA_AT_ONCE reactors on the GPU."""
+    how, threads = pick_method(natoms, requested)
+    if how == "uma" and requested == "auto":
+        busy = sum(1 for b in _SANDBOXES.values() if b.method == "uma" and b.proc.is_alive())
+        if busy >= MAX_UMA_AT_ONCE:
+            how = "gfn2"
+            threads = BIG_THREADS if natoms >= THREADS_FROM_ATOMS else 1
+            return how, threads, f"GFN2-xTB: {busy} reactors already use the GPU (UMA)"
+    return how, threads, None
+
+
+def pick_method(natoms: int, requested: str = "auto") -> tuple[str, int]:
+    """(method, axtb threads) for a reactor of `natoms`: "gfn2" or "uma" as asked; "auto" is UMA from
+    UMA_FROM_ATOMS on a GPU, else GFN2-xTB, on BIG_THREADS threads from THREADS_FROM_ATOMS."""
+    method = requested if requested in METHOD_LABELS else (
+        "uma" if natoms >= UMA_FROM_ATOMS and has_gpu() else "gfn2")
+    return method, (BIG_THREADS if method == "gfn2" and natoms >= THREADS_FROM_ATOMS else 1)
 MAX_ATOMS = 500          # the most atoms one interactive reactor takes (Jan, 2026-11-27: was 120)
 
 
@@ -445,7 +517,7 @@ def _make_room(owner: str, limits: Optional[dict]) -> dict:
 
 def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Optional[float] = None,
           names: str = "", owner: str = "", sources: Optional[list] = None, limits: Optional[dict] = None,
-          seed: Optional[int] = None, multiplicity: Optional[int] = None) -> Sandbox:
+          seed: Optional[int] = None, multiplicity: Optional[int] = None, method: str = "auto") -> Sandbox:
     """A new sandbox from one structure per molecule (repeated for copies),
     packed like the nanoreactor's (a different packing each time unless
     `seed` is given). Room is made by _make_room. Its spin is `multiplicity`,
@@ -463,15 +535,17 @@ def start(sid: str, structures: list, *, temperature: float = 800.0, radius: Opt
     mult = box_multiplicity(electrons, [int(s.multiplicity) for s in structures], multiplicity)
     with _LOCK:
         timing = _make_room(owner, limits)
+        how, threads, note = _choose(len(symbols), method)
         box = Sandbox(sid, symbols, coords, charge, mult, float(radius) * 1.15, temperature, names, owner, sources,
-                      **timing)
+                      **timing, method=how, threads=threads)
+        box.method_note = note
         _SANDBOXES[sid] = box
     return box
 
 
 def start_from(sid: str, structure, *, temperature: float = 800.0, radius: Optional[float] = None,
                names: str = "", owner: str = "", sources: Optional[list] = None,
-               limits: Optional[dict] = None) -> Sandbox:
+               limits: Optional[dict] = None, method: str = "auto") -> Sandbox:
     """A new sandbox starting from one geometry as it is (a complex's
     arrangement), centred; the wall a little beyond its farthest atom."""
     symbols = list(structure.symbols)
@@ -483,8 +557,10 @@ def start_from(sid: str, structure, *, temperature: float = 800.0, radius: Optio
     radius = float(radius or (np.linalg.norm(xyz, axis=1).max() + 2.0))
     with _LOCK:
         timing = _make_room(owner, limits)
+        how, threads, note = _choose(len(symbols), method)
         box = Sandbox(sid, symbols, xyz, int(structure.charge), int(structure.multiplicity), radius, temperature, names,
-                      owner, sources, **timing)
+                      owner, sources, **timing, method=how, threads=threads)
+        box.method_note = note
         _SANDBOXES[sid] = box
     return box
 

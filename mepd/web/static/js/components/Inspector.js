@@ -357,7 +357,7 @@ function SandboxLauncher({ sids, embedded = false, onClose = null }) {
       × ${structures[id]?.name}</label>`)}
     <label class="combine-row small">Temperature <input type="number" class="tiny" min="0" max="3000" step="100" value=${temperature}
       onInput=${(e) => setTemperature(+e.target.value || 0)} /> K</label>
-    <p class="small muted combine-help">Live GFN2-xTB dynamics you steer: drag atoms, scroll to squeeze the wall. ${atoms} atoms${atoms > 150 ? ' (slow beyond ~150: under a step a second at 240)' : ''}.
+    <p class="small muted combine-help">Live GFN2-xTB dynamics you steer: drag atoms, scroll to squeeze the wall. ${atoms} atoms${atoms >= 100 ? ' (big boxes run UMA on a GPU if there is one; GFN2-xTB slows down beyond ~150)' : ''}.
       <a href="/manual/settings#reactor" target="_blank" rel="noopener" title="Time step, thermostat, wall, piston and the rest">Its MD settings ›</a></p>
     <div class="row-actions"><button class="btn primary" disabled=${busy || atoms === 0 || atoms > 500} onClick=${start}>${busy ? 'Starting…' : 'Start'}</button>
       ${sids.every((id) => structures[id]?.smiles) && html`<a href="#/reactor/new" class="small"

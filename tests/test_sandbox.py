@@ -266,3 +266,43 @@ def test_a_reactor_outlives_the_thread_that_started_it():
         assert f.get("t_fs") and not f.get("error")
     finally:
         sandbox.stop("t_thread")
+
+
+def test_big_boxes_run_uma_on_a_gpu_and_gfn2_on_more_threads_without(monkeypatch):
+    monkeypatch.setattr(sandbox, "has_gpu", lambda: True)
+    assert sandbox.pick_method(30) == ("gfn2", 1)
+    assert sandbox.pick_method(sandbox.UMA_FROM_ATOMS) == ("uma", 1)
+    assert sandbox.pick_method(480, "gfn2") == ("gfn2", sandbox.BIG_THREADS)      # asked for
+    monkeypatch.setattr(sandbox, "has_gpu", lambda: False)
+    assert sandbox.pick_method(120) == ("gfn2", 1)
+    assert sandbox.pick_method(480) == ("gfn2", sandbox.BIG_THREADS)
+    assert sandbox.pick_method(30, "uma") == ("uma", 1)
+
+
+def test_uma_without_a_gpu_falls_back_to_gfn2_and_says_so(monkeypatch):
+    pytest.importorskip("fairchem.core")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")          # the reactor's process sees no GPU
+    box = sandbox.start("t_uma", [chem.structure_from_smiles("O")] * 3, temperature=300, method="uma")
+    try:
+        f = _wait(box, 0, 25.0)
+        assert f.get("t_fs") and not f.get("error")
+        assert box.method == "gfn2" and "UMA could not run here" in (box.method_note or "")
+    finally:
+        sandbox.stop("t_uma")
+
+
+def test_auto_leaves_uma_to_a_few_reactors_on_the_gpu(monkeypatch):
+    class Busy:
+        method = "uma"
+
+        class proc:
+            @staticmethod
+            def is_alive():
+                return True
+
+    monkeypatch.setattr(sandbox, "has_gpu", lambda: True)
+    monkeypatch.setattr(sandbox, "_SANDBOXES", {f"b{i}": Busy() for i in range(sandbox.MAX_UMA_AT_ONCE)})
+    how, threads, note = sandbox._choose(480, "auto")
+    assert (how, threads) == ("gfn2", sandbox.BIG_THREADS) and "already use the GPU" in note
+    assert sandbox._choose(480, "uma")[0] == "uma"            # asked for: as asked
+

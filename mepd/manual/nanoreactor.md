@@ -52,12 +52,23 @@ take about 4 minutes per simulated picosecond; an MLIP is much faster.
 **Steer by hand** starts the interactive reactor on the same box: a live
 GFN2-xTB MD you can drag, squeeze, switch the piston on and off in, and
 push molecules together in (Collide). **Stop & analyze** reads its
-trajectory the same way. It takes up to 500 atoms, but it slows down
-quickly with size, since each GFN2-xTB step costs about eight times more
-when the atoms double. Measured on one thread: about 200 MD steps a second
-at 30 atoms, 6 at 120, under one at 240 and one every 11 s at 480. A big
-box shows from the start, settling while its packing is relaxed (60 steps).
-The reactor stops 15 minutes after nobody looks at it.
+trajectory the same way. It takes up to 500 atoms. Small boxes run
+GFN2-xTB, whose steps cost about eight times more each time the atoms
+double; from 100 atoms, on a machine with a GPU, the reactor runs UMA, a
+machine-learned potential, instead. Measured on a laptop:
+
+| Atoms | GFN2-xTB | UMA on the GPU |
+|---|---|---|
+| 30 | ~200 MD steps a second | (not used) |
+| 120 | 6 | 40 |
+| 240 | 0.7 (1.6 on 4 threads) | 22 |
+| 480 | one every 11 s (one every 4 s on 4 threads) | 11 |
+
+Without a GPU (or with three UMA reactors already on it), boxes from 150
+atoms run GFN2-xTB on 4 threads. The reactor's header names what it runs.
+A big box shows from the start, settling while its packing is relaxed (up
+to 60 steps, cut short after 15 s once 10 are done). The reactor stops 15
+minutes after nobody looks at it.
 
 ## Many runs, one list
 
@@ -104,6 +115,9 @@ session you were in stays in the list as it was.
 - **"From the species" assumes parallel spins.** Two doublet radicals give
   a triplet box, which keeps them from bonding; choose **Lowest** to let
   them pair.
+- **UMA is not GFN2-xTB.** A big box steered by hand moves on UMA's
+  forces; its reactions are refined at your session's level of theory
+  either way. UMA's weights are Meta's (FAIR Chemistry licence).
 - **Collide is only in Steer by hand.** The unattended run has only the
   piston wall.
 - **The live network page does not show a Nanoreactor run.** That page

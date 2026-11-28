@@ -266,7 +266,9 @@ export function SandboxView() {
     <div class="view-head">
       <button class="btn-icon" title="Back to Explore (it keeps running for 15 minutes; the ◉ button in the top bar brings you back)" onClick=${() => set({ view: { tab: 'graph', jobId: null } })}>←</button>
       <div class="job-head-main"><h2>Interactive reactor<${Why} id="other.reactor" label="The interactive reactor" /></h2>
-        <div class="small muted"><b class="sb-names">${sb.names}</b> · <span class="has-tip" title="The reactor runs GFN2-xTB because it is fast. Barriers and energies afterwards use your session's level of theory.">GFN2-xTB</span> · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
+        <div class="small muted"><b class="sb-names">${sb.names}</b> · <span class="has-tip" title=${(hud?.method || sb.method) === 'uma'
+          ? 'UMA (uma-s-1p2), a machine-learned potential, on the GPU: big boxes move this way, GFN2-xTB would crawl. Barriers and energies afterwards use your session\'s level of theory.'
+          : `GFN2-xTB${sb.threads > 1 ? ` on ${sb.threads} threads` : ''}: fast for small boxes. Barriers and energies afterwards use your session's level of theory.${hud?.method_note ? ` ${hud.method_note}` : ''}`}>${(hud?.method || sb.method) === 'uma' ? 'UMA' : 'GFN2-xTB'}</span> · ${sb.symbols.length} atoms · charge ${sb.charge}${sb.multiplicity > 1 ? ` · multiplicity ${sb.multiplicity}` : ''}</div>
         <${StepBar} at=${reactions.length ? 'barrier' : 'reactor'} /></div>
       <div class="row-actions">
         ${!reactions.length && html`<button class="btn" onClick=${analyze}

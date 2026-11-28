@@ -246,6 +246,7 @@ class SandboxIn(BaseModel):
     temperature: float = 800.0
     radius: Optional[float] = None
     multiplicity: Optional[int] = None   # the box's spin; empty: from the species' own (unpaired electrons + 1)
+    method: Literal["auto", "gfn2", "uma"] = "auto"   # auto: UMA on a GPU for big boxes (sandbox.pick_method)
 
 
 class SpeciesPreviewIn(BaseModel):
@@ -2763,7 +2764,7 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             try:
                 box = sandbox.start_from(new_id("sb_"), W().load_structure(body.structure), temperature=body.temperature,
                                          radius=body.radius, names=rec["name"], owner=str(W().root),
-                                         sources=[body.structure], limits=limits)
+                                         sources=[body.structure], limits=limits, method=body.method)
             except (ValueError, RuntimeError) as exc:
                 raise WorkspaceError(str(exc)) from None
             return box.describe()
@@ -2780,7 +2781,8 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
             from mepd.web.workspace import new_id
 
             box = sandbox.start(new_id("sb_"), mols, temperature=body.temperature, radius=body.radius, names=names,
-                                owner=str(W().root), sources=ids, limits=limits, multiplicity=body.multiplicity)
+                                owner=str(W().root), sources=ids, limits=limits, multiplicity=body.multiplicity,
+                                method=body.method)
         except (ValueError, RuntimeError) as exc:
             raise WorkspaceError(str(exc)) from None
         return box.describe()
@@ -2792,6 +2794,15 @@ def create_app(workspace_root: Path, *, max_concurrent: int = 2, auth_token: Opt
         from mepd.web import reactor_list
 
         return reactor_list.collect(W(), J().list())
+
+    @app.get("/api/sandbox-methods")
+    def sandbox_methods():
+        """What the interactive reactor runs at which size here (the setup page's speed note)."""
+        from mepd.web import sandbox
+
+        return {"gpu": sandbox.has_gpu(), "uma_from_atoms": sandbox.UMA_FROM_ATOMS,
+                "threads_from_atoms": sandbox.THREADS_FROM_ATOMS, "big_threads": sandbox.BIG_THREADS,
+                "max_atoms": sandbox.MAX_ATOMS}
 
     @app.get("/api/sandboxes")
     def sandboxes_running():
