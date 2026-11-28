@@ -7,6 +7,7 @@ import { html, useEffect, useState } from '../lib.js';
 import { api, attempt } from '../api.js';
 import { openJob, openReactorList, set, toast, useStore } from '../store.js';
 import { depictUrl } from '../util.js';
+import { ProfilePicker, defaultProfile } from './Actions.js';
 
 const SPINS = [[1, 'singlet'], [2, 'doublet'], [3, 'triplet'], [4, 'quartet'], [5, 'quintet']];
 const SPIN_OF_WORD = Object.fromEntries(SPINS.map(([m, w]) => [w, m]));
@@ -14,9 +15,10 @@ const spinName = (m) => SPINS.find(([k]) => k === m)?.[1] || `multiplicity ${m}`
 const STEER_MAX_ATOMS = 500;   // the most the interactive reactor takes (sandbox.MAX_ATOMS)
 // What Steer by hand runs at this size here (GET /api/sandbox-methods: a GPU? sandbox.pick_method's sizes), in
 // words, with the speeds measured on the laptop (2026-11-27, ReactorSetup's box).
-function steerSpeed(atoms, m) {
+function steerSpeed(atoms, m, chosen = 'auto') {
   if (!m || atoms > m.max_atoms) return null;
-  if (m.gpu && atoms >= m.uma_from_atoms) {
+  if (chosen === 'uma' && !m.gpu) return { slow: true, text: 'There is no GPU here for UMA: Steer by hand would run GFN2-xTB instead.' };
+  if (chosen === 'uma' || (chosen === 'auto' && m.gpu && atoms >= m.uma_from_atoms)) {
     return { slow: false, text: `Steer by hand runs UMA (a machine-learned potential) on the GPU at this size: about 40 MD steps a second at 120 atoms, 11 at 480. It takes ~10 s to load.` };
   }
   if (atoms >= m.threads_from_atoms) {
@@ -110,6 +112,10 @@ export function ReactorSetup() {
   const [timePs, setTimePs] = useState(5);
   const [compress, setCompress] = useState(0.6);
   const [connect, setConnect] = useState(false);
+  const [profile, setProfile] = useState(() => defaultProfile());   // refines species, reactions, TSs
+  const [mdMethod, setMdMethod] = useState('level');                 // what drives the unattended run's MD
+  const [steerMethod, setSteerMethod] = useState('auto');            // what Steer by hand runs
+  const levels = useStore((s) => s.levels);
   const [spinMode, setSpinMode] = useState('species');
   const [otherMult, setOtherMult] = useState(1);
   const [busy, setBusy] = useState(null);
@@ -169,10 +175,10 @@ export function ReactorSetup() {
     const made = [];
     for (const { T, k } of plan) {
       const params = { copies: counts.join(', '), multiplicity: boxMult, temperature: T, time_ps: timePs, compress,
-        connect: plan.length === 1 && connect, refine_live: true, seed: seed + made.length };
+        connect: plan.length === 1 && connect, refine_live: true, seed: seed + made.length, md_method: mdMethod };
       const label = `Nanoreactor ${T} K${repeats > 1 ? `, run ${k + 1}` : ''}: ${title}`;
       try {
-        made.push(...await api.post('/api/jobs', { op: 'nanoreactor', structures: ids, params, label }));
+        made.push(...await api.post('/api/jobs', { op: 'nanoreactor', structures: ids, params, label, profile }));
       } catch (err) {
         if (!made.length) throw err;
         toast(`Launched ${made.length} of ${plan.length} runs: ${err.message || err}`, 'error', 12000);
@@ -184,13 +190,13 @@ export function ReactorSetup() {
   const steer = go('steer', async () => {
     const { ids, counts } = await addSpecies();
     const box = await api.post('/api/sandbox', { counts: Object.fromEntries(ids.map((id, k) => [id, counts[k]])),
-      temperature: temperatures[0], multiplicity: boxMult });
+      temperature: temperatures[0], multiplicity: boxMult, method: steerMethod });
     set({ view: { tab: 'sandbox', jobId: null, sandbox: box } });
   });
 
   const maxPs = demo?.limit_compute ? 10 : null;
   const atOnce = demo?.limit_compute ? demo.max_active_jobs : null;
-  const steerNote = steerSpeed(atoms, methods);
+  const steerNote = steerSpeed(atoms, methods, steerMethod);
   return html`<div class="nrs">
     <section class="nrs-recipe" aria-labelledby="nrs-in">
       <h2 id="nrs-in">What goes in</h2>
@@ -227,6 +233,25 @@ export function ReactorSetup() {
         : 'A species has a spin its electrons cannot have (marked).'}</p>`}
     </section>
     <aside class="nrs-run" aria-label="Conditions and run">
+      <div class="nrs-level">
+        <${ProfilePicker} value=${profile} onChange=${setProfile} />
+        <label class="field"><span class="field-label">MD driven by</span>
+          <select value=${mdMethod} onChange=${(e) => setMdMethod(e.target.value)}
+            title="What computes the forces of Launch nanoreactor's MD. Its reactions, species and TSs are refined at the compute profile's level either way.">
+            <option value="level">the profile's level (${levels[profile ?? '']?.label || 'its engine'})</option>
+            <option value="gfn2">GFN2-xTB (xtb's own MD, fast)</option>
+            <option value="gxtb">g-xTB (slower)</option>
+            <option value="gfn1">GFN1-xTB</option>
+            <option value="auto">Automatic (GFN2-xTB if xtb is installed)</option>
+          </select></label>
+        <label class="field"><span class="field-label">Steer by hand runs</span>
+          <select value=${steerMethod} onChange=${(e) => setSteerMethod(e.target.value)}
+            title="The live MD you drag and squeeze. Automatic: UMA on the GPU from ${methods?.uma_from_atoms ?? 100} atoms when there is one, else GFN2-xTB.">
+            <option value="auto">Automatic (${methods?.gpu && atoms >= (methods?.uma_from_atoms ?? 100) ? 'UMA here' : 'GFN2-xTB here'})</option>
+            <option value="gfn2">GFN2-xTB</option>
+            <option value="uma">UMA (needs a GPU)</option>
+          </select></label>
+      </div>
       <div class="nrs-fields">
         <label class="nrs-temps" title="Several, separated by commas, launch one run at each">Temperature<span><input class=${temperatures.length ? '' : 'bad'} inputmode="decimal" value=${temps}
           onInput=${(e) => setTemps(e.target.value)} /> K</span>
@@ -250,7 +275,7 @@ export function ReactorSetup() {
           onClick=${steer}>${busy === 'steer' ? 'Starting…' : 'Steer by hand'}</button>
       </div>
       ${steerNote && html`<p class=${`small ${steerNote.slow ? 'nrs-warn' : 'muted nrs-note'}`}>${steerNote.text}</p>`}
-      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand takes ${STEER_MAX_ATOMS} atoms at most. ` : ''}With g-xTB, a few dozen atoms take about 4 min per simulated ps; an MLIP is much faster.${' '}
+      <p class="small muted nrs-note">${atoms > STEER_MAX_ATOMS ? `Steer by hand takes ${STEER_MAX_ATOMS} atoms at most. ` : ''}The MD's speed depends on what drives it: GFN2-xTB is fastest; g-xTB took about 1 min per simulated ps for 30 atoms on a laptop.${' '}
         <a href="/manual/nanoreactor" target="_blank" rel="noopener">How it works ›</a></p>
     </aside>
   </div>`;
