@@ -179,6 +179,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The cluster pulls the image with the secret ghcr-pull. The one made by hand (a classic token,
+      # deploy/k8s/mepd-demo.yaml) has been refused by ghcr.io since 2026-11-24 (403 on its token request:
+      # ErrImagePull, every deploy rolled back). This run's own token can read the package; it is written
+      # into ghcr-pull before the rollout, which pulls the image while the token is still valid (it expires
+      # when this job ends: a pod restarted later on afh-c03 reuses the image already there, and the next
+      # deploy writes a fresh one). Replace with a durable credential (a bot's read:packages token) when
+      # there is one. The token goes through stdin, never a command line.
+      - name: Give the cluster this run's registry token (ghcr-pull)
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export KUBECONFIG="$HOME/.kube/config"
+          auth=$(printf '%s:%s' "$GITHUB_ACTOR" "$REGISTRY_TOKEN" | base64 -w0)
+          config=$(printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" | base64 -w0)
+          if printf 'apiVersion: v1\nkind: Secret\nmetadata: {name: ghcr-pull, namespace: mepd}\ntype: kubernetes.io/dockerconfigjson\ndata: {.dockerconfigjson: %s}\n' "$config" \
+              | kubectl apply -f -; then
+            echo "ghcr-pull: this run's registry token" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::could not write ghcr-pull (may this runner's kubeconfig write secrets?); the rollout uses the one there"
+          fi
+
       - name: Deploy ${{ env.TAG }}
         run: |
           # k3s's kubectl, with the cluster's kubeconfig the runner's user keeps (deploy/ci/README.md)
